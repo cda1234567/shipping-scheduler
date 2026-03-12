@@ -131,6 +131,53 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(bom["source_format"], ".xls")
         self.assertEqual(bom["is_converted"], 1)
 
+    def test_save_bom_file_preserves_existing_revisions(self):
+        db.save_bom_file({
+            "id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/formal.xlsx",
+            "source_filename": "legacy.xls",
+            "source_format": ".xls",
+            "is_converted": True,
+            "po_number": "123",
+            "model": "MODEL-A",
+            "pcb": "PCB-A",
+            "group_model": "MODEL-A",
+            "order_qty": 10,
+            "uploaded_at": "2026-03-12T10:00:00",
+            "components": [],
+        })
+        db.save_bom_revision({
+            "bom_file_id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/history/formal_v001.xlsx",
+            "source_action": "upload",
+            "note": "上傳 BOM",
+        })
+
+        db.save_bom_file({
+            "id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/formal.xlsx",
+            "source_filename": "legacy.xls",
+            "source_format": ".xls",
+            "is_converted": True,
+            "po_number": "456",
+            "model": "MODEL-A",
+            "pcb": "PCB-B",
+            "group_model": "MODEL-A",
+            "order_qty": 20,
+            "uploaded_at": "2026-03-12T11:00:00",
+            "components": [],
+        })
+
+        revisions = db.get_bom_revisions("bom-1")
+        bom = db.get_bom_file("bom-1")
+
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions[0]["source_action"], "upload")
+        self.assertEqual(bom["pcb"], "PCB-B")
+
 
 class OrderReloadTests(InMemoryDbTestCase):
     def test_upsert_orders_clears_pending_decisions_before_rebuild(self):

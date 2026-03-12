@@ -400,13 +400,12 @@ function renderEditor(bom) {
   const body = document.getElementById("bom-editor-table-body");
   const sortedComponents = [...(bom.components || [])].sort(compareEditorComponents);
   body.innerHTML = sortedComponents.map(component => `
-    <tr data-row="${component.source_row}">
+    <tr data-row="${component.source_row}" data-prev-qty-cs="${component.prev_qty_cs ?? 0}">
       <td>${component.source_row || ""}</td>
       <td><input type="text" class="bom-cell-input" data-field="part_number" value="${esc(component.part_number)}"></td>
       <td><input type="text" class="bom-cell-input" data-field="description" value="${esc(component.description || "")}"></td>
       <td><input type="number" class="bom-cell-input" data-field="qty_per_board" step="0.01" value="${component.qty_per_board ?? 0}"></td>
       <td><input type="number" class="bom-cell-input" data-field="needed_qty" step="0.01" value="${component.needed_qty ?? 0}"></td>
-      <td><input type="number" class="bom-cell-input" data-field="prev_qty_cs" step="0.01" value="${component.prev_qty_cs ?? 0}"></td>
       <td>
         <label class="bom-check-label">
           <input type="checkbox" class="bom-cell-check" data-field="is_dash" ${component.is_dash ? "checked" : ""}>
@@ -437,7 +436,7 @@ function readEditorPayload() {
       description: String(getValue("description") || "").trim(),
       qty_per_board: getNumber("qty_per_board"),
       needed_qty: getNumber("needed_qty"),
-      prev_qty_cs: getNumber("prev_qty_cs"),
+      prev_qty_cs: parseFloat(row.dataset.prevQtyCs || "0") || 0,
       is_dash: isDash,
     };
   });

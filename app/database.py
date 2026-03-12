@@ -512,10 +512,23 @@ def save_bom_file(bom: dict):
             sort_order = int(max_sort) + 1
 
         conn.execute(
-            "INSERT OR REPLACE INTO bom_files("
+            "INSERT INTO bom_files("
             "id, filename, filepath, source_filename, source_format, is_converted, "
             "po_number, model, pcb, group_model, order_qty, uploaded_at, sort_order"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET "
+            "filename=excluded.filename, "
+            "filepath=excluded.filepath, "
+            "source_filename=excluded.source_filename, "
+            "source_format=excluded.source_format, "
+            "is_converted=excluded.is_converted, "
+            "po_number=excluded.po_number, "
+            "model=excluded.model, "
+            "pcb=excluded.pcb, "
+            "group_model=excluded.group_model, "
+            "order_qty=excluded.order_qty, "
+            "uploaded_at=excluded.uploaded_at, "
+            "sort_order=excluded.sort_order",
             (
                 bom["id"],
                 bom["filename"],
