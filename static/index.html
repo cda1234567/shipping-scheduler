@@ -193,41 +193,12 @@ async function refreshCurrentView() {
     if (!confirmed) return;
   }
 
-  const originalText = refreshButton.textContent;
   refreshButton.disabled = true;
-  refreshButton.textContent = "↻ 重新整理中";
+  refreshButton.textContent = "↻ 重新載入中";
 
-  try {
-    await refreshMainStatus();
-    await refreshAlerts();
-
-    switch (getActiveTabName()) {
-      case "completed":
-        await refreshSchedule();
-        await refreshCompleted();
-        break;
-      case "bom":
-        await renderBomGroups();
-        await refreshSchedule();
-        break;
-      case "alerts-tab":
-        break;
-      case "logs-tab":
-        await refreshLogs();
-        break;
-      case "schedule":
-      default:
-        await refreshSchedule();
-        break;
-    }
-
-    showToast("已重新整理");
-  } catch (error) {
-    showToast(`重新整理失敗: ${error.message}`);
-  } finally {
-    refreshButton.disabled = false;
-    refreshButton.textContent = originalText;
-  }
+  const reloadUrl = new URL(window.location.href);
+  reloadUrl.searchParams.set("_reload", String(Date.now()));
+  window.location.replace(reloadUrl.toString());
 }
 
 document.getElementById("btn-refresh-app").addEventListener("click", () => {
