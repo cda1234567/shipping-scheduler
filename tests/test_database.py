@@ -127,3 +127,37 @@ class OrderReloadTests(InMemoryDbTestCase):
         decisions = db.get_all_decisions()
 
         self.assertEqual(decisions["PART-2"], "Shortage")
+
+
+class DispatchConsumptionTests(InMemoryDbTestCase):
+    def test_get_all_dispatched_consumption_ignores_records_at_or_before_snapshot(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1', 'M1', 'PCB', 1, 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+
+        db.save_snapshot({"PART-1": 100}, {"PART-1": 25})
+        self.conn.execute(
+            "UPDATE inventory_snapshot SET snapshot_at='2026-03-12T11:05:45.000000'"
+        )
+
+        self.conn.execute(
+            "INSERT INTO dispatch_records(order_id, part_number, needed_qty, prev_qty_cs, decision, dispatched_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (order_id, "PART-1", 40, 0, "None", "2026-03-12T10:00:00.000000"),
+        )
+        self.conn.execute(
+            "INSERT INTO dispatch_records(order_id, part_number, needed_qty, prev_qty_cs, decision, dispatched_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (order_id, "PART-1", 15, 0, "None", "2026-03-12T12:00:00.000000"),
+        )
+        self.conn.execute(
+            "INSERT INTO dispatch_records(order_id, part_number, needed_qty, prev_qty_cs, decision, dispatched_at) "
+            "VALUES(?,?,?,?,?,?)",
+            (order_id, "PART-1", 99, 0, "Shortage", "2026-03-12T12:30:00.000000"),
+        )
+
+        consumption = db.get_all_dispatched_consumption(db.get_snapshot_taken_at())
+
+        self.assertEqual(consumption, {"PART-1": 15.0})

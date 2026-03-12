@@ -43,6 +43,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["dispatched_consumption"], {"PART-1": 12})
         self.assertEqual(data["decisions"], {"PART-1": "CreateRequirement"})
 
+    def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
+        with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \
+             patch("app.routers.schedule.db.get_setting", side_effect=lambda key, default="": default), \
+             patch("app.routers.schedule.db.get_snapshot_taken_at", return_value="2026-03-12T11:05:45.000000"), \
+             patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-2": 15}) as mock_consumption, \
+             patch("app.routers.schedule.db.get_all_decisions", return_value={}):
+            response = self.client.get("/api/schedule/rows")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["dispatched_consumption"], {"PART-2": 15})
+        mock_consumption.assert_called_once_with("2026-03-12T11:05:45.000000")
+
     def test_main_file_data_backfills_missing_moq_from_live_main_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"

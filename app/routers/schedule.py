@@ -38,6 +38,11 @@ def _repair_legacy_snapshot_if_needed(main_path: str) -> dict[str, dict]:
     return snapshot
 
 
+def _get_active_dispatched_consumption() -> dict[str, float]:
+    snapshot_at = db.get_snapshot_taken_at()
+    return db.get_all_dispatched_consumption(snapshot_at)
+
+
 # ── Upload schedule ───────────────────────────────────────────────────────────
 
 @router.post("/schedule/upload")
@@ -78,7 +83,7 @@ async def get_schedule_rows():
         "loaded_at": db.get_setting("schedule_loaded_at"),
         "filename": db.get_setting("schedule_filename"),
         "completed_count": dispatched_count,
-        "dispatched_consumption": db.get_all_dispatched_consumption(),
+        "dispatched_consumption": _get_active_dispatched_consumption(),
         "decisions": db.get_all_decisions(),
     }
 
@@ -137,7 +142,8 @@ async def calculate_shortage():
         snapshot_stock = read_stock(main_path)
         moq = read_moq(main_path)
 
-    dispatched_consumption = db.get_all_dispatched_consumption()
+    # 快照是目前主檔基準，只扣快照之後新增的發料紀錄。
+    dispatched_consumption = _get_active_dispatched_consumption()
     orders = db.get_orders(["pending", "merged"])
     bom_map = db.get_all_bom_components_by_model()
 

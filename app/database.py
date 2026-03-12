@@ -235,6 +235,12 @@ def get_snapshot() -> dict[str, dict]:
     return {r["part_number"]: {"stock_qty": r["stock_qty"], "moq": r["moq"]} for r in rows}
 
 
+def get_snapshot_taken_at() -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT MAX(snapshot_at) AS snapshot_at FROM inventory_snapshot").fetchone()
+    return (row["snapshot_at"] if row and row["snapshot_at"] else "") or ""
+
+
 def get_snapshot_stock() -> dict[str, float]:
     snap = get_snapshot()
     return {k: v["stock_qty"] for k, v in snap.items()}
@@ -530,13 +536,20 @@ def get_dispatch_records(order_id: int | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def get_all_dispatched_consumption() -> dict[str, float]:
+def get_all_dispatched_consumption(after_snapshot_at: str = "") -> dict[str, float]:
     """取得所有已發料的消耗量加總 { PART: total_needed }。"""
+    sql = (
+        "SELECT part_number, SUM(needed_qty) as total FROM dispatch_records "
+        "WHERE decision != 'Shortage'"
+    )
+    params: list[str] = []
+    if after_snapshot_at:
+        sql += " AND dispatched_at > ?"
+        params.append(after_snapshot_at)
+    sql += " GROUP BY part_number"
+
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT part_number, SUM(needed_qty) as total FROM dispatch_records "
-            "WHERE decision != 'Shortage' GROUP BY part_number"
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return {r["part_number"].upper(): r["total"] for r in rows}
 
 
