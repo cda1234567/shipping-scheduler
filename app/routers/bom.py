@@ -318,17 +318,45 @@ class BomDispatchDownloadRequest(BaseModel):
     supplements: Dict[str, float]
 
 
-def _write_supplements_to_ws(ws, supplements: dict[str, float]):
-    part_col = cfg("excel.bom_part_col", 2) + 1
+def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
+    cell = ws.cell(row=row_idx, column=col_idx)
+    for merged_range in ws.merged_cells.ranges:
+        if cell.coordinate in merged_range:
+            return ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+    return cell
+
+
+def _set_cell_value(ws, row_idx: int, col_idx: int, value):
+    _resolve_cell_for_write(ws, row_idx, col_idx).value = value
+
+
+def _write_dispatch_values_to_ws(ws, components: list[dict], supplements: dict[str, float]):
+    g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
     data_start = cfg("excel.bom_data_start_row", 5)
 
     written = 0
-    for row_idx in range(data_start, ws.max_row + 1):
-        part = str(ws.cell(row=row_idx, column=part_col).value or "").strip().upper()
-        if part and part in supplements:
-            ws.cell(row=row_idx, column=h_col).value = supplements[part]
-            written += 1
+    supplemented_parts: set[str] = set()
+
+    for component in components:
+        row_idx = int(component.get("source_row") or 0)
+        if row_idx < data_start or row_idx > ws.max_row:
+            continue
+
+        part = str(component.get("part_number") or "").strip().upper()
+        if not part or component.get("is_dash"):
+            continue
+
+        prev_qty_cs = component.get("prev_qty_cs", 0)
+        supplement_qty = None
+        if part not in supplemented_parts and part in supplements:
+            supplement_qty = supplements[part]
+            supplemented_parts.add(part)
+
+        _set_cell_value(ws, row_idx, g_col, prev_qty_cs if prev_qty_cs else None)
+        _set_cell_value(ws, row_idx, h_col, supplement_qty if supplement_qty else None)
+        written += 1
+
     return written
 
 
@@ -358,7 +386,21 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         else:
             wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
-        _write_supplements_to_ws(wb.active, supplements)
+        parsed = parse_bom_for_storage(
+            path=str(src),
+            bom_id=bom["id"],
+            filename=bom["filename"],
+            uploaded_at=bom.get("uploaded_at", ""),
+            group_model=bom.get("group_model", ""),
+            source_filename=bom.get("source_filename", ""),
+            source_format=bom.get("source_format", ""),
+            is_converted=bool(bom.get("is_converted")),
+        )
+        _write_dispatch_values_to_ws(
+            wb.active,
+            [component.dict() for component in parsed.components],
+            supplements,
+        )
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()

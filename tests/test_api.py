@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import openpyxl
 from fastapi.testclient import TestClient
 
 from app.models import BomComponent, BomFile
@@ -191,3 +193,50 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["source_format"], ".xls")
         self.assertTrue(data["is_converted"])
         self.assertEqual(data["component_count"], 1)
+
+    def test_dispatch_download_writes_prev_batch_and_supplements_to_separate_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8).value = "製單號碼M/O:4500059234"
+            ws.cell(row=1, column=10).value = "訂單數量:"
+            ws.cell(row=2, column=3).value = "MODEL-A"
+            ws.cell(row=2, column=4).value = "PCB-A"
+            ws.cell(row=3, column=7).value = "上批餘料"
+            ws.cell(row=3, column=8).value = "增添料數"
+            ws.cell(row=5, column=3).value = "PART-1"
+            ws.cell(row=5, column=6).value = 10
+            ws.cell(row=5, column=8).value = 3
+            ws.cell(row=6, column=3).value = "PART-2"
+            ws.cell(row=6, column=6).value = 20
+            ws.cell(row=6, column=8).value = 8
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-1",
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "source_filename": "dispatch.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]):
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-1"],
+                    "supplements": {"PART-1": 7},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = downloaded.active
+        self.assertEqual(ws.cell(row=5, column=7).value, 3)
+        self.assertEqual(ws.cell(row=5, column=8).value, 7)
+        self.assertEqual(ws.cell(row=6, column=7).value, 8)
+        self.assertIsNone(ws.cell(row=6, column=8).value)
+        downloaded.close()
