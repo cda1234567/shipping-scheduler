@@ -1,0 +1,13 @@
+.claude/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+data/
+
+.DS_Store
+Thumbs.db

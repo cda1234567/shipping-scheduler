@@ -1,0 +1,779 @@
+import { apiJson, apiFetch, apiPost, apiPatch, showToast, esc, fmt } from "./api.js";
+import { calculate } from "./calculator.js";
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _rows = [];
+let _bomData = {};
+let _stock = {};
+let _moq = {};
+let _dispatchedConsumption = {};
+let _calcResults = [];
+let _decisions = {};
+let _completedRows = [];
+let _completedFolders = [];
+let _onRefreshMain = null;
+let _checkedIds = new Set();
+
+// ── Public ────────────────────────────────────────────────────────────────────
+export async function initSchedule(onRefreshMain) {
+  _onRefreshMain = onRefreshMain || null;
+  document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
+  document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
+  document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
+  document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
+  await refresh();
+}
+
+export async function refresh() {
+  await Promise.all([loadMainData(), loadScheduleRows(), loadBomData()]);
+  recalculate();
+  renderSchedule();
+}
+
+export async function refreshCompleted() {
+  await loadCompletedRows();
+  renderCompletedTab();
+}
+
+export function getDecisions() {
+  return { ..._decisions };
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+async function loadMainData() {
+  try {
+    const d = await apiJson("/api/main-file/data");
+    _stock = d.stock || {};
+    _moq = d.moq || {};
+  } catch (_) { _stock = {}; _moq = {}; }
+}
+
+async function loadScheduleRows() {
+  try {
+    const d = await apiJson("/api/schedule/rows");
+    _rows = d.rows || [];
+    const completedBadge = document.getElementById("completed-count");
+    if (completedBadge && d.completed_count > 0) {
+      completedBadge.textContent = d.completed_count;
+      completedBadge.style.display = "inline";
+    } else if (completedBadge) {
+      completedBadge.style.display = "none";
+    }
+  } catch (_) { _rows = []; }
+}
+
+async function loadBomData() {
+  try {
+    _bomData = await apiJson("/api/bom/data");
+  } catch (_) { _bomData = {}; }
+}
+
+async function loadCompletedRows() {
+  try {
+    const d = await apiJson("/api/schedule/completed");
+    _completedRows = d.rows || [];
+    _completedFolders = d.folders || [];
+  } catch (_) { _completedRows = []; _completedFolders = []; }
+}
+
+// ── Calculation ───────────────────────────────────────────────────────────────
+function recalculate() {
+  if (!_rows.length) { _calcResults = []; return; }
+  // 只計算勾選的訂單
+  const checkedOrders = _rows.filter(r => _checkedIds.has(r.id));
+  const checkedResults = checkedOrders.length
+    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption)
+    : [];
+  // 建立以 order id 為 key 的結果 map
+  const resultById = new Map();
+  checkedOrders.forEach((r, i) => resultById.set(r.id, checkedResults[i]));
+  // _calcResults 保持與 _rows 同長度，未勾選的為 null
+  _calcResults = _rows.map(r => resultById.get(r.id) || null);
+}
+
+// ── Render schedule ───────────────────────────────────────────────────────────
+function renderSchedule() {
+  const container = document.getElementById("schedule-scroll");
+  container.innerHTML = "";
+
+  if (!_rows.length) {
+    container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
+    renderShortagePanel([], []);
+    return;
+  }
+
+  const resultMap = {};
+  _calcResults.forEach((r, i) => { resultMap[_rows[i]?.id] = r; });
+
+  for (const r of _rows) {
+    container.appendChild(buildRowCard(r, resultMap));
+  }
+
+  initSortable(container);
+
+  const allShortages = [];
+  const allCSShortages = [];
+  _calcResults.forEach((r, i) => {
+    if (!r) return;
+    const code = _rows[i]?.code || "";
+    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code }));
+    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code }));
+  });
+  renderShortagePanel(allShortages, allCSShortages);
+}
+
+// ── Build single-row card ─────────────────────────────────────────────────────
+function buildRowCard(r, resultMap) {
+  const div = document.createElement("div");
+  div.className = "po-group";
+  div.dataset.orderId = r.id;
+
+  const res = resultMap[r.id];
+  const badge = cardBadge(res, r.id);
+  const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
+  const qty = r.order_qty != null ? r.order_qty : "—";
+  const code = esc(r.code || "");
+  const isChecked = _checkedIds.has(r.id);
+  const statusTag = r.status === "dispatched"
+    ? '<span class="tag tag-dispatched">已扣帳</span>'
+    : r.status === "merged"
+      ? '<span class="tag tag-merged">已merge</span>'
+      : '<span class="tag tag-pending">待排程</span>';
+  const remarkSpan = r.remark
+    ? `<span class="po-ship-date" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.remark)}">${esc(r.remark.slice(0, 24))}${r.remark.length > 24 ? "..." : ""}</span>`
+    : `<span></span>`;
+
+  div.innerHTML = `
+    <div class="po-group-header">
+      <input type="checkbox" class="row-check" data-order-id="${r.id}" ${isChecked ? "checked" : ""}
+             style="width:16px;height:16px;margin:0;cursor:pointer;accent-color:#34c759">
+      <span class="drag-handle" title="拖曳調整順序">⠿</span>
+      <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>
+      <span style="color:#c7c7cc;font-size:13px;text-align:center">|</span>
+      <span class="po-number" style="color:#6b7280;font-weight:500">${r.po_number}</span>
+      <span class="tag tag-pcb" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.pcb)}</span>
+      <span style="font-size:13px;color:#3c3c43;font-weight:500;white-space:nowrap">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
+      <span class="po-ship-date">${date}</span>
+      <input class="code-input" type="text" value="${code}"
+             data-order-id="${r.id}" placeholder="編號"
+             style="width:100%;box-sizing:border-box;border:1px solid #e5e5ea;border-radius:4px;padding:2px 6px;font-size:12px;text-align:center;background:transparent">
+      ${remarkSpan}
+      <span class="po-status-badge ${badge.cls}">${badge.text}</span>
+      <div class="row-actions">
+        <button class="btn-complete" data-order-id="${r.id}" title="標記已發料並 Merge">✓</button>
+        <button class="btn-edit-date" data-order-id="${r.id}" title="改交期">📅</button>
+        <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">✕</button>
+      </div>
+    </div>`;
+
+  // 勾選控制
+  div.querySelector(".row-check").addEventListener("change", e => {
+    const id = parseInt(e.target.dataset.orderId);
+    if (e.target.checked) _checkedIds.add(id);
+    else _checkedIds.delete(id);
+    recalculate();
+    updateStatusOnly();
+  });
+
+  // 雙擊編輯機種名稱
+  div.querySelector(".model-editable").addEventListener("dblclick", e => {
+    const span = e.target;
+    const currentModel = span.textContent;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = currentModel;
+    input.className = "model-edit-input";
+    input.style.cssText = "width:100%;box-sizing:border-box;border:1px solid #007aff;border-radius:4px;padding:2px 6px;font-size:14px;font-weight:600;outline:none;background:#fff";
+    span.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const save = async () => {
+      const newModel = input.value.trim();
+      if (newModel && newModel !== currentModel) {
+        try {
+          await apiPatch(`/api/schedule/orders/${r.id}/model`, { model: newModel });
+          showToast("機種已更新");
+          await refresh();
+          return;
+        } catch (err) { showToast("失敗：" + err.message); }
+      }
+      const newSpan = document.createElement("span");
+      newSpan.className = "po-number model-editable";
+      newSpan.dataset.orderId = r.id;
+      newSpan.title = "雙擊編輯機種名稱";
+      newSpan.textContent = newModel || currentModel;
+      input.replaceWith(newSpan);
+      newSpan.addEventListener("dblclick", e => {
+        div.querySelector(".model-editable")?.dispatchEvent(new MouseEvent("dblclick"));
+      });
+    };
+
+    input.addEventListener("blur", save);
+    input.addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+      if (e.key === "Escape") { input.value = currentModel; input.blur(); }
+    });
+  });
+
+  // 編號輸入
+  div.querySelector(".code-input").addEventListener("change", async e => {
+    const orderId = parseInt(e.target.dataset.orderId);
+    const codeVal = e.target.value.trim();
+    try {
+      await apiPatch(`/api/schedule/orders/${orderId}/code`, { code: codeVal });
+    } catch (_) {}
+  });
+
+  // 發料（直接鎖定）
+  div.querySelector(".btn-complete").addEventListener("click", () => {
+    handleDispatch(r.id, r.model);
+  });
+
+  // 改交期
+  div.querySelector(".btn-edit-date").addEventListener("click", () => {
+    handleEditDelivery(r.id, r.delivery_date || r.ship_date || "");
+  });
+
+  // 取消
+  div.querySelector(".btn-cancel-order").addEventListener("click", () => {
+    handleCancel(r.id, r.model);
+  });
+
+  return div;
+}
+
+function cardBadge(res, orderId) {
+  if (!res && orderId !== undefined && !_checkedIds.has(orderId)) return { cls: "badge-unchecked", text: "—" };
+  if (!res) return { cls: "badge-no-bom", text: "BOM未上傳" };
+  if (res.status === "ok") return { cls: "badge-ok", text: "OK" };
+  if (res.status === "shortage") {
+    const total = [...(res.shortages || []), ...(res.customer_material_shortages || [])]
+      .reduce((s, x) => s + (x.shortage_amount || 0), 0);
+    return { cls: "badge-shortage", text: `缺 ${fmt(total)}` };
+  }
+  return { cls: "badge-no-bom", text: "BOM未上傳" };
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function handleDispatch(orderId, model) {
+  if (!confirm(`確定要將「${model}」標記為已發料並鎖定？`)) return;
+
+  const btn = document.querySelector(`.btn-complete[data-order-id="${orderId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = "..."; }
+
+  try {
+    const result = await apiPost(`/api/schedule/orders/${orderId}/dispatch`, { decisions: _decisions });
+    showToast(`已發料，${result.merged_parts} 筆料號已 Merge`);
+    const card = document.querySelector(`.po-group[data-order-id="${orderId}"]`);
+    if (card) {
+      const badge = card.querySelector(".po-status-badge");
+      if (badge) { badge.className = "po-status-badge badge-dispatched"; badge.textContent = "已發料"; }
+      if (btn) { btn.disabled = true; btn.textContent = "✓"; }
+      const chk = card.querySelector(".row-check");
+      if (chk) { chk.disabled = true; }
+    }
+    _checkedIds.delete(orderId);
+    if (_onRefreshMain) _onRefreshMain();
+  } catch (e) {
+    showToast("失敗：" + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = "✓"; }
+  }
+}
+
+async function handleEditDelivery(orderId, currentDate) {
+  const newDate = prompt("請輸入新交期（格式: YYYY-MM-DD）：", currentDate);
+  if (!newDate) return;
+  try {
+    const result = await apiPatch(`/api/schedule/orders/${orderId}/delivery`, { delivery_date: newDate });
+    if (result.alert) {
+      alert(result.message);
+    } else {
+      showToast("交期已更新");
+    }
+    await refresh();
+  } catch (e) { showToast("失敗：" + e.message); }
+}
+
+async function handleCancel(orderId, model) {
+  if (!confirm(`確定要取消訂單「${model}」？`)) return;
+  try {
+    const result = await apiPost(`/api/schedule/orders/${orderId}/cancel`);
+    if (result.alert) {
+      alert(result.message);
+    } else {
+      showToast("訂單已取消");
+    }
+    await refresh();
+  } catch (e) { showToast("失敗：" + e.message); }
+}
+
+async function handleBatchMerge() {
+  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
+  if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
+  if (!targets.length) { showToast("勾選的訂單中沒有可 merge 的"); return; }
+  try {
+    await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
+    await refresh();
+    showShortageModal(targets);
+  } catch (e) { showToast("失敗：" + e.message); }
+}
+
+// ── Shortage Modal ────────────────────────────────────────────────────────────
+let _modalTargets = [];
+let _modalBomFiles = [];
+
+async function showShortageModal(targets) {
+  _modalTargets = targets;
+  const modal = document.getElementById("shortage-modal");
+  const list = document.getElementById("modal-shortage-list");
+  const footer = document.getElementById("modal-footer");
+
+  // 查詢對應的 BOM 檔案
+  const models = [...new Set(targets.map(t => t.model).filter(Boolean))];
+  _modalBomFiles = [];
+  if (models.length) {
+    try {
+      const lookup = await apiPost("/api/bom/lookup", { models });
+      _modalBomFiles = lookup.files || [];
+    } catch (_) {}
+  }
+
+  // 收集勾選訂單的缺料，按機種分組
+  const shortagesByModel = {};
+  const csShortagesByModel = {};
+  _calcResults.forEach((r, i) => {
+    if (!r) return;
+    const model = _rows[i]?.model || "未知機種";
+    const code = _rows[i]?.code || model;
+    (r.shortages || []).forEach(s => {
+      if (!shortagesByModel[model]) shortagesByModel[model] = [];
+      shortagesByModel[model].push({ ...s, _row_code: code });
+    });
+    (r.customer_material_shortages || []).forEach(s => {
+      if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
+      csShortagesByModel[model].push({ ...s, _row_code: code });
+    });
+  });
+
+  // 組內按料號排序
+  for (const items of Object.values(shortagesByModel))
+    items.sort((a, b) => (a.part_number || "").localeCompare(b.part_number || ""));
+  for (const items of Object.values(csShortagesByModel))
+    items.sort((a, b) => (a.part_number || "").localeCompare(b.part_number || ""));
+
+  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])];
+  const hasAny = allModels.length > 0;
+
+  let html = "";
+
+  if (!hasAny) {
+    html += `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
+      全部 OK，無缺料！可直接扣帳。</div>`;
+  } else {
+    for (const model of allModels) {
+      html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
+      const csItems = csShortagesByModel[model] || [];
+      const items = shortagesByModel[model] || [];
+      if (csItems.length) {
+        html += '<div style="margin-bottom:8px"><h4 style="font-size:12px;color:#ca8a04;margin:4px 0">客供料</h4>';
+        html += csItems.map(s => modalShortageItem(s, true)).join("");
+        html += '</div>';
+      }
+      if (items.length) {
+        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
+        html += items.map(s => modalShortageItem(s, false)).join("");
+      }
+    }
+  }
+
+  list.innerHTML = html;
+
+  // 綁定缺料 checkbox — 勾選時停用輸入框
+  list.querySelectorAll(".shortage-mark").forEach(chk => {
+    chk.addEventListener("change", () => {
+      const input = chk.closest(".shortage-item").querySelector(".supplement-input");
+      if (input) {
+        input.disabled = chk.checked;
+        if (chk.checked) input.value = "0";
+      }
+    });
+  });
+
+  // 重設 footer
+  footer.innerHTML = `
+    <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載 BOM</button>
+    <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
+  document.getElementById("modal-download-bom").onclick = handleModalDownloadBom;
+  document.getElementById("modal-cancel").onclick = closeShortageModal;
+  document.getElementById("modal-close").onclick = closeShortageModal;
+  modal.style.display = "flex";
+}
+
+function modalShortageItem(s, isCS) {
+  const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
+  const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
+  const defaultQty = s.suggested_qty || s.shortage_amount || 0;
+
+  return `<div class="shortage-item ${isCS ? "cs-item" : ""}" style="margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
+    <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
+    <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
+      <span style="color:#dc2626">缺 ${fmt(s.shortage_amount)}</span>
+      <span style="color:#16a34a">庫存 ${fmt(s.current_stock)}</span>
+      <span>需 ${fmt(s.needed)}</span>
+      ${s.moq ? `<span style="color:#2563eb">MOQ ${fmt(s.moq)}</span>` : ""}
+    </div>
+    ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
+    <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+      <label style="font-size:12px;color:#374151;white-space:nowrap">補料:</label>
+      <input type="number" class="supplement-input" data-part="${s.part_number}" value="${defaultQty}" min="0"
+             style="width:80px;padding:2px 6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-align:right">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:#dc2626;cursor:pointer;white-space:nowrap">
+        <input type="checkbox" class="shortage-mark" data-part="${s.part_number}"> 缺料
+      </label>
+    </div>`}
+  </div>`;
+}
+
+function closeShortageModal() {
+  document.getElementById("shortage-modal").style.display = "none";
+  _modalTargets = [];
+}
+
+function _collectModalDecisions() {
+  const list = document.getElementById("modal-shortage-list");
+  const decisions = {};
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    const part = input.dataset.part;
+    const qty = parseFloat(input.value) || 0;
+    const isShortage = input.closest(".shortage-item")?.querySelector(".shortage-mark")?.checked;
+
+    if (isShortage) {
+      decisions[part] = "Shortage";
+    } else if (qty > 0) {
+      decisions[part] = "CreateRequirement";
+    } else {
+      decisions[part] = "None";
+    }
+  });
+
+  return { ..._decisions, ...decisions };
+}
+
+function _collectModalSupplements() {
+  const supplements = {};
+  document.querySelectorAll(".supplement-input").forEach(input => {
+    const part = input.dataset.part;
+    const qty = parseFloat(input.value) || 0;
+    if (qty > 0) supplements[part] = qty;
+  });
+  return supplements;
+}
+
+async function handleModalDownloadBom() {
+  const btn = document.getElementById("modal-download-bom");
+  if (!_modalBomFiles.length) { showToast("找不到對應的 BOM 檔案"); return; }
+
+  btn.disabled = true;
+  btn.textContent = "下載中...";
+
+  const supplements = _collectModalSupplements();
+
+  try {
+    const bomIds = _modalBomFiles.map(f => f.id);
+    const resp = await fetch("/api/bom/dispatch-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bom_ids: bomIds, supplements }),
+    });
+    if (!resp.ok) { showToast("BOM 下載失敗"); btn.disabled = false; btn.textContent = "確認補料並下載 BOM"; return; }
+
+    const blob = await resp.blob();
+    const cd = resp.headers.get("content-disposition") || "";
+    const m = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+    const filename = m ? decodeURIComponent(m[1].replace(/"/g, "")) : "BOM.zip";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+
+    showToast("BOM 已下載");
+    closeShortageModal();
+  } catch (e) {
+    showToast("BOM 下載失敗：" + e.message);
+    btn.disabled = false;
+    btn.textContent = "確認補料並下載 BOM";
+  }
+}
+
+// ── Completed tab ─────────────────────────────────────────────────────────────
+function renderCompletedTab() {
+  const container = document.getElementById("completed-scroll");
+  if (!container) return;
+
+  if (!_completedRows.length) {
+    container.innerHTML = '<div class="empty-state">尚無已發料的排程列</div>';
+    return;
+  }
+
+  // 按 folder 分組
+  const grouped = {};
+  for (const r of _completedRows) {
+    const folder = r.folder || "";
+    if (!grouped[folder]) grouped[folder] = [];
+    grouped[folder].push(r);
+  }
+
+  // 所有資料夾選項（給下拉用）
+  const allFolders = _completedFolders.slice();
+
+  container.innerHTML = "";
+
+  // 先渲染有名字的資料夾
+  for (const folderName of allFolders) {
+    if (!grouped[folderName]) continue;
+    container.appendChild(buildFolderSection(folderName, grouped[folderName], allFolders));
+  }
+
+  // 最後渲染未歸檔
+  if (grouped[""]) {
+    container.appendChild(buildFolderSection("", grouped[""], allFolders));
+  }
+}
+
+function buildFolderSection(folderName, rows, allFolders) {
+  const section = document.createElement("div");
+  section.className = "completed-folder-section";
+
+  const isUnsorted = !folderName;
+  const label = isUnsorted ? "未歸檔" : folderName;
+
+  // 標題列
+  const header = document.createElement("div");
+  header.className = "completed-folder-header";
+  header.innerHTML = `
+    <span class="folder-toggle" style="cursor:pointer;user-select:none">▼</span>
+    <span class="folder-name">${esc(label)}</span>
+    <span style="font-size:11px;color:#8e8e93;margin-left:4px">(${rows.length})</span>
+    ${!isUnsorted ? `<button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="margin-left:auto;background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
+  section.appendChild(header);
+
+  // 卡片容器
+  const body = document.createElement("div");
+  body.className = "completed-folder-body";
+  for (const r of rows) {
+    body.appendChild(buildCompletedCard(r, allFolders));
+  }
+  section.appendChild(body);
+
+  // 收合
+  header.querySelector(".folder-toggle").addEventListener("click", () => {
+    const isOpen = body.style.display !== "none";
+    body.style.display = isOpen ? "none" : "";
+    header.querySelector(".folder-toggle").textContent = isOpen ? "▶" : "▼";
+  });
+
+  // 刪除資料夾
+  const delBtn = header.querySelector(".btn-folder-delete");
+  if (delBtn) {
+    delBtn.addEventListener("click", async () => {
+      if (!confirm(`確定刪除資料夾「${folderName}」？訂單會移回未歸檔。`)) return;
+      try {
+        await apiFetch(`/api/schedule/folders/${encodeURIComponent(folderName)}`, { method: "DELETE" });
+        await refreshCompleted();
+      } catch (e) { showToast("失敗：" + e.message); }
+    });
+  }
+
+  return section;
+}
+
+function buildCompletedCard(r, allFolders) {
+  const div = document.createElement("div");
+  div.className = "po-group completed-card";
+  const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
+  const qty = r.order_qty != null ? r.order_qty : "—";
+  const code = r.code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 4px">${esc(r.code)}</span>` : "";
+
+  // 資料夾下拉選項
+  const currentFolder = r.folder || "";
+  let folderOptions = `<option value=""${currentFolder === "" ? " selected" : ""}>未歸檔</option>`;
+  for (const f of allFolders) {
+    folderOptions += `<option value="${esc(f)}"${currentFolder === f ? " selected" : ""}>${esc(f)}</option>`;
+  }
+
+  div.innerHTML = `
+    <div class="completed-card-header">
+      <span class="po-number">${esc(r.model)}</span>
+      <span style="color:#c7c7cc;font-size:13px">|</span>
+      <span style="color:#6b7280;font-weight:500;font-size:14px;font-family:monospace">${r.po_number}</span>
+      <span class="tag tag-pcb" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.pcb)}</span>
+      ${code}
+      <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
+      <span class="po-ship-date">${date}</span>
+      <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
+    </div>`;
+
+  // 移動資料夾
+  div.querySelector(".folder-select").addEventListener("change", async (e) => {
+    const newFolder = e.target.value;
+    try {
+      await apiPost("/api/schedule/orders/move-folder", { order_ids: [r.id], folder: newFolder });
+      await refreshCompleted();
+    } catch (err) { showToast("移動失敗：" + err.message); }
+  });
+
+  return div;
+}
+
+async function handleCreateFolder() {
+  const input = document.getElementById("new-folder-name");
+  const name = (input?.value || "").trim();
+  if (!name) { showToast("請輸入資料夾名稱"); return; }
+  if (_completedFolders.includes(name)) { showToast("資料夾已存在"); return; }
+
+  // 直接建立：把一筆假訂單移過去再移回來太蠢，直接在前端記住
+  // 實際上建立資料夾 = 有訂單被移進去才會出現
+  // 所以先提示使用者建立後要把訂單移過去
+  _completedFolders.push(name);
+  input.value = "";
+  showToast(`資料夾「${name}」已建立，請將訂單移入`);
+  renderCompletedTab();
+}
+
+// ── SortableJS ────────────────────────────────────────────────────────────────
+function initSortable(container) {
+  if (typeof Sortable === "undefined") return;
+  Sortable.create(container, {
+    animation: 180,
+    handle: ".drag-handle",
+    ghostClass: "sortable-ghost",
+    dragClass: "sortable-drag",
+    async onEnd() {
+      const newOrder = Array.from(container.children).map(el => parseInt(el.dataset.orderId));
+      const rowMap = new Map(_rows.map(r => [r.id, r]));
+      _rows = newOrder.map(id => rowMap.get(id)).filter(Boolean);
+      recalculate();
+      updateStatusOnly();
+      try { await apiPost("/api/schedule/reorder", { order_ids: newOrder }); } catch (_) {}
+    },
+  });
+}
+
+function updateStatusOnly() {
+  const resultMap = {};
+  _calcResults.forEach((r, i) => { resultMap[_rows[i]?.id] = r; });
+
+  document.querySelectorAll("#schedule-scroll .po-group[data-order-id]").forEach(div => {
+    const orderId = parseInt(div.dataset.orderId);
+    const res = resultMap[orderId];
+    const badge = div.querySelector(".po-status-badge");
+    if (badge) {
+      const b = cardBadge(res, orderId);
+      badge.className = `po-status-badge ${b.cls}`;
+      badge.textContent = b.text;
+    }
+  });
+
+  const allShortages = [];
+  const allCSShortages = [];
+  _calcResults.forEach((r, i) => {
+    if (!r) return;
+    const code = _rows[i]?.code || "";
+    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code }));
+    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code }));
+  });
+  renderShortagePanel(allShortages, allCSShortages);
+}
+
+// ── Shortage panel ────────────────────────────────────────────────────────────
+function renderShortagePanel(shortages, csShortages = []) {
+  const scroll = document.getElementById("right-scroll");
+  const badge = document.getElementById("shortage-count");
+  const totalCount = shortages.length + csShortages.length;
+
+  if (!totalCount) {
+    scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
+    badge.style.display = "none";
+    return;
+  }
+
+  badge.style.display = "inline";
+  badge.textContent = totalCount;
+
+  let html = "";
+
+  // 客供料缺料（黃色區塊）
+  if (csShortages.length) {
+    html += '<div class="cs-shortage-section"><h4 class="cs-title">客供料缺料</h4>';
+    html += csShortages.map(s => shortageItemHtml(s, true)).join("");
+    html += '</div>';
+  }
+
+  // 一般缺料
+  if (shortages.length) {
+    if (csShortages.length) html += '<h4 style="font-size:12px;color:#dc2626;margin:8px 0 4px;font-weight:600">採購缺料</h4>';
+    html += shortages.map(s => shortageItemHtml(s, false)).join("");
+  }
+
+  scroll.innerHTML = html;
+
+  scroll.querySelectorAll(".dec-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const part = btn.dataset.part;
+      const dec = btn.dataset.dec;
+      _decisions[part] = (_decisions[part] === dec) ? "None" : dec;
+      renderShortagePanel(shortages, csShortages);
+    });
+  });
+}
+
+function shortageItemHtml(s, isCS) {
+  const dec = _decisions[s.part_number] || "None";
+  const codeTag = s._row_code
+    ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
+    : "";
+  const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
+
+  return `<div class="shortage-item ${isCS ? "cs-item" : ""}">
+    <div class="part">${s.part_number}${codeTag}${csTag}</div>
+    <div class="desc">${s.description || "—"}</div>
+    <div class="amounts">
+      <span class="red">缺 ${fmt(s.shortage_amount)}</span>
+      <span class="green">庫存 ${fmt(s.current_stock)}</span>
+      <span>需 ${fmt(s.needed)}</span>
+      ${s.moq ? `<span class="blue">建議補 ${fmt(s.suggested_qty)}（MOQ ${fmt(s.moq)}）</span>` : ""}
+    </div>
+    ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : `
+    <div class="decision-btns">
+      <button class="dec-btn ${dec === "CreateRequirement" ? "active-create" : ""}" data-dec="CreateRequirement" data-part="${s.part_number}">需採購</button>
+      <button class="dec-btn ${dec === "MarkHasPO" ? "active-has-po" : ""}" data-dec="MarkHasPO" data-part="${s.part_number}">已有PO</button>
+      <button class="dec-btn ${dec === "IgnoreOnce" ? "active-ignore" : ""}" data-dec="IgnoreOnce" data-part="${s.part_number}">忽略</button>
+      <button class="dec-btn ${dec === "Shortage" ? "active-shortage" : ""}" data-dec="Shortage" data-part="${s.part_number}">缺料</button>
+    </div>`}
+  </div>`;
+}
+
+// ── Toolbar actions ───────────────────────────────────────────────────────────
+async function handleAutoSort() {
+  try {
+    await apiFetch("/api/schedule/auto-sort", { method: "POST" });
+    await loadScheduleRows();
+    recalculate();
+    renderSchedule();
+    showToast("已恢復依出貨日自動排序");
+  } catch (e) { showToast("錯誤：" + e.message); }
+}
+
+async function handleSaveOrder() {
+  const order_ids = [];
+  document.querySelectorAll("#schedule-scroll .po-group[data-order-id]").forEach(div => {
+    order_ids.push(parseInt(div.dataset.orderId));
+  });
+  try {
+    await apiPost("/api/schedule/reorder", { order_ids });
+    showToast("順序已儲存");
+  } catch (e) { showToast("錯誤：" + e.message); }
+}

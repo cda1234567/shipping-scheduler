@@ -1,0 +1,44 @@
+# ── OpenText 出貨排程系統設定 ──────────────────────────────
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+# Excel 欄位位置（0-based）
+excel:
+  # 主檔
+  main_part_col: 0      # A 欄：料號
+  main_moq_col: 2       # C 欄：MOQ
+  main_desc_col: 3      # D 欄：說明
+
+  # BOM 副檔
+  bom_part_col: 2       # C 欄：料號
+  bom_desc_col: 3       # D 欄：說明
+  bom_qty_per_board: 1  # B 欄：每板用量
+  bom_needed_col: 5     # F 欄：生產用量含拋料
+  bom_g_col: 6          # G 欄：上批餘料庚霖（dash-check）
+  bom_h_col: 7          # H 欄：上批餘料辰尚
+  bom_po_col: 7         # H 欄(row1)：PO#
+  bom_order_qty_col: 10 # K 欄(row1)：訂單數量
+  bom_model_col: 2      # C 欄(row2)：機種
+  bom_pcb_col: 3        # D 欄(row2)：PCB 型號
+  bom_data_start_row: 5 # 資料從第 5 行開始（1-based）
+
+  # 排程表
+  sch_po_col: 0         # A 欄：PO#
+  sch_model_col: 1      # B 欄：機種
+  sch_pcb_col: 2        # C 欄：PCB
+  sch_qty_col: 3        # D 欄：訂單數量
+  sch_balance_col: 5    # F 欄：BALANCE
+  sch_ship_date_col: 6  # G 欄：出貨日期
+  sch_remark_col: 8     # I 欄：備註
+  sch_data_start_row: 4 # 資料從第 4 行開始（1-based）
+  sch_sheet_name: "PCB"  # Sheet 名稱
+
+# 提醒設定
+alerts:
+  days_before_delivery: 14  # 距交期 N 天仍有缺料 → 提醒
+  customer_material_remind: true
+
+# 日誌
+logging:
+  max_entries: 2000

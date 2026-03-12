@@ -1,0 +1,551 @@
+"""
+SQLite 資料庫管理模組 — 所有持久化資料都存在這裡。
+
+表結構：
+  inventory_snapshot  — 起始庫存快照（截止點）
+  orders              — 訂單（排程行），四階段狀態
+  bom_files           — BOM 副檔 metadata
+  bom_components      — BOM 料件明細
+  dispatch_records    — 已發料紀錄（鎖死）
+  decisions           — 補貨決策（持久化）
+  alerts              — 提醒
+  activity_logs       — 操作日誌
+  settings            — 系統設定（主檔路徑等）
+"""
+from __future__ import annotations
+import sqlite3
+import json
+from datetime import datetime
+from pathlib import Path
+from contextlib import contextmanager
+
+from .config import DATA_DIR
+
+DB_PATH = DATA_DIR / "system.db"
+
+_CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS inventory_snapshot (
+    part_number TEXT PRIMARY KEY,
+    stock_qty   REAL NOT NULL DEFAULT 0,
+    moq         REAL NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    snapshot_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    po_number     TEXT    NOT NULL DEFAULT '',
+    model         TEXT    NOT NULL DEFAULT '',
+    pcb           TEXT    NOT NULL DEFAULT '',
+    order_qty     REAL    NOT NULL DEFAULT 0,
+    balance_qty   REAL,
+    delivery_date TEXT,
+    ship_date     TEXT,
+    status        TEXT    NOT NULL DEFAULT 'pending',
+    code          TEXT    NOT NULL DEFAULT '',
+    remark        TEXT    NOT NULL DEFAULT '',
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    row_index     INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL DEFAULT '',
+    updated_at    TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS bom_files (
+    id          TEXT PRIMARY KEY,
+    filename    TEXT NOT NULL DEFAULT '',
+    filepath    TEXT NOT NULL DEFAULT '',
+    po_number   TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL DEFAULT '',
+    pcb         TEXT NOT NULL DEFAULT '',
+    group_model TEXT NOT NULL DEFAULT '',
+    order_qty   REAL NOT NULL DEFAULT 0,
+    uploaded_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS bom_components (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    bom_file_id          TEXT    NOT NULL REFERENCES bom_files(id) ON DELETE CASCADE,
+    part_number          TEXT    NOT NULL DEFAULT '',
+    description          TEXT    NOT NULL DEFAULT '',
+    qty_per_board        REAL    NOT NULL DEFAULT 0,
+    needed_qty           REAL    NOT NULL DEFAULT 0,
+    prev_qty_cs          REAL    NOT NULL DEFAULT 0,
+    is_dash              INTEGER NOT NULL DEFAULT 0,
+    is_customer_supplied INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_records (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id      INTEGER NOT NULL REFERENCES orders(id),
+    part_number   TEXT    NOT NULL DEFAULT '',
+    needed_qty    REAL    NOT NULL DEFAULT 0,
+    prev_qty_cs   REAL    NOT NULL DEFAULT 0,
+    decision      TEXT    NOT NULL DEFAULT 'None',
+    dispatched_at TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id     INTEGER NOT NULL REFERENCES orders(id),
+    part_number  TEXT    NOT NULL DEFAULT '',
+    decision     TEXT    NOT NULL DEFAULT 'None',
+    decided_at   TEXT    NOT NULL DEFAULT '',
+    UNIQUE(order_id, part_number)
+);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_type TEXT    NOT NULL DEFAULT '',
+    order_id   INTEGER,
+    message    TEXT    NOT NULL DEFAULT '',
+    is_read    INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS activity_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    action     TEXT NOT NULL DEFAULT '',
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
+CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
+"""
+
+
+def _now() -> str:
+    return datetime.now().isoformat()
+
+
+def init_db():
+    """建立所有表（若不存在）+ migration。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with get_conn() as conn:
+        conn.executescript(_CREATE_SQL)
+        # migration: orders 加 folder 欄位
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+        if "folder" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
+
+
+@contextmanager
+def get_conn():
+    """取得 SQLite 連線（WAL mode, foreign keys ON）。"""
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+def get_setting(key: str, default: str = "") -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_setting(key: str, value: str):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
+        )
+
+
+# ── Inventory Snapshot ────────────────────────────────────────────────────────
+
+def save_snapshot(stock: dict[str, float], moq: dict[str, float] | None = None):
+    """儲存起始庫存快照（截止點）。"""
+    moq = moq or {}
+    now = _now()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM inventory_snapshot")
+        for part, qty in stock.items():
+            conn.execute(
+                "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, snapshot_at) VALUES(?,?,?,?)",
+                (part.upper(), qty, moq.get(part.upper(), 0), now),
+            )
+
+
+def get_snapshot() -> dict[str, dict]:
+    """取得快照 {PART: {stock_qty, moq}}"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part_number, stock_qty, moq FROM inventory_snapshot").fetchall()
+    return {r["part_number"]: {"stock_qty": r["stock_qty"], "moq": r["moq"]} for r in rows}
+
+
+def get_snapshot_stock() -> dict[str, float]:
+    snap = get_snapshot()
+    return {k: v["stock_qty"] for k, v in snap.items()}
+
+
+def get_snapshot_moq() -> dict[str, float]:
+    snap = get_snapshot()
+    return {k: v["moq"] for k, v in snap.items()}
+
+
+# ── Orders ────────────────────────────────────────────────────────────────────
+
+def _get_bom_model_groups() -> dict[str, str]:
+    """取得 BOM group_model 的合併對照表 { MODEL_UPPER: PRIMARY_MODEL_UPPER }。
+    例如 group_model='T356789IU,T356789IU-U/A' → {'T356789IU-U/A': 'T356789IU'}
+    """
+    alias_map: dict[str, str] = {}
+    try:
+        with get_conn() as conn:
+            rows = conn.execute("SELECT group_model FROM bom_files WHERE group_model LIKE '%,%'").fetchall()
+        for row in rows:
+            models = [m.strip().upper() for m in row["group_model"].split(",") if m.strip()]
+            if len(models) >= 2:
+                primary = models[0]
+                for secondary in models[1:]:
+                    alias_map[secondary] = primary
+    except Exception:
+        pass
+    return alias_map
+
+
+def upsert_orders_from_schedule(rows: list[dict]):
+    """從排程表解析結果批次寫入 orders 表。
+    自動合併共用 BOM 的行（如 T356789IU + T356789IU-U/A）。
+    status=pending/merged 的會被清除重建。
+    """
+    now = _now()
+    alias_map = _get_bom_model_groups()
+
+    # 合併共用 BOM 的行：相同 PO + 次要機種合入主要機種
+    merged_rows: list[dict] = []
+    merge_targets: dict[str, int] = {}  # key="PO|PRIMARY_MODEL" → index in merged_rows
+
+    for r in rows:
+        model_upper = (r.get("model") or "").strip().upper()
+        po = str(r.get("po_number", ""))
+        primary = alias_map.get(model_upper)
+
+        if primary:
+            merge_key = f"{po}|{primary}"
+            if merge_key in merge_targets:
+                idx = merge_targets[merge_key]
+                target = merged_rows[idx]
+                target["order_qty"] = (target.get("order_qty") or 0) + (r.get("order_qty") or 0)
+                target["pcb"] = f"{target['pcb']} / {r.get('pcb', '')}"
+                continue
+
+        merge_key = f"{po}|{model_upper}"
+        merge_targets[merge_key] = len(merged_rows)
+        merged_rows.append(dict(r))
+
+    with get_conn() as conn:
+        conn.execute("DELETE FROM orders WHERE status IN ('pending','merged')")
+        for i, r in enumerate(merged_rows):
+            conn.execute(
+                "INSERT INTO orders(po_number, model, pcb, order_qty, balance_qty, "
+                "delivery_date, ship_date, status, code, remark, sort_order, row_index, "
+                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(r.get("po_number", "")),
+                    r.get("model", ""),
+                    r.get("pcb", ""),
+                    r.get("order_qty", 0),
+                    r.get("balance_qty"),
+                    r.get("ship_date"),
+                    r.get("ship_date"),
+                    "pending",
+                    r.get("code", ""),
+                    r.get("remark", ""),
+                    i,
+                    r.get("row_index", 0),
+                    now, now,
+                ),
+            )
+
+
+def get_orders(statuses: list[str] | None = None) -> list[dict]:
+    """取得訂單列表。statuses=None 取全部。"""
+    with get_conn() as conn:
+        if statuses:
+            placeholders = ",".join("?" * len(statuses))
+            rows = conn.execute(
+                f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY sort_order, delivery_date, row_index",
+                statuses,
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM orders ORDER BY sort_order, delivery_date, row_index").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_order(order_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_order(order_id: int, **fields):
+    fields["updated_at"] = _now()
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [order_id]
+    with get_conn() as conn:
+        conn.execute(f"UPDATE orders SET {sets} WHERE id=?", vals)
+
+
+def get_dispatch_folders() -> list[str]:
+    """取得已發料訂單中所有不重複的 folder 名稱（不含空字串）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT folder FROM orders WHERE status IN ('dispatched','completed') AND folder != '' ORDER BY folder"
+        ).fetchall()
+    return [r["folder"] for r in rows]
+
+
+def move_orders_to_folder(order_ids: list[int], folder: str):
+    if not order_ids:
+        return
+    placeholders = ",".join("?" * len(order_ids))
+    with get_conn() as conn:
+        conn.execute(
+            f"UPDATE orders SET folder=?, updated_at=? WHERE id IN ({placeholders})",
+            [folder, _now()] + order_ids,
+        )
+
+
+def move_orders_to_folder_by_name(folder_name: str):
+    """將指定資料夾的訂單全部移回未歸檔（folder=''）。"""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE orders SET folder='', updated_at=? WHERE folder=?",
+            [_now(), folder_name],
+        )
+
+
+def update_orders_sort(order_ids: list[int]):
+    """按 order_ids 順序更新 sort_order。"""
+    with get_conn() as conn:
+        for i, oid in enumerate(order_ids):
+            conn.execute("UPDATE orders SET sort_order=?, updated_at=? WHERE id=?", (i, _now(), oid))
+
+
+def batch_merge_orders(order_ids: list[int]):
+    """批次將 pending/merged 訂單改為 merged。"""
+    now = _now()
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(order_ids))
+        conn.execute(
+            f"UPDATE orders SET status='merged', updated_at=? WHERE id IN ({placeholders}) AND status IN ('pending','merged')",
+            [now] + order_ids,
+        )
+
+
+# ── BOM Files ─────────────────────────────────────────────────────────────────
+
+def save_bom_file(bom: dict):
+    """儲存一個 BOM 檔案及其 components。"""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO bom_files(id, filename, filepath, po_number, model, pcb, group_model, order_qty, uploaded_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (bom["id"], bom["filename"], bom["filepath"], str(bom.get("po_number", "")),
+             bom["model"], bom.get("pcb", ""), bom.get("group_model", ""),
+             bom.get("order_qty", 0), bom.get("uploaded_at", "")),
+        )
+        # 清除舊 components
+        conn.execute("DELETE FROM bom_components WHERE bom_file_id=?", (bom["id"],))
+        for c in bom.get("components", []):
+            conn.execute(
+                "INSERT INTO bom_components(bom_file_id, part_number, description, qty_per_board, "
+                "needed_qty, prev_qty_cs, is_dash, is_customer_supplied) VALUES(?,?,?,?,?,?,?,?)",
+                (bom["id"], c["part_number"], c.get("description", ""),
+                 c.get("qty_per_board", 0), c.get("needed_qty", 0),
+                 c.get("prev_qty_cs", 0), int(c.get("is_dash", False)),
+                 int(c.get("is_customer_supplied", False))),
+            )
+
+
+def get_bom_files() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bom_files ORDER BY uploaded_at").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_bom_components(bom_file_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bom_components WHERE bom_file_id=?", (bom_file_id,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_bom_components_by_model() -> dict[str, list[dict]]:
+    """回傳 { MODEL_UPPER: [components] }，單次 JOIN 查詢。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT bf.group_model, bf.model, "
+            "bc.part_number, bc.description, bc.qty_per_board, "
+            "bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied "
+            "FROM bom_files bf JOIN bom_components bc ON bc.bom_file_id = bf.id"
+        ).fetchall()
+    result: dict[str, list[dict]] = {}
+    for r in rows:
+        comp = {
+            "part_number": r["part_number"], "description": r["description"],
+            "qty_per_board": r["qty_per_board"], "needed_qty": r["needed_qty"],
+            "prev_qty_cs": r["prev_qty_cs"], "is_dash": bool(r["is_dash"]),
+            "is_customer_supplied": bool(r["is_customer_supplied"]),
+        }
+        raw_model = r["group_model"] or r["model"]
+        for key in [k.strip().upper() for k in raw_model.split(",") if k.strip()]:
+            if key not in result:
+                result[key] = []
+            result[key].append(comp)
+    return result
+
+
+def get_bom_files_by_models(models: list[str]) -> list[dict]:
+    """依機種名稱查詢對應的 BOM 檔案（支援 group_model 逗號分隔）。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM bom_files").fetchall()
+    matched = []
+    seen_ids = set()
+    upper_models = {m.upper() for m in models}
+    for r in rows:
+        raw = r["group_model"] or r["model"]
+        keys = {k.strip().upper() for k in raw.split(",") if k.strip()}
+        if keys & upper_models and r["id"] not in seen_ids:
+            matched.append(dict(r))
+            seen_ids.add(r["id"])
+    return matched
+
+
+def delete_bom_file(bom_id: str):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM bom_components WHERE bom_file_id=?", (bom_id,))
+        conn.execute("DELETE FROM bom_files WHERE id=?", (bom_id,))
+
+
+# ── Dispatch Records ──────────────────────────────────────────────────────────
+
+def save_dispatch_records(order_id: int, records: list[dict]):
+    """儲存發料紀錄（鎖死不再重算）。"""
+    now = _now()
+    with get_conn() as conn:
+        for r in records:
+            conn.execute(
+                "INSERT INTO dispatch_records(order_id, part_number, needed_qty, prev_qty_cs, decision, dispatched_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (order_id, r["part_number"], r["needed_qty"], r.get("prev_qty_cs", 0),
+                 r.get("decision", "None"), now),
+            )
+
+
+def get_dispatch_records(order_id: int | None = None) -> list[dict]:
+    with get_conn() as conn:
+        if order_id:
+            rows = conn.execute("SELECT * FROM dispatch_records WHERE order_id=?", (order_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM dispatch_records").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_all_dispatched_consumption() -> dict[str, float]:
+    """取得所有已發料的消耗量加總 { PART: total_needed }。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT part_number, SUM(needed_qty) as total FROM dispatch_records "
+            "WHERE decision != 'Shortage' GROUP BY part_number"
+        ).fetchall()
+    return {r["part_number"].upper(): r["total"] for r in rows}
+
+
+# ── Decisions ─────────────────────────────────────────────────────────────────
+
+def save_decision(order_id: int, part_number: str, decision: str):
+    now = _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO decisions(order_id, part_number, decision, decided_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(order_id, part_number) DO UPDATE SET decision=excluded.decision, decided_at=excluded.decided_at",
+            (order_id, part_number, decision, now),
+        )
+
+
+def get_decisions_for_order(order_id: int) -> dict[str, str]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part_number, decision FROM decisions WHERE order_id=?", (order_id,)).fetchall()
+    return {r["part_number"]: r["decision"] for r in rows}
+
+
+def get_all_decisions() -> dict[str, str]:
+    """取得所有 merged（未發料）訂單的決策 { part_number: decision }。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT d.part_number, d.decision FROM decisions d "
+            "JOIN orders o ON o.id = d.order_id WHERE o.status='merged'"
+        ).fetchall()
+    return {r["part_number"]: r["decision"] for r in rows}
+
+
+# ── Alerts ────────────────────────────────────────────────────────────────────
+
+def create_alert(alert_type: str, message: str, order_id: int | None = None):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO alerts(alert_type, order_id, message, created_at) VALUES(?,?,?,?)",
+            (alert_type, order_id, message, _now()),
+        )
+
+
+def get_alerts(unread_only: bool = False) -> list[dict]:
+    with get_conn() as conn:
+        if unread_only:
+            rows = conn.execute("SELECT * FROM alerts WHERE is_read=0 ORDER BY created_at DESC").fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM alerts ORDER BY created_at DESC LIMIT 200").fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_alert_read(alert_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE alerts SET is_read=1 WHERE id=?", (alert_id,))
+
+
+def mark_all_alerts_read():
+    with get_conn() as conn:
+        conn.execute("UPDATE alerts SET is_read=1 WHERE is_read=0")
+
+
+# ── Activity Logs ─────────────────────────────────────────────────────────────
+
+def log_activity(action: str, detail: str = ""):
+    with get_conn() as conn:
+        conn.execute("INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
+                     (action, detail, _now()))
+        # 保留最新 2000 筆
+        conn.execute(
+            "DELETE FROM activity_logs WHERE id NOT IN "
+            "(SELECT id FROM activity_logs ORDER BY id DESC LIMIT 2000)"
+        )
+
+
+def get_activity_logs(limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM activity_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]

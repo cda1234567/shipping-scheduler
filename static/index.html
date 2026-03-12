@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenText 出貨排程</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+</head>
+<body>
+
+<!-- Header -->
+<header id="header">
+  <h1>OpenText 出貨排程系統</h1>
+  <span class="subtitle">庚霖</span>
+  <span class="spacer"></span>
+  <button class="btn btn-sm btn-alert" id="btn-alerts" title="提醒">
+    🔔 <span id="alert-badge" class="alert-badge" style="display:none">0</span>
+  </button>
+  <button class="btn btn-sm btn-secondary" id="btn-logs" title="操作紀錄">📝</button>
+</header>
+
+<div id="layout">
+
+  <!-- Left Sidebar -->
+  <aside id="sidebar">
+
+    <!-- 主檔 -->
+    <div class="sidebar-section">
+      <h3>主檔庫存</h3>
+      <div id="main-status" class="file-status">尚未載入</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary btn-sm" style="flex:1" id="btn-upload-main">上傳主檔</button>
+        <button class="btn btn-secondary btn-sm" id="btn-download-main" title="下載主檔" disabled>⬇</button>
+      </div>
+      <div id="snapshot-status" style="font-size:11px;color:#8e8e93;margin-top:6px"></div>
+      <button class="btn btn-sm btn-secondary btn-full" id="btn-set-snapshot" style="margin-top:4px;display:none">設定為起始快照</button>
+      <input type="file" id="main-file-input" accept=".xlsx,.xls,.xlsm">
+    </div>
+
+    <!-- 排程表 -->
+    <div class="sidebar-section">
+      <h3>排程表</h3>
+      <div id="schedule-status" class="file-status">尚未載入</div>
+      <button class="btn btn-secondary btn-sm btn-full" id="btn-upload-schedule">上傳排程表</button>
+      <input type="file" id="schedule-file-input" accept=".xlsx,.xls,.xlsm">
+    </div>
+
+    <!-- 發料單 -->
+    <div class="sidebar-section" style="flex:1">
+      <h3>發料單</h3>
+      <p style="font-size:12px;color:#8e8e93;margin:0 0 10px">依目前排程與 BOM 計算</p>
+      <button class="btn btn-primary btn-sm btn-full" id="btn-gen-dispatch">生成發料單</button>
+      <div id="dispatch-status" style="font-size:11px;color:#8e8e93;margin-top:6px;text-align:center"></div>
+    </div>
+
+  </aside>
+
+  <!-- Main content -->
+  <div id="main-content">
+
+    <div id="tabs">
+      <button class="tab-btn active" data-tab="schedule">出貨排程</button>
+      <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
+      <button class="tab-btn" data-tab="bom">BOM 管理</button>
+      <button class="tab-btn" data-tab="alerts-tab">提醒</button>
+      <button class="tab-btn" data-tab="logs-tab">紀錄</button>
+    </div>
+
+    <!-- ── Tab: 排程 ── -->
+    <div id="tab-schedule" class="tab-content active">
+      <div id="schedule-area">
+        <div id="schedule-toolbar">
+          <button class="btn btn-secondary btn-sm" id="btn-auto-sort">依出貨日排序</button>
+          <button class="btn btn-primary btn-sm" id="btn-save-order">儲存順序</button>
+          <button class="btn btn-success btn-sm" id="btn-batch-merge">批次 Merge</button>
+          <span class="spacer"></span>
+          <span class="info-text" id="schedule-info"></span>
+        </div>
+        <div id="schedule-scroll"></div>
+      </div>
+
+      <!-- Right panel -->
+      <aside id="right-panel">
+        <div id="right-panel-header">
+          <h3>補料明細</h3>
+          <span id="shortage-count"></span>
+        </div>
+        <div id="right-scroll"></div>
+      </aside>
+    </div>
+
+    <!-- ── Tab: 已發料 ── -->
+    <div id="tab-completed" class="tab-content">
+      <div id="completed-area">
+        <div id="completed-toolbar">
+          <span style="font-size:13px;color:#8e8e93">已發料（鎖死不參與重算）</span>
+          <span class="spacer"></span>
+          <input type="text" id="new-folder-name" placeholder="新資料夾名稱" style="width:120px;padding:3px 8px;border:1px solid #e5e5ea;border-radius:4px;font-size:12px">
+          <button class="btn btn-primary btn-sm" id="btn-create-folder" style="padding:3px 10px;font-size:12px">建立</button>
+        </div>
+        <div id="completed-scroll"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: BOM 管理 ── -->
+    <div id="tab-bom" class="tab-content">
+      <div style="padding:12px 16px 0">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <label style="font-size:13px;font-weight:500;color:#3c3c43;white-space:nowrap">機種名稱：</label>
+          <input type="text" id="bom-group-model" placeholder="例如：T7U 或 T7U,T7U-U/A"
+            style="flex:1;border:1px solid #e5e5ea;border-radius:6px;padding:5px 10px;font-size:13px;outline:none">
+        </div>
+      </div>
+      <div id="bom-upload-area">
+        <div style="font-size:28px">📂</div>
+        <p>點擊或拖曳 BOM 檔案至此上傳（可多選）</p>
+        <p style="font-size:11px;color:#c7c7cc">支援 .xlsx / .xls</p>
+        <input type="file" id="bom-file-input" accept=".xlsx,.xls,.xlsm" multiple>
+      </div>
+      <div id="bom-group-wrap">
+        <div id="bom-group-list"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 提醒 ── -->
+    <div id="tab-alerts-tab" class="tab-content">
+      <div style="padding:12px 16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <h3 style="font-size:16px;font-weight:600;margin:0">系統提醒</h3>
+          <span class="spacer"></span>
+          <button class="btn btn-sm btn-secondary" id="btn-mark-all-read">全部已讀</button>
+        </div>
+        <div id="alert-list"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 紀錄 ── -->
+    <div id="tab-logs-tab" class="tab-content">
+      <div style="padding:12px 16px">
+        <h3 style="font-size:16px;font-weight:600;margin:0 0 12px">操作紀錄</h3>
+        <div id="log-list"></div>
+      </div>
+    </div>
+
+  </div><!-- /main-content -->
+
+</div><!-- /layout -->
+
+<div id="toast"></div>
+
+<script type="module">
+import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
+import { initSchedule, refresh as refreshSchedule, refreshCompleted, getDecisions } from "/static/modules/schedule.js";
+import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
+import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
+import { initLogs, refreshLogs } from "/static/modules/logs.js";
+
+// ── Tab switching ────────────────────────────────────────────────────────
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "completed") refreshCompleted();
+    if (btn.dataset.tab === "alerts-tab") refreshAlerts();
+    if (btn.dataset.tab === "logs-tab") refreshLogs();
+  });
+});
+
+// ── Header buttons ──────────────────────────────────────────────────────
+document.getElementById("btn-alerts").addEventListener("click", () => {
+  document.querySelector('[data-tab="alerts-tab"]').click();
+});
+document.getElementById("btn-logs").addEventListener("click", () => {
+  document.querySelector('[data-tab="logs-tab"]').click();
+});
+
+// ── Main file ───────────────────────────────────────────────────────────
+document.getElementById("btn-upload-main").addEventListener("click", () =>
+  document.getElementById("main-file-input").click());
+
+document.getElementById("btn-download-main").addEventListener("click", () => {
+  window.location.href = "/api/main-file/download";
+});
+
+document.getElementById("main-file-input").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  setStatus("main-status", "上傳中...", "");
+  try {
+    const d = await (await fetch("/api/main-file/upload", { method: "POST", body: fd })).json();
+    setStatus("main-status", `${d.filename}\n${d.part_count} 筆料號`, "ok");
+    document.getElementById("btn-download-main").disabled = false;
+    await refreshMainStatus();
+    await refreshSchedule();
+  } catch (err) {
+    setStatus("main-status", "上傳失敗", "warn");
+  }
+  e.target.value = "";
+});
+
+// ── Snapshot ────────────────────────────────────────────────────────────
+document.getElementById("btn-set-snapshot").addEventListener("click", async () => {
+  if (!confirm("確定要將目前主檔庫存設為起始快照？\n此操作會覆蓋先前的快照。")) return;
+  try {
+    const d = await apiPost("/api/main-file/snapshot");
+    showToast(`起始快照已設定，${d.part_count} 筆料號`);
+    await refreshMainStatus();
+    await refreshSchedule();
+  } catch (e) { showToast("失敗：" + e.message); }
+});
+
+// ── Schedule file ───────────────────────────────────────────────────────
+document.getElementById("btn-upload-schedule").addEventListener("click", () =>
+  document.getElementById("schedule-file-input").click());
+
+document.getElementById("schedule-file-input").addEventListener("change", async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  setStatus("schedule-status", "上傳中...", "");
+  try {
+    const d = await (await fetch("/api/schedule/upload", { method: "POST", body: fd })).json();
+    const date = (d.loaded_at || "").slice(5, 16);
+    setStatus("schedule-status", `${d.filename}\n${d.row_count} 筆 (${date})`, "ok");
+    await refreshSchedule();
+  } catch (err) {
+    setStatus("schedule-status", "上傳失敗", "warn");
+  }
+  e.target.value = "";
+});
+
+// ── Dispatch ────────────────────────────────────────────────────────────
+document.getElementById("btn-gen-dispatch").addEventListener("click", async () => {
+  const statusEl = document.getElementById("dispatch-status");
+  statusEl.textContent = "生成中...";
+  try {
+    const decisions = getDecisions();
+    const resp = await fetch("/api/dispatch/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decisions }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || resp.statusText);
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get("content-disposition") || "";
+    const m = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
+    const filename = m ? decodeURIComponent(m[1].replace(/"/g, "")) : "發料單.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+    statusEl.textContent = "已下載";
+    setTimeout(() => statusEl.textContent = "", 3000);
+  } catch (e) {
+    statusEl.textContent = "失敗：" + e.message;
+    alert("發料單生成失敗：" + e.message);
+  }
+});
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+async function refreshMainStatus() {
+  try {
+    const d = await apiJson("/api/main-file/info");
+    if (d.loaded) {
+      setStatus("main-status", `${d.filename}\n${d.part_count} 筆料號`, "ok");
+      document.getElementById("btn-download-main").disabled = false;
+      document.getElementById("btn-set-snapshot").style.display = "block";
+      const snapEl = document.getElementById("snapshot-status");
+      snapEl.innerHTML = d.has_snapshot
+        ? '<span style="color:#22c55e">已有起始快照</span>'
+        : '<span style="color:#f97316">尚未設定快照</span>';
+    }
+  } catch (_) {}
+}
+
+async function init() {
+  await refreshMainStatus();
+  try {
+    const d = await apiJson("/api/schedule/rows");
+    if (d.rows?.length) {
+      const at = (d.loaded_at || "").slice(5, 16);
+      const fn = d.filename || "";
+      setStatus("schedule-status", fn ? `${fn}\n${d.rows.length} 筆 (${at})` : `${d.rows.length} 筆 (${at})`, "ok");
+    }
+  } catch (_) {}
+  initBomManager(async () => { await refreshSchedule(); });
+  await renderBomGroups();
+  await initSchedule(refreshMainStatus);
+  await initAlerts();
+}
+
+function setStatus(id, text, cls) {
+  const el = document.getElementById(id);
+  el.innerHTML = text.split("\n").map(s => `<span>${s}</span>`).join("<br>");
+  el.className = "file-status" + (cls ? " " + cls : "");
+}
+
+init();
+</script>
+<!-- 補料決策 Modal -->
+<div id="shortage-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:16px">補料決策</h3>
+      <button id="modal-close" class="modal-close-btn">&times;</button>
+    </div>
+    <div id="modal-shortage-list" class="modal-body"></div>
+    <div id="modal-footer" class="modal-footer">
+      <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>
+      <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
