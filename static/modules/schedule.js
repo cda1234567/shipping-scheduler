@@ -14,6 +14,8 @@ let _completedRows = [];
 let _completedFolders = [];
 let _onRefreshMain = null;
 let _checkedIds = new Set();
+let _modalProgressTimer = null;
+let _modalProgressValue = 0;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -555,10 +557,13 @@ async function showShortageModal(targets) {
 
   footer.innerHTML = `
     <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
-      <div id="modal-download-status" class="modal-progress-label">正在整理補料資料...</div>
+      <div class="modal-progress-head">
+        <div id="modal-download-status" class="modal-progress-label">正在整理補料資料...</div>
+        <div id="modal-download-percent" class="modal-progress-percent">0%</div>
+      </div>
       <div id="modal-download-detail" class="modal-progress-detail">大型 BOM 會需要幾秒鐘，請稍候。</div>
       <div class="modal-progress-bar">
-        <div class="modal-progress-indeterminate"></div>
+        <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
       </div>
     </div>
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載 BOM</button>
@@ -602,6 +607,8 @@ function modalShortageItem(s, isCS) {
 }
 
 function closeShortageModal() {
+  stopModalProgressAnimation();
+  setModalDownloadProgress(false, "", "", 0);
   document.getElementById("shortage-modal").style.display = "none";
   _modalTargets = [];
   _modalBomFiles = [];
@@ -850,7 +857,36 @@ function _collectModalSupplements() {
   return supplements;
 }
 
-function setModalDownloadProgress(active, statusText = "", detailText = "") {
+function stopModalProgressAnimation() {
+  if (_modalProgressTimer) {
+    clearInterval(_modalProgressTimer);
+    _modalProgressTimer = null;
+  }
+}
+
+function setModalProgressPercent(percent) {
+  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const fill = document.getElementById("modal-download-progress-fill");
+  const percentLabel = document.getElementById("modal-download-percent");
+  _modalProgressValue = value;
+  if (fill) fill.style.width = `${value}%`;
+  if (percentLabel) percentLabel.textContent = `${value}%`;
+}
+
+function startModalProgressAnimation(targetPercent, intervalMs = 180) {
+  stopModalProgressAnimation();
+  _modalProgressTimer = setInterval(() => {
+    if (_modalProgressValue >= targetPercent) {
+      stopModalProgressAnimation();
+      return;
+    }
+    const remaining = targetPercent - _modalProgressValue;
+    const step = remaining > 18 ? 4 : remaining > 8 ? 2 : 1;
+    setModalProgressPercent(_modalProgressValue + step);
+  }, intervalMs);
+}
+
+function setModalDownloadProgress(active, statusText = "", detailText = "", percent = null) {
   const progress = document.getElementById("modal-download-progress");
   const status = document.getElementById("modal-download-status");
   const detail = document.getElementById("modal-download-detail");
@@ -861,6 +897,7 @@ function setModalDownloadProgress(active, statusText = "", detailText = "") {
   if (progress) progress.style.display = active ? "block" : "none";
   if (status && statusText) status.textContent = statusText;
   if (detail && detailText) detail.textContent = detailText;
+  if (percent != null) setModalProgressPercent(percent);
 
   if (downloadBtn) {
     downloadBtn.disabled = active;
@@ -868,6 +905,10 @@ function setModalDownloadProgress(active, statusText = "", detailText = "") {
   }
   if (cancelBtn) cancelBtn.disabled = active;
   if (closeBtn) closeBtn.disabled = active;
+  if (!active) {
+    stopModalProgressAnimation();
+    setModalProgressPercent(percent ?? 0);
+  }
 }
 
 async function handleModalDownloadBom() {
@@ -879,14 +920,16 @@ async function handleModalDownloadBom() {
   const headerOverrides = buildModalHeaderOverrides();
 
   try {
-    setModalDownloadProgress(true, "正在保存補料決策...", "會把這次 merge 的補料內容記進系統。");
+    setModalDownloadProgress(true, "正在保存補料決策...", "會把這次 merge 的補料內容記進系統。", 12);
+    startModalProgressAnimation(32, 140);
     await persistDecisionsForOrders(modalDecisions, targetOrderIds);
     Object.entries(modalDecisions).forEach(([part, decision]) => {
       setLocalDecision(part, decision);
     });
 
     const bomIds = _modalBomFiles.map(f => f.id);
-    setModalDownloadProgress(true, "正在產生並下載 BOM...", `共 ${bomIds.length} 份 BOM，請稍候。`);
+    setModalDownloadProgress(true, "正在產生並下載 BOM...", `共 ${bomIds.length} 份 BOM，請稍候。`, 42);
+    startModalProgressAnimation(92, 220);
     const result = await desktopDownload({
       path: "/api/bom/dispatch-download",
       method: "POST",
@@ -901,12 +944,14 @@ async function handleModalDownloadBom() {
       showToast(`BOM 已下載到 ${result.directory}`);
     }
 
+    setModalDownloadProgress(true, "下載完成", "BOM 已經下載完成。", 100);
+    await new Promise(resolve => setTimeout(resolve, 220));
     updateStatusOnly();
     showToast("BOM 已下載");
     closeShortageModal();
   } catch (e) {
     showToast("BOM 下載失敗：" + e.message);
-    setModalDownloadProgress(false);
+    setModalDownloadProgress(false, "", "", 0);
   }
 }
 
