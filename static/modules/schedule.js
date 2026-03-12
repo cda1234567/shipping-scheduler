@@ -220,7 +220,7 @@ function buildRowCard(r, resultMap) {
       <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>
       <span style="color:#c7c7cc;font-size:13px;text-align:center">|</span>
       <span class="po-number" style="color:#6b7280;font-weight:500">${r.po_number}</span>
-      <span class="tag tag-pcb" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.pcb)}</span>
+      <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
       <span style="font-size:13px;color:#3c3c43;font-weight:500;white-space:nowrap">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
       <input class="code-input" type="text" value="${code}"
@@ -1056,7 +1056,7 @@ function buildCompletedCard(r, allFolders) {
       <span class="po-number">${esc(r.model)}</span>
       <span style="color:#c7c7cc;font-size:13px">|</span>
       <span style="color:#6b7280;font-weight:500;font-size:14px;font-family:monospace">${r.po_number}</span>
-      <span class="tag tag-pcb" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.pcb)}</span>
+      <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
       ${code}
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
