@@ -456,13 +456,13 @@ class ApiTests(unittest.TestCase):
         wb_a = openpyxl.load_workbook(io.BytesIO(archive.read("board-a.xlsx")), data_only=False)
         ws_a = wb_a.active
         self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
-        self.assertEqual(ws_a.cell(row=5, column=8).value, 3000)
+        self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
         wb_a.close()
 
         wb_c = openpyxl.load_workbook(io.BytesIO(archive.read("board-c.xlsx")), data_only=False)
         ws_c = wb_c.active
-        self.assertEqual(ws_c.cell(row=5, column=7).value, 3120)
-        self.assertEqual(ws_c.cell(row=5, column=8).value, 0)
+        self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
+        self.assertEqual(ws_c.cell(row=5, column=8).value, 3000)
         wb_c.close()
         archive.close()
 

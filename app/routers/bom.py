@@ -401,6 +401,7 @@ def _build_order_based_export_values(
 
             part_map: dict[str, float] = {}
             supplement_map: dict[str, float] = {}
+            part_totals: dict[str, dict[str, float]] = {}
             for component in components_by_bom.get(bom_id, []):
                 needed_qty = float(component.get("needed_qty") or 0)
                 if component.get("is_dash") or needed_qty <= 0:
@@ -413,14 +414,25 @@ def _build_order_based_export_values(
                 if part not in part_map:
                     part_map[part] = float(running.get(part, 0))
 
+                summary = part_totals.setdefault(part, {"needed_qty": 0.0, "prev_qty_cs": 0.0})
+                summary["needed_qty"] += needed_qty
+                summary["prev_qty_cs"] += float(component.get("prev_qty_cs") or 0)
+
+            for part, totals in part_totals.items():
+                current_stock = float(running.get(part, 0))
+                ending_without_supplement = (
+                    current_stock
+                    + float(totals.get("prev_qty_cs") or 0)
+                    - float(totals.get("needed_qty") or 0)
+                )
+
                 supplement_qty = 0.0
-                if remaining_supplements.get(part, 0) > 0 and part not in supplement_map:
+                if ending_without_supplement < 0 and remaining_supplements.get(part, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part, 0))
                     supplement_map[part] = supplement_qty
                     remaining_supplements[part] = 0.0
 
-                prev_qty = float(component.get("prev_qty_cs") or 0)
-                running[part] = float(running.get(part, 0)) + prev_qty + supplement_qty - needed_qty
+                running[part] = ending_without_supplement + supplement_qty
 
             carry_overs[bom_id] = part_map
             supplement_allocations[bom_id] = supplement_map
