@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS inventory_snapshot (
     part_number TEXT PRIMARY KEY,
     stock_qty   REAL NOT NULL DEFAULT 0,
     moq         REAL NOT NULL DEFAULT 0,
+    moq_manual  INTEGER NOT NULL DEFAULT 0,
     description TEXT NOT NULL DEFAULT '',
     snapshot_at TEXT NOT NULL DEFAULT ''
 );
@@ -140,6 +141,9 @@ def init_db():
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
         if "folder" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
+        snapshot_cols = [r[1] for r in conn.execute("PRAGMA table_info(inventory_snapshot)").fetchall()]
+        if "moq_manual" not in snapshot_cols:
+            conn.execute("ALTER TABLE inventory_snapshot ADD COLUMN moq_manual INTEGER NOT NULL DEFAULT 0")
         bom_cols = [r[1] for r in conn.execute("PRAGMA table_info(bom_files)").fetchall()]
         if "source_filename" not in bom_cols:
             conn.execute("ALTER TABLE bom_files ADD COLUMN source_filename TEXT NOT NULL DEFAULT ''")
@@ -187,7 +191,11 @@ def set_setting(key: str, value: str):
 
 # ── Inventory Snapshot ────────────────────────────────────────────────────────
 
-def save_snapshot(stock: dict[str, float], moq: dict[str, float] | None = None):
+def save_snapshot(
+    stock: dict[str, float],
+    moq: dict[str, float] | None = None,
+    manual_moq_parts: set[str] | None = None,
+):
     """儲存起始庫存快照（截止點）。"""
     norm_stock = {
         str(part).strip().upper(): qty
@@ -199,14 +207,19 @@ def save_snapshot(stock: dict[str, float], moq: dict[str, float] | None = None):
         for part, qty in (moq or {}).items()
         if str(part).strip()
     }
+    norm_manual_parts = {
+        str(part).strip().upper()
+        for part in (manual_moq_parts or set())
+        if str(part).strip()
+    }
     all_parts = sorted(set(norm_stock) | set(norm_moq))
     now = _now()
     with get_conn() as conn:
         conn.execute("DELETE FROM inventory_snapshot")
         for part in all_parts:
             conn.execute(
-                "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, snapshot_at) VALUES(?,?,?,?)",
-                (part, norm_stock.get(part, 0), norm_moq.get(part, 0), now),
+                "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, moq_manual, snapshot_at) VALUES(?,?,?,?,?)",
+                (part, norm_stock.get(part, 0), norm_moq.get(part, 0), 1 if part in norm_manual_parts else 0, now),
             )
 
 
@@ -243,7 +256,7 @@ def upsert_snapshot_moq(part_number: str, moq: float) -> str:
         ).fetchone()
         if existing:
             conn.execute(
-                "UPDATE inventory_snapshot SET moq=? WHERE part_number=?",
+                "UPDATE inventory_snapshot SET moq=?, moq_manual=1 WHERE part_number=?",
                 (moq, normalized),
             )
             return normalized
@@ -253,8 +266,8 @@ def upsert_snapshot_moq(part_number: str, moq: float) -> str:
         ).fetchone()
         snapshot_at = (snapshot_row["snapshot_at"] if snapshot_row and snapshot_row["snapshot_at"] else "") or _now()
         conn.execute(
-            "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, snapshot_at) VALUES(?,?,?,?)",
-            (normalized, 0, moq, snapshot_at),
+            "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, moq_manual, snapshot_at) VALUES(?,?,?,?,?)",
+            (normalized, 0, moq, 1, snapshot_at),
         )
     return normalized
 
@@ -262,8 +275,15 @@ def upsert_snapshot_moq(part_number: str, moq: float) -> str:
 def get_snapshot() -> dict[str, dict]:
     """取得快照 {PART: {stock_qty, moq}}"""
     with get_conn() as conn:
-        rows = conn.execute("SELECT part_number, stock_qty, moq FROM inventory_snapshot").fetchall()
-    return {r["part_number"]: {"stock_qty": r["stock_qty"], "moq": r["moq"]} for r in rows}
+        rows = conn.execute("SELECT part_number, stock_qty, moq, moq_manual FROM inventory_snapshot").fetchall()
+    return {
+        r["part_number"]: {
+            "stock_qty": r["stock_qty"],
+            "moq": r["moq"],
+            "moq_manual": bool(r["moq_manual"]),
+        }
+        for r in rows
+    }
 
 
 def get_snapshot_taken_at() -> str:
@@ -280,6 +300,14 @@ def get_snapshot_stock() -> dict[str, float]:
 def get_snapshot_moq() -> dict[str, float]:
     snap = get_snapshot()
     return {k: v["moq"] for k, v in snap.items()}
+
+
+def get_manual_snapshot_moq() -> dict[str, float]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT part_number, moq FROM inventory_snapshot WHERE moq_manual=1"
+        ).fetchall()
+    return {r["part_number"]: r["moq"] for r in rows}
 
 
 # ── Orders ────────────────────────────────────────────────────────────────────

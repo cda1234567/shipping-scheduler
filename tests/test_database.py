@@ -44,8 +44,10 @@ class SnapshotTests(InMemoryDbTestCase):
 
         self.assertEqual(snapshot["AAA"]["stock_qty"], 5)
         self.assertEqual(snapshot["AAA"]["moq"], 8)
+        self.assertFalse(snapshot["AAA"]["moq_manual"])
         self.assertEqual(snapshot["BBB"]["stock_qty"], 0)
         self.assertEqual(snapshot["BBB"]["moq"], 12)
+        self.assertFalse(snapshot["BBB"]["moq_manual"])
 
     def test_update_snapshot_stock_only_changes_target_parts(self):
         db.save_snapshot({"AAA": 8, "BBB": 5}, {"AAA": 8, "BBB": 12})
@@ -71,6 +73,10 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(saved_part, "AAA")
         self.assertEqual(row["moq"], 1200)
         self.assertEqual(row["snapshot_at"], "2026-03-12T11:05:45.000000")
+        self.assertEqual(
+            self.conn.execute("SELECT moq_manual FROM inventory_snapshot WHERE part_number='AAA'").fetchone()["moq_manual"],
+            1,
+        )
 
     def test_upsert_snapshot_moq_inserts_missing_part_with_existing_snapshot_cutoff(self):
         db.save_snapshot({"AAA": 8}, {"AAA": 500})
@@ -87,6 +93,20 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(row["stock_qty"], 0)
         self.assertEqual(row["moq"], 3000)
         self.assertEqual(row["snapshot_at"], "2026-03-12T11:05:45.000000")
+        self.assertEqual(
+            self.conn.execute("SELECT moq_manual FROM inventory_snapshot WHERE part_number='BBB'").fetchone()["moq_manual"],
+            1,
+        )
+
+    def test_save_snapshot_preserves_manual_moq_flags_for_selected_parts(self):
+        db.save_snapshot({"AAA": 8, "BBB": 5}, {"AAA": 500, "BBB": 1200}, manual_moq_parts={"BBB"})
+
+        snapshot = db.get_snapshot()
+        manual_moq = db.get_manual_snapshot_moq()
+
+        self.assertFalse(snapshot["AAA"]["moq_manual"])
+        self.assertTrue(snapshot["BBB"]["moq_manual"])
+        self.assertEqual(manual_moq, {"BBB": 1200})
 
     def test_save_bom_file_keeps_source_metadata(self):
         db.save_bom_file({

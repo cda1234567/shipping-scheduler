@@ -65,9 +65,11 @@ async def set_snapshot():
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先上傳主檔")
 
+    manual_moq = db.get_manual_snapshot_moq()
     stock = read_stock(main_path)
     moq = read_moq(main_path)
-    db.save_snapshot(stock, moq)
+    moq.update(manual_moq)
+    db.save_snapshot(stock, moq, manual_moq_parts=set(manual_moq))
     db.log_activity("snapshot_set", f"已重建起始庫存快照，{len(stock)} 筆料號")
     return {"ok": True, "part_count": len(stock)}
 

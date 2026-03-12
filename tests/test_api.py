@@ -133,6 +133,23 @@ class ApiTests(unittest.TestCase):
         mock_update.assert_called_once_with("IC-LD39100PUR-TAB", 2500)
         mock_log.assert_called_once()
 
+    def test_set_snapshot_keeps_manual_moq_overrides_over_excel(self):
+        with patch("app.routers.main_file.db.get_setting", return_value="C:/main.xlsx"), \
+             patch("app.routers.main_file.Path.exists", return_value=True), \
+             patch("app.routers.main_file.db.get_manual_snapshot_moq", return_value={"PART-1": 3000}), \
+             patch("app.routers.main_file.read_stock", return_value={"PART-1": 10, "PART-2": 20}), \
+             patch("app.routers.main_file.read_moq", return_value={"PART-1": 500, "PART-2": 1200}), \
+             patch("app.routers.main_file.db.save_snapshot") as mock_save_snapshot, \
+             patch("app.routers.main_file.db.log_activity"):
+            response = self.client.post("/api/main-file/snapshot")
+
+        self.assertEqual(response.status_code, 200)
+        mock_save_snapshot.assert_called_once_with(
+            {"PART-1": 10, "PART-2": 20},
+            {"PART-1": 3000, "PART-2": 1200},
+            manual_moq_parts={"PART-1"},
+        )
+
     def test_bom_editor_returns_source_metadata(self):
         bom_record = {
             "id": "bom-1",
