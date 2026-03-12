@@ -478,7 +478,7 @@ function modalShortageItem(s, isCS) {
       <span style="color:#dc2626">缺 ${fmt(s.shortage_amount)}</span>
       <span style="color:#16a34a">庫存 ${fmt(s.current_stock)}</span>
       <span>需 ${fmt(s.needed)}</span>
-      ${s.moq ? `<span style="color:#2563eb">MOQ ${fmt(s.moq)}</span>` : ""}
+      ${moqBadgeHtml(s)}
     </div>
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
@@ -496,6 +496,25 @@ function closeShortageModal() {
   document.getElementById("shortage-modal").style.display = "none";
   _modalTargets = [];
   _modalBomFiles = [];
+}
+
+function hasMoqValue(shortage) {
+  return Number(shortage?.moq || 0) > 0;
+}
+
+function moqBadgeHtml(shortage) {
+  if (hasMoqValue(shortage)) {
+    return `<span class="moq-badge moq-badge-present">MOQ ${fmt(shortage.moq)}</span>`;
+  }
+  return '<span class="moq-badge moq-badge-missing">未寫 MOQ</span>';
+}
+
+function suggestedQtyHtml(shortage) {
+  const suggested = shortage.suggested_qty || shortage.shortage_amount || 0;
+  if (hasMoqValue(shortage)) {
+    return `<span class="blue">建議補 ${fmt(suggested)}（MOQ ${fmt(shortage.moq)}）</span>`;
+  }
+  return `<span class="amber">建議補 ${fmt(suggested)}（未寫 MOQ）</span>`;
 }
 
 function _collectModalDecisions() {
@@ -849,7 +868,7 @@ function shortageItemHtml(s, isCS) {
       <span class="red">缺 ${fmt(s.shortage_amount)}</span>
       <span class="green">庫存 ${fmt(s.current_stock)}</span>
       <span>需 ${fmt(s.needed)}</span>
-      ${s.moq ? `<span class="blue">建議補 ${fmt(s.suggested_qty)}（MOQ ${fmt(s.moq)}）</span>` : ""}
+      ${suggestedQtyHtml(s)}
     </div>
     ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : `
     <div class="decision-btns">
