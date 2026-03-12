@@ -762,7 +762,11 @@ body.desktop-dark .modal-progress-fill {
   background: #1c1c1e; color: #fff; border-radius: 10px;
   padding: 10px 20px; font-size: 13px; font-weight: 500;
   opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 9999;
-  white-space: nowrap;
+  max-width: min(72vw, 760px);
+  white-space: pre-line;
+  text-align: left;
+  word-break: break-word;
+  box-shadow: 0 14px 36px rgba(0,0,0,.28);
 }
 #toast.show { opacity: 1; }
 

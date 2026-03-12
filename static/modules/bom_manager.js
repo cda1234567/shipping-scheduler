@@ -1,5 +1,5 @@
 import { apiFetch, apiJson, apiPost, apiPut, showToast, esc } from "./api.js";
-import { desktopDownload } from "./desktop_bridge.js";
+import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 let _onRefresh = null;
 let _outerSortable = null;
@@ -192,9 +192,7 @@ export async function renderBomGroups() {
       button.addEventListener("click", async () => {
         try {
           const result = await desktopDownload({ path: `/api/bom/${button.dataset.id}/file` });
-          if (result.directory) {
-            showToast(`BOM 已下載到 ${result.directory}`);
-          }
+          showDownloadToast(result, "BOM");
         } catch (error) {
           showToast(`下載 BOM 失敗: ${error.message}`);
         }
@@ -336,9 +334,7 @@ function renderHistoryList(data) {
       if (!_historyBom) return;
       try {
         const result = await desktopDownload({ path: `/api/bom/${_historyBom.id}/revisions/${button.dataset.id}/file` });
-        if (result.directory) {
-          showToast(`歷史版本已下載到 ${result.directory}`);
-        }
+        showDownloadToast(result, "歷史版本");
       } catch (error) {
         showToast(`下載歷史版本失敗：${error.message}`);
       }

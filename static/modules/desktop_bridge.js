@@ -15,6 +15,10 @@ function parseFilenameFromContentDisposition(headerValue) {
   return plainMatch ? plainMatch[1] : "";
 }
 
+function normalizeDownloadText(value) {
+  return String(value || "").trim();
+}
+
 function applyDesktopTheme() {
   document.body.classList.toggle("desktop-dark", Boolean(_desktopState?.dark_mode_enabled));
 }
@@ -185,6 +189,31 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   anchor.click();
   URL.revokeObjectURL(blobUrl);
   return { ok: true, filename: outputName, path: outputName, directory: "" };
+}
+
+export function buildDownloadToastMessage(result, noun = "檔案") {
+  const label = normalizeDownloadText(noun) || "檔案";
+  const filename = normalizeDownloadText(result?.filename);
+  const directory = normalizeDownloadText(result?.directory);
+  const path = normalizeDownloadText(result?.path);
+
+  if (filename && directory) {
+    return `${label}已下載：${filename}\n儲存位置：${directory}`;
+  }
+  if (filename && path && path !== filename) {
+    return `${label}已下載：${filename}\n儲存位置：${path}`;
+  }
+  if (filename) {
+    return `${label}已下載：${filename}`;
+  }
+  if (path) {
+    return `${label}已下載：${path}`;
+  }
+  return `${label}已下載`;
+}
+
+export function showDownloadToast(result, noun = "檔案") {
+  showToast(buildDownloadToastMessage(result, noun));
 }
 
 export async function desktopDownload({ path, method = "GET", body = null, filename = "" }) {

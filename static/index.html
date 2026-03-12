@@ -161,7 +161,7 @@ import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedO
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
-import { initDesktopBridge, desktopDownload } from "/static/modules/desktop_bridge.js";
+import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/modules/desktop_bridge.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -217,9 +217,7 @@ document.getElementById("btn-upload-main").addEventListener("click", () =>
 document.getElementById("btn-download-main").addEventListener("click", async () => {
   try {
     const result = await desktopDownload({ path: "/api/main-file/download" });
-    if (result.directory) {
-      showToast(`主檔已下載到 ${result.directory}`);
-    }
+    showDownloadToast(result, "主檔");
   } catch (error) {
     showToast(`下載主檔失敗: ${error.message}`);
   }
@@ -292,9 +290,7 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
       body: { order_ids: orderIds, decisions },
     });
     statusEl.textContent = "已下載";
-    if (result.directory) {
-      showToast(`發料單已下載到 ${result.directory}`);
-    }
+    showDownloadToast(result, "發料單");
     setTimeout(() => statusEl.textContent = "", 3000);
   } catch (e) {
     statusEl.textContent = "失敗：" + e.message;

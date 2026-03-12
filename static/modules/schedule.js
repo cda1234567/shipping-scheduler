@@ -1,6 +1,6 @@
 import { apiJson, apiFetch, apiPost, apiPatch, showToast, esc, fmt } from "./api.js";
 import { calculate } from "./calculator.js";
-import { desktopDownload } from "./desktop_bridge.js";
+import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _rows = [];
@@ -940,14 +940,11 @@ async function handleModalDownloadBom() {
         header_overrides: headerOverrides,
       },
     });
-    if (result.directory) {
-      showToast(`BOM 已下載到 ${result.directory}`);
-    }
+    showDownloadToast(result, "BOM");
 
     setModalDownloadProgress(true, "下載完成", "BOM 已經下載完成。", 100);
     await new Promise(resolve => setTimeout(resolve, 220));
     updateStatusOnly();
-    showToast("BOM 已下載");
     closeShortageModal();
   } catch (e) {
     showToast("BOM 下載失敗：" + e.message);
