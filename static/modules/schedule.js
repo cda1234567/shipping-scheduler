@@ -39,6 +39,59 @@ export function getDecisions() {
   return { ..._decisions };
 }
 
+function normalizePartKey(partNumber) {
+  return String(partNumber || "").trim().toUpperCase();
+}
+
+function normalizeDecisionMap(decisions = {}) {
+  const normalized = {};
+  for (const [part, decision] of Object.entries(decisions || {})) {
+    const key = normalizePartKey(part);
+    if (!key || !decision || decision === "None") continue;
+    normalized[key] = decision;
+  }
+  return normalized;
+}
+
+function setLocalDecision(partNumber, decision) {
+  const key = normalizePartKey(partNumber);
+  if (!key) return;
+  if (!decision || decision === "None") {
+    delete _decisions[key];
+    return;
+  }
+  _decisions[key] = decision;
+}
+
+function getAffectedOrderIdsForPart(partNumber) {
+  const key = normalizePartKey(partNumber);
+  if (!key) return [];
+  const ids = new Set();
+  _calcResults.forEach((result, index) => {
+    if (!result) return;
+    const items = [...(result.shortages || []), ...(result.customer_material_shortages || [])];
+    if (items.some(item => normalizePartKey(item.part_number) === key)) {
+      const orderId = _rows[index]?.id;
+      if (Number.isInteger(orderId)) ids.add(orderId);
+    }
+  });
+  return [...ids];
+}
+
+async function persistDecisionsForOrders(decisions, orderIds) {
+  const normalizedDecisions = {};
+  for (const [part, decision] of Object.entries(decisions || {})) {
+    const key = normalizePartKey(part);
+    if (!key || !decision) continue;
+    normalizedDecisions[key] = decision;
+  }
+  const targetIds = [...new Set((orderIds || []).filter(id => Number.isInteger(id)))];
+  if (!targetIds.length || !Object.keys(normalizedDecisions).length) return;
+  await Promise.all(targetIds.map(orderId =>
+    apiPost(`/api/schedule/orders/${orderId}/decisions`, { decisions: normalizedDecisions })
+  ));
+}
+
 // ── Data loading ──────────────────────────────────────────────────────────────
 async function loadMainData() {
   try {
@@ -52,6 +105,8 @@ async function loadScheduleRows() {
   try {
     const d = await apiJson("/api/schedule/rows");
     _rows = d.rows || [];
+    _dispatchedConsumption = d.dispatched_consumption || {};
+    _decisions = normalizeDecisionMap(d.decisions || {});
     const completedBadge = document.getElementById("completed-count");
     if (completedBadge && d.completed_count > 0) {
       completedBadge.textContent = d.completed_count;
@@ -59,7 +114,11 @@ async function loadScheduleRows() {
     } else if (completedBadge) {
       completedBadge.style.display = "none";
     }
-  } catch (_) { _rows = []; }
+  } catch (_) {
+    _rows = [];
+    _dispatchedConsumption = {};
+    _decisions = {};
+  }
 }
 
 async function loadBomData() {
@@ -265,16 +324,9 @@ async function handleDispatch(orderId, model) {
   try {
     const result = await apiPost(`/api/schedule/orders/${orderId}/dispatch`, { decisions: _decisions });
     showToast(`已發料，${result.merged_parts} 筆料號已 Merge`);
-    const card = document.querySelector(`.po-group[data-order-id="${orderId}"]`);
-    if (card) {
-      const badge = card.querySelector(".po-status-badge");
-      if (badge) { badge.className = "po-status-badge badge-dispatched"; badge.textContent = "已發料"; }
-      if (btn) { btn.disabled = true; btn.textContent = "✓"; }
-      const chk = card.querySelector(".row-check");
-      if (chk) { chk.disabled = true; }
-    }
     _checkedIds.delete(orderId);
-    if (_onRefreshMain) _onRefreshMain();
+    await refresh();
+    if (_onRefreshMain) await _onRefreshMain();
   } catch (e) {
     showToast("失敗：" + e.message);
     if (btn) { btn.disabled = false; btn.textContent = "✓"; }
@@ -439,14 +491,16 @@ function modalShortageItem(s, isCS) {
 function closeShortageModal() {
   document.getElementById("shortage-modal").style.display = "none";
   _modalTargets = [];
+  _modalBomFiles = [];
 }
 
 function _collectModalDecisions() {
   const list = document.getElementById("modal-shortage-list");
+  if (!list) return {};
   const decisions = {};
 
   list.querySelectorAll(".supplement-input").forEach(input => {
-    const part = input.dataset.part;
+    const part = normalizePartKey(input.dataset.part);
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".shortage-item")?.querySelector(".shortage-mark")?.checked;
 
@@ -459,13 +513,15 @@ function _collectModalDecisions() {
     }
   });
 
-  return { ..._decisions, ...decisions };
+  return decisions;
 }
 
 function _collectModalSupplements() {
   const supplements = {};
-  document.querySelectorAll(".supplement-input").forEach(input => {
-    const part = input.dataset.part;
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return supplements;
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    const part = normalizePartKey(input.dataset.part);
     const qty = parseFloat(input.value) || 0;
     if (qty > 0) supplements[part] = qty;
   });
@@ -480,8 +536,15 @@ async function handleModalDownloadBom() {
   btn.textContent = "下載中...";
 
   const supplements = _collectModalSupplements();
+  const modalDecisions = _collectModalDecisions();
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
 
   try {
+    await persistDecisionsForOrders(modalDecisions, targetOrderIds);
+    Object.entries(modalDecisions).forEach(([part, decision]) => {
+      setLocalDecision(part, decision);
+    });
+
     const bomIds = _modalBomFiles.map(f => f.id);
     const resp = await fetch("/api/bom/dispatch-download", {
       method: "POST",
@@ -499,6 +562,7 @@ async function handleModalDownloadBom() {
     a.href = url; a.download = filename; a.click();
     URL.revokeObjectURL(url);
 
+    updateStatusOnly();
     showToast("BOM 已下載");
     closeShortageModal();
   } catch (e) {
@@ -721,17 +785,26 @@ function renderShortagePanel(shortages, csShortages = []) {
   scroll.innerHTML = html;
 
   scroll.querySelectorAll(".dec-btn").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const part = btn.dataset.part;
+    btn.addEventListener("click", async () => {
+      const part = normalizePartKey(btn.dataset.part);
       const dec = btn.dataset.dec;
-      _decisions[part] = (_decisions[part] === dec) ? "None" : dec;
+      const prev = _decisions[part] || "None";
+      const next = prev === dec ? "None" : dec;
+      setLocalDecision(part, next);
       renderShortagePanel(shortages, csShortages);
+      try {
+        await persistDecisionsForOrders({ [part]: next }, getAffectedOrderIdsForPart(part));
+      } catch (e) {
+        setLocalDecision(part, prev);
+        renderShortagePanel(shortages, csShortages);
+        showToast("決策儲存失敗：" + e.message);
+      }
     });
   });
 }
 
 function shortageItemHtml(s, isCS) {
-  const dec = _decisions[s.part_number] || "None";
+  const dec = _decisions[normalizePartKey(s.part_number)] || "None";
   const codeTag = s._row_code
     ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
     : "";

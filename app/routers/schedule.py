@@ -65,6 +65,8 @@ async def get_schedule_rows():
         "loaded_at": db.get_setting("schedule_loaded_at"),
         "filename": db.get_setting("schedule_filename"),
         "completed_count": dispatched_count,
+        "dispatched_consumption": db.get_all_dispatched_consumption(),
+        "decisions": db.get_all_decisions(),
     }
 
 

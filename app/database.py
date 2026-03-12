@@ -176,14 +176,24 @@ def set_setting(key: str, value: str):
 
 def save_snapshot(stock: dict[str, float], moq: dict[str, float] | None = None):
     """儲存起始庫存快照（截止點）。"""
-    moq = moq or {}
+    norm_stock = {
+        str(part).strip().upper(): qty
+        for part, qty in stock.items()
+        if str(part).strip()
+    }
+    norm_moq = {
+        str(part).strip().upper(): qty
+        for part, qty in (moq or {}).items()
+        if str(part).strip()
+    }
+    all_parts = sorted(set(norm_stock) | set(norm_moq))
     now = _now()
     with get_conn() as conn:
         conn.execute("DELETE FROM inventory_snapshot")
-        for part, qty in stock.items():
+        for part in all_parts:
             conn.execute(
                 "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, snapshot_at) VALUES(?,?,?,?)",
-                (part.upper(), qty, moq.get(part.upper(), 0), now),
+                (part, norm_stock.get(part, 0), norm_moq.get(part, 0), now),
             )
 
 
@@ -256,6 +266,11 @@ def upsert_orders_from_schedule(rows: list[dict]):
         merged_rows.append(dict(r))
 
     with get_conn() as conn:
+        # 先刪掉待處理訂單的決策，避免外鍵擋住 orders 重建
+        conn.execute(
+            "DELETE FROM decisions WHERE order_id IN "
+            "(SELECT id FROM orders WHERE status IN ('pending','merged'))"
+        )
         conn.execute("DELETE FROM orders WHERE status IN ('pending','merged')")
         for i, r in enumerate(merged_rows):
             conn.execute(
@@ -479,28 +494,34 @@ def get_all_dispatched_consumption() -> dict[str, float]:
 
 def save_decision(order_id: int, part_number: str, decision: str):
     now = _now()
+    part = str(part_number).strip().upper()
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO decisions(order_id, part_number, decision, decided_at) VALUES(?,?,?,?) "
             "ON CONFLICT(order_id, part_number) DO UPDATE SET decision=excluded.decision, decided_at=excluded.decided_at",
-            (order_id, part_number, decision, now),
+            (order_id, part, decision, now),
         )
 
 
 def get_decisions_for_order(order_id: int) -> dict[str, str]:
     with get_conn() as conn:
         rows = conn.execute("SELECT part_number, decision FROM decisions WHERE order_id=?", (order_id,)).fetchall()
-    return {r["part_number"]: r["decision"] for r in rows}
+    return {str(r["part_number"]).strip().upper(): r["decision"] for r in rows}
 
 
 def get_all_decisions() -> dict[str, str]:
-    """取得所有 merged（未發料）訂單的決策 { part_number: decision }。"""
+    """取得所有待處理訂單的決策 { part_number: decision }。較新的決策會覆蓋較舊的。"""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT d.part_number, d.decision FROM decisions d "
-            "JOIN orders o ON o.id = d.order_id WHERE o.status='merged'"
+            "JOIN orders o ON o.id = d.order_id "
+            "WHERE o.status IN ('pending','merged') "
+            "ORDER BY d.part_number, d.decided_at, d.id"
         ).fetchall()
-    return {r["part_number"]: r["decision"] for r in rows}
+    decisions: dict[str, str] = {}
+    for r in rows:
+        decisions[str(r["part_number"]).strip().upper()] = r["decision"]
+    return decisions
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────
