@@ -316,6 +316,7 @@ async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
 class BomDispatchDownloadRequest(BaseModel):
     bom_ids: List[str]
     supplements: Dict[str, float]
+    header_overrides: Dict[str, Dict[str, str]] = Field(default_factory=dict)
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -368,13 +369,13 @@ def _write_dispatch_values_to_ws(ws, components: list[dict], supplements: dict[s
             continue
 
         prev_qty_cs = component.get("prev_qty_cs", 0)
-        supplement_qty = None
+        supplement_qty = 0
         if part not in supplemented_parts and part in supplements:
             supplement_qty = supplements[part]
             supplemented_parts.add(part)
 
-        _set_cell_value(ws, row_idx, g_col, prev_qty_cs if prev_qty_cs else None)
-        _set_cell_value(ws, row_idx, h_col, supplement_qty if supplement_qty else None)
+        _set_cell_value(ws, row_idx, g_col, prev_qty_cs)
+        _set_cell_value(ws, row_idx, h_col, supplement_qty)
         written += 1
 
     return written
@@ -416,7 +417,10 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             source_format=bom.get("source_format", ""),
             is_converted=bool(bom.get("is_converted")),
         )
-        _write_bom_header_values(wb.active, bom.get("po_number") or parsed.po_number)
+        override = req.header_overrides.get(bom["id"], {})
+        override_po = str(override.get("po_number", "") or "").strip()
+        po_number = override_po or str(bom.get("po_number") or parsed.po_number or "").strip()
+        _write_bom_header_values(wb.active, po_number)
         _write_dispatch_values_to_ws(
             wb.active,
             [component.dict() for component in parsed.components],

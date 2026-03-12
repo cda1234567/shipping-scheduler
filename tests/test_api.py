@@ -213,6 +213,9 @@ class ApiTests(unittest.TestCase):
             ws.cell(row=6, column=3).value = "PART-2"
             ws.cell(row=6, column=6).value = 20
             ws.cell(row=6, column=8).value = 8
+            ws.cell(row=7, column=3).value = "PART-3"
+            ws.cell(row=7, column=6).value = 30
+            ws.cell(row=7, column=8).value = 0
             wb.save(bom_path)
             wb.close()
 
@@ -223,7 +226,7 @@ class ApiTests(unittest.TestCase):
                 "source_filename": "dispatch.xlsx",
                 "source_format": ".xlsx",
                 "is_converted": 0,
-                "po_number": "4500059234",
+                "po_number": "0",
                 "group_model": "MODEL-A",
                 "uploaded_at": "2026-03-12T08:00:00",
             }
@@ -232,6 +235,7 @@ class ApiTests(unittest.TestCase):
                 response = self.client.post("/api/bom/dispatch-download", json={
                     "bom_ids": ["bom-1"],
                     "supplements": {"PART-1": 7},
+                    "header_overrides": {"bom-1": {"po_number": "4500059234"}},
                 })
 
         self.assertEqual(response.status_code, 200)
@@ -241,5 +245,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=5, column=7).value, 3)
         self.assertEqual(ws.cell(row=5, column=8).value, 7)
         self.assertEqual(ws.cell(row=6, column=7).value, 8)
-        self.assertIsNone(ws.cell(row=6, column=8).value)
+        self.assertEqual(ws.cell(row=6, column=8).value, 0)
+        self.assertEqual(ws.cell(row=7, column=7).value, 0)
+        self.assertEqual(ws.cell(row=7, column=8).value, 0)
         downloaded.close()

@@ -376,6 +376,29 @@ async function handleBatchMerge() {
 let _modalTargets = [];
 let _modalBomFiles = [];
 
+function getModalTargetForBomFile(bomFile) {
+  const keys = new Set();
+  const primary = normalizePartKey(bomFile?.model);
+  if (primary) keys.add(primary);
+  String(bomFile?.group_model || "")
+    .split(",")
+    .map(normalizePartKey)
+    .filter(Boolean)
+    .forEach(key => keys.add(key));
+  return _modalTargets.find(target => keys.has(normalizePartKey(target?.model))) || null;
+}
+
+function buildModalHeaderOverrides() {
+  const overrides = {};
+  _modalBomFiles.forEach(bomFile => {
+    const target = getModalTargetForBomFile(bomFile);
+    const poNumber = String(target?.po_number || "").trim();
+    if (!poNumber) return;
+    overrides[bomFile.id] = { po_number: poNumber };
+  });
+  return overrides;
+}
+
 async function showShortageModal(targets) {
   _modalTargets = targets;
   const modal = document.getElementById("shortage-modal");
@@ -753,6 +776,7 @@ async function handleModalDownloadBom() {
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  const headerOverrides = buildModalHeaderOverrides();
 
   try {
     await persistDecisionsForOrders(modalDecisions, targetOrderIds);
@@ -764,7 +788,7 @@ async function handleModalDownloadBom() {
     const resp = await fetch("/api/bom/dispatch-download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bom_ids: bomIds, supplements }),
+      body: JSON.stringify({ bom_ids: bomIds, supplements, header_overrides: headerOverrides }),
     });
     if (!resp.ok) { showToast("BOM 下載失敗"); btn.disabled = false; btn.textContent = "確認補料並下載 BOM"; return; }
 
