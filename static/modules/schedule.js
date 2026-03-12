@@ -471,7 +471,11 @@ async function showShortageModal(targets) {
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
-  const defaultQty = s.suggested_qty || s.shortage_amount || 0;
+  const defaultQty = roundShortageUiValue(s.suggested_qty || s.shortage_amount || 0);
+  const shortageAmount = roundShortageUiValue(s.shortage_amount);
+  const currentStock = roundShortageUiValue(s.current_stock);
+  const neededQty = roundShortageUiValue(s.needed);
+  s = { ...s, shortage_amount: shortageAmount, current_stock: currentStock, needed: neededQty };
 
   return `<div class="shortage-item ${isCS ? "cs-item" : ""}" style="margin-bottom:8px">
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
@@ -505,15 +509,22 @@ function hasMoqValue(shortage) {
   return Number(shortage?.moq || 0) > 0;
 }
 
+function roundShortageUiValue(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num);
+}
+
 function moqBadgeHtml(shortage) {
   if (hasMoqValue(shortage)) {
-    return `<span class="moq-badge moq-badge-present">MOQ ${fmt(shortage.moq)}</span>`;
+    return `<span class="moq-badge moq-badge-present">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
   }
   return '<span class="moq-badge moq-badge-missing">未寫 MOQ</span>';
 }
 
 function suggestedQtyHtml(shortage) {
-  const suggested = shortage.suggested_qty || shortage.shortage_amount || 0;
+  shortage = { ...shortage, moq: roundShortageUiValue(shortage.moq) };
+  const suggested = roundShortageUiValue(shortage.suggested_qty || shortage.shortage_amount || 0);
   if (hasMoqValue(shortage)) {
     return `<span class="blue">建議補 ${fmt(suggested)}（MOQ ${fmt(shortage.moq)}）</span>`;
   }
@@ -931,6 +942,10 @@ function renderShortagePanel(shortages, csShortages = []) {
 }
 
 function shortageItemHtml(s, isCS) {
+  const shortageAmount = roundShortageUiValue(s.shortage_amount);
+  const currentStock = roundShortageUiValue(s.current_stock);
+  const neededQty = roundShortageUiValue(s.needed);
+  s = { ...s, shortage_amount: shortageAmount, current_stock: currentStock, needed: neededQty };
   const dec = _decisions[normalizePartKey(s.part_number)] || "None";
   const codeTag = s._row_code
     ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
