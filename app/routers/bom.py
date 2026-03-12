@@ -25,7 +25,9 @@ from ..services.bom_editor import (
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
 )
+from ..services.download_names import append_minute_timestamp, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
+from ..services.order_supplements import build_order_supplement_allocations
 router = APIRouter()
 
 
@@ -234,7 +236,7 @@ async def download_bom_files(req: BomDownloadRequest):
         bom, file_path = valid[0]
         return FileResponse(
             path=str(file_path),
-            filename=bom["filename"] or file_path.name,
+            filename=append_minute_timestamp(bom["filename"] or file_path.name),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -253,7 +255,7 @@ async def download_bom_files(req: BomDownloadRequest):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=BOM.zip"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(build_generated_filename('BOM', '.zip'))}"},
     )
 
 
@@ -523,6 +525,11 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         req.order_ids,
         supplements,
     )
+    if req.order_ids:
+        db.replace_order_supplements(
+            req.order_ids,
+            build_order_supplement_allocations(req.order_ids, supplements),
+        )
     output_files: list[tuple[str, io.BytesIO]] = []
 
     for bom in target_boms:
@@ -531,7 +538,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             continue
 
         ext = src.suffix.lower()
-        output_name = bom["filename"] or src.name
+        output_name = append_minute_timestamp(bom["filename"] or src.name)
         wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
         override = req.header_overrides.get(bom["id"], {})
@@ -581,5 +588,5 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=BOM.zip"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(build_generated_filename('補料BOM', '.zip'))}"},
     )

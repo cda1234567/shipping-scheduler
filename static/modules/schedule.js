@@ -40,6 +40,12 @@ export function getDecisions() {
   return { ..._decisions };
 }
 
+export function getCheckedOrderIds() {
+  return _rows
+    .filter(row => _checkedIds.has(row.id))
+    .map(row => row.id);
+}
+
 function normalizePartKey(partNumber) {
   return String(partNumber || "").trim().toUpperCase();
 }

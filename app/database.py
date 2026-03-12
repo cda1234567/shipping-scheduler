@@ -103,6 +103,15 @@ CREATE TABLE IF NOT EXISTS decisions (
     UNIQUE(order_id, part_number)
 );
 
+CREATE TABLE IF NOT EXISTS order_supplements (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id       INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    part_number    TEXT    NOT NULL DEFAULT '',
+    supplement_qty REAL    NOT NULL DEFAULT 0,
+    updated_at     TEXT    NOT NULL DEFAULT '',
+    UNIQUE(order_id, part_number)
+);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     alert_type TEXT    NOT NULL DEFAULT '',
@@ -124,6 +133,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
+CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
 """
 
@@ -365,6 +375,10 @@ def upsert_orders_from_schedule(rows: list[dict]):
         # 先刪掉待處理訂單的決策，避免外鍵擋住 orders 重建
         conn.execute(
             "DELETE FROM decisions WHERE order_id IN "
+            "(SELECT id FROM orders WHERE status IN ('pending','merged'))"
+        )
+        conn.execute(
+            "DELETE FROM order_supplements WHERE order_id IN "
             "(SELECT id FROM orders WHERE status IN ('pending','merged'))"
         )
         conn.execute("DELETE FROM orders WHERE status IN ('pending','merged')")
@@ -709,6 +723,66 @@ def get_all_decisions() -> dict[str, str]:
     for r in rows:
         decisions[str(r["part_number"]).strip().upper()] = r["decision"]
     return decisions
+
+
+def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[str, float]] | None = None):
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return
+
+    now = _now()
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(normalized_ids))
+        conn.execute(
+            f"DELETE FROM order_supplements WHERE order_id IN ({placeholders})",
+            normalized_ids,
+        )
+
+        for order_id in normalized_ids:
+            for part_number, supplement_qty in (allocations or {}).get(order_id, {}).items():
+                part = str(part_number or "").strip().upper()
+                qty = float(supplement_qty or 0)
+                if not part or qty <= 0:
+                    continue
+                conn.execute(
+                    "INSERT INTO order_supplements(order_id, part_number, supplement_qty, updated_at) "
+                    "VALUES(?,?,?,?)",
+                    (order_id, part, qty, now),
+                )
+
+
+def get_order_supplements(order_ids: list[int] | None = None) -> dict[int, dict[str, float]]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+
+    sql = "SELECT order_id, part_number, supplement_qty FROM order_supplements"
+    params: list[int] = []
+    if normalized_ids:
+        placeholders = ",".join("?" * len(normalized_ids))
+        sql += f" WHERE order_id IN ({placeholders})"
+        params.extend(normalized_ids)
+    sql += " ORDER BY order_id, part_number"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    result: dict[int, dict[str, float]] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        result.setdefault(order_id, {})
+        result[order_id][str(row["part_number"]).strip().upper()] = float(row["supplement_qty"] or 0)
+    return result
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────

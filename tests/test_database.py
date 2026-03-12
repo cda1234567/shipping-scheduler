@@ -161,6 +161,31 @@ class OrderReloadTests(InMemoryDbTestCase):
         self.assertEqual(order_count, 1)
         self.assertEqual(decision_count, 0)
 
+    def test_upsert_orders_clears_pending_supplements_before_rebuild(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1', 'OLD', 'PCB', 1, 'pending', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+        db.replace_order_supplements([order_id], {order_id: {"PART-1": 3000}})
+
+        db.upsert_orders_from_schedule([
+            {
+                "po_number": "2",
+                "model": "NEW",
+                "pcb": "PCB2",
+                "order_qty": 2,
+                "balance_qty": None,
+                "ship_date": "2026-03-12",
+                "remark": "",
+                "row_index": 2,
+                "code": "",
+            }
+        ])
+
+        supplement_count = self.conn.execute("SELECT COUNT(*) FROM order_supplements").fetchone()[0]
+        self.assertEqual(supplement_count, 0)
+
     def test_get_all_decisions_returns_latest_pending_decision_in_uppercase(self):
         self.conn.execute(
             "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
@@ -178,6 +203,19 @@ class OrderReloadTests(InMemoryDbTestCase):
         decisions = db.get_all_decisions()
 
         self.assertEqual(decisions["PART-2"], "Shortage")
+
+    def test_replace_and_get_order_supplements_normalize_parts(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1', 'M1', 'PCB', 1, 'merged', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+
+        db.replace_order_supplements([order_id], {order_id: {" part-1 ": 3000, "PART-2": 0}})
+
+        supplements = db.get_order_supplements([order_id])
+
+        self.assertEqual(supplements, {order_id: {"PART-1": 3000.0}})
 
 
 class DispatchConsumptionTests(InMemoryDbTestCase):

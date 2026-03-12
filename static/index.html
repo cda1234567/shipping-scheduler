@@ -157,7 +157,7 @@
 
 <script type="module">
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
-import { initSchedule, refresh as refreshSchedule, refreshCompleted, getDecisions } from "/static/modules/schedule.js";
+import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
@@ -273,13 +273,18 @@ document.getElementById("schedule-file-input").addEventListener("change", async 
 // ── Dispatch ────────────────────────────────────────────────────────────
 document.getElementById("btn-gen-dispatch").addEventListener("click", async () => {
   const statusEl = document.getElementById("dispatch-status");
+  const orderIds = getCheckedOrderIds();
+  if (!orderIds.length) {
+    showToast("請先勾選要生成發料單的訂單");
+    return;
+  }
   statusEl.textContent = "生成中...";
   try {
     const decisions = getDecisions();
     const result = await desktopDownload({
       path: "/api/dispatch/generate",
       method: "POST",
-      body: { decisions },
+      body: { order_ids: orderIds, decisions },
     });
     statusEl.textContent = "已下載";
     if (result.directory) {

@@ -288,6 +288,45 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=8, column=8).value, 0)
         downloaded.close()
 
+    def test_dispatch_download_persists_order_supplements_for_selected_orders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.merge_cells("G1:H1")
+            ws.cell(row=1, column=7).value = "製單號碼M/O:"
+            ws.cell(row=5, column=3).value = "PART-1"
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-1",
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "source_filename": "dispatch.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "po_number": "0",
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
+                 patch("app.routers.bom._build_order_based_export_values", return_value=({}, {})), \
+                 patch("app.routers.bom.build_order_supplement_allocations", return_value={5: {"PART-1": 3000}}) as mock_allocations, \
+                 patch("app.routers.bom.db.replace_order_supplements") as mock_replace:
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-1"],
+                    "order_ids": [5],
+                    "supplements": {"PART-1": 3000},
+                    "header_overrides": {"bom-1": {"po_number": "4500059234"}},
+                    "carry_overs": {"bom-1": {"PART-1": 135}},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        mock_allocations.assert_called_once_with([5], {"PART-1": 3000})
+        mock_replace.assert_called_once_with([5], {5: {"PART-1": 3000}})
+
     def test_dispatch_download_computes_carry_over_per_bom_in_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bom_a_path = Path(temp_dir) / "board-a.xlsx"
@@ -355,7 +394,8 @@ class ApiTests(unittest.TestCase):
                  }), \
                  patch("app.routers.bom.db.get_setting", return_value=""), \
                  patch("app.routers.bom.db.get_snapshot_taken_at", return_value="2026-03-12T08:00:00"), \
-                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}):
+                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}), \
+                 patch("app.routers.bom.db.replace_order_supplements"):
                 response = self.client.post("/api/bom/dispatch-download", json={
                     "bom_ids": ["bom-a", "bom-c"],
                     "order_ids": [1],
@@ -368,15 +408,18 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         archive = zipfile.ZipFile(io.BytesIO(response.content))
-        self.assertEqual(sorted(archive.namelist()), ["board-a.xlsx", "board-c.xlsx"])
+        archive_names = sorted(archive.namelist())
+        self.assertEqual(len(archive_names), 2)
+        self.assertTrue(archive_names[0].startswith("board-a_"))
+        self.assertTrue(archive_names[1].startswith("board-c_"))
 
-        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read("board-a.xlsx")), data_only=False)
+        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[0])), data_only=False)
         ws_a = wb_a.active
         self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
         self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
         wb_a.close()
 
-        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read("board-c.xlsx")), data_only=False)
+        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[1])), data_only=False)
         ws_c = wb_c.active
         self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
         self.assertEqual(ws_c.cell(row=5, column=8).value, 0)
@@ -439,7 +482,9 @@ class ApiTests(unittest.TestCase):
                  }), \
                  patch("app.routers.bom.db.get_setting", return_value=""), \
                  patch("app.routers.bom.db.get_snapshot_taken_at", return_value="2026-03-12T08:00:00"), \
-                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}):
+                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}), \
+                 patch("app.routers.bom.build_order_supplement_allocations", return_value={1: {"EC-20023A": 3000}}), \
+                 patch("app.routers.bom.db.replace_order_supplements"):
                 response = self.client.post("/api/bom/dispatch-download", json={
                     "bom_ids": ["bom-a", "bom-c"],
                     "order_ids": [1],
@@ -452,14 +497,16 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         archive = zipfile.ZipFile(io.BytesIO(response.content))
+        archive_names = sorted(archive.namelist())
+        self.assertEqual(len(archive_names), 2)
 
-        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read("board-a.xlsx")), data_only=False)
+        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[0])), data_only=False)
         ws_a = wb_a.active
         self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
         self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
         wb_a.close()
 
-        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read("board-c.xlsx")), data_only=False)
+        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[1])), data_only=False)
         ws_c = wb_c.active
         self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
         self.assertEqual(ws_c.cell(row=5, column=8).value, 3000)
