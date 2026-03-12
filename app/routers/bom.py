@@ -25,6 +25,7 @@ from ..services.bom_editor import (
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
 )
+from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 router = APIRouter()
 
 
@@ -313,9 +314,100 @@ async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
 
 class BomDispatchDownloadRequest(BaseModel):
     bom_ids: List[str]
+    order_ids: List[int] = Field(default_factory=list)
     supplements: Dict[str, float]
     header_overrides: Dict[str, Dict[str, str]] = Field(default_factory=dict)
     carry_overs: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+
+
+def _normalize_lookup_key(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def _get_bom_match_keys(bom: dict) -> set[str]:
+    raw = str(bom.get("group_model") or bom.get("model") or "")
+    return {_normalize_lookup_key(item) for item in raw.split(",") if _normalize_lookup_key(item)}
+
+
+def _build_dispatch_running_stock() -> dict[str, float]:
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    snapshot = db.get_snapshot()
+
+    if snapshot and main_path and Path(main_path).exists():
+        fixes = find_legacy_snapshot_stock_fixes(main_path, snapshot)
+        if fixes:
+            db.update_snapshot_stock(fixes)
+            for part, qty in fixes.items():
+                if part in snapshot:
+                    snapshot[part]["stock_qty"] = qty
+
+    if snapshot:
+        running = {
+            _normalize_lookup_key(part): float((values or {}).get("stock_qty") or 0)
+            for part, values in snapshot.items()
+            if _normalize_lookup_key(part)
+        }
+    elif main_path and Path(main_path).exists():
+        running = {
+            _normalize_lookup_key(part): float(qty or 0)
+            for part, qty in read_stock(main_path).items()
+            if _normalize_lookup_key(part)
+        }
+    else:
+        running = {}
+
+    dispatched_consumption = db.get_all_dispatched_consumption(db.get_snapshot_taken_at())
+    for part, consumed in dispatched_consumption.items():
+        key = _normalize_lookup_key(part)
+        if not key:
+            continue
+        running[key] = float(running.get(key, 0)) - float(consumed or 0)
+
+    return running
+
+
+def _build_order_based_carry_overs(target_boms: list[dict], order_ids: list[int]) -> dict[str, dict[str, float]]:
+    if not order_ids or not target_boms:
+        return {}
+
+    running = _build_dispatch_running_stock()
+    components_by_bom = {str(bom["id"]): db.get_bom_components(str(bom["id"])) for bom in target_boms}
+    carry_overs: dict[str, dict[str, float]] = {}
+
+    for order_id in order_ids:
+        order = db.get_order(int(order_id))
+        if not order:
+            continue
+
+        order_model = _normalize_lookup_key(order.get("model"))
+        if not order_model:
+            continue
+
+        matched_boms = [bom for bom in target_boms if order_model in _get_bom_match_keys(bom)]
+        for bom in matched_boms:
+            bom_id = str(bom["id"])
+            if bom_id in carry_overs:
+                continue
+
+            part_map: dict[str, float] = {}
+            for component in components_by_bom.get(bom_id, []):
+                needed_qty = float(component.get("needed_qty") or 0)
+                if component.get("is_dash") or needed_qty <= 0:
+                    continue
+
+                part = _normalize_lookup_key(component.get("part_number"))
+                if not part:
+                    continue
+
+                if part not in part_map:
+                    part_map[part] = float(running.get(part, 0))
+
+                prev_qty = float(component.get("prev_qty_cs") or 0)
+                running[part] = float(running.get(part, 0)) + prev_qty - needed_qty
+
+            carry_overs[bom_id] = part_map
+
+    return carry_overs
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -396,6 +488,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         raise HTTPException(404, "找不到指定的 BOM")
 
     supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
+    computed_carry_overs = _build_order_based_carry_overs(target_boms, req.order_ids)
     output_files: list[tuple[str, io.BytesIO]] = []
 
     for bom in target_boms:
@@ -410,9 +503,10 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         override = req.header_overrides.get(bom["id"], {})
         override_po = str(override.get("po_number", "") or "").strip()
         po_number = override_po or str(bom.get("po_number") or "").strip()
+        carry_over_source = computed_carry_overs.get(bom["id"]) or req.carry_overs.get(bom["id"], {})
         carry_overs = {
             str(part).strip().upper(): qty
-            for part, qty in req.carry_overs.get(bom["id"], {}).items()
+            for part, qty in carry_over_source.items()
             if str(part).strip()
         }
         _write_bom_header_values(wb.active, po_number)

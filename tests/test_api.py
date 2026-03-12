@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -286,6 +287,101 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=8, column=7).value, 12)
         self.assertEqual(ws.cell(row=8, column=8).value, 0)
         downloaded.close()
+
+    def test_dispatch_download_computes_carry_over_per_bom_in_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_a_path = Path(temp_dir) / "board-a.xlsx"
+            bom_c_path = Path(temp_dir) / "board-c.xlsx"
+
+            for path, label in ((bom_a_path, "A"), (bom_c_path, "C")):
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.merge_cells("G1:H1")
+                ws.cell(row=1, column=7).value = "M/O:"
+                ws.cell(row=5, column=3).value = "EC-20023A"
+                ws.cell(row=5, column=7).value = None
+                ws.cell(row=5, column=8).value = None
+                ws.cell(row=6, column=3).value = f"PART-{label}"
+                ws.cell(row=6, column=7).value = None
+                ws.cell(row=6, column=8).value = None
+                wb.save(path)
+                wb.close()
+
+            bom_a = {
+                "id": "bom-a",
+                "filename": "board-a.xlsx",
+                "filepath": str(bom_a_path),
+                "source_filename": "board-a.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 1,
+                "po_number": "0",
+                "model": "T356789IU_MAIN_BOARD_A",
+                "group_model": "MODEL-A",
+                "sort_order": 0,
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+            bom_c = {
+                "id": "bom-c",
+                "filename": "board-c.xlsx",
+                "filepath": str(bom_c_path),
+                "source_filename": "board-c.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 1,
+                "po_number": "0",
+                "model": "T356789IU_DISPLAY_C",
+                "group_model": "MODEL-A",
+                "sort_order": 1,
+                "uploaded_at": "2026-03-12T08:01:00",
+            }
+
+            components_by_bom = {
+                "bom-a": [
+                    {"part_number": "EC-20023A", "needed_qty": 5505, "prev_qty_cs": 0, "is_dash": 0},
+                    {"part_number": "PART-A", "needed_qty": 10, "prev_qty_cs": 0, "is_dash": 0},
+                ],
+                "bom-c": [
+                    {"part_number": "EC-20023A", "needed_qty": 100, "prev_qty_cs": 0, "is_dash": 0},
+                    {"part_number": "PART-C", "needed_qty": 20, "prev_qty_cs": 0, "is_dash": 0},
+                ],
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_a, bom_c]), \
+                 patch("app.routers.bom.db.get_order", return_value={"id": 1, "model": "MODEL-A"}), \
+                 patch("app.routers.bom.db.get_bom_components", side_effect=lambda bom_id: components_by_bom[bom_id]), \
+                 patch("app.routers.bom.db.get_snapshot", return_value={
+                     "EC-20023A": {"stock_qty": 5625, "moq": 0},
+                     "PART-A": {"stock_qty": 30, "moq": 0},
+                     "PART-C": {"stock_qty": 40, "moq": 0},
+                 }), \
+                 patch("app.routers.bom.db.get_setting", return_value=""), \
+                 patch("app.routers.bom.db.get_snapshot_taken_at", return_value="2026-03-12T08:00:00"), \
+                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}):
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-a", "bom-c"],
+                    "order_ids": [1],
+                    "supplements": {},
+                    "header_overrides": {
+                        "bom-a": {"po_number": "4500059234"},
+                        "bom-c": {"po_number": "4500059234"},
+                    },
+                })
+
+        self.assertEqual(response.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        self.assertEqual(sorted(archive.namelist()), ["board-a.xlsx", "board-c.xlsx"])
+
+        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read("board-a.xlsx")), data_only=False)
+        ws_a = wb_a.active
+        self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
+        self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
+        wb_a.close()
+
+        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read("board-c.xlsx")), data_only=False)
+        ws_c = wb_c.active
+        self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
+        self.assertEqual(ws_c.cell(row=5, column=8).value, 0)
+        wb_c.close()
+        archive.close()
 
     def test_dispatch_download_normalizes_legacy_xls_before_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:

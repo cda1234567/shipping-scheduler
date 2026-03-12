@@ -593,7 +593,8 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
             "SELECT bf.group_model, bf.model, "
             "bc.part_number, bc.description, bc.qty_per_board, "
             "bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied "
-            "FROM bom_files bf JOIN bom_components bc ON bc.bom_file_id = bf.id"
+            "FROM bom_files bf JOIN bom_components bc ON bc.bom_file_id = bf.id "
+            "ORDER BY bf.sort_order, bf.uploaded_at, bf.filename, bc.id"
         ).fetchall()
     result: dict[str, list[dict]] = {}
     for r in rows:
@@ -614,7 +615,9 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
 def get_bom_files_by_models(models: list[str]) -> list[dict]:
     """依機種名稱查詢對應的 BOM 檔案（支援 group_model 逗號分隔）。"""
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bom_files").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM bom_files ORDER BY sort_order, uploaded_at, filename"
+        ).fetchall()
     matched = []
     seen_ids = set()
     upper_models = {m.upper() for m in models}

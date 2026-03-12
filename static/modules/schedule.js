@@ -848,7 +848,6 @@ async function handleModalDownloadBom() {
   const modalDecisions = _collectModalDecisions();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   const headerOverrides = buildModalHeaderOverrides();
-  const carryOverOverrides = buildModalCarryOverOverrides();
 
   try {
     await persistDecisionsForOrders(modalDecisions, targetOrderIds);
@@ -862,9 +861,9 @@ async function handleModalDownloadBom() {
       method: "POST",
       body: {
         bom_ids: bomIds,
+        order_ids: targetOrderIds,
         supplements,
         header_overrides: headerOverrides,
-        carry_overs: carryOverOverrides,
       },
     });
     if (result.directory) {
