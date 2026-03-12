@@ -13,15 +13,13 @@ export async function initMainPreview() {
   if (_initialized) return;
   _initialized = true;
 
+  hydratePreviewLabels();
+
   document.getElementById("btn-main-preview-refresh")?.addEventListener("click", () => {
     void refreshMainPreview({ force: true, eager: true });
   });
-  document.getElementById("btn-main-preview-search")?.addEventListener("click", () => {
-    runSheetSearch();
-  });
-  document.getElementById("btn-main-preview-clear")?.addEventListener("click", () => {
-    clearSheetSearch();
-  });
+  document.getElementById("btn-main-preview-search")?.addEventListener("click", runSheetSearch);
+  document.getElementById("btn-main-preview-clear")?.addEventListener("click", clearSheetSearch);
   document.getElementById("main-preview-search")?.addEventListener("keydown", event => {
     if (event.key === "Enter") {
       event.preventDefault();
@@ -35,6 +33,7 @@ export async function initMainPreview() {
 }
 
 export async function onMainPreviewTabActivated() {
+  hydratePreviewLabels();
   await refreshMainPreview({ eager: true });
 }
 
@@ -48,7 +47,7 @@ export async function refreshMainPreview({ force = false, sheet = "", eager = fa
   const isActive = panel?.classList.contains("active");
   if (!isActive && !eager) return;
 
-  renderLoadingState("正在讀取 live 主檔...");
+  renderLoadingState("正在載入目前 live 主檔...");
 
   try {
     const requestedSheet = sheet || _activeSheet;
@@ -77,7 +76,34 @@ export async function refreshMainPreview({ force = false, sheet = "", eager = fa
     _sheetNames = [];
     _activeSheet = "";
     _sheetCache.clear();
-    renderEmptyState(error.message || "尚未載入主檔");
+    renderEmptyState(error.message || "無法讀取目前主檔預覽。");
+  }
+}
+
+function hydratePreviewLabels() {
+  const tabButton = document.querySelector('.tab-btn[data-tab="main-preview"]');
+  if (tabButton) tabButton.textContent = "主檔預覽";
+
+  const title = document.getElementById("main-preview-title");
+  if (title && !_workbookMeta.filename) {
+    title.textContent = "主檔預覽";
+  }
+
+  const searchInput = document.getElementById("main-preview-search");
+  if (searchInput) searchInput.setAttribute("placeholder", "搜尋料號 / 內容");
+
+  const searchBtn = document.getElementById("btn-main-preview-search");
+  if (searchBtn) searchBtn.textContent = "搜尋";
+
+  const clearBtn = document.getElementById("btn-main-preview-clear");
+  if (clearBtn) clearBtn.textContent = "清除";
+
+  const refreshBtn = document.getElementById("btn-main-preview-refresh");
+  if (refreshBtn) refreshBtn.textContent = "重新整理";
+
+  const stage = document.getElementById("main-preview-stage");
+  if (stage?.querySelector(".main-preview-empty")) {
+    stage.innerHTML = '<div class="main-preview-empty">主檔已載入後，可在這裡預覽目前的 live 主檔。</div>';
   }
 }
 
@@ -88,23 +114,21 @@ function renderLoadingState(message) {
 }
 
 function renderEmptyState(message) {
-  updateWorkbookMetaUi("尚未載入主檔", message, "");
+  updateWorkbookMetaUi("主檔預覽", message, "");
   const tabs = document.getElementById("main-preview-sheet-tabs");
   if (tabs) tabs.innerHTML = "";
   const stage = document.getElementById("main-preview-stage");
-  if (stage) {
-    stage.innerHTML = `<div class="main-preview-empty">${esc(message)}</div>`;
-  }
+  if (stage) stage.innerHTML = `<div class="main-preview-empty">${esc(message)}</div>`;
 }
 
 function renderWorkbookMeta() {
   const metaLine = _workbookMeta.loaded_at
-    ? `目前預覽的是 live 主檔，載入時間 ${formatLoadedAt(_workbookMeta.loaded_at)}`
-    : "目前預覽的是 live 主檔";
+    ? `目前顯示的是 live 主檔，載入時間 ${formatLoadedAt(_workbookMeta.loaded_at)}`
+    : "目前顯示的是 live 主檔";
   const hintLine = _workbookMeta.style_preserved
-    ? "樣式會盡量保留原始 Excel 的欄寬、底色、粗體與合併儲存格。"
-    : "這份主檔是 .xls，預覽會保留內容與結構，但樣式可能不會完全等同原始 Excel。";
-  updateWorkbookMetaUi(_workbookMeta.filename || "主檔預覽", metaLine, hintLine);
+    ? "畫面會保留欄寬、合併儲存格與框線，但不套用原始底色，方便直接核對內容。"
+    : "這份主檔來自 .xls 來源，畫面會保留結構與欄位，但不保留原始底色。";
+  updateWorkbookMetaUi(_workbookMeta.filename || "主檔", metaLine, hintLine);
 }
 
 function updateWorkbookMetaUi(title, meta, hint) {
@@ -148,7 +172,7 @@ function renderActiveSheet() {
   const payload = _sheetCache.get(_activeSheet);
   const sheet = payload?.sheet;
   if (!sheet) {
-    renderEmptyState("讀不到主檔工作表");
+    renderEmptyState("目前沒有可預覽的工作表。");
     return;
   }
 
@@ -159,6 +183,7 @@ function renderActiveSheet() {
   } else if (_searchCursor < 0 || _searchCursor >= _searchMatches.length) {
     _searchCursor = 0;
   }
+
   const matchMap = buildMatchMap(sheet, query);
   const currentMatch = getCurrentMatch();
   const styles = sheet.styles || [];
@@ -221,9 +246,11 @@ function buildCellHtml(cell, style, rowIndex, isMatched, isFocused) {
   ];
   if (cell.rowspan && cell.rowspan > 1) attrs.push(`rowspan="${cell.rowspan}"`);
   if (cell.colspan && cell.colspan > 1) attrs.push(`colspan="${cell.colspan}"`);
+
   const classes = ["main-preview-cell"];
   if (isMatched) classes.push("main-preview-cell-match");
   if (isFocused) classes.push("main-preview-cell-current");
+
   const text = String(cell.value ?? "");
   return `<td class="${classes.join(" ")}" ${attrs.join(" ")} style="${styleToCss(style)}" title="${esc(text)}">${renderCellContent(text, style)}</td>`;
 }
@@ -237,8 +264,6 @@ function renderCellContent(text, style) {
 
 function styleToCss(style = {}) {
   const css = [];
-  if (style.background) css.push(`background:${style.background}`);
-  if (style.color) css.push(`color:${style.color}`);
   if (style.font_name) css.push(`font-family:'${String(style.font_name).replace(/'/g, "\\'")}', 'Calibri', sans-serif`);
   if (style.font_size) css.push(`font-size:${style.font_size}pt`);
   if (style.bold) css.push("font-weight:700");
@@ -247,11 +272,15 @@ function styleToCss(style = {}) {
   if (style.align) css.push(`text-align:${normalizeAlign(style.align)}`);
   if (style.valign) css.push(`vertical-align:${normalizeVerticalAlign(style.valign)}`);
   if (style.wrap) css.push("white-space:pre-wrap");
-  if (style.border_top) css.push(`border-top:${style.border_top}`);
-  if (style.border_right) css.push(`border-right:${style.border_right}`);
-  if (style.border_bottom) css.push(`border-bottom:${style.border_bottom}`);
-  if (style.border_left) css.push(`border-left:${style.border_left}`);
+  if (style.border_top) css.push(`border-top:${neutralizeBorder(style.border_top)}`);
+  if (style.border_right) css.push(`border-right:${neutralizeBorder(style.border_right)}`);
+  if (style.border_bottom) css.push(`border-bottom:${neutralizeBorder(style.border_bottom)}`);
+  if (style.border_left) css.push(`border-left:${neutralizeBorder(style.border_left)}`);
   return css.join(";");
+}
+
+function neutralizeBorder(borderCss = "") {
+  return String(borderCss || "").replace(/#[0-9a-fA-F]{6}/g, "#cbd5e1");
 }
 
 function normalizeAlign(value) {
@@ -261,8 +290,7 @@ function normalizeAlign(value) {
 }
 
 function normalizeVerticalAlign(value) {
-  if (value === "center") return "middle";
-  if (value === "distributed" || value === "justify") return "middle";
+  if (value === "center" || value === "distributed" || value === "justify") return "middle";
   return value || "middle";
 }
 
@@ -281,7 +309,7 @@ function runSheetSearch() {
   if (!_searchMatches.length) {
     _searchCursor = -1;
     renderActiveSheet();
-    showToast(`主檔內找不到 ${query}`);
+    showToast(`找不到「${query}」`);
     return;
   }
 
@@ -345,8 +373,8 @@ function scrollToCurrentMatch() {
 }
 
 function buildSearchStatusText() {
-  if (!_currentQuery) return "可直接搜尋料號、MOQ 或任一儲存格內容";
-  if (!_searchMatches.length) return "找不到符合內容";
+  if (!_currentQuery) return "可搜尋料號、內容或備註。";
+  if (!_searchMatches.length) return "沒有符合的結果。";
   return `搜尋結果 ${_searchCursor + 1} / ${_searchMatches.length}`;
 }
 
