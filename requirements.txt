@@ -5,3 +5,4 @@ xlrd>=2.0.1
 python-multipart>=0.0.9
 pyyaml>=6.0
 python-dateutil>=2.8.0
+pywebview>=6.1

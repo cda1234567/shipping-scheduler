@@ -163,6 +163,51 @@ body {
   padding: 12px 20px; border-top: 1px solid #e5e5ea;
   display: flex; gap: 8px; justify-content: flex-end;
 }
+.desktop-footer .spacer { flex: 1; }
+.desktop-status-card {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.desktop-status-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.desktop-status-meta {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 4px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.desktop-autostart-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+  cursor: pointer;
+}
+.desktop-autostart-row input {
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+}
+.desktop-autostart-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2937;
+}
+.desktop-help {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #6b7280;
+}
 
 /* Row actions */
 .row-actions { display: flex; gap: 4px; align-items: center; }
