@@ -47,6 +47,16 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(snapshot["BBB"]["stock_qty"], 0)
         self.assertEqual(snapshot["BBB"]["moq"], 12)
 
+    def test_update_snapshot_stock_only_changes_target_parts(self):
+        db.save_snapshot({"AAA": 8, "BBB": 5}, {"AAA": 8, "BBB": 12})
+
+        updated = db.update_snapshot_stock({"AAA": 0})
+        snapshot = db.get_snapshot()
+
+        self.assertEqual(updated, 1)
+        self.assertEqual(snapshot["AAA"]["stock_qty"], 0)
+        self.assertEqual(snapshot["BBB"]["stock_qty"], 5)
+
 
 class OrderReloadTests(InMemoryDbTestCase):
     def test_upsert_orders_clears_pending_decisions_before_rebuild(self):

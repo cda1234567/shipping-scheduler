@@ -23,9 +23,12 @@ import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
+from ..config import cfg
+
 PART_COL = 1  # A 欄 (1-based)
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+STOCK_SEARCH_START_COL = cfg("excel.main_moq_col", 2) + 2  # 0-based MOQ 右側 → 1-based
 
 
 def _try_float(v) -> float | None:
@@ -131,9 +134,9 @@ def merge_row_to_main(
             if row_idx is None:
                 continue
 
-            # 讀目前庫存（從 max_col 往回找最後一個數字）
+            # 讀目前庫存（只找 MOQ 右側欄位，避免把 MOQ 誤判成庫存）
             current_stock = 0.0
-            for c in range(max_col, 0, -1):
+            for c in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
                 v = _try_float(ws.cell(row=row_idx, column=c).value)
                 if v is not None:
                     current_stock = v
@@ -143,7 +146,7 @@ def merge_row_to_main(
             f_val = _round_away(needed_qty)
             j_val = _round_away(current_stock + h_val - f_val)
 
-            decision = decisions.get(part_number, "None")
+            decision = decisions.get(part_upper, decisions.get(part_number, "None"))
 
             # 寫 H（增添料）
             ws.cell(row=row_idx, column=col_h).value = h_val

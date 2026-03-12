@@ -175,8 +175,9 @@ function renderSchedule() {
   _calcResults.forEach((r, i) => {
     if (!r) return;
     const code = _rows[i]?.code || "";
-    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code }));
-    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code }));
+    const model = _rows[i]?.model || "";
+    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
+    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
   });
   renderShortagePanel(allShortages, allCSShortages);
 }
@@ -380,6 +381,7 @@ async function showShortageModal(targets) {
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
+  const targetIds = new Set(targets.map(t => t.id));
 
   // 查詢對應的 BOM 檔案
   const models = [...new Set(targets.map(t => t.model).filter(Boolean))];
@@ -396,25 +398,27 @@ async function showShortageModal(targets) {
   const csShortagesByModel = {};
   _calcResults.forEach((r, i) => {
     if (!r) return;
+    if (!targetIds.has(_rows[i]?.id)) return;
     const model = _rows[i]?.model || "未知機種";
     const code = _rows[i]?.code || model;
     (r.shortages || []).forEach(s => {
       if (!shortagesByModel[model]) shortagesByModel[model] = [];
-      shortagesByModel[model].push({ ...s, _row_code: code });
+      shortagesByModel[model].push({ ...s, _row_code: code, _row_model: model });
     });
     (r.customer_material_shortages || []).forEach(s => {
       if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
-      csShortagesByModel[model].push({ ...s, _row_code: code });
+      csShortagesByModel[model].push({ ...s, _row_code: code, _row_model: model });
     });
   });
 
   // 組內按料號排序
   for (const items of Object.values(shortagesByModel))
-    items.sort((a, b) => (a.part_number || "").localeCompare(b.part_number || ""));
+    items.sort(compareShortageItems);
   for (const items of Object.values(csShortagesByModel))
-    items.sort((a, b) => (a.part_number || "").localeCompare(b.part_number || ""));
+    items.sort(compareShortageItems);
 
-  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])];
+  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])]
+    .sort((a, b) => compareText(a, b, "zh-Hant"));
   const hasAny = allModels.length > 0;
 
   let html = "";
@@ -746,13 +750,41 @@ function updateStatusOnly() {
   _calcResults.forEach((r, i) => {
     if (!r) return;
     const code = _rows[i]?.code || "";
-    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code }));
-    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code }));
+    const model = _rows[i]?.model || "";
+    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
+    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
   });
   renderShortagePanel(allShortages, allCSShortages);
 }
 
 // ── Shortage panel ────────────────────────────────────────────────────────────
+function compareText(a, b, locale = "en") {
+  return String(a || "").localeCompare(String(b || ""), locale, { numeric: true, sensitivity: "base" });
+}
+
+function compareShortageItems(a, b) {
+  const modelCmp = compareText(a._row_model, b._row_model, "zh-Hant");
+  if (modelCmp !== 0) return modelCmp;
+  const partCmp = compareText(a.part_number, b.part_number);
+  if (partCmp !== 0) return partCmp;
+  return compareText(a._row_code, b._row_code);
+}
+
+function renderShortageGroupHtml(items, isCS) {
+  const sorted = [...items].sort(compareShortageItems);
+  let html = "";
+  let currentModel = null;
+  for (const item of sorted) {
+    const model = item._row_model || "未指定機種";
+    if (model !== currentModel) {
+      currentModel = model;
+      html += `<div style="font-size:11px;font-weight:600;color:#6b7280;margin:8px 0 4px">${esc(model)}</div>`;
+    }
+    html += shortageItemHtml(item, isCS);
+  }
+  return html;
+}
+
 function renderShortagePanel(shortages, csShortages = []) {
   const scroll = document.getElementById("right-scroll");
   const badge = document.getElementById("shortage-count");
@@ -772,14 +804,14 @@ function renderShortagePanel(shortages, csShortages = []) {
   // 客供料缺料（黃色區塊）
   if (csShortages.length) {
     html += '<div class="cs-shortage-section"><h4 class="cs-title">客供料缺料</h4>';
-    html += csShortages.map(s => shortageItemHtml(s, true)).join("");
+    html += renderShortageGroupHtml(csShortages, true);
     html += '</div>';
   }
 
   // 一般缺料
   if (shortages.length) {
     if (csShortages.length) html += '<h4 style="font-size:12px;color:#dc2626;margin:8px 0 4px;font-weight:600">採購缺料</h4>';
-    html += shortages.map(s => shortageItemHtml(s, false)).join("");
+    html += renderShortageGroupHtml(shortages, false);
   }
 
   scroll.innerHTML = html;

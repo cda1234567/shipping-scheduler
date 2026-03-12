@@ -60,6 +60,8 @@ class ApiTests(unittest.TestCase):
 
             with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
                  patch("app.routers.main_file.db.get_snapshot", return_value=snapshot), \
+                 patch("app.routers.main_file.find_legacy_snapshot_stock_fixes", return_value={}), \
+                 patch("app.routers.main_file.db.update_snapshot_stock", return_value=0), \
                  patch("app.routers.main_file.read_moq", return_value={"AAA": 99, "BBB": 12}):
                 response = self.client.get("/api/main-file/data")
 
@@ -68,3 +70,35 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["stock"], {"AAA": 5})
         self.assertEqual(data["moq"]["AAA"], 8)
         self.assertEqual(data["moq"]["BBB"], 12)
+
+    def test_main_file_data_repairs_legacy_snapshot_stock_bug(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"placeholder")
+
+            def fake_setting(key, default=""):
+                mapping = {
+                    "main_file_path": str(main_path),
+                    "main_part_count": "2",
+                    "main_loaded_at": "2026-03-12T08:00:00",
+                    "main_filename": "main.xlsx",
+                }
+                return mapping.get(key, default)
+
+            snapshot = {
+                "AAA": {"stock_qty": 8, "moq": 8},
+                "BBB": {"stock_qty": 5, "moq": 12},
+            }
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
+                 patch("app.routers.main_file.db.get_snapshot", return_value=snapshot), \
+                 patch("app.routers.main_file.find_legacy_snapshot_stock_fixes", return_value={"AAA": 0.0}), \
+                 patch("app.routers.main_file.db.update_snapshot_stock", return_value=1), \
+                 patch("app.routers.main_file.db.log_activity"), \
+                 patch("app.routers.main_file.read_moq", return_value={"AAA": 99, "BBB": 12}):
+                response = self.client.get("/api/main-file/data")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["stock"]["AAA"], 0.0)
+        self.assertEqual(data["stock"]["BBB"], 5)

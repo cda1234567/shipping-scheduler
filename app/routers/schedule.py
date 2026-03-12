@@ -13,6 +13,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 
 from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
+from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main
@@ -23,6 +24,18 @@ from ..models import (
 from .. import database as db
 
 router = APIRouter()
+
+
+def _repair_legacy_snapshot_if_needed(main_path: str) -> dict[str, dict]:
+    snapshot = db.get_snapshot()
+    fixes = find_legacy_snapshot_stock_fixes(main_path, snapshot)
+    repaired = db.update_snapshot_stock(fixes)
+    if repaired:
+        db.log_activity("snapshot_repaired", f"自動修正舊版快照庫存 {repaired} 筆")
+        for part, qty in fixes.items():
+            if part in snapshot:
+                snapshot[part]["stock_qty"] = qty
+    return snapshot
 
 
 # ── Upload schedule ───────────────────────────────────────────────────────────
@@ -112,17 +125,17 @@ async def calculate_shortage():
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先上傳主檔")
 
-    snapshot_stock = db.get_snapshot_stock()
-    moq = db.get_snapshot_moq()
-    if not snapshot_stock:
-        from ..services.main_reader import read_stock, read_moq
+    snapshot = _repair_legacy_snapshot_if_needed(main_path)
+    if snapshot:
+        snapshot_stock = {part: values["stock_qty"] for part, values in snapshot.items()}
+        snapshot_moq = {part: values["moq"] for part, values in snapshot.items()}
+
+        live_moq = read_moq(main_path)
+        live_moq.update(snapshot_moq)
+        moq = live_moq
+    else:
         snapshot_stock = read_stock(main_path)
         moq = read_moq(main_path)
-    else:
-        from ..services.main_reader import read_moq
-        live_moq = read_moq(main_path)
-        live_moq.update(moq)
-        moq = live_moq
 
     dispatched_consumption = db.get_all_dispatched_consumption()
     orders = db.get_orders(["pending", "merged"])

@@ -197,6 +197,27 @@ def save_snapshot(stock: dict[str, float], moq: dict[str, float] | None = None):
             )
 
 
+def update_snapshot_stock(stock_updates: dict[str, float]) -> int:
+    """只更新快照中的庫存值，用於修正舊版讀檔 bug。"""
+    normalized = {
+        str(part).strip().upper(): qty
+        for part, qty in (stock_updates or {}).items()
+        if str(part).strip()
+    }
+    if not normalized:
+        return 0
+
+    updated = 0
+    with get_conn() as conn:
+        for part, qty in normalized.items():
+            cur = conn.execute(
+                "UPDATE inventory_snapshot SET stock_qty=? WHERE part_number=?",
+                (qty, part),
+            )
+            updated += cur.rowcount or 0
+    return updated
+
+
 def get_snapshot() -> dict[str, dict]:
     """取得快照 {PART: {stock_qty, moq}}"""
     with get_conn() as conn:
