@@ -606,8 +606,10 @@ async function handleShortageBadgeMoqEdit(badge) {
     return;
   }
 
-  input.focus();
-  input.select();
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
 
   let finished = false;
   const cancel = () => {
@@ -655,13 +657,16 @@ async function handleShortageBadgeMoqEdit(badge) {
   input.addEventListener("blur", () => { void save(); });
 }
 
-function bindShortageMoqBadgeEditor(root) {
-  if (!root || root.dataset.moqBadgeBound === "1") return;
-  root.dataset.moqBadgeBound = "1";
-  root.addEventListener("dblclick", async event => {
-    const badge = event.target.closest(".moq-badge-editable");
-    if (!badge || !root.contains(badge)) return;
-    await handleShortageBadgeMoqEdit(badge);
+function bindShortageMoqBadgeEditors(root) {
+  if (!root) return;
+  root.querySelectorAll(".moq-badge-editable").forEach(badge => {
+    if (badge.dataset.moqBadgeBound === "1") return;
+    badge.dataset.moqBadgeBound = "1";
+    badge.addEventListener("dblclick", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void handleShortageBadgeMoqEdit(badge);
+    });
   });
 }
 
@@ -1021,7 +1026,7 @@ function renderShortagePanel(shortages, csShortages = []) {
     });
   });
   bindMoqEditors(scroll);
-  bindShortageMoqBadgeEditor(scroll);
+  bindShortageMoqBadgeEditors(scroll);
 }
 
 function shortageItemHtml(s, isCS) {
