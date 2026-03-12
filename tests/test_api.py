@@ -209,12 +209,14 @@ class ApiTests(unittest.TestCase):
             ws.cell(row=3, column=8).value = "增添料數"
             ws.cell(row=5, column=3).value = "PART-1"
             ws.cell(row=5, column=6).value = 10
-            ws.cell(row=5, column=8).value = 3
+            ws.cell(row=5, column=7).value = 3
+            ws.cell(row=5, column=8).value = 99
             ws.cell(row=6, column=3).value = "PART-2"
             ws.cell(row=6, column=6).value = 20
             ws.cell(row=6, column=8).value = 8
             ws.cell(row=7, column=3).value = "PART-3"
             ws.cell(row=7, column=6).value = 30
+            ws.cell(row=7, column=7).value = 0
             ws.cell(row=7, column=8).value = 0
             wb.save(bom_path)
             wb.close()
@@ -244,7 +246,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=1, column=7).value, "製單號碼M/O:4500059234")
         self.assertEqual(ws.cell(row=5, column=7).value, 3)
         self.assertEqual(ws.cell(row=5, column=8).value, 7)
-        self.assertEqual(ws.cell(row=6, column=7).value, 8)
+        self.assertEqual(ws.cell(row=6, column=7).value, 0)
         self.assertEqual(ws.cell(row=6, column=8).value, 0)
         self.assertEqual(ws.cell(row=7, column=7).value, 0)
         self.assertEqual(ws.cell(row=7, column=8).value, 0)

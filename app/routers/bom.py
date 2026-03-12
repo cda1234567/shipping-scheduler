@@ -351,30 +351,32 @@ def _write_bom_header_values(ws, po_number):
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
 
 
-def _write_dispatch_values_to_ws(ws, components: list[dict], supplements: dict[str, float]):
+def _write_dispatch_values_to_ws(ws, supplements: dict[str, float]):
+    part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
     data_start = cfg("excel.bom_data_start_row", 5)
 
     written = 0
+    dash_markers = {"-", "x", "X", "n", "N", "n/a", "N/A", "na", "NA", "?"}
     supplemented_parts: set[str] = set()
-
-    for component in components:
-        row_idx = int(component.get("source_row") or 0)
-        if row_idx < data_start or row_idx > ws.max_row:
+    for row_idx in range(data_start, ws.max_row + 1):
+        part = str(ws.cell(row=row_idx, column=part_col).value or "").strip().upper()
+        if not part:
             continue
 
-        part = str(component.get("part_number") or "").strip().upper()
-        if not part or component.get("is_dash"):
-            continue
-
-        prev_qty_cs = component.get("prev_qty_cs", 0)
         supplement_qty = 0
         if part not in supplemented_parts and part in supplements:
             supplement_qty = supplements[part]
             supplemented_parts.add(part)
 
-        _set_cell_value(ws, row_idx, g_col, prev_qty_cs)
+        g_text = str(ws.cell(row=row_idx, column=g_col).value or "").strip()
+        h_text = str(ws.cell(row=row_idx, column=h_col).value or "").strip()
+        if g_text in dash_markers or h_text in dash_markers:
+            continue
+
+        if g_text == "":
+            _set_cell_value(ws, row_idx, g_col, 0)
         _set_cell_value(ws, row_idx, h_col, supplement_qty)
         written += 1
 
@@ -407,25 +409,11 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         else:
             wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
-        parsed = parse_bom_for_storage(
-            path=str(src),
-            bom_id=bom["id"],
-            filename=bom["filename"],
-            uploaded_at=bom.get("uploaded_at", ""),
-            group_model=bom.get("group_model", ""),
-            source_filename=bom.get("source_filename", ""),
-            source_format=bom.get("source_format", ""),
-            is_converted=bool(bom.get("is_converted")),
-        )
         override = req.header_overrides.get(bom["id"], {})
         override_po = str(override.get("po_number", "") or "").strip()
-        po_number = override_po or str(bom.get("po_number") or parsed.po_number or "").strip()
+        po_number = override_po or str(bom.get("po_number") or "").strip()
         _write_bom_header_values(wb.active, po_number)
-        _write_dispatch_values_to_ws(
-            wb.active,
-            [component.dict() for component in parsed.components],
-            supplements,
-        )
+        _write_dispatch_values_to_ws(wb.active, supplements)
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()
