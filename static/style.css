@@ -230,12 +230,6 @@ body {
   background: #dbeafe;
   color: #1d4ed8;
 }
-.moq-badge-editable {
-  cursor: pointer;
-}
-.moq-badge-editable:hover {
-  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.35);
-}
 .moq-badge-missing {
   background: #ffedd5;
   color: #c2410c;

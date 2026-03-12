@@ -516,10 +516,8 @@ function roundShortageUiValue(value) {
 }
 
 function moqBadgeHtml(shortage) {
-  const partNumber = esc(shortage?.part_number || "");
-  const rawMoq = Number(shortage?.moq || 0);
   if (hasMoqValue(shortage)) {
-    return `<span class="moq-badge moq-badge-present moq-badge-editable" data-part="${partNumber}" data-moq="${rawMoq}" title="雙擊可編輯 MOQ">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
+    return `<span class="moq-badge moq-badge-present">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
   }
   return '<span class="moq-badge moq-badge-missing">未寫 MOQ</span>';
 }
@@ -585,37 +583,6 @@ async function saveManualMoq(partNumber, input, button) {
   }
 }
 
-async function handleMoqBadgeEdit(badge) {
-  const partNumber = normalizePartKey(badge?.dataset.part);
-  const currentMoq = badge?.dataset.moq || "";
-  if (!partNumber) {
-    showToast("??銝蝛箇");
-    return;
-  }
-
-  const nextValue = prompt("隢撓?亙之 MOQ", currentMoq && Number(currentMoq) > 0 ? currentMoq : "");
-  if (nextValue == null) return;
-
-  const moqValue = parseFloat(nextValue);
-  if (!Number.isFinite(moqValue) || moqValue <= 0) {
-    showToast("MOQ 隢撓?亙之??0 ?摮?);
-    return;
-  }
-
-  try {
-    await apiPatch("/api/main-file/moq", { part_number: partNumber, moq: moqValue });
-    _moq[partNumber] = moqValue;
-    recalculate();
-    updateStatusOnly();
-    if (_modalTargets.length && document.getElementById("shortage-modal")?.style.display === "flex") {
-      await showShortageModal(_modalTargets);
-    }
-    showToast(`${partNumber} MOQ 撌脣摮);
-  } catch (e) {
-    showToast("MOQ ?脣?憭望?: " + e.message);
-  }
-}
-
 function bindMoqEditors(root) {
   if (!root) return;
 
@@ -632,12 +599,6 @@ function bindMoqEditors(root) {
       if (event.key !== "Enter") return;
       event.preventDefault();
       input.closest(".moq-editor")?.querySelector(".save-moq-btn")?.click();
-    });
-  });
-
-  root.querySelectorAll(".moq-badge-editable").forEach(badge => {
-    badge.addEventListener("dblclick", async () => {
-      await handleMoqBadgeEdit(badge);
     });
   });
 }
