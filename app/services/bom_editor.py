@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
 
 from ..config import BACKUP_DIR, BOM_DIR, cfg
 from ..models import BomEditorSaveRequest, BomFile
@@ -181,6 +182,22 @@ def backup_bom_file(path: str) -> str:
     return str(dest)
 
 
+def _resolve_cell_for_write(ws: Worksheet, row_idx: int, col_idx: int):
+    cell = ws.cell(row=row_idx, column=col_idx)
+    for merged_range in ws.merged_cells.ranges:
+        if cell.coordinate in merged_range:
+            return ws.cell(row=merged_range.min_row, column=merged_range.min_col)
+    return cell
+
+
+def _get_cell_value(ws: Worksheet, row_idx: int, col_idx: int):
+    return _resolve_cell_for_write(ws, row_idx, col_idx).value
+
+
+def _set_cell_value(ws: Worksheet, row_idx: int, col_idx: int, value):
+    _resolve_cell_for_write(ws, row_idx, col_idx).value = value
+
+
 def _write_component_row(ws, row_idx: int, component):
     part_col = cfg("excel.bom_part_col", 2) + 1
     desc_col = cfg("excel.bom_desc_col", 3) + 1
@@ -189,18 +206,18 @@ def _write_component_row(ws, row_idx: int, component):
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
 
-    ws.cell(row=row_idx, column=part_col).value = component.part_number.strip()
-    ws.cell(row=row_idx, column=desc_col).value = component.description
-    ws.cell(row=row_idx, column=qty_col).value = component.qty_per_board
-    ws.cell(row=row_idx, column=needed_col).value = component.needed_qty
+    _set_cell_value(ws, row_idx, part_col, component.part_number.strip())
+    _set_cell_value(ws, row_idx, desc_col, component.description)
+    _set_cell_value(ws, row_idx, qty_col, component.qty_per_board)
+    _set_cell_value(ws, row_idx, needed_col, component.needed_qty)
 
     if component.is_dash:
-        ws.cell(row=row_idx, column=g_col).value = "-"
-        ws.cell(row=row_idx, column=h_col).value = "-"
+        _set_cell_value(ws, row_idx, g_col, "-")
+        _set_cell_value(ws, row_idx, h_col, "-")
     else:
-        if str(ws.cell(row=row_idx, column=g_col).value or "").strip() in _DASH_MARKERS:
-            ws.cell(row=row_idx, column=g_col).value = None
-        ws.cell(row=row_idx, column=h_col).value = component.prev_qty_cs
+        if str(_get_cell_value(ws, row_idx, g_col) or "").strip() in _DASH_MARKERS:
+            _set_cell_value(ws, row_idx, g_col, None)
+        _set_cell_value(ws, row_idx, h_col, component.prev_qty_cs)
 
 
 def apply_bom_editor_changes(path: str, req: BomEditorSaveRequest):
@@ -215,10 +232,10 @@ def apply_bom_editor_changes(path: str, req: BomEditorSaveRequest):
     pcb_col = cfg("excel.bom_pcb_col", 3) + 1
     data_start = cfg("excel.bom_data_start_row", 5)
 
-    ws.cell(row=1, column=po_col).value = req.po_number
-    ws.cell(row=1, column=order_qty_col).value = req.order_qty
-    ws.cell(row=2, column=model_col).value = req.model
-    ws.cell(row=2, column=pcb_col).value = req.pcb
+    _set_cell_value(ws, 1, po_col, req.po_number)
+    _set_cell_value(ws, 1, order_qty_col, req.order_qty)
+    _set_cell_value(ws, 2, model_col, req.model)
+    _set_cell_value(ws, 2, pcb_col, req.pcb)
 
     seen_rows: set[int] = set()
     for component in req.components:

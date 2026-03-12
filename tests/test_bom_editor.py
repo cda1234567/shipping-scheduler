@@ -41,6 +41,26 @@ class BomEditorTests(unittest.TestCase):
         wb.save(path)
         wb.close()
 
+    def _build_merged_header_bom_workbook(self, path: Path):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "BOM"
+        ws.merge_cells("G1:H1")
+        ws["G1"] = 1001
+        ws.merge_cells("J1:K1")
+        ws["J1"] = 20
+        ws.merge_cells("B2:C2")
+        ws["B2"] = "MODEL-A"
+        ws["D2"] = "PCB-A"
+        ws["B5"] = 1
+        ws["C5"] = "PART-A"
+        ws["D5"] = "OLD DESC"
+        ws["F5"] = 5
+        ws["G5"] = "X"
+        ws["H5"] = "-"
+        wb.save(path)
+        wb.close()
+
     def test_prepare_uploaded_bom_file_converts_xls_name_to_xlsx(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -114,4 +134,40 @@ class BomEditorTests(unittest.TestCase):
             self.assertEqual(ws["H5"].value, 3)
             self.assertEqual(ws["G6"].value, "-")
             self.assertEqual(ws["H6"].value, "-")
+            wb.close()
+
+    def test_apply_bom_editor_changes_writes_to_merged_header_anchor_cells(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            self._build_merged_header_bom_workbook(path)
+
+            req = BomEditorSaveRequest(
+                po_number=2002,
+                order_qty=88,
+                model="MODEL-NEW",
+                pcb="PCB-NEW",
+                group_model="MODEL-NEW",
+                components=[
+                    BomEditorComponentUpdate(
+                        source_row=5,
+                        part_number="PART-A-NEW",
+                        description="NEW DESC",
+                        qty_per_board=1.5,
+                        needed_qty=11,
+                        prev_qty_cs=3,
+                        is_dash=False,
+                    ),
+                ],
+            )
+
+            apply_bom_editor_changes(str(path), req)
+
+            wb = load_workbook(path, data_only=False)
+            ws = wb.active
+            self.assertEqual(ws["G1"].value, 2002)
+            self.assertEqual(ws["J1"].value, 88)
+            self.assertEqual(ws["B2"].value, "MODEL-NEW")
+            self.assertEqual(ws["D2"].value, "PCB-NEW")
+            self.assertEqual(ws["C5"].value, "PART-A-NEW")
+            self.assertEqual(ws["D5"].value, "NEW DESC")
             wb.close()
