@@ -554,6 +554,13 @@ async function showShortageModal(targets) {
   bindShortageMoqBadgeEditors(list);
 
   footer.innerHTML = `
+    <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
+      <div id="modal-download-status" class="modal-progress-label">正在整理補料資料...</div>
+      <div id="modal-download-detail" class="modal-progress-detail">大型 BOM 會需要幾秒鐘，請稍候。</div>
+      <div class="modal-progress-bar">
+        <div class="modal-progress-indeterminate"></div>
+      </div>
+    </div>
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載 BOM</button>
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-download-bom").onclick = handleModalDownloadBom;
@@ -843,12 +850,28 @@ function _collectModalSupplements() {
   return supplements;
 }
 
-async function handleModalDownloadBom() {
-  const btn = document.getElementById("modal-download-bom");
-  if (!_modalBomFiles.length) { showToast("找不到對應的 BOM 檔案"); return; }
+function setModalDownloadProgress(active, statusText = "", detailText = "") {
+  const progress = document.getElementById("modal-download-progress");
+  const status = document.getElementById("modal-download-status");
+  const detail = document.getElementById("modal-download-detail");
+  const downloadBtn = document.getElementById("modal-download-bom");
+  const cancelBtn = document.getElementById("modal-cancel");
+  const closeBtn = document.getElementById("modal-close");
 
-  btn.disabled = true;
-  btn.textContent = "下載中...";
+  if (progress) progress.style.display = active ? "block" : "none";
+  if (status && statusText) status.textContent = statusText;
+  if (detail && detailText) detail.textContent = detailText;
+
+  if (downloadBtn) {
+    downloadBtn.disabled = active;
+    downloadBtn.textContent = active ? "下載中..." : "確認補料並下載 BOM";
+  }
+  if (cancelBtn) cancelBtn.disabled = active;
+  if (closeBtn) closeBtn.disabled = active;
+}
+
+async function handleModalDownloadBom() {
+  if (!_modalBomFiles.length) { showToast("找不到對應的 BOM 檔案"); return; }
 
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
@@ -856,12 +879,14 @@ async function handleModalDownloadBom() {
   const headerOverrides = buildModalHeaderOverrides();
 
   try {
+    setModalDownloadProgress(true, "正在保存補料決策...", "會把這次 merge 的補料內容記進系統。");
     await persistDecisionsForOrders(modalDecisions, targetOrderIds);
     Object.entries(modalDecisions).forEach(([part, decision]) => {
       setLocalDecision(part, decision);
     });
 
     const bomIds = _modalBomFiles.map(f => f.id);
+    setModalDownloadProgress(true, "正在產生並下載 BOM...", `共 ${bomIds.length} 份 BOM，請稍候。`);
     const result = await desktopDownload({
       path: "/api/bom/dispatch-download",
       method: "POST",
@@ -881,8 +906,7 @@ async function handleModalDownloadBom() {
     closeShortageModal();
   } catch (e) {
     showToast("BOM 下載失敗：" + e.message);
-    btn.disabled = false;
-    btn.textContent = "確認補料並下載 BOM";
+    setModalDownloadProgress(false);
   }
 }
 

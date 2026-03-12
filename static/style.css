@@ -640,6 +640,59 @@ input[type="file"] { display: none; }
   font-size: 10px; font-weight: 700; padding: 1px 6px; margin-left: 4px;
 }
 
+.modal-progress-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-right: 12px;
+}
+.modal-progress-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+.modal-progress-detail {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.modal-progress-bar {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.22);
+}
+.modal-progress-indeterminate {
+  position: absolute;
+  inset: 0 auto 0 -36%;
+  width: 36%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), #38bdf8, rgba(59, 130, 246, 0.15));
+  animation: modal-progress-slide 1.15s ease-in-out infinite;
+}
+body.desktop-dark .modal-progress-label {
+  color: #e5e7eb;
+}
+body.desktop-dark .modal-progress-detail {
+  color: #94a3b8;
+}
+body.desktop-dark .modal-progress-bar {
+  background: rgba(30, 41, 59, 0.9);
+}
+body.desktop-dark .modal-progress-indeterminate {
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0.1), #60a5fa, rgba(96, 165, 250, 0.1));
+}
+
+@keyframes modal-progress-slide {
+  0% {
+    left: -36%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
 /* Toast */
 #toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
