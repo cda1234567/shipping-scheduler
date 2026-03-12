@@ -161,7 +161,7 @@ body {
 .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
 .modal-footer {
   padding: 12px 20px; border-top: 1px solid #e5e5ea;
-  display: flex; gap: 8px; justify-content: flex-end;
+  display: flex; gap: 10px; justify-content: flex-end; align-items: flex-end;
 }
 .desktop-footer .spacer { flex: 1; }
 .desktop-status-card {
@@ -644,8 +644,9 @@ input[type="file"] { display: none; }
   display: flex;
   flex-direction: column;
   gap: 6px;
-  width: 100%;
-  margin-right: 12px;
+  flex: 1 1 auto;
+  min-width: 220px;
+  margin-right: 6px;
 }
 .modal-progress-label {
   font-size: 12px;
@@ -655,6 +656,7 @@ input[type="file"] { display: none; }
 .modal-progress-detail {
   font-size: 11px;
   color: #94a3b8;
+  line-height: 1.35;
 }
 .modal-progress-bar {
   position: relative;
@@ -670,6 +672,11 @@ input[type="file"] { display: none; }
   border-radius: 999px;
   background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), #38bdf8, rgba(59, 130, 246, 0.15));
   animation: modal-progress-slide 1.15s ease-in-out infinite;
+}
+.modal-footer .btn {
+  flex: 0 0 auto;
+  min-width: 92px;
+  white-space: nowrap;
 }
 body.desktop-dark .modal-progress-label {
   color: #e5e7eb;

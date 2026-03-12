@@ -41,6 +41,8 @@ def _copy_sheet_settings(source_ws, target_ws):
         target_dimension.bestFit = dimension.bestFit
         target_dimension.outlineLevel = dimension.outlineLevel
 
+    target_ws.column_dimensions["D"].width = 72
+
 
 def _copy_cell_style(source_cell, target_cell):
     target_cell._style = copy(source_cell._style)
@@ -78,7 +80,7 @@ def _parse_display_date(date_str: str | None, now: datetime) -> tuple[int, int, 
 
 
 def _build_title(model: str, year: int, month: int) -> str:
-    return f"           辰尚-庚霖   {_roc_year(year)}年 {month}月份  {model}  之發料單\u3000\u3000\u3000\u3000"
+    return f"辰尚-庚霖   {_roc_year(year)}年 {month}月份  {model}  之發料單\u3000\u3000\u3000\u3000"
 
 
 def _coerce_po_number(po_number):
@@ -103,6 +105,10 @@ def _write_section_header(source_ws, target_ws, start_row: int, group: dict, now
     target_ws.cell(start_row, 4).value = _build_title(group.get("model", ""), year, month)
     target_ws.cell(start_row, 5).value = "日期"
     target_ws.cell(start_row + 1, 5).value = f"{year}/{month}/{day}"
+    date_cell = target_ws.cell(start_row + 1, 5)
+    date_font = copy(date_cell.font)
+    date_font.sz = 9
+    date_cell.font = date_font
 
 
 def _write_item_row(source_ws, target_ws, row_idx: int, index: int, item: dict):
