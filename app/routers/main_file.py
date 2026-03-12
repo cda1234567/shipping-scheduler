@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from .. import database as db
 from ..config import MAIN_FILE_DIR
 from ..models import UpdateMoqRequest
+from ..services.main_preview import read_live_main_preview
 from ..services.main_reader import (
     find_legacy_snapshot_stock_fixes,
     read_moq,
@@ -25,7 +26,7 @@ def _repair_legacy_snapshot_if_needed(main_path: str, snapshot: dict[str, dict])
     fixes = find_legacy_snapshot_stock_fixes(main_path, snapshot)
     repaired = db.update_snapshot_stock(fixes)
     if repaired:
-        db.log_activity("snapshot_repaired", f"自動修正舊版快照庫存 {repaired} 筆")
+        db.log_activity("snapshot_repaired", f"修正舊快照庫存 {repaired} 筆")
         for part, qty in fixes.items():
             if part in snapshot:
                 snapshot[part]["stock_qty"] = qty
@@ -36,7 +37,7 @@ def _repair_legacy_snapshot_if_needed(main_path: str, snapshot: dict[str, dict])
 async def upload_main_file(file: UploadFile = File(...)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
-        raise HTTPException(400, "僅支援 xlsx / xls / xlsm")
+        raise HTTPException(400, "只支援 xlsx / xls / xlsm")
 
     dest = MAIN_FILE_DIR / f"main{ext}"
     dest.write_bytes(await file.read())
@@ -52,15 +53,15 @@ async def upload_main_file(file: UploadFile = File(...)):
     existing = db.get_snapshot()
     if not existing:
         db.save_snapshot(stock, moq)
-        db.log_activity("snapshot_created", f"起始庫存快照已建立，{len(stock)} 筆料號")
+        db.log_activity("snapshot_created", f"首次建立主檔快照，共 {len(stock)} 筆")
 
-    db.log_activity("main_file_upload", f"{file.filename}, {len(stock)} 筆料號")
+    db.log_activity("main_file_upload", f"{file.filename}, {len(stock)} 筆")
     return {"ok": True, "part_count": len(stock), "filename": file.filename}
 
 
 @router.post("/main-file/snapshot")
 async def set_snapshot():
-    """以目前主檔內容重建起始庫存快照。"""
+    """把目前主檔重新設成缺料計算的快照基準。"""
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先上傳主檔")
@@ -70,13 +71,13 @@ async def set_snapshot():
     moq = read_moq(main_path)
     moq.update(manual_moq)
     db.save_snapshot(stock, moq, manual_moq_parts=set(manual_moq))
-    db.log_activity("snapshot_set", f"已重建起始庫存快照，{len(stock)} 筆料號")
+    db.log_activity("snapshot_set", f"重設主檔快照，共 {len(stock)} 筆")
     return {"ok": True, "part_count": len(stock)}
 
 
 @router.get("/main-file/data")
 async def get_main_data():
-    """取得起始庫存快照與 MOQ。"""
+    """回傳主檔庫存與 MOQ。"""
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
@@ -87,9 +88,9 @@ async def get_main_data():
         stock = {k: v["stock_qty"] for k, v in snapshot.items()}
         snapshot_moq = {k: v["moq"] for k, v in snapshot.items()}
 
-        # 舊快照可能沒有完整 MOQ，這裡用最新主檔補齊缺漏鍵。
-        moq = read_moq(main_path)
-        moq.update(snapshot_moq)
+        live_moq = read_moq(main_path)
+        live_moq.update(snapshot_moq)
+        moq = live_moq
     else:
         stock = read_stock(main_path)
         moq = read_moq(main_path)
@@ -122,6 +123,20 @@ async def download_main_file():
         raise HTTPException(404, "找不到主檔")
     filename = db.get_setting("main_filename") or Path(main_path).name
     return FileResponse(main_path, filename=filename)
+
+
+@router.get("/main-file/preview")
+async def get_main_preview(sheet: str | None = None):
+    main_path = db.get_setting("main_file_path")
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(404, "找不到主檔")
+
+    preview = read_live_main_preview(main_path, sheet_name=sheet)
+    preview.update({
+        "filename": db.get_setting("main_filename") or Path(main_path).name,
+        "loaded_at": db.get_setting("main_loaded_at"),
+    })
+    return preview
 
 
 @router.get("/main-file/info")

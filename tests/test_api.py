@@ -10,6 +10,7 @@ from unittest.mock import call, patch
 import openpyxl
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from openpyxl.styles import Font, PatternFill
 
 from app.models import BomComponent, BomFile
 from main import app
@@ -274,6 +275,81 @@ class ApiTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["stock"]["AAA"], 0.0)
         self.assertEqual(data["stock"]["BBB"], 5)
+
+    def test_main_file_preview_returns_live_sheet_structure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "庫存主檔"
+            sheet.column_dimensions["A"].width = 18
+            sheet.column_dimensions["B"].width = 12
+            sheet.merge_cells("A1:C1")
+            sheet["A1"] = "主檔即時預覽"
+            sheet["A1"].font = Font(name="Calibri", bold=True, size=14)
+            sheet["A1"].fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+            sheet["A2"] = "料號"
+            sheet["B2"] = "MOQ"
+            sheet["C2"] = "庫存"
+            sheet["A3"] = "EC-20023A"
+            sheet["B3"] = 10000
+            sheet["C3"] = 5625
+            workbook.create_sheet("第二頁")
+            workbook.save(main_path)
+            workbook.close()
+
+            def fake_setting(key, default=""):
+                mapping = {
+                    "main_file_path": str(main_path),
+                    "main_filename": "主檔260306test.xlsx",
+                    "main_loaded_at": "2026-03-12T22:45:00",
+                }
+                return mapping.get(key, default)
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting):
+                response = self.client.get("/api/main-file/preview")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["filename"], "主檔260306test.xlsx")
+        self.assertEqual(data["selected_sheet"], "庫存主檔")
+        self.assertEqual(data["sheet_names"], ["庫存主檔", "第二頁"])
+        self.assertTrue(data["style_preserved"])
+        self.assertEqual(data["sheet"]["columns"][0]["letter"], "A")
+        self.assertGreater(data["sheet"]["columns"][0]["width_px"], 100)
+        self.assertEqual(data["sheet"]["rows"][0]["cells"][0]["value"], "主檔即時預覽")
+        self.assertEqual(data["sheet"]["rows"][0]["cells"][0]["colspan"], 3)
+        self.assertEqual(data["sheet"]["styles"][data["sheet"]["rows"][0]["cells"][0]["style_id"]]["background"], "#D9EAF7")
+
+    def test_main_file_preview_can_switch_sheet(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+
+            workbook = openpyxl.Workbook()
+            workbook.active.title = "第一頁"
+            second = workbook.create_sheet("第二頁")
+            second["B2"] = "切換成功"
+            workbook.save(main_path)
+            workbook.close()
+
+            def fake_setting(key, default=""):
+                mapping = {
+                    "main_file_path": str(main_path),
+                    "main_filename": "main.xlsx",
+                    "main_loaded_at": "2026-03-12T22:45:00",
+                }
+                return mapping.get(key, default)
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting):
+                response = self.client.get("/api/main-file/preview?sheet=第二頁")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["selected_sheet"], "第二頁")
+        self.assertEqual(data["sheet"]["name"], "第二頁")
+        target_cell = next(cell for cell in data["sheet"]["rows"][1]["cells"] if cell["col"] == 2)
+        self.assertEqual(target_cell["value"], "切換成功")
 
     def test_update_snapshot_moq_endpoint_normalizes_part_number(self):
         with patch("app.routers.main_file.db.upsert_snapshot_moq", return_value="IC-LD39100PUR-TAB") as mock_update, \

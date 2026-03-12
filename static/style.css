@@ -85,6 +85,12 @@ body {
   padding: 12px 18px; font-size: 14px; font-weight: 500;
   cursor: pointer; color: #8e8e93; transition: color .15s, border-color .15s;
 }
+.tab-btn[data-tab="schedule"] { order: 0; }
+.tab-btn[data-tab="completed"] { order: 1; }
+.tab-btn[data-tab="main-preview"] { order: 2; }
+.tab-btn[data-tab="bom"] { order: 3; }
+.tab-btn[data-tab="alerts-tab"] { order: 4; }
+.tab-btn[data-tab="logs-tab"] { order: 5; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -521,6 +527,222 @@ body {
 #tab-completed { display: none; flex-direction: column; overflow: hidden; }
 #tab-completed.active { display: flex; }
 
+#tab-main-preview { display: none; flex-direction: column; overflow: hidden; }
+#tab-main-preview.active { display: flex; }
+
+.main-preview-shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: #eef3fb;
+}
+
+.main-preview-toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 16px 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #f7fafe 100%);
+  border-bottom: 1px solid #d7e3f3;
+}
+
+.main-preview-meta-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.main-preview-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #10233e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-preview-meta,
+.main-preview-hint {
+  font-size: 12px;
+  color: #5f7088;
+  line-height: 1.45;
+}
+
+.main-preview-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.main-preview-actions input {
+  width: min(300px, 32vw);
+  border: 1px solid #c7d8ee;
+  border-radius: 9px;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: #fff;
+}
+
+.main-preview-sheet-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  background: #eef3fb;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.main-preview-sheet-tab {
+  border: 1px solid #ccd8ea;
+  background: #f8fbff;
+  color: #36506f;
+  border-radius: 12px 12px 0 0;
+  padding: 7px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.main-preview-sheet-tab.active {
+  background: #ffffff;
+  color: #103155;
+  border-bottom-color: #ffffff;
+  box-shadow: 0 -1px 0 #ffffff, 0 6px 18px rgba(15, 36, 68, 0.06);
+}
+
+.main-preview-stage {
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px 16px;
+  overflow: hidden;
+}
+
+.main-preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 220px;
+  color: #6b7d93;
+  font-size: 13px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.9), rgba(247,250,254,0.94));
+  border: 1px dashed #c7d6ea;
+  border-radius: 18px;
+}
+
+.main-preview-sheet-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border: 1px solid #d3ddec;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 18px 48px rgba(15, 36, 68, 0.08);
+}
+
+.main-preview-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #dbe5f1;
+  background: linear-gradient(180deg, #fbfdff, #f4f8fd);
+}
+
+.main-preview-sheet-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #10233e;
+}
+
+.main-preview-sheet-meta,
+.main-preview-search-status {
+  font-size: 12px;
+  color: #63768e;
+}
+
+.main-preview-grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: linear-gradient(180deg, rgba(243, 248, 255, 0.8), rgba(255, 255, 255, 0.95));
+}
+
+.main-preview-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  width: max-content;
+  min-width: 100%;
+  table-layout: fixed;
+  font-family: Calibri, "Segoe UI", sans-serif;
+  font-size: 11pt;
+  color: #17273a;
+}
+
+.main-preview-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: #e7eef8;
+  color: #405976;
+  font-weight: 700;
+  text-align: center;
+  border-right: 1px solid #c9d4e4;
+  border-bottom: 1px solid #bccada;
+  height: 30px;
+}
+
+.main-preview-corner {
+  left: 0;
+  z-index: 5;
+  min-width: 56px;
+}
+
+.main-preview-row-header {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  background: #edf3fb;
+  color: #5a6e86;
+  min-width: 56px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  border-right: 1px solid #c9d4e4;
+  border-bottom: 1px solid #d8e1ec;
+}
+
+.main-preview-cell {
+  min-width: 48px;
+  max-width: 420px;
+  padding: 4px 6px;
+  border-right: 1px solid #dde5ef;
+  border-bottom: 1px solid #e3e9f2;
+  background: #fff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.main-preview-row-match .main-preview-row-header {
+  background: #dceaff;
+  color: #1d4f8f;
+}
+
+.main-preview-cell-match {
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
+}
+
+.main-preview-cell-current {
+  box-shadow: inset 0 0 0 2px #2563eb !important;
+}
+
 #completed-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #completed-toolbar { padding: 12px 16px; background: #fff; border-bottom: 1px solid #e5e5ea; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 #completed-scroll { flex: 1; overflow-y: auto; padding: 12px 16px; }
@@ -666,6 +888,65 @@ body.desktop-dark .shortage-item.cs-item {
 }
 body.desktop-dark .empty-state {
   color: #94a3b8;
+}
+body.desktop-dark .main-preview-shell {
+  background: #0b1220;
+}
+body.desktop-dark .main-preview-toolbar,
+body.desktop-dark .main-preview-sheet-head,
+body.desktop-dark .main-preview-sheet-card,
+body.desktop-dark .main-preview-grid-wrap {
+  background: #111827;
+  border-color: #243041;
+  color: #e5e7eb;
+}
+body.desktop-dark .main-preview-title,
+body.desktop-dark .main-preview-sheet-name {
+  color: #eff6ff;
+}
+body.desktop-dark .main-preview-meta,
+body.desktop-dark .main-preview-hint,
+body.desktop-dark .main-preview-sheet-meta,
+body.desktop-dark .main-preview-search-status {
+  color: #94a3b8;
+}
+body.desktop-dark .main-preview-actions input {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-color: #334155;
+}
+body.desktop-dark .main-preview-sheet-tabs {
+  background: #0b1220;
+}
+body.desktop-dark .main-preview-sheet-tab {
+  background: #172235;
+  color: #cbd5e1;
+  border-color: #334155;
+}
+body.desktop-dark .main-preview-sheet-tab.active {
+  background: #111827;
+  color: #f8fafc;
+  border-bottom-color: #111827;
+}
+body.desktop-dark .main-preview-empty {
+  background: #111827;
+  color: #94a3b8;
+  border-color: #334155;
+}
+body.desktop-dark .main-preview-grid thead th {
+  background: #172235;
+  color: #cbd5e1;
+  border-color: #334155;
+}
+body.desktop-dark .main-preview-row-header {
+  background: #132033;
+  color: #94a3b8;
+  border-color: #334155;
+}
+body.desktop-dark .main-preview-cell {
+  border-color: #233145;
+  background: #111827;
+  color: #e5e7eb;
 }
 
 /* ── Alerts tab ─────────────────────────── */

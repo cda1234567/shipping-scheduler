@@ -58,6 +58,7 @@
   <div id="main-content">
 
     <div id="tabs">
+      <button class="tab-btn" data-tab="main-preview">銝餅?預覽</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
@@ -103,6 +104,29 @@
     </div>
 
     <!-- ── Tab: BOM 管理 ── -->
+    <div id="tab-main-preview" class="tab-content">
+      <div class="main-preview-shell">
+        <div class="main-preview-toolbar">
+          <div class="main-preview-meta-wrap">
+            <div id="main-preview-title" class="main-preview-title">尚未載入主檔</div>
+            <div id="main-preview-meta" class="main-preview-meta"></div>
+            <div id="main-preview-hint" class="main-preview-hint"></div>
+          </div>
+          <span class="spacer"></span>
+          <div class="main-preview-actions">
+            <input type="text" id="main-preview-search" placeholder="搜尋料號 / 關鍵字">
+            <button class="btn btn-secondary btn-sm" id="btn-main-preview-search">搜尋</button>
+            <button class="btn btn-secondary btn-sm" id="btn-main-preview-clear">清除</button>
+            <button class="btn btn-primary btn-sm" id="btn-main-preview-refresh">重新讀取</button>
+          </div>
+        </div>
+        <div id="main-preview-sheet-tabs" class="main-preview-sheet-tabs"></div>
+        <div id="main-preview-stage" class="main-preview-stage">
+          <div class="main-preview-empty">切到這頁後，會直接讀目前 live 主檔。</div>
+        </div>
+      </div>
+    </div>
+
     <div id="tab-bom" class="tab-content">
       <div style="padding:12px 16px 0">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
@@ -157,6 +181,7 @@
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
+import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview } from "/static/modules/main_preview.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
 import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/modules/desktop_bridge.js";
@@ -168,6 +193,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    if (btn.dataset.tab === "main-preview") onMainPreviewTabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
@@ -227,7 +253,7 @@ document.getElementById("main-file-input").addEventListener("change", async e =>
     const d = await (await fetch("/api/main-file/upload", { method: "POST", body: fd })).json();
     setStatus("main-status", `${d.filename}\n${d.part_count} 筆料號`, "ok");
     document.getElementById("btn-download-main").disabled = false;
-    await refreshMainStatus();
+    await handleMainMutation();
     await refreshSchedule();
   } catch (err) {
     setStatus("main-status", "上傳失敗", "warn");
@@ -308,8 +334,14 @@ async function refreshMainStatus() {
   } catch (_) {}
 }
 
+async function handleMainMutation() {
+  await refreshMainStatus();
+  await refreshMainPreview({ force: true });
+}
+
 async function init() {
   await initDesktopBridge();
+  await initMainPreview();
   await refreshMainStatus();
   try {
     const d = await apiJson("/api/schedule/rows");
@@ -321,7 +353,7 @@ async function init() {
   } catch (_) {}
   initBomManager(async () => { await refreshSchedule(); });
   await renderBomGroups();
-  await initSchedule(refreshMainStatus);
+  await initSchedule(handleMainMutation);
   await initAlerts();
 }
 
