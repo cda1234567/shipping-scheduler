@@ -124,6 +124,75 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
         self.assertEqual(mock_execute.call_args_list[1].args[4], {"PART-1": "CreateRequirement"})
 
+    def test_main_write_preview_uses_allocated_supplements(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            context_a = ({"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"}, [{"components": []}], [])
+            context_b = ({"id": 2, "po_number": "4500059235", "model": "MODEL-B", "status": "pending"}, [{"components": []}], [])
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule._prepare_dispatch_context", side_effect=[context_a, context_b]), \
+                 patch("app.routers.schedule.build_order_supplement_allocations", return_value={
+                     1: {"PART-1": 3000},
+                     2: {},
+                 }) as mock_allocations, \
+                 patch("app.routers.schedule.preview_order_batches", return_value={
+                     "merged_parts": 4,
+                     "shortages": [{"part_number": "PART-1", "shortage_amount": 12}],
+                 }) as mock_preview:
+                response = self.client.post("/api/schedule/main-write-preview", json={
+                    "order_ids": [1, 2],
+                    "decisions": {"part-1": "CreateRequirement"},
+                    "supplements": {"part-1": 3000},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["merged_parts"], 4)
+        self.assertEqual(data["shortages"], [{"part_number": "PART-1", "shortage_amount": 12}])
+        mock_allocations.assert_called_once_with([1, 2], {"PART-1": 3000.0})
+        self.assertEqual(
+            mock_preview.call_args.args[1],
+            [
+                {"order_id": 1, "model": "MODEL-A", "groups": [{"components": []}], "supplements": {"PART-1": 3000}},
+                {"order_id": 2, "model": "MODEL-B", "groups": [{"components": []}], "supplements": {}},
+            ],
+        )
+
+    def test_batch_dispatch_passes_allocated_supplements_to_each_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            context_a = ({"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"}, [{"components": []}], [])
+            context_b = ({"id": 2, "po_number": "4500059235", "model": "MODEL-B", "status": "pending"}, [{"components": []}], [])
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule._prepare_dispatch_context", side_effect=[context_a, context_b]), \
+                 patch("app.routers.schedule.build_order_supplement_allocations", return_value={
+                     1: {"PART-1": 3000},
+                     2: {},
+                 }), \
+                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                     {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11}},
+                     {"order_id": 2, "merged_parts": 2, "backup_path": "C:/b2.xlsx", "session": {"id": 12}},
+                 ]) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/batch-dispatch", json={
+                    "order_ids": [1, 2],
+                    "decisions": {"part-1": "CreateRequirement"},
+                    "supplements": {"part-1": 3000},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_execute.call_args_list[0].args[5], {"PART-1": 3000})
+        self.assertEqual(mock_execute.call_args_list[1].args[5], {})
+        mock_replace.assert_called_once_with([1, 2], {1: {"PART-1": 3000}, 2: {}})
+
     def test_batch_dispatch_rolls_back_processed_orders_when_later_order_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"

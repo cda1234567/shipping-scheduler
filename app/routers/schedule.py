@@ -17,7 +17,8 @@ from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
-from ..services.merge_to_main import merge_row_to_main
+from ..services.merge_to_main import merge_row_to_main, preview_order_batches
+from ..services.order_supplements import build_order_supplement_allocations
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
@@ -85,6 +86,20 @@ def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, s
         if not key or not decision:
             continue
         normalized[key] = str(decision)
+    return normalized
+
+
+def _normalize_supplements(supplements: dict[str, float] | None = None) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for part, qty in (supplements or {}).items():
+        key = str(part or "").strip().upper()
+        try:
+            amount = float(qty or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if not key or amount <= 0:
+            continue
+        normalized[key] = amount
     return normalized
 
 
@@ -183,11 +198,19 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     }
 
 
-def _execute_dispatch(order: dict, groups: list[dict], all_components: list[dict], main_path: str, decisions: dict[str, str]) -> dict:
+def _execute_dispatch(
+    order: dict,
+    groups: list[dict],
+    all_components: list[dict],
+    main_path: str,
+    decisions: dict[str, str],
+    supplements: dict[str, float] | None = None,
+) -> dict:
     result = merge_row_to_main(
         main_path=main_path,
         groups=groups,
         decisions=decisions,
+        supplements=supplements or {},
         backup_dir=str(BACKUP_DIR),
     )
 
@@ -441,7 +464,52 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     """
     main_path = db.get_setting("main_file_path")
     order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
-    return _execute_dispatch(order, groups, all_components, main_path, _normalize_decisions(req.decisions))
+    decisions = _normalize_decisions(req.decisions)
+    supplements = _normalize_supplements(req.supplements)
+    result = _execute_dispatch(order, groups, all_components, main_path, decisions, supplements)
+    if supplements:
+        allocations = build_order_supplement_allocations([order_id], supplements)
+        db.replace_order_supplements([order_id], allocations)
+    return result
+
+
+@router.post("/schedule/main-write-preview")
+async def preview_main_write(req: BatchDispatchRequest):
+    normalized_order_ids = []
+    for order_id in req.order_ids:
+        try:
+            normalized_order_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    if not normalized_order_ids:
+        raise HTTPException(400, "隢?靘?閮")
+
+    main_path = db.get_setting("main_file_path")
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "隢?銝銝餅?")
+
+    decisions = _normalize_decisions(req.decisions)
+    supplements = _normalize_supplements(req.supplements)
+    supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
+
+    batches = []
+    for order_id in normalized_order_ids:
+        order, groups, _ = _prepare_dispatch_context(order_id, main_path)
+        batches.append({
+            "order_id": int(order["id"]),
+            "model": order.get("model", ""),
+            "groups": groups,
+            "supplements": supplement_allocations.get(int(order["id"]), {}),
+        })
+
+    preview = preview_order_batches(main_path, batches, decisions)
+    return {
+        "ok": True,
+        "count": len(batches),
+        "merged_parts": preview["merged_parts"],
+        "shortages": preview["shortages"],
+    }
 
 
 @router.post("/schedule/batch-dispatch")
@@ -464,13 +532,16 @@ async def batch_dispatch(req: BatchDispatchRequest):
         raise HTTPException(400, "請先上傳主檔")
 
     decisions = _normalize_decisions(req.decisions)
+    supplements = _normalize_supplements(req.supplements)
+    supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
     contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
 
     results: list[dict] = []
     processed_sessions: list[dict] = []
     try:
         for order, groups, all_components in contexts:
-            result = _execute_dispatch(order, groups, all_components, main_path, decisions)
+            order_supplements = supplement_allocations.get(int(order["id"]), {})
+            result = _execute_dispatch(order, groups, all_components, main_path, decisions, order_supplements)
             results.append(result)
             if result.get("session"):
                 processed_sessions.append(result["session"])
@@ -479,6 +550,9 @@ async def batch_dispatch(req: BatchDispatchRequest):
             _rollback_dispatch_sessions(processed_sessions)
             db.log_activity("batch_dispatch_rollback", f"批次發料失敗，已回復 {len(processed_sessions)} 筆")
         raise
+
+    if supplement_allocations:
+        db.replace_order_supplements(normalized_order_ids, supplement_allocations)
 
     total_merged_parts = sum(int(item.get("merged_parts") or 0) for item in results)
     db.log_activity("batch_dispatch", f"批次發料 {len(results)} 筆訂單，合計 {total_merged_parts} 筆 merge")

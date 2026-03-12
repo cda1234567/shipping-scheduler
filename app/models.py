@@ -130,11 +130,13 @@ class BatchMergeRequest(BaseModel):
 
 class BatchDispatchRequest(BaseModel):
     order_ids: list[int]
-    decisions: dict[str, str] = {}
+    decisions: dict[str, str] = Field(default_factory=dict)
+    supplements: dict[str, float] = Field(default_factory=dict)
 
 
 class DecisionRequest(BaseModel):
-    decisions: dict[str, str] = {}
+    decisions: dict[str, str] = Field(default_factory=dict)
+    supplements: dict[str, float] = Field(default_factory=dict)
 
 
 class RowCodeRequest(BaseModel):

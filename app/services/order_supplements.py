@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import database as db
-from .main_reader import find_legacy_snapshot_stock_fixes, read_stock
+from .main_reader import read_stock
 
 
 def normalize_part_key(value) -> str:
@@ -12,37 +12,19 @@ def normalize_part_key(value) -> str:
 
 def build_dispatch_running_stock() -> dict[str, float]:
     main_path = str(db.get_setting("main_file_path") or "").strip()
-    snapshot = db.get_snapshot()
-
-    if snapshot and main_path and Path(main_path).exists():
-        fixes = find_legacy_snapshot_stock_fixes(main_path, snapshot)
-        if fixes:
-            db.update_snapshot_stock(fixes)
-            for part, qty in fixes.items():
-                if part in snapshot:
-                    snapshot[part]["stock_qty"] = qty
-
-    if snapshot:
-        running = {
-            normalize_part_key(part): float((values or {}).get("stock_qty") or 0)
-            for part, values in snapshot.items()
-            if normalize_part_key(part)
-        }
-    elif main_path and Path(main_path).exists():
+    if main_path and Path(main_path).exists():
         running = {
             normalize_part_key(part): float(qty or 0)
             for part, qty in read_stock(main_path).items()
             if normalize_part_key(part)
         }
     else:
-        running = {}
-
-    dispatched_consumption = db.get_all_dispatched_consumption(db.get_snapshot_taken_at())
-    for part, consumed in dispatched_consumption.items():
-        key = normalize_part_key(part)
-        if not key:
-            continue
-        running[key] = float(running.get(key, 0)) - float(consumed or 0)
+        snapshot = db.get_snapshot()
+        running = {
+            normalize_part_key(part): float((values or {}).get("stock_qty") or 0)
+            for part, values in snapshot.items()
+            if normalize_part_key(part)
+        }
 
     return running
 

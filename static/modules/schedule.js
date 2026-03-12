@@ -415,7 +415,12 @@ async function handleBatchMerge() {
   try {
     await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
     await refresh();
-    showShortageModal(targets);
+    const shouldWriteMain = confirm(`已完成 ${targets.length} 筆 merge。\n要接著寫入主檔嗎？`);
+    if (shouldWriteMain) {
+      await showWriteToMainModal(targets);
+    } else {
+      await showShortageModal(targets);
+    }
   } catch (e) { showToast("失敗：" + e.message); }
 }
 
@@ -423,6 +428,8 @@ async function handleBatchMerge() {
 let _modalTargets = [];
 let _modalBomFiles = [];
 let _modalCarryOversByModel = {};
+let _modalMode = "download";
+let _modalPreviewShortages = [];
 
 function getModalTargetForBomFile(bomFile) {
   const keys = new Set();
@@ -509,6 +516,8 @@ function buildModalCarryOverOverrides() {
 
 async function showShortageModal(targets) {
   _modalTargets = targets;
+  _modalMode = "download";
+  _modalPreviewShortages = [];
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
@@ -612,6 +621,91 @@ async function showShortageModal(targets) {
   modal.style.display = "flex";
 }
 
+async function showWriteToMainModal(targets) {
+  _modalTargets = targets;
+  _modalMode = "write";
+
+  const modal = document.getElementById("shortage-modal");
+  const list = document.getElementById("modal-shortage-list");
+  const footer = document.getElementById("modal-footer");
+  const targetOrderIds = (targets || []).map(item => item.id).filter(Number.isInteger);
+  const models = [...new Set((targets || []).map(item => item.model).filter(Boolean))];
+
+  _modalBomFiles = [];
+  if (models.length) {
+    try {
+      const lookup = await apiPost("/api/bom/lookup", { models });
+      _modalBomFiles = lookup.files || [];
+    } catch (_) {}
+  }
+
+  _modalCarryOversByModel = buildModalCarryOversByModel(targets);
+
+  const preview = await apiPost("/api/schedule/main-write-preview", {
+    order_ids: targetOrderIds,
+    decisions: _decisions,
+  });
+  _modalPreviewShortages = preview.shortages || [];
+
+  const shortagesByModel = {};
+  _modalPreviewShortages.forEach(item => {
+    const model = item.model || item.bom_model || "未指定機種";
+    if (!shortagesByModel[model]) shortagesByModel[model] = [];
+    shortagesByModel[model].push({
+      ...item,
+      _row_code: item.batch_code || item.model || model,
+      _row_model: model,
+    });
+  });
+  for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
+
+  const allModels = Object.keys(shortagesByModel).sort((a, b) => compareText(a, b, "zh-Hant"));
+  let html = "";
+  if (!allModels.length) {
+    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
+      模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。</div>`;
+  } else {
+    for (const model of allModels) {
+      html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
+      html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
+      html += (shortagesByModel[model] || []).map(item => modalShortageItem(item, false)).join("");
+    }
+  }
+
+  list.innerHTML = html;
+  list.querySelectorAll(".shortage-mark").forEach(chk => {
+    chk.addEventListener("change", () => {
+      const input = chk.closest(".shortage-item")?.querySelector(".supplement-input");
+      if (!input) return;
+      input.disabled = chk.checked;
+      if (chk.checked) input.value = "0";
+    });
+  });
+
+  bindMoqEditors(list);
+  bindShortageMoqBadgeEditors(list);
+
+  footer.innerHTML = `
+    <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
+      <div class="modal-progress-head">
+        <div id="modal-download-status" class="modal-progress-label">正在準備寫入主檔...</div>
+        <div id="modal-download-percent" class="modal-progress-percent">0%</div>
+      </div>
+      <div id="modal-download-detail" class="modal-progress-detail">這份明細是模擬寫入主檔後，仍然會缺料的項目。</div>
+      <div class="modal-progress-bar">
+        <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
+      </div>
+    </div>
+    <button id="modal-write-main" class="btn btn-success btn-sm">寫入主檔</button>
+    <button id="modal-download-bom" class="btn btn-primary btn-sm">下載 BOM</button>
+    <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
+  document.getElementById("modal-write-main").onclick = handleModalWriteMain;
+  document.getElementById("modal-download-bom").onclick = handleModalDownloadBom;
+  document.getElementById("modal-cancel").onclick = closeShortageModal;
+  document.getElementById("modal-close").onclick = closeShortageModal;
+  modal.style.display = "flex";
+}
+
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
@@ -651,6 +745,8 @@ function closeShortageModal() {
   _modalTargets = [];
   _modalBomFiles = [];
   _modalCarryOversByModel = {};
+  _modalMode = "download";
+  _modalPreviewShortages = [];
 }
 
 function hasMoqValue(shortage) {
@@ -750,6 +846,8 @@ async function handleBatchDispatch() {
   const extra = targets.length > 6 ? `\n... 另 ${targets.length - 6} 筆` : "";
   const confirmed = confirm(`確定要批次發料 ${targets.length} 筆訂單嗎？\n${preview}${extra}`);
   if (!confirmed) return;
+  await showWriteToMainModal(targets);
+  return;
 
   try {
     if (button) {
@@ -964,6 +1062,7 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   const status = document.getElementById("modal-download-status");
   const detail = document.getElementById("modal-download-detail");
   const downloadBtn = document.getElementById("modal-download-bom");
+  const writeBtn = document.getElementById("modal-write-main");
   const cancelBtn = document.getElementById("modal-cancel");
   const closeBtn = document.getElementById("modal-close");
 
@@ -974,13 +1073,57 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
 
   if (downloadBtn) {
     downloadBtn.disabled = active;
+    downloadBtn.textContent = active ? "下載中..." : "下載 BOM";
     downloadBtn.textContent = active ? "下載中..." : "確認補料並下載 BOM";
+  }
+  if (writeBtn) {
+    writeBtn.disabled = active;
+    writeBtn.textContent = active ? "寫入中..." : "寫入主檔";
   }
   if (cancelBtn) cancelBtn.disabled = active;
   if (closeBtn) closeBtn.disabled = active;
   if (!active) {
     stopModalProgressAnimation();
     setModalProgressPercent(percent ?? 0);
+  }
+}
+
+async function handleModalWriteMain() {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) {
+    showToast("沒有可寫入主檔的訂單");
+    return;
+  }
+
+  const supplements = _collectModalSupplements();
+  const modalDecisions = _collectModalDecisions();
+
+  try {
+    setModalDownloadProgress(true, "正在保存缺料決策...", "先保存這次要寫入主檔的缺料與補料內容。", 10);
+    startModalProgressAnimation(35, 140);
+    await persistDecisionsForOrders(modalDecisions, targetOrderIds);
+    Object.entries(modalDecisions).forEach(([part, decision]) => {
+      setLocalDecision(part, decision);
+    });
+
+    setModalDownloadProgress(true, "正在寫入主檔...", "系統會依目前選取訂單順序，將內容寫入 live 主檔。", 46);
+    startModalProgressAnimation(92, 220);
+    const result = await apiPost("/api/schedule/batch-dispatch", {
+      order_ids: targetOrderIds,
+      decisions: modalDecisions,
+      supplements,
+    });
+
+    _modalTargets.forEach(item => _checkedIds.delete(item.id));
+    setModalDownloadProgress(true, "寫入完成", "主檔與已發料清單正在刷新。", 100);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    closeShortageModal();
+    showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`);
+  } catch (error) {
+    showToast("寫入主檔失敗: " + error.message);
+    setModalDownloadProgress(false, "", "", 0);
   }
 }
 

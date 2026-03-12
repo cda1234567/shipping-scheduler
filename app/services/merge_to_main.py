@@ -1,185 +1,304 @@
 """
-Merge 已完成排程列的 BOM 扣帳到主檔 Excel。
+Merge BOM demand into the live main workbook.
 
-每份 BOM 檔案各自新增 3 欄（不合併同機種的不同 BOM）：
-  col_1 = 增添料 (H, prev_qty_cs)
-  col_2 = 生產用量 (F, needed_qty)
-  col_3 = 結存 (J = 庫存 + H - F)
-
-表頭格式：batch_code | PO# | BOM model
-
-主檔結構：
-  Row 1 = 表頭
-  Row 2+ = 資料（A 欄 = 料號）
-  最後的數字欄 = 當前庫存
+This module now exposes both:
+- a preview path that simulates how selected orders will write into main
+- the real write path used by dispatch
 """
 from __future__ import annotations
+
 import shutil
 from datetime import datetime
 from math import copysign, floor
 from pathlib import Path
 
 import openpyxl
-from openpyxl.styles import PatternFill, Font, Alignment
-from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
 
-PART_COL = 1  # A 欄 (1-based)
+PART_COL = 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-STOCK_SEARCH_START_COL = cfg("excel.main_moq_col", 2) + 2  # 0-based MOQ 右側 → 1-based
+STOCK_SEARCH_START_COL = cfg("excel.main_moq_col", 2) + 2
 
 
-def _try_float(v) -> float | None:
-    if v is None:
+def _try_float(value) -> float | None:
+    if value is None:
         return None
     try:
-        return float(v)
-    except (ValueError, TypeError):
+        return float(value)
+    except (TypeError, ValueError):
         return None
 
 
-def _round_away(x: float) -> float:
-    """四捨五入遠離零"""
-    if x == 0:
+def _round_away(value: float) -> float:
+    if value == 0:
         return 0.0
-    return copysign(floor(abs(x) + 0.5), x)
+    return copysign(floor(abs(value) + 0.5), value)
 
 
-def backup_main_file(main_path: str, backup_dir: str) -> str:
-    """備份主檔，回傳備份路徑。"""
-    p = Path(main_path)
-    bd = Path(backup_dir)
-    bd.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_name = f"{p.stem}_backup_{ts}{p.suffix}"
-    dst = bd / backup_name
-    shutil.copy2(main_path, dst)
-    return str(dst)
+def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for part, decision in (decisions or {}).items():
+        key = str(part or "").strip().upper()
+        if not key or not decision:
+            continue
+        normalized[key] = str(decision)
+    return normalized
 
 
-def merge_row_to_main(
-    main_path: str,
-    groups: list[dict],
-    decisions: dict[str, str],
-    backup_dir: str | None = None,
-) -> dict:
-    """
-    將已完成排程列的 BOM 扣帳寫入主檔。
+def _normalize_supplements(supplements: dict[str, float] | None = None) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for part, qty in (supplements or {}).items():
+        key = str(part or "").strip().upper()
+        amount = _try_float(qty) or 0.0
+        if not key or amount <= 0:
+            continue
+        normalized[key] = float(amount)
+    return normalized
 
-    每份 BOM 獨立 3 欄，表頭為 batch_code | PO# | BOM model。
 
-    Parameters
-    ----------
-    main_path : 主檔 Excel 路徑
-    groups : 每份 BOM 的資訊
-        [{"batch_code": "1-3", "po_number": "4500059234",
-          "bom_model": "T356789IU (A板)", "components": [...]}]
-    decisions : { part_number: decision_str }
-    backup_dir : 備份資料夾（None = 不備份）
+def _resolve_decision(part_number: str, decisions: dict[str, str]) -> str:
+    key = str(part_number or "").strip().upper()
+    return decisions.get(key, "None")
 
-    Returns
-    -------
-    { "backup_path", "merged_parts", "new_col_count" }
-    """
-    backup_path = None
-    if backup_dir:
-        backup_path = backup_main_file(main_path, backup_dir)
 
-    is_macro = Path(main_path).suffix.lower() == ".xlsm"
-    wb = openpyxl.load_workbook(main_path, keep_vba=is_macro)
-    ws = wb.active
-
-    # 建立 料號 → 列號 對應表
+def _build_part_row_map(ws) -> dict[str, int]:
     part_row_map: dict[str, int] = {}
     for row_idx in range(2, ws.max_row + 1):
         raw = ws.cell(row=row_idx, column=PART_COL).value
         part = str(raw or "").strip().upper()
         if part:
             part_row_map[part] = row_idx
+    return part_row_map
 
+
+def _read_latest_stock(ws, row_idx: int, max_col: int) -> float:
+    current_stock = 0.0
+    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
+        value = _try_float(ws.cell(row=row_idx, column=col_idx).value)
+        if value is not None:
+            current_stock = value
+            break
+    return current_stock
+
+
+def backup_main_file(main_path: str, backup_dir: str) -> str:
+    source = Path(main_path)
+    destination_dir = Path(backup_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_name = f"{source.stem}_backup_{ts}{source.suffix}"
+    destination = destination_dir / backup_name
+    shutil.copy2(main_path, destination)
+    return str(destination)
+
+
+def _build_preview_for_batches(ws, batches: list[dict], decisions: dict[str, str]) -> dict:
+    part_row_map = _build_part_row_map(ws)
+    running_stock: dict[str, float] = {}
+    planned_batches: list[dict] = []
+    shortages: list[dict] = []
     max_col = ws.max_column
     total_merged = 0
+
+    for batch in batches:
+        remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
+        planned_groups: list[dict] = []
+
+        for group in batch.get("groups", []):
+            components = group.get("components", []) or []
+            if not components:
+                continue
+
+            col_h = max_col + 1
+            col_f = max_col + 2
+            col_j = max_col + 3
+            group_rows: list[dict] = []
+            group_shortages: list[dict] = []
+
+            for comp in components:
+                needed_qty = float(comp.get("needed_qty") or 0)
+                if comp.get("is_dash") or needed_qty <= 0:
+                    continue
+
+                part_number = str(comp.get("part_number") or "").strip()
+                part_upper = part_number.upper()
+                row_idx = part_row_map.get(part_upper)
+                if row_idx is None:
+                    continue
+
+                current_stock = running_stock.get(part_upper)
+                if current_stock is None:
+                    current_stock = _read_latest_stock(ws, row_idx, max_col)
+
+                prev_qty_cs = float(comp.get("prev_qty_cs") or 0)
+                decision = _resolve_decision(part_number, decisions)
+
+                available_before = current_stock + prev_qty_cs
+                supplement_qty = 0.0
+                shortage_before = max(0.0, needed_qty - available_before)
+                if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part_upper, 0) > 0:
+                    supplement_qty = float(remaining_supplements.get(part_upper, 0))
+                    remaining_supplements[part_upper] = 0.0
+
+                effective_h = prev_qty_cs + supplement_qty
+                available_after_supply = current_stock + effective_h
+                if decision == "Shortage":
+                    ending_stock = available_after_supply
+                    shortage_after = shortage_before
+                    f_value = "缺料"
+                else:
+                    ending_stock = available_after_supply - needed_qty
+                    shortage_after = max(0.0, needed_qty - available_after_supply)
+                    f_value = _round_away(needed_qty)
+
+                running_stock[part_upper] = ending_stock
+                total_merged += 1
+
+                row_plan = {
+                    "row_idx": row_idx,
+                    "part_number": part_upper,
+                    "description": str(comp.get("description") or ""),
+                    "decision": decision,
+                    "current_stock": float(current_stock),
+                    "prev_qty_cs": prev_qty_cs,
+                    "supplement_qty": supplement_qty,
+                    "effective_h": _round_away(effective_h) if effective_h else 0,
+                    "needed_qty": needed_qty,
+                    "f_value": f_value,
+                    "j_value": _round_away(ending_stock),
+                    "shortage_amount": shortage_after,
+                    "col_h": col_h,
+                    "col_f": col_f,
+                    "col_j": col_j,
+                }
+                group_rows.append(row_plan)
+
+                if shortage_after > 0:
+                    shortage = {
+                        "order_id": batch.get("order_id"),
+                        "batch_code": group.get("batch_code", ""),
+                        "po_number": group.get("po_number", ""),
+                        "model": batch.get("model", ""),
+                        "bom_model": group.get("bom_model", ""),
+                        "part_number": part_upper,
+                        "description": str(comp.get("description") or ""),
+                        "current_stock": available_after_supply,
+                        "needed": needed_qty,
+                        "shortage_amount": shortage_after,
+                        "supplement_qty": supplement_qty,
+                        "resulting_stock": ending_stock,
+                        "suggested_qty": shortage_after,
+                    }
+                    group_shortages.append(shortage)
+                    shortages.append(shortage)
+
+            if group_rows:
+                planned_groups.append({
+                    "batch_code": group.get("batch_code", ""),
+                    "po_number": group.get("po_number", ""),
+                    "bom_model": group.get("bom_model", ""),
+                    "col_h": col_h,
+                    "col_f": col_f,
+                    "col_j": col_j,
+                    "rows": group_rows,
+                    "shortages": group_shortages,
+                })
+                max_col = col_j
+
+        planned_batches.append({
+            "order_id": batch.get("order_id"),
+            "model": batch.get("model", ""),
+            "groups": planned_groups,
+        })
+
+    return {
+        "batches": planned_batches,
+        "shortages": shortages,
+        "merged_parts": total_merged,
+        "new_col_count": max_col,
+    }
+
+
+def preview_order_batches(main_path: str, batches: list[dict], decisions: dict[str, str] | None = None) -> dict:
+    workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
+    try:
+        return _build_preview_for_batches(workbook.active, batches, _normalize_decisions(decisions))
+    finally:
+        workbook.close()
+
+
+def _write_group_headers(ws, group_plan: dict):
     header_font = Font(bold=True, size=9)
+    for row_idx, column, value in (
+        (1, group_plan["col_h"], group_plan.get("batch_code", "")),
+        (1, group_plan["col_f"], group_plan.get("po_number", "")),
+        (1, group_plan["col_j"], group_plan.get("bom_model", "")),
+    ):
+        cell = ws.cell(row=row_idx, column=column)
+        cell.value = value
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    for group in groups:
-        components = group.get("components", [])
-        if not components:
-            continue
 
-        col_h = max_col + 1  # 增添料
-        col_f = max_col + 2  # 生產用量
-        col_j = max_col + 3  # 結存
+def _write_group_rows(ws, group_plan: dict):
+    for row in group_plan.get("rows", []):
+        h_cell = ws.cell(row=row["row_idx"], column=group_plan["col_h"])
+        f_cell = ws.cell(row=row["row_idx"], column=group_plan["col_f"])
+        j_cell = ws.cell(row=row["row_idx"], column=group_plan["col_j"])
 
-        # 表頭：batch_code | PO# | BOM model
-        ws.cell(row=1, column=col_h).value = group.get("batch_code", "")
-        ws.cell(row=1, column=col_h).font = header_font
-        ws.cell(row=1, column=col_f).value = group.get("po_number", "")
-        ws.cell(row=1, column=col_f).font = header_font
-        ws.cell(row=1, column=col_j).value = group.get("bom_model", "")
-        ws.cell(row=1, column=col_j).font = header_font
+        h_cell.value = row["effective_h"]
 
-        for comp in components:
-            part_number = comp.get("part_number", "")
-            is_dash = comp.get("is_dash", False)
-            needed_qty = comp.get("needed_qty", 0)
-            prev_qty_cs = comp.get("prev_qty_cs", 0)
+        if row["decision"] == "Shortage":
+            f_cell.value = "缺料"
+            f_cell.fill = PatternFill(fill_type=None)
+        else:
+            f_cell.value = row["f_value"]
+            f_cell.fill = ORANGE_FILL if row["decision"] == "CreateRequirement" else PatternFill(fill_type=None)
 
-            if is_dash or needed_qty <= 0:
-                continue
+        j_cell.value = row["j_value"]
+        if row["j_value"] < 0:
+            j_cell.fill = RED_FILL
+        else:
+            j_cell.fill = PatternFill(fill_type=None)
 
-            part_upper = part_number.strip().upper()
-            row_idx = part_row_map.get(part_upper)
-            if row_idx is None:
-                continue
 
-            # 讀目前庫存（只找 MOQ 右側欄位，避免把 MOQ 誤判成庫存）
-            current_stock = 0.0
-            for c in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
-                v = _try_float(ws.cell(row=row_idx, column=c).value)
-                if v is not None:
-                    current_stock = v
-                    break
+def merge_row_to_main(
+    main_path: str,
+    groups: list[dict],
+    decisions: dict[str, str],
+    supplements: dict[str, float] | None = None,
+    backup_dir: str | None = None,
+) -> dict:
+    backup_path = backup_main_file(main_path, backup_dir) if backup_dir else None
 
-            h_val = _round_away(prev_qty_cs) if prev_qty_cs else 0
-            f_val = _round_away(needed_qty)
-            j_val = _round_away(current_stock + h_val - f_val)
+    workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
+    try:
+        plan = _build_preview_for_batches(
+            workbook.active,
+            [{
+                "order_id": None,
+                "model": groups[0].get("bom_model", "") if groups else "",
+                "groups": groups,
+                "supplements": supplements or {},
+            }],
+            _normalize_decisions(decisions),
+        )
 
-            decision = decisions.get(part_upper, decisions.get(part_number, "None"))
+        for batch in plan["batches"]:
+            for group_plan in batch.get("groups", []):
+                _write_group_headers(workbook.active, group_plan)
+                _write_group_rows(workbook.active, group_plan)
 
-            # 寫 H（增添料）
-            ws.cell(row=row_idx, column=col_h).value = h_val
-
-            # 寫 F（生產用量）
-            if decision == "Shortage":
-                ws.cell(row=row_idx, column=col_f).value = "缺"
-            else:
-                ws.cell(row=row_idx, column=col_f).value = f_val
-                if decision == "CreateRequirement":
-                    ws.cell(row=row_idx, column=col_f).fill = ORANGE_FILL
-
-            # 寫 J（結存）
-            if decision == "Shortage":
-                j_val_actual = _round_away(current_stock + h_val)
-                ws.cell(row=row_idx, column=col_j).value = j_val_actual
-                if j_val_actual < 0:
-                    ws.cell(row=row_idx, column=col_j).fill = RED_FILL
-            else:
-                ws.cell(row=row_idx, column=col_j).value = j_val
-                if j_val < 0:
-                    ws.cell(row=row_idx, column=col_j).fill = RED_FILL
-
-            total_merged += 1
-
-        # 下一組從這裡開始（確保 running balance 正確銜接）
-        max_col = col_j
-
-    wb.save(main_path)
-    wb.close()
+        workbook.save(main_path)
+    finally:
+        workbook.close()
 
     return {
         "backup_path": backup_path,
-        "merged_parts": total_merged,
-        "new_col_count": max_col,
+        "merged_parts": plan["merged_parts"],
+        "new_col_count": plan["new_col_count"],
+        "shortages": plan["shortages"],
     }

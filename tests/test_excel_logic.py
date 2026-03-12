@@ -76,3 +76,36 @@ class ExcelLogicTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=2, column=10).value, 50)
             self.assertEqual(ws.cell(row=2, column=11).value, -50)
             wb.close()
+
+    def test_merge_to_main_writes_supplement_into_live_main(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            backup_dir = Path(temp_dir) / "backups"
+            self._build_main_workbook(path)
+
+            result = merge_row_to_main(
+                main_path=str(path),
+                groups=[{
+                    "batch_code": "1-3",
+                    "po_number": "4500059234",
+                    "bom_model": "MODEL-A",
+                    "components": [{
+                        "part_number": "PART-A",
+                        "description": "CAP",
+                        "is_dash": False,
+                        "needed_qty": 50,
+                        "prev_qty_cs": 0,
+                    }],
+                }],
+                decisions={},
+                supplements={"PART-A": 70},
+                backup_dir=str(backup_dir),
+            )
+
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+            self.assertEqual(result["merged_parts"], 1)
+            self.assertEqual(ws.cell(row=2, column=9).value, 70)
+            self.assertEqual(ws.cell(row=2, column=10).value, 50)
+            self.assertEqual(ws.cell(row=2, column=11).value, 20)
+            wb.close()
