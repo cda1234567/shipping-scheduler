@@ -256,6 +256,15 @@ function closeEditor() {
   _editorBom = null;
 }
 
+function compareEditorComponents(a, b) {
+  const partCmp = String(a?.part_number || "").localeCompare(String(b?.part_number || ""), "en", {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (partCmp !== 0) return partCmp;
+  return Number(a?.source_row || 0) - Number(b?.source_row || 0);
+}
+
 function renderEditor(bom) {
   document.getElementById("bom-editor-title").textContent = `編輯 BOM：${bom.filename}`;
   document.getElementById("bom-editor-source").textContent = bom.is_converted
@@ -270,7 +279,8 @@ function renderEditor(bom) {
   document.getElementById("bom-editor-group-model").value = bom.group_model || "";
 
   const body = document.getElementById("bom-editor-table-body");
-  body.innerHTML = (bom.components || []).map(component => `
+  const sortedComponents = [...(bom.components || [])].sort(compareEditorComponents);
+  body.innerHTML = sortedComponents.map(component => `
     <tr data-row="${component.source_row}">
       <td>${component.source_row || ""}</td>
       <td><input type="text" class="bom-cell-input" data-field="part_number" value="${esc(component.part_number)}"></td>
