@@ -310,7 +310,7 @@ function cardBadge(res, orderId) {
   if (res.status === "shortage") {
     const total = [...(res.shortages || []), ...(res.customer_material_shortages || [])]
       .reduce((s, x) => s + (x.shortage_amount || 0), 0);
-    return { cls: "badge-shortage", text: `缺 ${fmt(total)}` };
+    return { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` };
   }
   return { cls: "badge-no-bom", text: "BOM未上傳" };
 }
