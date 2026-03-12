@@ -128,6 +128,11 @@ class BatchMergeRequest(BaseModel):
     order_ids: list[int]
 
 
+class BatchDispatchRequest(BaseModel):
+    order_ids: list[int]
+    decisions: dict[str, str] = {}
+
+
 class DecisionRequest(BaseModel):
     decisions: dict[str, str] = {}
 

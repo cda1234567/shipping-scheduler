@@ -20,7 +20,7 @@ from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
-    DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
+    BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
 )
 from .. import database as db
 
@@ -76,6 +76,164 @@ def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
         raise HTTPException(400, "找不到可反悔的訂單資料")
 
     return order, session, affected_orders
+
+
+def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    for part, decision in (decisions or {}).items():
+        key = str(part or "").strip().upper()
+        if not key or not decision:
+            continue
+        normalized[key] = str(decision)
+    return normalized
+
+
+def _prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[dict], list[dict]]:
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(404, "找不到此訂單")
+    if order["status"] not in ("pending", "merged"):
+        raise HTTPException(400, f"訂單狀態為 {order['status']}，無法發料")
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先上傳主檔")
+
+    model_key = (order.get("model") or "").upper()
+    bom_files = db.get_bom_files_by_models([model_key])
+    if not bom_files:
+        raise HTTPException(400, f"機種 {order.get('model')} 沒有對應的 BOM")
+
+    label = order.get("code") or order.get("model") or str(order_id)
+    po_number = str(order.get("po_number", ""))
+
+    groups = []
+    all_components = []
+    for bf in bom_files:
+        comps = db.get_bom_components(bf["id"])
+        groups.append({
+            "batch_code": label,
+            "po_number": po_number,
+            "bom_model": bf["model"],
+            "components": comps,
+        })
+        all_components.extend(comps)
+
+    if not all_components:
+        raise HTTPException(400, f"機種 {order.get('model')} 沒有 BOM 零件資料")
+
+    return order, groups, all_components
+
+
+def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
+    if not sessions:
+        raise HTTPException(400, "找不到可反悔的發料紀錄")
+
+    normalized_sessions = [dict(session) for session in sessions if session]
+    if not normalized_sessions:
+        raise HTTPException(400, "找不到可反悔的發料紀錄")
+
+    first_session = normalized_sessions[0]
+    backup_path = Path(str(first_session.get("backup_path") or "")).expanduser()
+    if not backup_path.exists():
+        raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
+
+    current_main_path = str(db.get_setting("main_file_path") or "").strip()
+    session_paths = {
+        str(session.get("main_file_path") or "").strip()
+        for session in normalized_sessions
+        if str(session.get("main_file_path") or "").strip()
+    }
+    if len(session_paths) > 1:
+        raise HTTPException(400, "這批發料使用了不同主檔，無法自動反悔")
+
+    session_main_path = next(iter(session_paths), "")
+    restore_target = session_main_path or current_main_path
+    if not restore_target:
+        raise HTTPException(400, "找不到目前主檔路徑，無法反悔")
+    if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
+        raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
+
+    restore_target_path = Path(restore_target)
+    restore_target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(backup_path, restore_target_path)
+
+    order_ids = [int(session["order_id"]) for session in normalized_sessions]
+    session_ids = [int(session["id"]) for session in normalized_sessions]
+    db.delete_dispatch_records_for_orders(order_ids)
+    db.mark_dispatch_sessions_rolled_back(session_ids)
+
+    restored_orders = []
+    for session in normalized_sessions:
+        order_id = int(session["order_id"])
+        order = db.get_order(order_id)
+        restore_status = session.get("previous_status") or "merged"
+        db.update_order(order_id, status=restore_status, folder="")
+        restored_orders.append({
+            "id": order_id,
+            "po_number": order.get("po_number", "") if order else "",
+            "model": order.get("model", "") if order else "",
+            "status": order.get("status", "") if order else "",
+            "restore_status": restore_status,
+        })
+
+    return {
+        "count": len(restored_orders),
+        "restored_from": str(backup_path),
+        "main_file_path": str(restore_target_path),
+        "orders": restored_orders,
+    }
+
+
+def _execute_dispatch(order: dict, groups: list[dict], all_components: list[dict], main_path: str, decisions: dict[str, str]) -> dict:
+    result = merge_row_to_main(
+        main_path=main_path,
+        groups=groups,
+        decisions=decisions,
+        backup_dir=str(BACKUP_DIR),
+    )
+
+    session = None
+    try:
+        session = db.save_dispatch_session(
+            order_id=int(order["id"]),
+            previous_status=order["status"],
+            backup_path=result.get("backup_path") or "",
+            main_file_path=main_path,
+        )
+
+        dispatch_records = []
+        for comp in all_components:
+            if comp.get("is_dash") or comp.get("needed_qty", 0) <= 0:
+                continue
+            part_number = str(comp.get("part_number") or "")
+            dispatch_records.append({
+                "part_number": part_number,
+                "needed_qty": comp["needed_qty"],
+                "prev_qty_cs": comp.get("prev_qty_cs", 0),
+                "decision": decisions.get(part_number.strip().upper(), "None"),
+            })
+        db.save_dispatch_records(int(order["id"]), dispatch_records)
+        db.update_order(int(order["id"]), status="dispatched")
+    except Exception:
+        backup_path = Path(str(result.get("backup_path") or "")).expanduser()
+        if backup_path.exists():
+            shutil.copy2(backup_path, main_path)
+        if session:
+            db.delete_dispatch_records_for_orders([int(order["id"])])
+            db.mark_dispatch_sessions_rolled_back([int(session["id"])])
+            db.update_order(int(order["id"]), status=order["status"], folder=order.get("folder", ""))
+        raise
+
+    db.log_activity(
+        "order_dispatched",
+        f"訂單 {order['po_number']} ({order['model']}) 已發料，{result['merged_parts']} 筆 merge",
+    )
+    return {
+        "ok": True,
+        "order_id": int(order["id"]),
+        "merged_parts": result["merged_parts"],
+        "backup_path": result["backup_path"],
+        "session": session,
+    }
 
 
 # ── Upload schedule ───────────────────────────────────────────────────────────
@@ -281,76 +439,54 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     """
     標記訂單為已發料，每份 BOM 分別 merge 到主檔。
     """
-    order = db.get_order(order_id)
-    if not order:
-        raise HTTPException(404, "找不到此訂單")
-    if order["status"] not in ("pending", "merged"):
-        raise HTTPException(400, f"訂單狀態為 {order['status']}，無法發料")
+    main_path = db.get_setting("main_file_path")
+    order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+    return _execute_dispatch(order, groups, all_components, main_path, _normalize_decisions(req.decisions))
+
+
+@router.post("/schedule/batch-dispatch")
+async def batch_dispatch(req: BatchDispatchRequest):
+    if not req.order_ids:
+        raise HTTPException(400, "請選擇要發料的訂單")
+
+    normalized_order_ids = []
+    for order_id in req.order_ids:
+        try:
+            normalized_order_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    if not normalized_order_ids:
+        raise HTTPException(400, "請選擇要發料的訂單")
 
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先上傳主檔")
 
-    # 取得個別 BOM 檔案（不合併）
-    model_key = (order.get("model") or "").upper()
-    bom_files = db.get_bom_files_by_models([model_key])
-    if not bom_files:
-        raise HTTPException(400, f"機種 {order.get('model')} 沒有對應的 BOM")
+    decisions = _normalize_decisions(req.decisions)
+    contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
 
-    label = order.get("code") or order.get("model") or str(order_id)
-    po_number = str(order.get("po_number", ""))
+    results: list[dict] = []
+    processed_sessions: list[dict] = []
+    try:
+        for order, groups, all_components in contexts:
+            result = _execute_dispatch(order, groups, all_components, main_path, decisions)
+            results.append(result)
+            if result.get("session"):
+                processed_sessions.append(result["session"])
+    except Exception:
+        if processed_sessions:
+            _rollback_dispatch_sessions(processed_sessions)
+            db.log_activity("batch_dispatch_rollback", f"批次發料失敗，已回復 {len(processed_sessions)} 筆")
+        raise
 
-    # 每份 BOM 各自一組
-    groups = []
-    all_components = []
-    for bf in bom_files:
-        comps = db.get_bom_components(bf["id"])
-        groups.append({
-            "batch_code": label,
-            "po_number": po_number,
-            "bom_model": bf["model"],
-            "components": comps,
-        })
-        all_components.extend(comps)
-
-    if not all_components:
-        raise HTTPException(400, f"機種 {order.get('model')} 沒有 BOM 零件資料")
-
-    result = merge_row_to_main(
-        main_path=main_path,
-        groups=groups,
-        decisions=req.decisions,
-        backup_dir=str(BACKUP_DIR),
-    )
-
-    # 儲存發料紀錄
-    dispatch_records = []
-    for comp in all_components:
-        if comp.get("is_dash") or comp.get("needed_qty", 0) <= 0:
-            continue
-        dispatch_records.append({
-            "part_number": comp["part_number"],
-            "needed_qty": comp["needed_qty"],
-            "prev_qty_cs": comp.get("prev_qty_cs", 0),
-            "decision": req.decisions.get(comp["part_number"], "None"),
-        })
-    db.save_dispatch_records(order_id, dispatch_records)
-    db.save_dispatch_session(
-        order_id=order_id,
-        previous_status=order["status"],
-        backup_path=result.get("backup_path") or "",
-        main_file_path=main_path,
-    )
-
-    db.update_order(order_id, status="dispatched")
-    db.log_activity("order_dispatched",
-                    f"訂單 {order['po_number']} ({order['model']}) 已發料，{result['merged_parts']} 筆 merge")
-
+    total_merged_parts = sum(int(item.get("merged_parts") or 0) for item in results)
+    db.log_activity("batch_dispatch", f"批次發料 {len(results)} 筆訂單，合計 {total_merged_parts} 筆 merge")
     return {
         "ok": True,
-        "order_id": order_id,
-        "merged_parts": result["merged_parts"],
-        "backup_path": result["backup_path"],
+        "count": len(results),
+        "merged_parts": total_merged_parts,
+        "order_ids": [int(item["order_id"]) for item in results],
     }
 
 
@@ -368,45 +504,13 @@ async def rollback_order_preview(order_id: int):
 @router.post("/schedule/orders/{order_id}/rollback")
 async def rollback_order(order_id: int):
     order, session, affected_orders = _build_rollback_preview(order_id)
-
-    backup_path = Path(str(session.get("backup_path") or "")).expanduser()
-    if not backup_path.exists():
-        raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
-
-    current_main_path = str(db.get_setting("main_file_path") or "").strip()
-    session_main_path = str(session.get("main_file_path") or "").strip()
-    restore_target = session_main_path or current_main_path
-    if not restore_target:
-        raise HTTPException(400, "找不到目前主檔路徑，無法反悔")
-    if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
-        raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
-
-    restore_target_path = Path(restore_target)
-    restore_target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(backup_path, restore_target_path)
-
-    order_ids = [int(item["id"]) for item in affected_orders]
-    session_ids = [int(row["id"]) for row in db.get_dispatch_session_tail(int(session["id"]))]
-    db.delete_dispatch_records_for_orders(order_ids)
-    db.mark_dispatch_sessions_rolled_back(session_ids)
-    for item in affected_orders:
-        db.update_order(
-            int(item["id"]),
-            status=item.get("restore_status") or "merged",
-            folder="",
-        )
-
+    tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
+    result = _rollback_dispatch_sessions(tail_sessions)
     db.log_activity(
         "order_rollback",
         f"從訂單 {order['po_number']} ({order['model']}) 開始反悔，共 {len(affected_orders)} 筆，主檔已還原",
     )
-    return {
-        "ok": True,
-        "count": len(affected_orders),
-        "restored_from": str(backup_path),
-        "main_file_path": str(restore_target_path),
-        "orders": affected_orders,
-    }
+    return {"ok": True, **result}
 
 
 # ── Reorder / Sort ────────────────────────────────────────────────────────────

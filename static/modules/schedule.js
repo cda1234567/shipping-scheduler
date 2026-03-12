@@ -23,6 +23,7 @@ export async function initSchedule(onRefreshMain) {
   document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
   document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
   document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
+  document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
   document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
   await refresh();
 }
@@ -697,6 +698,41 @@ async function saveManualMoq(partNumber, input, button) {
     if (button) {
       button.disabled = false;
       button.textContent = "記住 MOQ";
+    }
+  }
+}
+
+async function handleBatchDispatch() {
+  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
+  if (!_checkedIds.size) { showToast("請先勾選要發料的訂單"); return; }
+  if (!targets.length) { showToast("勾選的訂單中沒有可發料的"); return; }
+
+  const button = document.getElementById("btn-batch-dispatch");
+  const originalText = button?.textContent || "批次發料";
+  const preview = targets.slice(0, 6).map(item => `${item.po_number} ${item.model}`).join("\n");
+  const extra = targets.length > 6 ? `\n... 另 ${targets.length - 6} 筆` : "";
+  const confirmed = confirm(`確定要批次發料 ${targets.length} 筆訂單嗎？\n${preview}${extra}`);
+  if (!confirmed) return;
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "發料中...";
+    }
+    const result = await apiPost("/api/schedule/batch-dispatch", {
+      order_ids: targets.map(item => item.id),
+      decisions: _decisions,
+    });
+    targets.forEach(item => _checkedIds.delete(item.id));
+    showToast(`已批次發料 ${result.count} 筆\n共 Merge ${result.merged_parts} 筆料號`);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    showToast("批次發料失敗：" + error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
     }
   }
 }

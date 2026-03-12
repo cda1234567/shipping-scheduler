@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import call, patch
 
 import openpyxl
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.models import BomComponent, BomFile
@@ -93,6 +94,60 @@ class ApiTests(unittest.TestCase):
             main_file_path=str(main_path),
         )
 
+    def test_batch_dispatch_processes_checked_orders_in_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            context_a = ({"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"}, [{"components": []}], [])
+            context_b = ({"id": 2, "po_number": "4500059235", "model": "MODEL-B", "status": "pending"}, [{"components": []}], [])
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule._prepare_dispatch_context", side_effect=[context_a, context_b]) as mock_prepare, \
+                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                     {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11}},
+                     {"order_id": 2, "merged_parts": 4, "backup_path": "C:/b2.xlsx", "session": {"id": 12}},
+                 ]) as mock_execute, \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/batch-dispatch", json={
+                    "order_ids": [1, 2],
+                    "decisions": {"part-1": "CreateRequirement"},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["merged_parts"], 7)
+        self.assertEqual(data["order_ids"], [1, 2])
+        mock_prepare.assert_has_calls([call(1, str(main_path)), call(2, str(main_path))])
+        self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
+        self.assertEqual(mock_execute.call_args_list[1].args[4], {"PART-1": "CreateRequirement"})
+
+    def test_batch_dispatch_rolls_back_processed_orders_when_later_order_fails(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            context_a = ({"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"}, [{"components": []}], [])
+            context_b = ({"id": 2, "po_number": "4500059235", "model": "MODEL-B", "status": "pending"}, [{"components": []}], [])
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule._prepare_dispatch_context", side_effect=[context_a, context_b]), \
+                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                     {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11, "order_id": 1}},
+                     HTTPException(status_code=400, detail="第二筆發料失敗"),
+                 ]), \
+                 patch("app.routers.schedule._rollback_dispatch_sessions", return_value={"count": 1}) as mock_rollback, \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/batch-dispatch", json={
+                    "order_ids": [1, 2],
+                    "decisions": {},
+                })
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "第二筆發料失敗")
+        mock_rollback.assert_called_once_with([{"id": 11, "order_id": 1}])
+
     def test_rollback_preview_returns_tail_orders(self):
         orders = {
             5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
@@ -133,8 +188,8 @@ class ApiTests(unittest.TestCase):
             }
             session = {"id": 9, "order_id": 5, "backup_path": str(backup_path), "main_file_path": str(main_path)}
             tail = [
-                {"id": 9, "order_id": 5, "previous_status": "merged"},
-                {"id": 10, "order_id": 6, "previous_status": "pending"},
+                {"id": 9, "order_id": 5, "previous_status": "merged", "backup_path": str(backup_path), "main_file_path": str(main_path)},
+                {"id": 10, "order_id": 6, "previous_status": "pending", "backup_path": str(backup_path), "main_file_path": str(main_path)},
             ]
 
             with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
