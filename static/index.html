@@ -161,7 +161,7 @@ import { initSchedule, refresh as refreshSchedule, refreshCompleted, getDecision
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
-import { initDesktopBridge } from "/static/modules/desktop_bridge.js";
+import { initDesktopBridge, desktopDownload } from "/static/modules/desktop_bridge.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -188,8 +188,15 @@ document.getElementById("btn-logs").addEventListener("click", () => {
 document.getElementById("btn-upload-main").addEventListener("click", () =>
   document.getElementById("main-file-input").click());
 
-document.getElementById("btn-download-main").addEventListener("click", () => {
-  window.location.href = "/api/main-file/download";
+document.getElementById("btn-download-main").addEventListener("click", async () => {
+  try {
+    const result = await desktopDownload({ path: "/api/main-file/download" });
+    if (result.directory) {
+      showToast(`主檔已下載到 ${result.directory}`);
+    }
+  } catch (error) {
+    showToast(`下載主檔失敗: ${error.message}`);
+  }
 });
 
 document.getElementById("main-file-input").addEventListener("change", async e => {
@@ -248,24 +255,15 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
   statusEl.textContent = "生成中...";
   try {
     const decisions = getDecisions();
-    const resp = await fetch("/api/dispatch/generate", {
+    const result = await desktopDownload({
+      path: "/api/dispatch/generate",
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decisions }),
+      body: { decisions },
     });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err.detail || resp.statusText);
-    }
-    const blob = await resp.blob();
-    const cd = resp.headers.get("content-disposition") || "";
-    const m = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
-    const filename = m ? decodeURIComponent(m[1].replace(/"/g, "")) : "發料單.xlsx";
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
     statusEl.textContent = "已下載";
+    if (result.directory) {
+      showToast(`發料單已下載到 ${result.directory}`);
+    }
     setTimeout(() => statusEl.textContent = "", 3000);
   } catch (e) {
     statusEl.textContent = "失敗：" + e.message;
@@ -329,11 +327,25 @@ init();
         <div id="desktop-status" class="desktop-status-title">桌面版未連線</div>
         <div id="desktop-url" class="desktop-status-meta"></div>
       </div>
+      <div class="desktop-setting-group">
+        <div class="desktop-setting-header">
+          <div class="desktop-autostart-title">下載資料夾</div>
+          <button id="desktop-choose-download-dir" type="button" class="btn btn-secondary btn-sm">選擇資料夾</button>
+        </div>
+        <div id="desktop-download-folder" class="desktop-status-meta"></div>
+      </div>
       <label class="desktop-autostart-row">
         <input id="desktop-autostart" type="checkbox">
         <div>
           <div class="desktop-autostart-title">開機自動啟動</div>
           <div id="desktop-startup-note" class="desktop-status-meta"></div>
+        </div>
+      </label>
+      <label class="desktop-autostart-row">
+        <input id="desktop-dark-mode" type="checkbox">
+        <div>
+          <div class="desktop-autostart-title">黑暗模式</div>
+          <div class="desktop-status-meta">只影響桌面版視窗，不會改原始 Excel。</div>
         </div>
       </label>
       <div class="desktop-help">

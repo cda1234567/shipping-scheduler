@@ -1,4 +1,5 @@
 import { apiFetch, apiJson, apiPost, apiPut, showToast, esc } from "./api.js";
+import { desktopDownload } from "./desktop_bridge.js";
 
 let _onRefresh = null;
 let _outerSortable = null;
@@ -174,8 +175,15 @@ export async function renderBomGroups() {
       button.addEventListener("click", () => openEditor(button.dataset.id));
     });
     container.querySelectorAll(".bom-download").forEach(button => {
-      button.addEventListener("click", () => {
-        window.location.href = `/api/bom/${button.dataset.id}/file`;
+      button.addEventListener("click", async () => {
+        try {
+          const result = await desktopDownload({ path: `/api/bom/${button.dataset.id}/file` });
+          if (result.directory) {
+            showToast(`BOM 已下載到 ${result.directory}`);
+          }
+        } catch (error) {
+          showToast(`下載 BOM 失敗: ${error.message}`);
+        }
       });
     });
     container.querySelectorAll(".bom-del").forEach(button => {

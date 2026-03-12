@@ -208,6 +208,19 @@ body {
   line-height: 1.6;
   color: #6b7280;
 }
+.desktop-setting-group {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+.desktop-setting-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
 
 /* Row actions */
 .row-actions { display: flex; gap: 4px; align-items: center; }
@@ -491,6 +504,98 @@ body {
 .completed-card-header {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px;
   background: #f0fdf4; border-bottom: 1px solid #dcfce7;
+}
+
+body.desktop-dark {
+  background: #0b1220;
+  color: #e5e7eb;
+}
+body.desktop-dark #header,
+body.desktop-dark #sidebar,
+body.desktop-dark #tabs,
+body.desktop-dark #schedule-toolbar,
+body.desktop-dark #right-panel,
+body.desktop-dark .modal-box,
+body.desktop-dark .po-group,
+body.desktop-dark .bom-model-group,
+body.desktop-dark .completed-folder-section,
+body.desktop-dark .desktop-setting-group,
+body.desktop-dark .desktop-status-card {
+  background: #111827;
+  color: #e5e7eb;
+  border-color: #243041;
+}
+body.desktop-dark #header,
+body.desktop-dark #tabs,
+body.desktop-dark #schedule-toolbar,
+body.desktop-dark #right-panel-header,
+body.desktop-dark .sidebar-section,
+body.desktop-dark .modal-header,
+body.desktop-dark .modal-footer,
+body.desktop-dark .bom-model-header,
+body.desktop-dark .completed-folder-header,
+body.desktop-dark .completed-card-header {
+  border-color: #243041;
+}
+body.desktop-dark #main-content,
+body.desktop-dark #layout,
+body.desktop-dark #schedule-scroll,
+body.desktop-dark #right-scroll,
+body.desktop-dark #completed-area,
+body.desktop-dark #completed-scroll,
+body.desktop-dark #tab-bom,
+body.desktop-dark #bom-group-wrap,
+body.desktop-dark #alert-list,
+body.desktop-dark #log-list {
+  background: #0b1220;
+  color: #e5e7eb;
+}
+body.desktop-dark .file-status,
+body.desktop-dark .modal-subtitle,
+body.desktop-dark .desktop-status-meta,
+body.desktop-dark .desktop-help,
+body.desktop-dark .po-ship-date,
+body.desktop-dark .shortage-item .desc,
+body.desktop-dark #schedule-toolbar .info-text,
+body.desktop-dark .subtitle {
+  color: #94a3b8;
+}
+body.desktop-dark .btn-secondary,
+body.desktop-dark .btn-alert {
+  background: #1f2937;
+  color: #e5e7eb;
+  border-color: #334155;
+}
+body.desktop-dark .tab-btn {
+  color: #94a3b8;
+}
+body.desktop-dark .tab-btn.active {
+  color: #60a5fa;
+  border-bottom-color: #60a5fa;
+}
+body.desktop-dark input,
+body.desktop-dark textarea,
+body.desktop-dark select,
+body.desktop-dark .code-input,
+body.desktop-dark .moq-inline-input {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-color: #334155;
+}
+body.desktop-dark .po-group-header,
+body.desktop-dark .bom-model-header {
+  background: #0f172a;
+}
+body.desktop-dark .shortage-item {
+  background: #241313;
+  border-color: #7f1d1d;
+}
+body.desktop-dark .shortage-item.cs-item {
+  background: #2a220f;
+  border-color: #a16207;
+}
+body.desktop-dark .empty-state {
+  color: #94a3b8;
 }
 
 /* ── Alerts tab ─────────────────────────── */

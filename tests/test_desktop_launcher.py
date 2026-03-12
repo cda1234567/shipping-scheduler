@@ -7,8 +7,14 @@ from unittest.mock import patch
 
 from app.services.desktop_launcher import (
     build_autostart_command,
+    build_unique_download_path,
+    format_bool_setting,
+    get_default_download_directory,
     get_startup_shortcut_path,
     is_autostart_enabled,
+    normalize_download_directory,
+    parse_bool_setting,
+    parse_content_disposition_filename,
     resolve_pythonw_executable,
     set_autostart_enabled,
 )
@@ -68,6 +74,45 @@ class DesktopLauncherTests(unittest.TestCase):
             shortcut_path,
             Path(r"C:\Users\Andy\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\App.lnk"),
         )
+
+    def test_parse_bool_setting(self):
+        self.assertTrue(parse_bool_setting("1"))
+        self.assertTrue(parse_bool_setting("true"))
+        self.assertFalse(parse_bool_setting("0"))
+        self.assertFalse(parse_bool_setting(""))
+        self.assertEqual(format_bool_setting(True), "1")
+        self.assertEqual(format_bool_setting(False), "0")
+
+    def test_default_and_normalized_download_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir)
+            downloads = home / "Downloads"
+            downloads.mkdir()
+
+            self.assertEqual(get_default_download_directory(temp_dir), downloads)
+            self.assertEqual(normalize_download_directory(str(downloads), temp_dir), downloads)
+            self.assertEqual(normalize_download_directory(str(home / "missing"), temp_dir), downloads)
+
+    def test_build_unique_download_path_appends_suffix(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir)
+            first = directory / "report.xlsx"
+            first.write_text("x", encoding="utf-8")
+
+            candidate = build_unique_download_path(directory, "report.xlsx")
+
+        self.assertEqual(candidate.name, "report_1.xlsx")
+
+    def test_parse_content_disposition_filename(self):
+        self.assertEqual(
+            parse_content_disposition_filename("attachment; filename*=UTF-8''BOM%20zip.zip"),
+            "BOM zip.zip",
+        )
+        self.assertEqual(
+            parse_content_disposition_filename('attachment; filename="dispatch.xlsx"'),
+            "dispatch.xlsx",
+        )
+        self.assertEqual(parse_content_disposition_filename(""), "")
 
     def test_set_autostart_enabled_removes_shortcut_when_disabled(self):
         with tempfile.TemporaryDirectory() as temp_dir:

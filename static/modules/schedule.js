@@ -1,5 +1,6 @@
 import { apiJson, apiFetch, apiPost, apiPatch, showToast, esc, fmt } from "./api.js";
 import { calculate } from "./calculator.js";
+import { desktopDownload } from "./desktop_bridge.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _rows = [];
@@ -850,26 +851,19 @@ async function handleModalDownloadBom() {
     });
 
     const bomIds = _modalBomFiles.map(f => f.id);
-    const resp = await fetch("/api/bom/dispatch-download", {
+    const result = await desktopDownload({
+      path: "/api/bom/dispatch-download",
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: {
         bom_ids: bomIds,
         supplements,
         header_overrides: headerOverrides,
         carry_overs: carryOverOverrides,
-      }),
+      },
     });
-    if (!resp.ok) { showToast("BOM 下載失敗"); btn.disabled = false; btn.textContent = "確認補料並下載 BOM"; return; }
-
-    const blob = await resp.blob();
-    const cd = resp.headers.get("content-disposition") || "";
-    const m = cd.match(/filename\*?=(?:UTF-8'')?([^;]+)/i);
-    const filename = m ? decodeURIComponent(m[1].replace(/"/g, "")) : "BOM.zip";
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = filename; a.click();
-    URL.revokeObjectURL(url);
+    if (result.directory) {
+      showToast(`BOM 已下載到 ${result.directory}`);
+    }
 
     updateStatusOnly();
     showToast("BOM 已下載");

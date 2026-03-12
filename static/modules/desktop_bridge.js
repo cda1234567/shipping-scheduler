@@ -7,9 +7,22 @@ function hasDesktopApi() {
   return Boolean(window.pywebview?.api);
 }
 
+function parseFilenameFromContentDisposition(headerValue) {
+  const text = String(headerValue || "");
+  const utfMatch = text.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch) return decodeURIComponent(utfMatch[1].replace(/"/g, ""));
+  const plainMatch = text.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1] : "";
+}
+
+function applyDesktopTheme() {
+  document.body.classList.toggle("desktop-dark", Boolean(_desktopState?.dark_mode_enabled));
+}
+
 async function readDesktopState() {
   if (!hasDesktopApi()) return null;
   _desktopState = await window.pywebview.api.get_state();
+  applyDesktopTheme();
   return _desktopState;
 }
 
@@ -18,14 +31,20 @@ function renderDesktopState() {
   const urlEl = document.getElementById("desktop-url");
   const startupEl = document.getElementById("desktop-startup-note");
   const checkbox = document.getElementById("desktop-autostart");
-  if (!statusEl || !urlEl || !startupEl || !checkbox) return;
+  const folderEl = document.getElementById("desktop-download-folder");
+  const darkModeEl = document.getElementById("desktop-dark-mode");
+  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !darkModeEl) return;
 
   if (!_desktopState) {
     statusEl.textContent = "桌面版未連線";
     urlEl.textContent = "";
     startupEl.textContent = "";
+    folderEl.textContent = "尚未指定下載資料夾";
     checkbox.checked = false;
     checkbox.disabled = true;
+    darkModeEl.checked = false;
+    darkModeEl.disabled = true;
+    applyDesktopTheme();
     return;
   }
 
@@ -33,6 +52,11 @@ function renderDesktopState() {
     ? "桌面版已啟動本機服務"
     : "桌面版已連到既有服務";
   urlEl.textContent = _desktopState.app_url || "";
+  folderEl.textContent = _desktopState.download_directory_set
+    ? (_desktopState.download_directory || "尚未指定下載資料夾")
+    : "尚未指定，首次下載時會詢問資料夾";
+  darkModeEl.checked = Boolean(_desktopState.dark_mode_enabled);
+  darkModeEl.disabled = false;
   if (_desktopState.autostart_managed) {
     startupEl.textContent = _desktopState.autostart_enabled
       ? "開機後會自動啟動，並縮小在工作列"
@@ -43,6 +67,7 @@ function renderDesktopState() {
     checkbox.disabled = true;
   }
   checkbox.checked = Boolean(_desktopState.autostart_enabled);
+  applyDesktopTheme();
 }
 
 function openDesktopModal() {
@@ -72,6 +97,40 @@ async function handleAutostartChange(event) {
   }
 }
 
+async function handleChooseDownloadDirectory() {
+  try {
+    const nextState = await window.pywebview.api.choose_download_directory();
+    if (nextState?.cancelled) return;
+    if (!nextState?.ok && nextState?.message) {
+      throw new Error(nextState.message);
+    }
+    _desktopState = nextState;
+    renderDesktopState();
+    showToast("已更新桌面版下載資料夾");
+  } catch (error) {
+    showToast("設定下載資料夾失敗: " + error.message);
+  }
+}
+
+async function handleDarkModeChange(event) {
+  const checkbox = event.currentTarget;
+  const enabled = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    const nextState = await window.pywebview.api.set_dark_mode(enabled);
+    if (!nextState?.ok && nextState?.message) {
+      throw new Error(nextState.message);
+    }
+    _desktopState = nextState;
+    renderDesktopState();
+    showToast(enabled ? "已切換為黑暗模式" : "已切換為淺色模式");
+  } catch (error) {
+    checkbox.checked = !enabled;
+    checkbox.disabled = false;
+    showToast("主題切換失敗: " + error.message);
+  }
+}
+
 async function handleMinimize() {
   await window.pywebview.api.minimize_window();
   closeDesktopModal();
@@ -96,9 +155,51 @@ function bindDesktopEvents() {
   document.getElementById("desktop-open-browser").addEventListener("click", handleOpenBrowser);
   document.getElementById("desktop-quit").addEventListener("click", handleQuitDesktop);
   document.getElementById("desktop-autostart").addEventListener("change", handleAutostartChange);
+  document.getElementById("desktop-choose-download-dir").addEventListener("click", handleChooseDownloadDirectory);
+  document.getElementById("desktop-dark-mode").addEventListener("change", handleDarkModeChange);
   document.getElementById("desktop-modal").addEventListener("click", event => {
     if (event.target.id === "desktop-modal") closeDesktopModal();
   });
+}
+
+async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "" }) {
+  const response = await fetch(path, {
+    method,
+    headers: body == null ? undefined : { "Content-Type": "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      message = (await response.json()).detail || message;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
+  const outputName = filename || headerName || "download.bin";
+  const blobUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = blobUrl;
+  anchor.download = outputName;
+  anchor.click();
+  URL.revokeObjectURL(blobUrl);
+  return { ok: true, filename: outputName, path: outputName, directory: "" };
+}
+
+export async function desktopDownload({ path, method = "GET", body = null, filename = "" }) {
+  if (!hasDesktopApi()) {
+    return fallbackBrowserDownload({ path, method, body, filename });
+  }
+
+  const result = await window.pywebview.api.download_from_app({ path, method, body, filename });
+  if (result?.cancelled) {
+    throw new Error("已取消選擇下載資料夾");
+  }
+  if (!result?.ok) {
+    throw new Error(result?.message || "桌面版下載失敗");
+  }
+  return result;
 }
 
 async function bootDesktopBridge() {
