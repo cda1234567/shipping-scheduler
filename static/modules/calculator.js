@@ -36,35 +36,56 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
     const shortages = [];
     const csShortages = [];
     const components = bomEntry.components || [];
+    const partSummaries = {};
 
     for (const comp of components) {
       if (comp.is_dash || comp.needed_qty <= 0) continue;
 
       const part = (comp.part_number || "").toUpperCase();
       const isCS = comp.is_customer_supplied || false;
+      if (!partSummaries[part]) {
+        partSummaries[part] = {
+          part_key: part,
+          part_number: comp.part_number,
+          description: comp.description || "",
+          current_stock: running[part] ?? 0,
+          needed: 0,
+          ending_stock: running[part] ?? 0,
+          is_customer_supplied: isCS,
+        };
+      } else if (!partSummaries[part].description && comp.description) {
+        partSummaries[part].description = comp.description;
+      }
+
+      const summary = partSummaries[part];
       const g = running[part] ?? 0;
       const f = comp.needed_qty;
       const h = comp.prev_qty_cs || 0;
       const j = g + h - f;
       running[part] = j;
+      summary.needed += f;
+      summary.ending_stock = j;
+      summary.is_customer_supplied = summary.is_customer_supplied || isCS;
+    }
 
-      if (g >= 0 && j < 0) {
-        const shortage_amount = Math.abs(j);
-        const item_moq = moq[part] ?? 0;
-        const item = {
-          part_number: comp.part_number,
-          description: comp.description,
-          shortage_amount,
-          current_stock: g,
-          needed: f,
-          moq: item_moq,
-          suggested_qty: calcSuggested(shortage_amount, item_moq),
-          decision: "None",
-          is_customer_supplied: isCS,
-        };
-        if (isCS) csShortages.push(item);
-        else shortages.push(item);
-      }
+    for (const summary of Object.values(partSummaries)) {
+      if (summary.ending_stock >= 0) continue;
+
+      const shortage_amount = Math.abs(summary.ending_stock);
+      const item_moq = moq[summary.part_key] ?? 0;
+      const item = {
+        part_number: summary.part_number,
+        description: summary.description,
+        shortage_amount,
+        current_stock: summary.current_stock,
+        needed: summary.needed,
+        moq: item_moq,
+        suggested_qty: calcSuggested(shortage_amount, item_moq),
+        decision: "None",
+        is_customer_supplied: summary.is_customer_supplied,
+      };
+      if (summary.is_customer_supplied) csShortages.push(item);
+      else shortages.push(item);
     }
 
     results.push({

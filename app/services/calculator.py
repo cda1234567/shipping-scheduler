@@ -10,6 +10,22 @@ from __future__ import annotations
 from ..models import calc_suggested_qty
 
 
+def _build_shortage_item(summary: dict, moq: dict[str, float]) -> dict:
+    shortage_amt = abs(summary["ending_stock"])
+    item_moq = moq.get(summary["part_key"], 0.0)
+    return {
+        "part_number": summary["part_number"],
+        "description": summary["description"],
+        "shortage_amount": shortage_amt,
+        "current_stock": summary["current_stock"],
+        "needed": summary["needed"],
+        "moq": item_moq,
+        "suggested_qty": calc_suggested_qty(shortage_amt, item_moq),
+        "decision": "None",
+        "is_customer_supplied": summary["is_customer_supplied"],
+    }
+
+
 def run(
     orders: list[dict],
     bom_map: dict[str, list[dict]],
@@ -62,6 +78,7 @@ def run(
 
         shortages: list[dict] = []
         cs_shortages: list[dict] = []
+        part_summaries: dict[str, dict] = {}
 
         for comp in components:
             is_dash = comp.get("is_dash", False)
@@ -71,31 +88,39 @@ def run(
 
             part = comp.get("part_number", "").upper()
             is_cs = comp.get("is_customer_supplied", False)
+            summary = part_summaries.get(part)
+            if summary is None:
+                summary = {
+                    "part_key": part,
+                    "part_number": comp.get("part_number", ""),
+                    "description": comp.get("description", ""),
+                    "current_stock": running.get(part, 0.0),
+                    "needed": 0.0,
+                    "ending_stock": running.get(part, 0.0),
+                    "is_customer_supplied": is_cs,
+                }
+                part_summaries[part] = summary
+            elif not summary["description"] and comp.get("description", ""):
+                summary["description"] = comp.get("description", "")
+
             g = running.get(part, 0.0)
             f = needed_qty
             h = comp.get("prev_qty_cs", 0)
             j = g + h - f
             running[part] = j
+            summary["needed"] += f
+            summary["ending_stock"] = j
+            summary["is_customer_supplied"] = summary["is_customer_supplied"] or is_cs
 
-            if g >= 0 and j < 0:
-                shortage_amt = abs(j)
-                item_moq = moq.get(part, 0.0)
-                suggested = calc_suggested_qty(shortage_amt, item_moq)
-                shortage_item = {
-                    "part_number":     comp.get("part_number", ""),
-                    "description":     comp.get("description", ""),
-                    "shortage_amount": shortage_amt,
-                    "current_stock":   g,
-                    "needed":          f,
-                    "moq":             item_moq,
-                    "suggested_qty":   suggested,
-                    "decision":        "None",
-                    "is_customer_supplied": is_cs,
-                }
-                if is_cs:
-                    cs_shortages.append(shortage_item)
-                else:
-                    shortages.append(shortage_item)
+        for summary in part_summaries.values():
+            if summary["ending_stock"] >= 0:
+                continue
+
+            shortage_item = _build_shortage_item(summary, moq)
+            if summary["is_customer_supplied"]:
+                cs_shortages.append(shortage_item)
+            else:
+                shortages.append(shortage_item)
 
         has_shortage = bool(shortages) or bool(cs_shortages)
         results.append({
