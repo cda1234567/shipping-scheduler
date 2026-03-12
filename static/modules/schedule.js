@@ -717,7 +717,13 @@ async function handleShortageBadgeMoqEdit(badge) {
 
   const save = async () => {
     if (finished) return;
-    const moqValue = parseFloat(input.value);
+    const rawValue = String(input.value || "").trim();
+    if (!rawValue) {
+      cancel();
+      return;
+    }
+
+    const moqValue = parseFloat(rawValue);
     if (!Number.isFinite(moqValue) || moqValue <= 0) {
       showToast("MOQ 請輸入大於 0 的數字");
       input.focus();
