@@ -516,10 +516,12 @@ function roundShortageUiValue(value) {
 }
 
 function moqBadgeHtml(shortage) {
+  const partNumber = esc(shortage?.part_number || "");
+  const rawMoq = Number(shortage?.moq || 0);
   if (hasMoqValue(shortage)) {
-    return `<span class="moq-badge moq-badge-present">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
+    return `<span class="moq-badge moq-badge-present moq-badge-editable" data-part="${partNumber}" data-moq="${rawMoq}" title="雙擊可編輯 MOQ">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
   }
-  return '<span class="moq-badge moq-badge-missing">未寫 MOQ</span>';
+  return `<span class="moq-badge moq-badge-missing moq-badge-editable" data-part="${partNumber}" data-moq="0" title="雙擊可編輯 MOQ">未寫 MOQ</span>`;
 }
 
 function suggestedQtyHtml(shortage) {
@@ -581,6 +583,44 @@ async function saveManualMoq(partNumber, input, button) {
       button.textContent = "記住 MOQ";
     }
   }
+}
+
+async function handleShortageBadgeMoqEdit(badge) {
+  const partNumber = normalizePartKey(badge?.dataset.part);
+  if (!partNumber) {
+    showToast("料號不可空白");
+    return;
+  }
+
+  const currentMoq = Number(badge?.dataset.moq || 0);
+  const nextValue = prompt("請輸入 MOQ", currentMoq > 0 ? String(currentMoq) : "");
+  if (nextValue == null) return;
+
+  const moqValue = parseFloat(nextValue);
+  if (!Number.isFinite(moqValue) || moqValue <= 0) {
+    showToast("MOQ 請輸入大於 0 的數字");
+    return;
+  }
+
+  try {
+    await apiPatch("/api/main-file/moq", { part_number: partNumber, moq: moqValue });
+    _moq[partNumber] = moqValue;
+    recalculate();
+    updateStatusOnly();
+    showToast(`${partNumber} MOQ 已儲存`);
+  } catch (e) {
+    showToast("MOQ 儲存失敗: " + e.message);
+  }
+}
+
+function bindShortageMoqBadgeEditor(root) {
+  if (!root || root.dataset.moqBadgeBound === "1") return;
+  root.dataset.moqBadgeBound = "1";
+  root.addEventListener("dblclick", async event => {
+    const badge = event.target.closest(".moq-badge-editable");
+    if (!badge || !root.contains(badge)) return;
+    await handleShortageBadgeMoqEdit(badge);
+  });
 }
 
 function bindMoqEditors(root) {
@@ -939,6 +979,7 @@ function renderShortagePanel(shortages, csShortages = []) {
     });
   });
   bindMoqEditors(scroll);
+  bindShortageMoqBadgeEditor(scroll);
 }
 
 function shortageItemHtml(s, isCS) {
