@@ -592,25 +592,67 @@ async function handleShortageBadgeMoqEdit(badge) {
     return;
   }
 
-  const currentMoq = Number(badge?.dataset.moq || 0);
-  const nextValue = prompt("請輸入 MOQ", currentMoq > 0 ? String(currentMoq) : "");
-  if (nextValue == null) return;
+  if (badge.dataset.editing === "1") return;
 
-  const moqValue = parseFloat(nextValue);
-  if (!Number.isFinite(moqValue) || moqValue <= 0) {
-    showToast("MOQ 請輸入大於 0 的數字");
+  const currentMoq = Number(badge?.dataset.moq || 0);
+  badge.dataset.editing = "1";
+  const originalHtml = badge.innerHTML;
+  badge.innerHTML = `<input type="number" class="moq-inline-input" min="0" step="0.01" value="${currentMoq > 0 ? currentMoq : ""}" placeholder="MOQ">`;
+
+  const input = badge.querySelector(".moq-inline-input");
+  if (!input) {
+    delete badge.dataset.editing;
+    badge.innerHTML = originalHtml;
     return;
   }
 
-  try {
-    await apiPatch("/api/main-file/moq", { part_number: partNumber, moq: moqValue });
-    _moq[partNumber] = moqValue;
-    recalculate();
-    updateStatusOnly();
-    showToast(`${partNumber} MOQ 已儲存`);
-  } catch (e) {
-    showToast("MOQ 儲存失敗: " + e.message);
-  }
+  input.focus();
+  input.select();
+
+  let finished = false;
+  const cancel = () => {
+    if (finished) return;
+    finished = true;
+    delete badge.dataset.editing;
+    badge.innerHTML = originalHtml;
+  };
+
+  const save = async () => {
+    if (finished) return;
+    const moqValue = parseFloat(input.value);
+    if (!Number.isFinite(moqValue) || moqValue <= 0) {
+      showToast("MOQ 請輸入大於 0 的數字");
+      input.focus();
+      input.select();
+      return;
+    }
+
+    finished = true;
+    try {
+      await apiPatch("/api/main-file/moq", { part_number: partNumber, moq: moqValue });
+      _moq[partNumber] = moqValue;
+      recalculate();
+      updateStatusOnly();
+      showToast(`${partNumber} MOQ 已儲存`);
+    } catch (e) {
+      delete badge.dataset.editing;
+      badge.innerHTML = originalHtml;
+      showToast("MOQ 儲存失敗: " + e.message);
+    }
+  };
+
+  input.addEventListener("click", event => event.stopPropagation());
+  input.addEventListener("dblclick", event => event.stopPropagation());
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  input.addEventListener("blur", () => { void save(); });
 }
 
 function bindShortageMoqBadgeEditor(root) {
