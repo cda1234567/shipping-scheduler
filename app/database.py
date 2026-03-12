@@ -106,6 +106,16 @@ CREATE TABLE IF NOT EXISTS dispatch_records (
     dispatched_at TEXT    NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS dispatch_sessions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id        INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    previous_status TEXT    NOT NULL DEFAULT 'pending',
+    backup_path     TEXT    NOT NULL DEFAULT '',
+    main_file_path  TEXT    NOT NULL DEFAULT '',
+    dispatched_at   TEXT    NOT NULL DEFAULT '',
+    rolled_back_at  TEXT    NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id     INTEGER NOT NULL REFERENCES orders(id),
@@ -145,6 +155,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
@@ -749,6 +760,98 @@ def get_dispatch_records(order_id: int | None = None) -> list[dict]:
         else:
             rows = conn.execute("SELECT * FROM dispatch_records").fetchall()
     return [dict(r) for r in rows]
+
+
+def save_dispatch_session(
+    order_id: int,
+    previous_status: str,
+    backup_path: str,
+    main_file_path: str,
+    dispatched_at: str | None = None,
+) -> dict:
+    dispatched_at = dispatched_at or _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO dispatch_sessions(order_id, previous_status, backup_path, main_file_path, dispatched_at, rolled_back_at) "
+            "VALUES(?,?,?,?,?, '')",
+            (order_id, previous_status, backup_path, main_file_path, dispatched_at),
+        )
+        session_id = cur.lastrowid
+    return {
+        "id": session_id,
+        "order_id": order_id,
+        "previous_status": previous_status,
+        "backup_path": backup_path,
+        "main_file_path": main_file_path,
+        "dispatched_at": dispatched_at,
+        "rolled_back_at": "",
+    }
+
+
+def get_active_dispatch_session(order_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM dispatch_sessions "
+            "WHERE order_id=? AND rolled_back_at='' "
+            "ORDER BY id DESC LIMIT 1",
+            (order_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_active_dispatch_sessions() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM dispatch_sessions WHERE rolled_back_at='' ORDER BY id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dispatch_session_tail(session_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM dispatch_sessions WHERE rolled_back_at='' AND id>=? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_dispatch_sessions_rolled_back(session_ids: list[int]) -> int:
+    normalized_ids = []
+    for session_id in session_ids or []:
+        try:
+            normalized_ids.append(int(session_id))
+        except (TypeError, ValueError):
+            continue
+    if not normalized_ids:
+        return 0
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE dispatch_sessions SET rolled_back_at=? WHERE id IN ({placeholders}) AND rolled_back_at=''",
+            [_now()] + normalized_ids,
+        )
+    return int(cur.rowcount or 0)
+
+
+def delete_dispatch_records_for_orders(order_ids: list[int]) -> int:
+    normalized_ids = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    if not normalized_ids:
+        return 0
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"DELETE FROM dispatch_records WHERE order_id IN ({placeholders})",
+            normalized_ids,
+        )
+    return int(cur.rowcount or 0)
 
 
 def get_all_dispatched_consumption(after_snapshot_at: str = "") -> dict[str, float]:

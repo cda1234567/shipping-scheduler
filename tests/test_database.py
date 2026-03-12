@@ -299,6 +299,48 @@ class DispatchConsumptionTests(InMemoryDbTestCase):
         self.assertEqual(consumption, {"PART-1": 15.0})
 
 
+class DispatchSessionTests(InMemoryDbTestCase):
+    def test_get_dispatch_session_tail_returns_active_sessions_from_target(self):
+        for index, po in enumerate(("A", "B", "C"), start=1):
+            self.conn.execute(
+                "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+                "VALUES(?, 'MODEL', 'PCB', 1, 'dispatched', ?, ?, 'n', 'n', '')",
+                (po, index, index),
+            )
+
+        order_ids = [row["id"] for row in self.conn.execute("SELECT id FROM orders ORDER BY id").fetchall()]
+        first = db.save_dispatch_session(order_ids[0], "merged", "C:/b1.xlsx", "C:/main.xlsx", "2026-03-12T10:00:00")
+        second = db.save_dispatch_session(order_ids[1], "merged", "C:/b2.xlsx", "C:/main.xlsx", "2026-03-12T10:05:00")
+        third = db.save_dispatch_session(order_ids[2], "pending", "C:/b3.xlsx", "C:/main.xlsx", "2026-03-12T10:10:00")
+        db.mark_dispatch_sessions_rolled_back([third["id"]])
+
+        tail = db.get_dispatch_session_tail(second["id"])
+
+        self.assertEqual([row["order_id"] for row in tail], order_ids[:2][1:])
+        self.assertEqual([row["id"] for row in tail], [second["id"]])
+        self.assertEqual(db.get_active_dispatch_session(order_ids[0])["id"], first["id"])
+
+    def test_delete_dispatch_records_for_orders_removes_only_target_rows(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1', 'M1', 'PCB', 1, 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('2', 'M2', 'PCB', 1, 'dispatched', 1, 2, 'n', 'n', '')"
+        )
+        ids = [row["id"] for row in self.conn.execute("SELECT id FROM orders ORDER BY id").fetchall()]
+        db.save_dispatch_records(ids[0], [{"part_number": "PART-1", "needed_qty": 10}])
+        db.save_dispatch_records(ids[1], [{"part_number": "PART-2", "needed_qty": 20}])
+
+        deleted = db.delete_dispatch_records_for_orders([ids[1]])
+        remaining = db.get_dispatch_records()
+
+        self.assertEqual(deleted, 1)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["order_id"], ids[0])
+
+
 class BomOrderTests(InMemoryDbTestCase):
     def test_save_bom_order_updates_group_and_sort_order(self):
         db.save_bom_file({
