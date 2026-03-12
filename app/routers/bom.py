@@ -1,23 +1,60 @@
 from __future__ import annotations
+
 import io
-import uuid
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 from urllib.parse import quote
+from uuid import uuid4
 
 import openpyxl
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from ..config import BOM_DIR, cfg
-from ..services.bom_parser import parse_bom
-from ..services.xls_reader import open_workbook_any
 from .. import database as db
+from ..config import BOM_DIR, cfg
+from ..models import BomEditorSaveRequest
+from ..services.bom_editor import (
+    apply_bom_editor_changes,
+    backup_bom_file,
+    build_bom_storage_payload,
+    normalize_bom_record_to_editable,
+    parse_bom_for_storage,
+    prepare_uploaded_bom_file,
+)
+from ..services.xls_reader import open_workbook_any
 
 router = APIRouter()
+
+
+def _get_required_bom(bom_id: str) -> dict:
+    bom = db.get_bom_file(bom_id)
+    if not bom:
+        raise HTTPException(404, "找不到 BOM")
+    return bom
+
+
+def _ensure_editable_bom_record(bom: dict) -> dict:
+    normalized = normalize_bom_record_to_editable(bom)
+    if normalized == bom:
+        return normalized
+
+    parsed = parse_bom_for_storage(
+        path=normalized["filepath"],
+        bom_id=normalized["id"],
+        filename=normalized["filename"],
+        uploaded_at=normalized["uploaded_at"],
+        group_model=normalized.get("group_model", ""),
+        source_filename=normalized.get("source_filename", ""),
+        source_format=normalized.get("source_format", ""),
+        is_converted=bool(normalized.get("is_converted")),
+    )
+    db.save_bom_file(build_bom_storage_payload(parsed))
+    db.log_activity("bom_convert", f"{bom.get('filename') or bom['id']} 已轉為可編輯 xlsx")
+    return db.get_bom_file(bom["id"]) or normalized
 
 
 @router.post("/bom/upload")
@@ -29,123 +66,113 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
     for uf in files:
         ext = Path(uf.filename or "").suffix.lower()
         if ext not in {".xlsx", ".xls", ".xlsm"}:
-            errors.append(f"{uf.filename}: 不支援的格式")
+            errors.append(f"{uf.filename}: 僅支援 xlsx / xls / xlsm")
             continue
 
-        content = await uf.read()
-        bom_id = str(uuid.uuid4())
-        dest = BOM_DIR / f"{bom_id}{ext}"
-        dest.write_bytes(content)
-
+        bom_id = uuid4().hex
+        stored = None
         try:
-            bom = parse_bom(
-                path=str(dest),
+            stored = prepare_uploaded_bom_file(
                 bom_id=bom_id,
-                filename=uf.filename or dest.name,
-                uploaded_at=datetime.now().isoformat(),
+                upload_name=uf.filename or f"{bom_id}{ext}",
+                content=await uf.read(),
             )
-            if group_model:
-                bom.group_model = group_model
-        except Exception as e:
-            dest.unlink(missing_ok=True)
-            errors.append(f"{uf.filename}: {e}")
+            parsed = parse_bom_for_storage(
+                path=str(stored["filepath"]),
+                bom_id=bom_id,
+                filename=str(stored["filename"]),
+                uploaded_at=datetime.now().isoformat(),
+                group_model=group_model,
+                source_filename=str(stored["source_filename"]),
+                source_format=str(stored["source_format"]),
+                is_converted=bool(stored["is_converted"]),
+            )
+            db.save_bom_file(build_bom_storage_payload(parsed))
+            saved.append({
+                "id": parsed.id,
+                "filename": parsed.filename,
+                "source_filename": parsed.source_filename,
+                "source_format": parsed.source_format,
+                "is_converted": parsed.is_converted,
+                "po_number": parsed.po_number,
+                "model": parsed.model,
+                "pcb": parsed.pcb,
+                "order_qty": parsed.order_qty,
+                "components": len(parsed.components),
+                "customer_supplied_count": sum(1 for c in parsed.components if c.is_customer_supplied),
+            })
+        except Exception as exc:
+            if stored and stored.get("filepath"):
+                Path(str(stored["filepath"])).unlink(missing_ok=True)
+            for suffix in (".xlsx", ".xls", ".xlsm"):
+                (BOM_DIR / f"{bom_id}{suffix}").unlink(missing_ok=True)
+            errors.append(f"{uf.filename}: {exc}")
             continue
-
-        bom_dict = {
-            "id": bom_id,
-            "filename": bom.filename,
-            "filepath": str(dest),
-            "po_number": bom.po_number,
-            "model": bom.model,
-            "pcb": bom.pcb,
-            "group_model": bom.group_model,
-            "order_qty": bom.order_qty,
-            "uploaded_at": bom.uploaded_at,
-            "components": [c.dict() for c in bom.components],
-        }
-        db.save_bom_file(bom_dict)
-
-        saved.append({
-            "id": bom_id,
-            "filename": bom.filename,
-            "po_number": bom.po_number,
-            "model": bom.model,
-            "pcb": bom.pcb,
-            "order_qty": bom.order_qty,
-            "components": len(bom.components),
-            "customer_supplied_count": sum(1 for c in bom.components if c.is_customer_supplied),
-        })
 
     if saved:
-        db.log_activity("bom_upload", f"上傳 {len(saved)} 個 BOM" + (f"（{group_model}）" if group_model else ""))
+        converted_count = sum(1 for item in saved if item["is_converted"])
+        detail = f"上傳 {len(saved)} 份 BOM"
+        if group_model:
+            detail += f"（group_model: {group_model}）"
+        if converted_count:
+            detail += f"，其中 {converted_count} 份 xls 已轉為 xlsx"
+        db.log_activity("bom_upload", detail)
 
     return {"saved": saved, "errors": errors}
 
 
 @router.get("/bom/list")
 async def list_bom_files():
-    """回傳以機種分組的 BOM 清單。"""
     bom_files = db.get_bom_files()
 
     groups: dict[str, list] = {}
-    for b in bom_files:
-        m = b["group_model"] or b["model"] or "（未指定機種）"
-        if m not in groups:
-            groups[m] = []
-        comps = db.get_bom_components(b["id"])
-        cs_count = sum(1 for c in comps if c.get("is_customer_supplied"))
-        groups[m].append({
-            "id":          b["id"],
-            "filename":    b["filename"],
-            "po_number":   b["po_number"],
-            "model":       b["model"],
-            "pcb":         b["pcb"],
-            "order_qty":   b["order_qty"],
-            "components":  len(comps),
-            "uploaded_at": b["uploaded_at"],
+    for bom in bom_files:
+        model_key = bom["group_model"] or bom["model"] or "未指定機種"
+        groups.setdefault(model_key, [])
+        components = db.get_bom_components(bom["id"])
+        cs_count = sum(1 for comp in components if comp.get("is_customer_supplied"))
+        groups[model_key].append({
+            "id": bom["id"],
+            "filename": bom["filename"],
+            "source_filename": bom.get("source_filename") or bom["filename"],
+            "source_format": bom.get("source_format") or Path(bom["filename"]).suffix.lower(),
+            "is_converted": bool(bom.get("is_converted")),
+            "po_number": bom["po_number"],
+            "model": bom["model"],
+            "pcb": bom["pcb"],
+            "order_qty": bom["order_qty"],
+            "components": len(components),
+            "uploaded_at": bom["uploaded_at"],
             "customer_supplied_count": cs_count,
         })
 
-    result = [{"model": m, "items": items} for m, items in groups.items()]
-    return {"groups": result}
+    return {"groups": [{"model": model, "items": items} for model, items in groups.items()]}
 
 
 @router.delete("/bom/{bom_id}")
 async def delete_bom(bom_id: str):
-    bom_files = db.get_bom_files()
-    found = next((b for b in bom_files if b["id"] == bom_id), None)
-    if not found:
-        raise HTTPException(404, "找不到此 BOM")
-
-    Path(found["filepath"]).unlink(missing_ok=True)
+    bom = _get_required_bom(bom_id)
+    Path(bom["filepath"]).unlink(missing_ok=True)
     db.delete_bom_file(bom_id)
-    db.log_activity("bom_delete", f"刪除 BOM {found['filename']}")
+    db.log_activity("bom_delete", f"刪除 BOM {bom['filename']}")
     return {"ok": True}
 
 
 @router.get("/bom/data")
 async def get_bom_data():
-    """回傳以 model 為 key 的合併 BOM。"""
     bom_map = db.get_all_bom_components_by_model()
-    result = {}
-    for model_key, comps in bom_map.items():
-        result[model_key] = {"model": model_key, "components": comps}
-    return result
+    return {model: {"model": model, "components": components} for model, components in bom_map.items()}
 
 
 @router.get("/bom/{bom_id}/file")
 async def get_bom_file(bom_id: str):
-    """直接下載/開啟單一 BOM 檔案。"""
-    bom_files = db.get_bom_files()
-    found = next((b for b in bom_files if b["id"] == bom_id), None)
-    if not found:
-        raise HTTPException(404, "找不到此 BOM")
-    fpath = Path(found["filepath"])
-    if not fpath.exists():
-        raise HTTPException(404, "BOM 檔案不存在於磁碟")
+    bom = _get_required_bom(bom_id)
+    file_path = Path(bom["filepath"])
+    if not file_path.exists():
+        raise HTTPException(404, "BOM 檔案不存在")
     return FileResponse(
-        path=str(fpath),
-        filename=found["filename"] or fpath.name,
+        path=str(file_path),
+        filename=bom["filename"] or file_path.name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -156,18 +183,17 @@ class BomLookupRequest(BaseModel):
 
 @router.post("/bom/lookup")
 async def lookup_bom_files(req: BomLookupRequest):
-    """依機種名稱查詢 BOM 檔案 metadata（不下載）。"""
     bom_files = db.get_bom_files_by_models(req.models)
     return {
         "files": [
             {
-                "id": b["id"],
-                "filename": b["filename"],
-                "model": b["model"],
-                "group_model": b["group_model"],
+                "id": bom["id"],
+                "filename": bom["filename"],
+                "model": bom["model"],
+                "group_model": bom["group_model"],
             }
-            for b in bom_files
-            if Path(b["filepath"]).exists()
+            for bom in bom_files
+            if Path(bom["filepath"]).exists()
         ]
     }
 
@@ -178,61 +204,107 @@ class BomDownloadRequest(BaseModel):
 
 @router.post("/bom/download")
 async def download_bom_files(req: BomDownloadRequest):
-    """依機種名稱下載對應的 BOM 檔案（多檔打包 zip）。"""
     if not req.models:
-        raise HTTPException(400, "請提供機種名稱")
+        raise HTTPException(400, "請提供要下載的機種")
 
     bom_files = db.get_bom_files_by_models(req.models)
     if not bom_files:
-        raise HTTPException(404, "找不到對應的 BOM 檔案")
+        raise HTTPException(404, "找不到對應的 BOM")
 
-    # 過濾掉磁碟上不存在的檔案
-    valid = [(b, Path(b["filepath"])) for b in bom_files if Path(b["filepath"]).exists()]
+    valid = [(bom, Path(bom["filepath"])) for bom in bom_files if Path(bom["filepath"]).exists()]
     if not valid:
-        raise HTTPException(404, "BOM 檔案不存在於磁碟")
+        raise HTTPException(404, "BOM 檔案不存在")
 
-    # 單檔直接回傳
     if len(valid) == 1:
-        bom, fpath = valid[0]
+        bom, file_path = valid[0]
         return FileResponse(
-            path=str(fpath),
-            filename=bom["filename"] or fpath.name,
+            path=str(file_path),
+            filename=bom["filename"] or file_path.name,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    # 多檔打包 zip
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         seen_names: dict[str, int] = {}
-        for bom, fpath in valid:
-            name = bom["filename"] or fpath.name
-            if name in seen_names:
-                seen_names[name] += 1
-                stem, ext = Path(name).stem, Path(name).suffix
-                name = f"{stem}_{seen_names[name]}{ext}"
-            else:
-                seen_names[name] = 0
-            zf.write(str(fpath), name)
-    buf.seek(0)
+        for bom, file_path in valid:
+            name = bom["filename"] or file_path.name
+            seen_names[name] = seen_names.get(name, -1) + 1
+            if seen_names[name] > 0:
+                stem, suffix = Path(name).stem, Path(name).suffix
+                name = f"{stem}_{seen_names[name]}{suffix}"
+            zf.write(str(file_path), name)
+    zip_buffer.seek(0)
 
     return StreamingResponse(
-        buf,
+        zip_buffer,
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=BOM.zip"},
     )
 
 
-# ── Dispatch download: write supplements into BOM copies ──────────────────────
+@router.get("/bom/{bom_id}/editor")
+async def get_bom_editor(bom_id: str):
+    bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
+    parsed = parse_bom_for_storage(
+        path=bom["filepath"],
+        bom_id=bom["id"],
+        filename=bom["filename"],
+        uploaded_at=bom["uploaded_at"],
+        group_model=bom.get("group_model", ""),
+        source_filename=bom.get("source_filename", ""),
+        source_format=bom.get("source_format", ""),
+        is_converted=bool(bom.get("is_converted")),
+    )
+    payload = build_bom_storage_payload(parsed)
+    payload["component_count"] = len(parsed.components)
+    return payload
+
+
+@router.put("/bom/{bom_id}/editor")
+async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
+    bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
+    file_path = Path(bom["filepath"])
+    if not file_path.exists():
+        raise HTTPException(404, "BOM 檔案不存在")
+
+    backup_path = backup_bom_file(str(file_path))
+    try:
+        apply_bom_editor_changes(str(file_path), req)
+        parsed = parse_bom_for_storage(
+            path=str(file_path),
+            bom_id=bom["id"],
+            filename=bom["filename"],
+            uploaded_at=bom["uploaded_at"],
+            group_model=req.group_model.strip(),
+            source_filename=bom.get("source_filename", ""),
+            source_format=bom.get("source_format", ""),
+            is_converted=bool(bom.get("is_converted")),
+        )
+        db.save_bom_file(build_bom_storage_payload(parsed))
+    except Exception as exc:
+        shutil.copy2(backup_path, file_path)
+        raise HTTPException(400, f"儲存 BOM 失敗：{exc}")
+
+    db.log_activity(
+        "bom_edit",
+        f"更新 BOM {parsed.filename}，{len(parsed.components)} 列元件已同步回正式檔",
+    )
+    return {
+        "ok": True,
+        "filename": parsed.filename,
+        "components": len(parsed.components),
+        "backup_path": backup_path,
+    }
+
 
 class BomDispatchDownloadRequest(BaseModel):
     bom_ids: List[str]
-    supplements: Dict[str, float]  # {part_number: qty}
+    supplements: Dict[str, float]
 
 
 def _write_supplements_to_ws(ws, supplements: dict[str, float]):
-    """將補料數量寫入 BOM 工作表的 H 欄。"""
-    part_col = cfg("excel.bom_part_col", 2) + 1   # 0-based → 1-based
-    h_col = cfg("excel.bom_h_col", 7) + 1         # 0-based → 1-based
+    part_col = cfg("excel.bom_part_col", 2) + 1
+    h_col = cfg("excel.bom_h_col", 7) + 1
     data_start = cfg("excel.bom_data_start_row", 5)
 
     written = 0
@@ -246,64 +318,56 @@ def _write_supplements_to_ws(ws, supplements: dict[str, float]):
 
 @router.post("/bom/dispatch-download")
 async def dispatch_download_bom(req: BomDispatchDownloadRequest):
-    """將補料數量寫入 BOM 副本的 H 欄後回傳下載。"""
     if not req.bom_ids:
         raise HTTPException(400, "請提供 BOM ID")
 
-    all_boms = db.get_bom_files()
-    id_set = set(req.bom_ids)
-    target_boms = [b for b in all_boms if b["id"] in id_set]
+    target_ids = set(req.bom_ids)
+    target_boms = [bom for bom in db.get_bom_files() if bom["id"] in target_ids]
     if not target_boms:
-        raise HTTPException(404, "找不到指定的 BOM 檔案")
+        raise HTTPException(404, "找不到指定的 BOM")
 
-    norm_suppl = {k.strip().upper(): v for k, v in req.supplements.items()}
-
+    supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
     output_files: list[tuple[str, io.BytesIO]] = []
 
-    for bf in target_boms:
-        src = Path(bf["filepath"])
+    for bom in target_boms:
+        src = Path(bom["filepath"])
         if not src.exists():
             continue
 
         ext = src.suffix.lower()
-        out_name = bf["filename"] or src.name
-
+        output_name = bom["filename"] or src.name
         if ext == ".xls":
             wb = open_workbook_any(str(src))
-            out_name = str(Path(out_name).with_suffix(".xlsx"))
+            output_name = str(Path(output_name).with_suffix(".xlsx"))
         else:
-            is_macro = ext == ".xlsm"
-            wb = openpyxl.load_workbook(str(src), keep_vba=is_macro)
+            wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
-        _write_supplements_to_ws(wb.active, norm_suppl)
-
-        buf = io.BytesIO()
-        wb.save(buf)
+        _write_supplements_to_ws(wb.active, supplements)
+        buffer = io.BytesIO()
+        wb.save(buffer)
         wb.close()
-        buf.seek(0)
-        output_files.append((out_name, buf))
+        buffer.seek(0)
+        output_files.append((output_name, buffer))
 
     if not output_files:
-        raise HTTPException(404, "沒有可用的 BOM 檔案")
+        raise HTTPException(404, "找不到可下載的 BOM 檔案")
 
-    # 單檔直接回傳
     if len(output_files) == 1:
-        name, buf = output_files[0]
+        name, buffer = output_files[0]
         return StreamingResponse(
-            buf,
+            buffer,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"},
         )
 
-    # 多檔打包 zip
-    zip_buf = io.BytesIO()
-    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name, buf in output_files:
-            zf.writestr(name, buf.read())
-    zip_buf.seek(0)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, buffer in output_files:
+            zf.writestr(name, buffer.read())
+    zip_buffer.seek(0)
 
     return StreamingResponse(
-        zip_buf,
+        zip_buffer,
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=BOM.zip"},
     )

@@ -147,10 +147,12 @@ body {
   max-height: 80vh; display: flex; flex-direction: column;
   box-shadow: 0 20px 60px rgba(0,0,0,.25);
 }
+.modal-box-wide { width: min(1180px, 96vw); }
 .modal-header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 16px 20px; border-bottom: 1px solid #e5e5ea;
 }
+.modal-subtitle { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.4; }
 .modal-close-btn {
   background: none; border: none; font-size: 22px; cursor: pointer;
   color: #8e8e93; line-height: 1;
@@ -239,6 +241,7 @@ body {
 .tag-pending { background: #f3f4f6; color: #6b7280; }
 .tag-merged { background: #dbeafe; color: #2563eb; }
 .tag-cs { background: #fef3c7; color: #92400e; margin-left: 4px; }
+.tag-converted { background: #dcfce7; color: #166534; }
 
 /* ── BOM tab ────────────────────────────── */
 #tab-bom { display: none; flex-direction: column; overflow: hidden; padding: 16px; gap: 12px; }
@@ -274,9 +277,86 @@ body {
 .bom-item-row:last-child { border-bottom: none; }
 .bom-item-row.sortable-ghost { opacity: .4; }
 .drag-handle-item { color: #c7c7cc; font-size: 14px; cursor: grab; flex-shrink: 0; }
+.bom-item-main { flex: 1; min-width: 0; }
+.bom-item-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .bom-item-filename { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #3c3c43; }
+.bom-item-sub { font-size: 11px; color: #8e8e93; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bom-item-info { font-size: 11px; color: #8e8e93; white-space: nowrap; }
+.bom-item-actions { display: flex; align-items: center; gap: 6px; }
 .bom-del { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 14px; flex-shrink: 0; }
+
+.editor-note {
+  background: #f8fafc;
+  border: 1px solid #dbeafe;
+  color: #1d4ed8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.bom-editor-form { display: flex; flex-direction: column; gap: 10px; }
+.bom-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.bom-editor-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #374151; }
+.bom-editor-grid label span { font-weight: 600; }
+.bom-editor-grid input {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: #fff;
+}
+.bom-editor-grid input[readonly] { background: #f3f4f6; color: #6b7280; }
+.bom-editor-grid-wide { grid-column: span 2; }
+
+.bom-editor-table-wrap {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 52vh;
+}
+.bom-editor-table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.bom-editor-table thead th {
+  position: sticky;
+  top: 0;
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 700;
+  z-index: 1;
+}
+.bom-editor-table th,
+.bom-editor-table td {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+.bom-editor-table tbody tr:nth-child(even) { background: #fcfcfd; }
+.bom-cell-input {
+  width: 100%;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #fff;
+}
+.bom-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+}
+.bom-auto-tag { font-size: 11px; color: #94a3b8; }
 
 /* ── Completed tab ──────────────────────── */
 #tab-completed { display: none; flex-direction: column; overflow: hidden; }
@@ -352,3 +432,19 @@ input[type="file"] { display: none; }
   white-space: nowrap;
 }
 #toast.show { opacity: 1; }
+
+@media (max-width: 1100px) {
+  #sidebar { display: none; }
+  #right-panel { display: none; }
+}
+
+@media (max-width: 768px) {
+  #tabs { overflow-x: auto; }
+  #schedule-toolbar, #completed-toolbar { flex-wrap: wrap; }
+  #schedule-scroll, #completed-scroll, #right-scroll { padding: 10px; }
+  .bom-editor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bom-editor-grid-wide { grid-column: span 2; }
+  .bom-item-row { align-items: flex-start; flex-wrap: wrap; }
+  .bom-item-info { width: 100%; }
+  .bom-item-actions { width: 100%; justify-content: flex-end; }
+}

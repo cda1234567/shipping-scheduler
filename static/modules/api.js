@@ -32,6 +32,14 @@ export async function apiPatch(path, body = {}) {
   });
 }
 
+export async function apiPut(path, body = {}) {
+  return apiJson(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // ── Toast ────────────────────────────────────────────────────────────────────
 export function showToast(msg) {
   const t = document.getElementById("toast");

@@ -57,6 +57,29 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(snapshot["AAA"]["stock_qty"], 0)
         self.assertEqual(snapshot["BBB"]["stock_qty"], 5)
 
+    def test_save_bom_file_keeps_source_metadata(self):
+        db.save_bom_file({
+            "id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/formal.xlsx",
+            "source_filename": "legacy.xls",
+            "source_format": ".xls",
+            "is_converted": True,
+            "po_number": "123",
+            "model": "MODEL-A",
+            "pcb": "PCB-A",
+            "group_model": "MODEL-A",
+            "order_qty": 10,
+            "uploaded_at": "2026-03-12T10:00:00",
+            "components": [],
+        })
+
+        bom = db.get_bom_file("bom-1")
+
+        self.assertEqual(bom["source_filename"], "legacy.xls")
+        self.assertEqual(bom["source_format"], ".xls")
+        self.assertEqual(bom["is_converted"], 1)
+
 
 class OrderReloadTests(InMemoryDbTestCase):
     def test_upsert_orders_clears_pending_decisions_before_rebuild(self):

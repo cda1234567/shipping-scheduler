@@ -115,7 +115,7 @@
       <div id="bom-upload-area">
         <div style="font-size:28px">📂</div>
         <p>點擊或拖曳 BOM 檔案至此上傳（可多選）</p>
-        <p style="font-size:11px;color:#c7c7cc">支援 .xlsx / .xls</p>
+        <p style="font-size:11px;color:#c7c7cc">支援 .xlsx / .xls / .xlsm；.xls 會自動轉成正式 .xlsx</p>
         <input type="file" id="bom-file-input" accept=".xlsx,.xls,.xlsm" multiple>
       </div>
       <div id="bom-group-wrap">
@@ -317,6 +317,76 @@ init();
     <div id="modal-footer" class="modal-footer">
       <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- BOM 編輯 Modal -->
+<div id="bom-editor-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box modal-box-wide">
+    <div class="modal-header">
+      <div>
+        <h3 id="bom-editor-title" style="margin:0;font-size:16px">編輯 BOM</h3>
+        <div id="bom-editor-source" class="modal-subtitle"></div>
+      </div>
+      <button id="bom-editor-close" class="modal-close-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="bom-editor-convert-note" class="editor-note" style="display:none">
+        這份 BOM 原本是 `.xls`，系統已自動轉成正式 `.xlsx` 後再同步編輯。
+      </div>
+      <form id="bom-editor-form" class="bom-editor-form" onsubmit="return false;">
+        <div class="bom-editor-grid">
+          <label>
+            <span>PO#</span>
+            <input id="bom-editor-po" type="number" min="0" step="1">
+          </label>
+          <label>
+            <span>訂單數量</span>
+            <input id="bom-editor-order-qty" type="number" min="0" step="0.01">
+          </label>
+          <label>
+            <span>機種</span>
+            <input id="bom-editor-model" type="text">
+          </label>
+          <label>
+            <span>PCB</span>
+            <input id="bom-editor-pcb" type="text">
+          </label>
+          <label class="bom-editor-grid-wide">
+            <span>系統 group_model</span>
+            <input id="bom-editor-group-model" type="text" placeholder="例如 T7U,T7U-U/A">
+          </label>
+          <label>
+            <span>來源格式</span>
+            <input id="bom-editor-source-format" type="text" readonly>
+          </label>
+        </div>
+        <div class="editor-note" style="margin-top:10px">
+          客供判斷會依描述關鍵字重新計算；此版本先支援編輯既有列，不做任意插列刪列。
+        </div>
+        <div class="bom-editor-table-wrap">
+          <table class="bom-editor-table">
+            <thead>
+              <tr>
+                <th>列號</th>
+                <th>料號</th>
+                <th>說明</th>
+                <th>每板用量</th>
+                <th>需求量</th>
+                <th>H 欄 / 上批餘料</th>
+                <th>跳過</th>
+                <th>客供</th>
+              </tr>
+            </thead>
+            <tbody id="bom-editor-table-body"></tbody>
+          </table>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button id="bom-editor-save" class="btn btn-primary btn-sm">儲存並同步正式 BOM</button>
+      <button id="bom-editor-cancel" class="btn btn-secondary btn-sm">取消</button>
     </div>
   </div>
 </div>

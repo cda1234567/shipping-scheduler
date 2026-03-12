@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app.models import BomComponent, BomFile
 from main import app
 
 
@@ -102,3 +103,45 @@ class ApiTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["stock"]["AAA"], 0.0)
         self.assertEqual(data["stock"]["BBB"], 5)
+
+    def test_bom_editor_returns_source_metadata(self):
+        bom_record = {
+            "id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/formal.xlsx",
+            "source_filename": "legacy.xls",
+            "source_format": ".xls",
+            "is_converted": 1,
+            "group_model": "MODEL-A",
+            "uploaded_at": "2026-03-12T08:00:00",
+        }
+        parsed = BomFile(
+            id="bom-1",
+            filename="formal.xlsx",
+            path="C:/formal.xlsx",
+            po_number=123,
+            model="MODEL-A",
+            pcb="PCB-A",
+            group_model="MODEL-A",
+            order_qty=10,
+            uploaded_at="2026-03-12T08:00:00",
+            source_filename="legacy.xls",
+            source_format=".xls",
+            is_converted=True,
+            components=[
+                BomComponent(part_number="PART-1", source_row=5),
+            ],
+        )
+
+        with patch("app.routers.bom._get_required_bom", return_value=bom_record), \
+             patch("app.routers.bom._ensure_editable_bom_record", return_value=bom_record), \
+             patch("app.routers.bom.parse_bom_for_storage", return_value=parsed):
+            response = self.client.get("/api/bom/bom-1/editor")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["filename"], "formal.xlsx")
+        self.assertEqual(data["source_filename"], "legacy.xls")
+        self.assertEqual(data["source_format"], ".xls")
+        self.assertTrue(data["is_converted"])
+        self.assertEqual(data["component_count"], 1)

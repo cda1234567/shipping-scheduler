@@ -59,6 +59,9 @@ CREATE TABLE IF NOT EXISTS bom_files (
     id          TEXT PRIMARY KEY,
     filename    TEXT NOT NULL DEFAULT '',
     filepath    TEXT NOT NULL DEFAULT '',
+    source_filename TEXT NOT NULL DEFAULT '',
+    source_format   TEXT NOT NULL DEFAULT '',
+    is_converted    INTEGER NOT NULL DEFAULT 0,
     po_number   TEXT NOT NULL DEFAULT '',
     model       TEXT NOT NULL DEFAULT '',
     pcb         TEXT NOT NULL DEFAULT '',
@@ -136,6 +139,13 @@ def init_db():
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
         if "folder" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
+        bom_cols = [r[1] for r in conn.execute("PRAGMA table_info(bom_files)").fetchall()]
+        if "source_filename" not in bom_cols:
+            conn.execute("ALTER TABLE bom_files ADD COLUMN source_filename TEXT NOT NULL DEFAULT ''")
+        if "source_format" not in bom_cols:
+            conn.execute("ALTER TABLE bom_files ADD COLUMN source_format TEXT NOT NULL DEFAULT ''")
+        if "is_converted" not in bom_cols:
+            conn.execute("ALTER TABLE bom_files ADD COLUMN is_converted INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager
@@ -397,11 +407,24 @@ def save_bom_file(bom: dict):
     """儲存一個 BOM 檔案及其 components。"""
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO bom_files(id, filename, filepath, po_number, model, pcb, group_model, order_qty, uploaded_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (bom["id"], bom["filename"], bom["filepath"], str(bom.get("po_number", "")),
-             bom["model"], bom.get("pcb", ""), bom.get("group_model", ""),
-             bom.get("order_qty", 0), bom.get("uploaded_at", "")),
+            "INSERT OR REPLACE INTO bom_files("
+            "id, filename, filepath, source_filename, source_format, is_converted, "
+            "po_number, model, pcb, group_model, order_qty, uploaded_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                bom["id"],
+                bom["filename"],
+                bom["filepath"],
+                bom.get("source_filename", bom.get("filename", "")),
+                bom.get("source_format", Path(str(bom.get("filename", ""))).suffix.lower()),
+                int(bool(bom.get("is_converted", False))),
+                str(bom.get("po_number", "")),
+                bom["model"],
+                bom.get("pcb", ""),
+                bom.get("group_model", ""),
+                bom.get("order_qty", 0),
+                bom.get("uploaded_at", ""),
+            ),
         )
         # 清除舊 components
         conn.execute("DELETE FROM bom_components WHERE bom_file_id=?", (bom["id"],))
@@ -414,6 +437,12 @@ def save_bom_file(bom: dict):
                  c.get("prev_qty_cs", 0), int(c.get("is_dash", False)),
                  int(c.get("is_customer_supplied", False))),
             )
+
+
+def get_bom_file(bom_id: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM bom_files WHERE id=?", (bom_id,)).fetchone()
+    return dict(row) if row else None
 
 
 def get_bom_files() -> list[dict]:

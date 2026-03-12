@@ -78,7 +78,7 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
 
     # Row data_start+（index data_start-1）
     components: list[BomComponent] = []
-    for row_vals in all_rows[data_start - 1:]:
+    for row_number, row_vals in enumerate(all_rows[data_start - 1:], start=data_start):
         if not row_vals or len(row_vals) <= f_col:
             continue
 
@@ -103,6 +103,8 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
             prev_qty_cs=prev_cs,
             is_dash=is_dash_flag,
             is_customer_supplied=_is_customer_supplied(desc),
+            source_row=row_number,
+            source_sheet=ws.title,
         ))
 
     return BomFile(

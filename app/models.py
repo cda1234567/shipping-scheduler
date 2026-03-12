@@ -44,6 +44,8 @@ class BomComponent(BaseModel):
     prev_qty_cs: float = 0.0
     is_dash: bool = False
     is_customer_supplied: bool = False
+    source_row: Optional[int] = None
+    source_sheet: str = ""
 
 
 class BomFile(BaseModel):
@@ -57,6 +59,28 @@ class BomFile(BaseModel):
     order_qty: float = 0.0
     components: list[BomComponent] = Field(default_factory=list)
     uploaded_at: str = ""
+    source_filename: str = ""
+    source_format: str = ""
+    is_converted: bool = False
+
+
+class BomEditorComponentUpdate(BaseModel):
+    source_row: int
+    part_number: str
+    description: str = ""
+    qty_per_board: float = 0.0
+    needed_qty: float = 0.0
+    prev_qty_cs: float = 0.0
+    is_dash: bool = False
+
+
+class BomEditorSaveRequest(BaseModel):
+    po_number: int = 0
+    model: str = ""
+    pcb: str = ""
+    group_model: str = ""
+    order_qty: float = 0.0
+    components: list[BomEditorComponentUpdate] = Field(default_factory=list)
 
 
 # ── Schedule row（排程表解析用） ──────────────────────────────────────────────
