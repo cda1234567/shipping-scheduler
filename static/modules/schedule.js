@@ -400,20 +400,52 @@ function buildModalHeaderOverrides() {
   return overrides;
 }
 
-function buildModalCarryOversByModel(shortagesByModel, csShortagesByModel) {
+function buildModalCarryOversByModel(targets) {
   const carryOvers = {};
-  const modelKeys = [...new Set([...Object.keys(shortagesByModel || {}), ...Object.keys(csShortagesByModel || {})])];
-  modelKeys.forEach(model => {
-    const modelKey = normalizePartKey(model);
+  const running = {};
+
+  Object.entries(_stock || {}).forEach(([part, qty]) => {
+    const key = normalizePartKey(part);
+    if (!key) return;
+    running[key] = Number(qty || 0);
+  });
+
+  Object.entries(_dispatchedConsumption || {}).forEach(([part, consumed]) => {
+    const key = normalizePartKey(part);
+    running[key] = Number(running[key] || 0) - Number(consumed || 0);
+  });
+
+  const normalizedBomMap = {};
+  Object.entries(_bomData || {}).forEach(([model, entry]) => {
+    normalizedBomMap[normalizePartKey(model)] = entry?.components || [];
+  });
+
+  (targets || []).forEach(target => {
+    const modelKey = normalizePartKey(target?.model);
     if (!modelKey) return;
+
+    const components = normalizedBomMap[modelKey] || [];
     const partMap = {};
-    [...(shortagesByModel[model] || []), ...(csShortagesByModel[model] || [])].forEach(item => {
-      const part = normalizePartKey(item?.part_number);
+
+    components.forEach(component => {
+      if (component?.is_dash || Number(component?.needed_qty || 0) <= 0) return;
+
+      const part = normalizePartKey(component?.part_number);
       if (!part) return;
-      partMap[part] = roundShortageUiValue(item.current_stock);
+
+      if (!(part in partMap)) {
+        partMap[part] = roundShortageUiValue(running[part] ?? 0);
+      }
+
+      const currentStock = Number(running[part] || 0);
+      const neededQty = Number(component?.needed_qty || 0);
+      const prevQty = Number(component?.prev_qty_cs || 0);
+      running[part] = currentStock + prevQty - neededQty;
     });
+
     carryOvers[modelKey] = partMap;
   });
+
   return carryOvers;
 }
 
@@ -464,7 +496,7 @@ async function showShortageModal(targets) {
   });
 
   // 組內按料號排序
-  _modalCarryOversByModel = buildModalCarryOversByModel(shortagesByModel, csShortagesByModel);
+  _modalCarryOversByModel = buildModalCarryOversByModel(targets);
 
   for (const items of Object.values(shortagesByModel))
     items.sort(compareShortageItems);
@@ -559,6 +591,7 @@ function closeShortageModal() {
   document.getElementById("shortage-modal").style.display = "none";
   _modalTargets = [];
   _modalBomFiles = [];
+  _modalCarryOversByModel = {};
 }
 
 function hasMoqValue(shortage) {
