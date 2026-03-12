@@ -375,6 +375,7 @@ async function handleBatchMerge() {
 // ── Shortage Modal ────────────────────────────────────────────────────────────
 let _modalTargets = [];
 let _modalBomFiles = [];
+let _modalCarryOversByModel = {};
 
 function getModalTargetForBomFile(bomFile) {
   const keys = new Set();
@@ -395,6 +396,34 @@ function buildModalHeaderOverrides() {
     const poNumber = String(target?.po_number || "").trim();
     if (!poNumber) return;
     overrides[bomFile.id] = { po_number: poNumber };
+  });
+  return overrides;
+}
+
+function buildModalCarryOversByModel(shortagesByModel, csShortagesByModel) {
+  const carryOvers = {};
+  const modelKeys = [...new Set([...Object.keys(shortagesByModel || {}), ...Object.keys(csShortagesByModel || {})])];
+  modelKeys.forEach(model => {
+    const modelKey = normalizePartKey(model);
+    if (!modelKey) return;
+    const partMap = {};
+    [...(shortagesByModel[model] || []), ...(csShortagesByModel[model] || [])].forEach(item => {
+      const part = normalizePartKey(item?.part_number);
+      if (!part) return;
+      partMap[part] = roundShortageUiValue(item.current_stock);
+    });
+    carryOvers[modelKey] = partMap;
+  });
+  return carryOvers;
+}
+
+function buildModalCarryOverOverrides() {
+  const overrides = {};
+  _modalBomFiles.forEach(bomFile => {
+    const target = getModalTargetForBomFile(bomFile);
+    const modelKey = normalizePartKey(target?.model);
+    if (!modelKey) return;
+    overrides[bomFile.id] = { ...(_modalCarryOversByModel[modelKey] || {}) };
   });
   return overrides;
 }
@@ -435,6 +464,8 @@ async function showShortageModal(targets) {
   });
 
   // 組內按料號排序
+  _modalCarryOversByModel = buildModalCarryOversByModel(shortagesByModel, csShortagesByModel);
+
   for (const items of Object.values(shortagesByModel))
     items.sort(compareShortageItems);
   for (const items of Object.values(csShortagesByModel))
@@ -777,6 +808,7 @@ async function handleModalDownloadBom() {
   const modalDecisions = _collectModalDecisions();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   const headerOverrides = buildModalHeaderOverrides();
+  const carryOverOverrides = buildModalCarryOverOverrides();
 
   try {
     await persistDecisionsForOrders(modalDecisions, targetOrderIds);
@@ -788,7 +820,12 @@ async function handleModalDownloadBom() {
     const resp = await fetch("/api/bom/dispatch-download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bom_ids: bomIds, supplements, header_overrides: headerOverrides }),
+      body: JSON.stringify({
+        bom_ids: bomIds,
+        supplements,
+        header_overrides: headerOverrides,
+        carry_overs: carryOverOverrides,
+      }),
     });
     if (!resp.ok) { showToast("BOM 下載失敗"); btn.disabled = false; btn.textContent = "確認補料並下載 BOM"; return; }
 

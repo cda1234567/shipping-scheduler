@@ -218,6 +218,10 @@ class ApiTests(unittest.TestCase):
             ws.cell(row=7, column=6).value = 30
             ws.cell(row=7, column=7).value = 0
             ws.cell(row=7, column=8).value = 0
+            ws.cell(row=8, column=3).value = "PART-4"
+            ws.cell(row=8, column=6).value = 40
+            ws.cell(row=8, column=7).value = 12
+            ws.cell(row=8, column=8).value = 5
             wb.save(bom_path)
             wb.close()
 
@@ -238,16 +242,19 @@ class ApiTests(unittest.TestCase):
                     "bom_ids": ["bom-1"],
                     "supplements": {"PART-1": 7},
                     "header_overrides": {"bom-1": {"po_number": "4500059234"}},
+                    "carry_overs": {"bom-1": {"PART-1": 135, "PART-2": 246}},
                 })
 
         self.assertEqual(response.status_code, 200)
         downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
         ws = downloaded.active
         self.assertEqual(ws.cell(row=1, column=7).value, "製單號碼M/O:4500059234")
-        self.assertEqual(ws.cell(row=5, column=7).value, 3)
+        self.assertEqual(ws.cell(row=5, column=7).value, 135)
         self.assertEqual(ws.cell(row=5, column=8).value, 7)
-        self.assertEqual(ws.cell(row=6, column=7).value, 0)
+        self.assertEqual(ws.cell(row=6, column=7).value, 246)
         self.assertEqual(ws.cell(row=6, column=8).value, 0)
         self.assertEqual(ws.cell(row=7, column=7).value, 0)
         self.assertEqual(ws.cell(row=7, column=8).value, 0)
+        self.assertEqual(ws.cell(row=8, column=7).value, 12)
+        self.assertEqual(ws.cell(row=8, column=8).value, 0)
         downloaded.close()

@@ -317,6 +317,7 @@ class BomDispatchDownloadRequest(BaseModel):
     bom_ids: List[str]
     supplements: Dict[str, float]
     header_overrides: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    carry_overs: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -351,7 +352,7 @@ def _write_bom_header_values(ws, po_number):
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
 
 
-def _write_dispatch_values_to_ws(ws, supplements: dict[str, float]):
+def _write_dispatch_values_to_ws(ws, supplements: dict[str, float], carry_overs: dict[str, float]):
     part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -375,7 +376,10 @@ def _write_dispatch_values_to_ws(ws, supplements: dict[str, float]):
         if g_text in dash_markers or h_text in dash_markers:
             continue
 
-        if g_text == "":
+        carry_over_qty = carry_overs.get(part)
+        if carry_over_qty is not None:
+            _set_cell_value(ws, row_idx, g_col, carry_over_qty)
+        elif g_text == "":
             _set_cell_value(ws, row_idx, g_col, 0)
         _set_cell_value(ws, row_idx, h_col, supplement_qty)
         written += 1
@@ -412,8 +416,13 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         override = req.header_overrides.get(bom["id"], {})
         override_po = str(override.get("po_number", "") or "").strip()
         po_number = override_po or str(bom.get("po_number") or "").strip()
+        carry_overs = {
+            str(part).strip().upper(): qty
+            for part, qty in req.carry_overs.get(bom["id"], {}).items()
+            if str(part).strip()
+        }
         _write_bom_header_values(wb.active, po_number)
-        _write_dispatch_values_to_ws(wb.active, supplements)
+        _write_dispatch_values_to_ws(wb.active, supplements, carry_overs)
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()
