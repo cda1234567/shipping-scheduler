@@ -330,6 +330,26 @@ def _set_cell_value(ws, row_idx: int, col_idx: int, value):
     _resolve_cell_for_write(ws, row_idx, col_idx).value = value
 
 
+def _format_bom_po_value(existing_value, po_number):
+    po_text = str(po_number or "").strip()
+    if not po_text:
+        return existing_value
+
+    existing_text = str(existing_value or "").strip()
+    if any(token in existing_text for token in ("製單號碼", "M/O", "PO")):
+        if ":" in existing_text:
+            prefix = existing_text.split(":", 1)[0]
+            return f"{prefix}:{po_text}"
+        return f"{existing_text}{po_text}"
+    return po_number
+
+
+def _write_bom_header_values(ws, po_number):
+    po_col = cfg("excel.bom_po_col", 7) + 1
+    po_cell = _resolve_cell_for_write(ws, 1, po_col)
+    po_cell.value = _format_bom_po_value(po_cell.value, po_number)
+
+
 def _write_dispatch_values_to_ws(ws, components: list[dict], supplements: dict[str, float]):
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -396,6 +416,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             source_format=bom.get("source_format", ""),
             is_converted=bool(bom.get("is_converted")),
         )
+        _write_bom_header_values(wb.active, bom.get("po_number") or parsed.po_number)
         _write_dispatch_values_to_ws(
             wb.active,
             [component.dict() for component in parsed.components],

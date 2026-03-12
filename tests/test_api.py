@@ -200,7 +200,8 @@ class ApiTests(unittest.TestCase):
 
             wb = openpyxl.Workbook()
             ws = wb.active
-            ws.cell(row=1, column=8).value = "製單號碼M/O:4500059234"
+            ws.merge_cells("G1:H1")
+            ws.cell(row=1, column=7).value = "製單號碼M/O:"
             ws.cell(row=1, column=10).value = "訂單數量:"
             ws.cell(row=2, column=3).value = "MODEL-A"
             ws.cell(row=2, column=4).value = "PCB-A"
@@ -222,6 +223,7 @@ class ApiTests(unittest.TestCase):
                 "source_filename": "dispatch.xlsx",
                 "source_format": ".xlsx",
                 "is_converted": 0,
+                "po_number": "4500059234",
                 "group_model": "MODEL-A",
                 "uploaded_at": "2026-03-12T08:00:00",
             }
@@ -235,6 +237,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
         ws = downloaded.active
+        self.assertEqual(ws.cell(row=1, column=7).value, "製單號碼M/O:4500059234")
         self.assertEqual(ws.cell(row=5, column=7).value, 3)
         self.assertEqual(ws.cell(row=5, column=8).value, 7)
         self.assertEqual(ws.cell(row=6, column=7).value, 8)
