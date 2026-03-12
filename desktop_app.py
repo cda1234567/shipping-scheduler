@@ -54,6 +54,10 @@ class LocalServer:
         if self._url_ready(self.app_url):
             return
 
+        self._start_server()
+        self._wait_until_ready()
+
+    def _start_server(self):
         config = uvicorn.Config(
             "main:app",
             host=APP_HOST,
@@ -67,6 +71,7 @@ class LocalServer:
         self.thread.start()
         self.started_here = True
 
+    def _wait_until_ready(self):
         deadline = time.time() + 20
         while time.time() < deadline:
             if self._url_ready(self.app_url):
@@ -80,6 +85,14 @@ class LocalServer:
         self.server.should_exit = True
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
+
+    def restart(self):
+        if self.started_here:
+            self.stop()
+            self.server = None
+            self.thread = None
+            self.started_here = False
+        self.ensure_started()
 
 
 class DesktopBridge:
@@ -235,6 +248,14 @@ class DesktopBridge:
 
     def open_in_browser(self):
         webbrowser.open(APP_URL)
+        return {"ok": True}
+
+    def reload_app(self):
+        if self.server.started_here:
+            self.server.restart()
+        if self.window:
+            refresh_url = f"{APP_URL}?_reload={int(time.time() * 1000)}"
+            self.window.load_url(refresh_url)
         return {"ok": True}
 
     def quit_app(self):

@@ -196,6 +196,11 @@ async function refreshCurrentView() {
   refreshButton.disabled = true;
   refreshButton.textContent = "↻ 重新載入中";
 
+  if (window.pywebview?.api?.reload_app) {
+    await window.pywebview.api.reload_app();
+    return;
+  }
+
   const reloadUrl = new URL(window.location.href);
   reloadUrl.searchParams.set("_reload", String(Date.now()));
   window.location.replace(reloadUrl.toString());

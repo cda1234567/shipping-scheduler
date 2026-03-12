@@ -189,7 +189,7 @@ async def get_bom_file(bom_id: str):
         raise HTTPException(404, "BOM 檔案不存在")
     return FileResponse(
         path=str(file_path),
-        filename=bom["filename"] or file_path.name,
+        filename=append_minute_timestamp(bom["filename"] or file_path.name),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
@@ -244,7 +244,7 @@ async def download_bom_files(req: BomDownloadRequest):
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         seen_names: dict[str, int] = {}
         for bom, file_path in valid:
-            name = bom["filename"] or file_path.name
+            name = append_minute_timestamp(bom["filename"] or file_path.name)
             seen_names[name] = seen_names.get(name, -1) + 1
             if seen_names[name] > 0:
                 stem, suffix = Path(name).stem, Path(name).suffix

@@ -1,118 +1,132 @@
 from __future__ import annotations
 
+from copy import copy
 from datetime import datetime
+from pathlib import Path
 
 import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import PatternFill
 
-ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
-WHITE_FILL = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
-
-HEADER_CODE_FONT = Font(name="Calibri", size=14)
-HEADER_TITLE_FONT = Font(name="Calibri", size=16)
-HEADER_META_FONT = Font(name="Calibri", size=10)
-INDEX_FONT = Font(name="Calibri", size=10)
-DATA_FONT = Font(name="Calibri", size=9)
-
-HEADER_ALIGNMENT = Alignment(horizontal="center", vertical="center")
-TEXT_ALIGNMENT = Alignment(vertical="center")
-VALUE_ALIGNMENT = Alignment(horizontal="center", vertical="center")
+TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "dispatch_form_template.xlsx"
+ITEM_STYLE_ROW = 3
+HEADER_ROWS = (1, 2)
+ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
+WHITE_FILL = PatternFill(start_color="FFFFFFFF", end_color="FFFFFFFF", fill_type="solid")
 
 
 def _roc_year(western_year: int) -> int:
     return western_year - 1911
 
 
-def _set_column_layout(ws):
-    ws.column_dimensions["A"].width = 3.625
-    ws.column_dimensions["B"].width = 0.125
-    ws.column_dimensions["C"].width = 18.125
-    ws.column_dimensions["D"].width = 68.875
-    ws.column_dimensions["E"].width = 8.625
+def _load_template_sheet():
+    if not TEMPLATE_PATH.exists():
+        raise FileNotFoundError(f"Dispatch form template not found: {TEMPLATE_PATH}")
+    workbook = openpyxl.load_workbook(TEMPLATE_PATH)
+    return workbook, workbook.active
 
 
-def _build_title(model: str, date_str: str, now: datetime) -> str:
-    try:
-        parts = date_str.replace("-", "/").split("/")
-        year, month = int(parts[0]), int(parts[1])
-    except (ValueError, IndexError):
-        year, month = now.year, now.month
-    return f"           辰尚-庚霖   {_roc_year(year)}年 {month}月份  {model}  之發料單　　　"
+def _copy_sheet_settings(source_ws, target_ws):
+    target_ws.title = source_ws.title
+    target_ws.sheet_view.showGridLines = source_ws.sheet_view.showGridLines
+    target_ws.sheet_format.defaultRowHeight = source_ws.sheet_format.defaultRowHeight
+    target_ws.page_margins = copy(source_ws.page_margins)
+    target_ws.page_setup = copy(source_ws.page_setup)
+    target_ws.print_options = copy(source_ws.print_options)
+    target_ws.sheet_properties = copy(source_ws.sheet_properties)
+
+    for key, dimension in source_ws.column_dimensions.items():
+        target_dimension = target_ws.column_dimensions[key]
+        target_dimension.width = dimension.width
+        target_dimension.hidden = dimension.hidden
+        target_dimension.bestFit = dimension.bestFit
+        target_dimension.outlineLevel = dimension.outlineLevel
 
 
-def _write_section_header(ws, row_idx: int, group: dict, now: datetime):
-    batch_code = group.get("batch_code") or ""
-    po_number = str(group.get("po_number", ""))
-    date_str = group.get("date") or now.strftime("%Y/%m/%d")
-    title = _build_title(group.get("model", ""), date_str, now)
-
-    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=3)
-    ws.merge_cells(start_row=row_idx + 1, start_column=1, end_row=row_idx + 1, end_column=3)
-    ws.merge_cells(start_row=row_idx, start_column=4, end_row=row_idx + 1, end_column=4)
-
-    ws.row_dimensions[row_idx].height = 18.75
-    ws.row_dimensions[row_idx + 1].height = 18.75
-
-    code_cell = ws.cell(row=row_idx, column=1)
-    code_cell.value = batch_code
-    code_cell.font = HEADER_CODE_FONT
-    code_cell.alignment = HEADER_ALIGNMENT
-
-    po_cell = ws.cell(row=row_idx + 1, column=1)
-    po_cell.value = po_number
-    po_cell.font = HEADER_CODE_FONT
-    po_cell.alignment = HEADER_ALIGNMENT
-
-    title_cell = ws.cell(row=row_idx, column=4)
-    title_cell.value = title
-    title_cell.font = HEADER_TITLE_FONT
-    title_cell.alignment = HEADER_ALIGNMENT
-
-    label_cell = ws.cell(row=row_idx, column=5)
-    label_cell.value = "日期"
-    label_cell.font = HEADER_META_FONT
-    label_cell.alignment = HEADER_ALIGNMENT
-
-    date_cell = ws.cell(row=row_idx + 1, column=5)
-    date_cell.value = date_str
-    date_cell.font = HEADER_META_FONT
-    date_cell.alignment = HEADER_ALIGNMENT
+def _copy_cell_style(source_cell, target_cell):
+    target_cell._style = copy(source_cell._style)
+    target_cell.number_format = source_cell.number_format
+    target_cell.protection = copy(source_cell.protection)
+    target_cell.alignment = copy(source_cell.alignment)
+    target_cell.font = copy(source_cell.font)
+    target_cell.fill = copy(source_cell.fill)
+    target_cell.border = copy(source_cell.border)
 
 
-def _write_item_row(ws, row_idx: int, index: int, item: dict):
-    qty_value = item.get("qty", "")
+def _copy_row_template(source_ws, source_row: int, target_ws, target_row: int):
+    for column in range(1, 6):
+        _copy_cell_style(source_ws.cell(source_row, column), target_ws.cell(target_row, column))
+    target_ws.row_dimensions[target_row].height = source_ws.row_dimensions[source_row].height
+
+
+def _merge_section(target_ws, start_row: int):
+    target_ws.merge_cells(start_row=start_row, start_column=1, end_row=start_row, end_column=3)
+    target_ws.merge_cells(start_row=start_row + 1, start_column=1, end_row=start_row + 1, end_column=3)
+    target_ws.merge_cells(start_row=start_row, start_column=4, end_row=start_row + 1, end_column=4)
+
+
+def _parse_display_date(date_str: str | None, now: datetime) -> tuple[int, int, int]:
+    raw = str(date_str or "").strip()
+    if raw:
+        normalized = raw.replace("-", "/")
+        parts = normalized.split("/")
+        if len(parts) >= 3:
+            try:
+                return int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                pass
+    return now.year, now.month, now.day
+
+
+def _build_title(model: str, year: int, month: int) -> str:
+    return f"           辰尚-庚霖   {_roc_year(year)}年 {month}月份  {model}  之發料單\u3000\u3000\u3000\u3000"
+
+
+def _coerce_po_number(po_number):
+    text = str(po_number or "").strip()
+    if text.isdigit():
+        try:
+            return int(text)
+        except ValueError:
+            return text
+    return text
+
+
+def _write_section_header(source_ws, target_ws, start_row: int, group: dict, now: datetime):
+    for offset, source_row in enumerate(HEADER_ROWS):
+        _copy_row_template(source_ws, source_row, target_ws, start_row + offset)
+
+    _merge_section(target_ws, start_row)
+
+    year, month, day = _parse_display_date(group.get("date"), now)
+    target_ws.cell(start_row, 1).value = group.get("batch_code") or ""
+    target_ws.cell(start_row + 1, 1).value = _coerce_po_number(group.get("po_number"))
+    target_ws.cell(start_row, 4).value = _build_title(group.get("model", ""), year, month)
+    target_ws.cell(start_row, 5).value = "日期"
+    target_ws.cell(start_row + 1, 5).value = f"{year}/{month}/{day}"
+
+
+def _write_item_row(source_ws, target_ws, row_idx: int, index: int, item: dict):
+    _copy_row_template(source_ws, ITEM_STYLE_ROW, target_ws, row_idx)
+
+    description = str(item.get("desc") or "")
     is_shortage = bool(item.get("is_shortage"))
-    description = item.get("desc", "") or ""
+    qty_value = "缺" if is_shortage else item.get("qty", "")
 
-    ws.row_dimensions[row_idx].height = 24.0 if len(description) > 90 or is_shortage else 18.75
+    target_ws.cell(row_idx, 1).value = index
+    target_ws.cell(row_idx, 3).value = item.get("part", "")
+    target_ws.cell(row_idx, 4).value = description
+    target_ws.cell(row_idx, 5).value = qty_value
+    target_ws.cell(row_idx, 5).fill = copy(WHITE_FILL if is_shortage else ORANGE_FILL)
 
-    index_cell = ws.cell(row=row_idx, column=1)
-    index_cell.value = index
-    index_cell.font = INDEX_FONT
-    index_cell.alignment = VALUE_ALIGNMENT
-
-    part_cell = ws.cell(row=row_idx, column=3)
-    part_cell.value = item.get("part", "")
-    part_cell.font = DATA_FONT
-    part_cell.alignment = TEXT_ALIGNMENT
-
-    desc_cell = ws.cell(row=row_idx, column=4)
-    desc_cell.value = description
-    desc_cell.font = DATA_FONT
-    desc_cell.alignment = Alignment(vertical="center", wrap_text=True)
-
-    qty_cell = ws.cell(row=row_idx, column=5)
-    qty_cell.value = "缺" if is_shortage else qty_value
-    qty_cell.font = DATA_FONT
-    qty_cell.alignment = VALUE_ALIGNMENT
-    qty_cell.fill = ORANGE_FILL if item.get("fill_color") else WHITE_FILL
+    if len(description) > 90 or is_shortage:
+        target_ws.row_dimensions[row_idx].height = 24.0
 
 
 def generate_dispatch_form(groups: list[dict], output_path: str) -> str:
+    template_wb, template_ws = _load_template_sheet()
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "發料單"
-    _set_column_layout(ws)
+    _copy_sheet_settings(template_ws, ws)
 
     now = datetime.now()
     current_row = 1
@@ -122,13 +136,14 @@ def generate_dispatch_form(groups: list[dict], output_path: str) -> str:
         if not items:
             continue
 
-        _write_section_header(ws, current_row, group, now)
+        _write_section_header(template_ws, ws, current_row, group, now)
         current_row += 2
 
         for index, item in enumerate(items, start=1):
-            _write_item_row(ws, current_row, index, item)
+            _write_item_row(template_ws, ws, current_row, index, item)
             current_row += 1
 
     wb.save(output_path)
     wb.close()
+    template_wb.close()
     return output_path

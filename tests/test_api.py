@@ -195,6 +195,15 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(data["is_converted"])
         self.assertEqual(data["component_count"], 1)
 
+    def test_root_and_static_disable_cache(self):
+        root_response = self.client.get("/")
+        static_response = self.client.get("/static/style.css")
+
+        self.assertEqual(root_response.status_code, 200)
+        self.assertEqual(static_response.status_code, 200)
+        self.assertEqual(root_response.headers.get("cache-control"), "no-store, no-cache, must-revalidate, max-age=0")
+        self.assertEqual(static_response.headers.get("cache-control"), "no-store, no-cache, must-revalidate, max-age=0")
+
     def test_get_bom_file_normalizes_legacy_xls_before_download(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bom_path = Path(temp_dir) / "legacy.xlsx"
@@ -216,12 +225,40 @@ class ApiTests(unittest.TestCase):
             }
 
             with patch("app.routers.bom._get_required_bom", return_value=raw_bom_record), \
-                 patch("app.routers.bom._ensure_editable_bom_record", return_value=converted_bom_record) as mock_ensure:
+                 patch("app.routers.bom._ensure_editable_bom_record", return_value=converted_bom_record) as mock_ensure, \
+                 patch("app.routers.bom.append_minute_timestamp", return_value="legacy_20260312_1740.xlsx"):
                 response = self.client.get("/api/bom/bom-legacy/file")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("legacy.xlsx", response.headers["content-disposition"])
+        self.assertIn("legacy_20260312_1740.xlsx", response.headers["content-disposition"])
         mock_ensure.assert_called_once_with(raw_bom_record)
+
+    def test_bom_download_zip_entries_include_timestamp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first_path = Path(temp_dir) / "first.xlsx"
+            second_path = Path(temp_dir) / "second.xlsx"
+
+            for path, value in ((first_path, "A"), (second_path, "B")):
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws["A1"] = value
+                wb.save(path)
+                wb.close()
+
+            bom_records = [
+                {"id": "bom-1", "filename": "first.xlsx", "filepath": str(first_path)},
+                {"id": "bom-2", "filename": "second.xlsx", "filepath": str(second_path)},
+            ]
+
+            with patch("app.routers.bom.db.get_bom_files_by_models", return_value=bom_records), \
+                 patch("app.routers.bom.append_minute_timestamp", side_effect=lambda filename, now=None: f"{Path(filename).stem}_20260312_1740{Path(filename).suffix}"), \
+                 patch("app.routers.bom.build_generated_filename", return_value="BOM_20260312_1740.zip"):
+                response = self.client.post("/api/bom/download", json={"models": ["MODEL-A"]})
+
+        self.assertEqual(response.status_code, 200)
+        archive = zipfile.ZipFile(io.BytesIO(response.content))
+        self.assertEqual(sorted(archive.namelist()), ["first_20260312_1740.xlsx", "second_20260312_1740.xlsx"])
+        archive.close()
 
     def test_dispatch_download_writes_prev_batch_and_supplements_to_separate_columns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
