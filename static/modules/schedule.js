@@ -16,6 +16,7 @@ let _onRefreshMain = null;
 let _checkedIds = new Set();
 let _modalProgressTimer = null;
 let _modalProgressValue = 0;
+let _completedFolderCollapsedState = loadCompletedFolderCollapsedState();
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -51,6 +52,42 @@ export function getCheckedOrderIds() {
 
 function normalizePartKey(partNumber) {
   return String(partNumber || "").trim().toUpperCase();
+}
+
+function completedFolderStateKey(folderName) {
+  return String(folderName || "__unsorted__");
+}
+
+function loadCompletedFolderCollapsedState() {
+  try {
+    const raw = window.localStorage?.getItem("completed-folder-collapsed-state");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveCompletedFolderCollapsedState() {
+  try {
+    window.localStorage?.setItem(
+      "completed-folder-collapsed-state",
+      JSON.stringify(_completedFolderCollapsedState || {}),
+    );
+  } catch (_) {}
+}
+
+function isCompletedFolderCollapsed(folderName) {
+  const key = completedFolderStateKey(folderName);
+  if (Object.prototype.hasOwnProperty.call(_completedFolderCollapsedState, key)) {
+    return Boolean(_completedFolderCollapsedState[key]);
+  }
+  return Boolean(folderName);
+}
+
+function setCompletedFolderCollapsed(folderName, collapsed) {
+  _completedFolderCollapsedState[completedFolderStateKey(folderName)] = Boolean(collapsed);
+  saveCompletedFolderCollapsedState();
 }
 
 function normalizeDecisionMap(decisions = {}) {
@@ -1029,12 +1066,13 @@ function buildFolderSection(folderName, rows, allFolders) {
 
   const isUnsorted = !folderName;
   const label = isUnsorted ? "未歸檔" : folderName;
+  const isCollapsed = isCompletedFolderCollapsed(folderName);
 
   // 標題列
   const header = document.createElement("div");
   header.className = "completed-folder-header";
   header.innerHTML = `
-    <span class="folder-toggle" style="cursor:pointer;user-select:none">▼</span>
+    <span class="folder-toggle" style="cursor:pointer;user-select:none">${isCollapsed ? "▶" : "▼"}</span>
     <span class="folder-name">${esc(label)}</span>
     <span style="font-size:11px;color:#8e8e93;margin-left:4px">(${rows.length})</span>
     ${!isUnsorted ? `<button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="margin-left:auto;background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
@@ -1043,6 +1081,7 @@ function buildFolderSection(folderName, rows, allFolders) {
   // 卡片容器
   const body = document.createElement("div");
   body.className = "completed-folder-body";
+  if (isCollapsed) body.style.display = "none";
   for (const r of rows) {
     body.appendChild(buildCompletedCard(r, allFolders));
   }
@@ -1051,8 +1090,10 @@ function buildFolderSection(folderName, rows, allFolders) {
   // 收合
   header.querySelector(".folder-toggle").addEventListener("click", () => {
     const isOpen = body.style.display !== "none";
-    body.style.display = isOpen ? "none" : "";
-    header.querySelector(".folder-toggle").textContent = isOpen ? "▶" : "▼";
+    const nextCollapsed = isOpen;
+    body.style.display = nextCollapsed ? "none" : "";
+    header.querySelector(".folder-toggle").textContent = nextCollapsed ? "▶" : "▼";
+    setCompletedFolderCollapsed(folderName, nextCollapsed);
   });
 
   // 刪除資料夾
@@ -1061,6 +1102,8 @@ function buildFolderSection(folderName, rows, allFolders) {
     delBtn.addEventListener("click", async () => {
       if (!confirm(`確定刪除資料夾「${folderName}」？訂單會移回未歸檔。`)) return;
       try {
+        delete _completedFolderCollapsedState[completedFolderStateKey(folderName)];
+        saveCompletedFolderCollapsedState();
         await apiFetch(`/api/schedule/folders/${encodeURIComponent(folderName)}`, { method: "DELETE" });
         await refreshCompleted();
       } catch (e) { showToast("失敗：" + e.message); }
