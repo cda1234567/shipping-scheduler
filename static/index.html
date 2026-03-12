@@ -18,7 +18,7 @@
   <button class="btn btn-sm btn-alert" id="btn-alerts" title="提醒">
     🔔 <span id="alert-badge" class="alert-badge" style="display:none">0</span>
   </button>
-  <button class="btn btn-sm btn-secondary" id="btn-logs" title="操作紀錄">📝</button>
+  <button class="btn btn-sm btn-secondary" id="btn-refresh-app" title="重新整理">↻ 重新整理</button>
 </header>
 
 <div id="layout">
@@ -180,8 +180,58 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 document.getElementById("btn-alerts").addEventListener("click", () => {
   document.querySelector('[data-tab="alerts-tab"]').click();
 });
-document.getElementById("btn-logs").addEventListener("click", () => {
-  document.querySelector('[data-tab="logs-tab"]').click();
+
+function getActiveTabName() {
+  return document.querySelector(".tab-btn.active")?.dataset.tab || "schedule";
+}
+
+async function refreshCurrentView() {
+  const refreshButton = document.getElementById("btn-refresh-app");
+  const bomOrderDirty = !document.getElementById("btn-save-bom-order")?.disabled;
+  if (getActiveTabName() === "bom" && bomOrderDirty) {
+    const confirmed = confirm("BOM 排序尚未儲存，重新整理會放棄目前順序。要繼續嗎？");
+    if (!confirmed) return;
+  }
+
+  const originalText = refreshButton.textContent;
+  refreshButton.disabled = true;
+  refreshButton.textContent = "↻ 重新整理中";
+
+  try {
+    await refreshMainStatus();
+    await refreshAlerts();
+
+    switch (getActiveTabName()) {
+      case "completed":
+        await refreshSchedule();
+        await refreshCompleted();
+        break;
+      case "bom":
+        await renderBomGroups();
+        await refreshSchedule();
+        break;
+      case "alerts-tab":
+        break;
+      case "logs-tab":
+        await refreshLogs();
+        break;
+      case "schedule":
+      default:
+        await refreshSchedule();
+        break;
+    }
+
+    showToast("已重新整理");
+  } catch (error) {
+    showToast(`重新整理失敗: ${error.message}`);
+  } finally {
+    refreshButton.disabled = false;
+    refreshButton.textContent = originalText;
+  }
+}
+
+document.getElementById("btn-refresh-app").addEventListener("click", () => {
+  void refreshCurrentView();
 });
 
 // ── Main file ───────────────────────────────────────────────────────────
