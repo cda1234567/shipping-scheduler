@@ -5,6 +5,7 @@
                                     ↘ cancelled
 """
 from __future__ import annotations
+import shutil
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
@@ -41,6 +42,40 @@ def _repair_legacy_snapshot_if_needed(main_path: str) -> dict[str, dict]:
 def _get_active_dispatched_consumption() -> dict[str, float]:
     snapshot_at = db.get_snapshot_taken_at()
     return db.get_all_dispatched_consumption(snapshot_at)
+
+
+def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(404, "找不到此訂單")
+    if order["status"] not in ("dispatched", "completed"):
+        raise HTTPException(400, "只能反悔已發料訂單")
+
+    session = db.get_active_dispatch_session(order_id)
+    if not session:
+        raise HTTPException(400, "找不到這筆訂單的發料歷史，無法反悔")
+
+    tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
+    if not tail_sessions:
+        raise HTTPException(400, "找不到可反悔的發料紀錄")
+
+    affected_orders = []
+    for row in tail_sessions:
+        target = db.get_order(int(row["order_id"]))
+        if not target:
+            continue
+        affected_orders.append({
+            "id": int(target["id"]),
+            "po_number": target.get("po_number", ""),
+            "model": target.get("model", ""),
+            "status": target.get("status", ""),
+            "restore_status": row.get("previous_status") or "merged",
+        })
+
+    if not affected_orders:
+        raise HTTPException(400, "找不到可反悔的訂單資料")
+
+    return order, session, affected_orders
 
 
 # ── Upload schedule ───────────────────────────────────────────────────────────
@@ -300,6 +335,12 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
             "decision": req.decisions.get(comp["part_number"], "None"),
         })
     db.save_dispatch_records(order_id, dispatch_records)
+    db.save_dispatch_session(
+        order_id=order_id,
+        previous_status=order["status"],
+        backup_path=result.get("backup_path") or "",
+        main_file_path=main_path,
+    )
 
     db.update_order(order_id, status="dispatched")
     db.log_activity("order_dispatched",
@@ -310,6 +351,61 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
         "order_id": order_id,
         "merged_parts": result["merged_parts"],
         "backup_path": result["backup_path"],
+    }
+
+
+@router.get("/schedule/orders/{order_id}/rollback-preview")
+async def rollback_order_preview(order_id: int):
+    _, session, affected_orders = _build_rollback_preview(order_id)
+    return {
+        "ok": True,
+        "count": len(affected_orders),
+        "backup_path": session.get("backup_path", ""),
+        "orders": affected_orders,
+    }
+
+
+@router.post("/schedule/orders/{order_id}/rollback")
+async def rollback_order(order_id: int):
+    order, session, affected_orders = _build_rollback_preview(order_id)
+
+    backup_path = Path(str(session.get("backup_path") or "")).expanduser()
+    if not backup_path.exists():
+        raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
+
+    current_main_path = str(db.get_setting("main_file_path") or "").strip()
+    session_main_path = str(session.get("main_file_path") or "").strip()
+    restore_target = session_main_path or current_main_path
+    if not restore_target:
+        raise HTTPException(400, "找不到目前主檔路徑，無法反悔")
+    if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
+        raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
+
+    restore_target_path = Path(restore_target)
+    restore_target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(backup_path, restore_target_path)
+
+    order_ids = [int(item["id"]) for item in affected_orders]
+    session_ids = [int(row["id"]) for row in db.get_dispatch_session_tail(int(session["id"]))]
+    db.delete_dispatch_records_for_orders(order_ids)
+    db.mark_dispatch_sessions_rolled_back(session_ids)
+    for item in affected_orders:
+        db.update_order(
+            int(item["id"]),
+            status=item.get("restore_status") or "merged",
+            folder="",
+        )
+
+    db.log_activity(
+        "order_rollback",
+        f"從訂單 {order['po_number']} ({order['model']}) 開始反悔，共 {len(affected_orders)} 筆，主檔已還原",
+    )
+    return {
+        "ok": True,
+        "count": len(affected_orders),
+        "restored_from": str(backup_path),
+        "main_file_path": str(restore_target_path),
+        "orders": affected_orders,
     }
 
 

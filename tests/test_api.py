@@ -5,7 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import openpyxl
 from fastapi.testclient import TestClient
@@ -57,6 +57,107 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["dispatched_consumption"], {"PART-2": 15})
         mock_consumption.assert_called_once_with("2026-03-12T11:05:45.000000")
+
+    def test_dispatch_order_saves_dispatch_session(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            order = {
+                "id": 1,
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "1-3",
+                "status": "merged",
+            }
+            bom_file = {"id": "bom-1", "model": "MODEL-A"}
+            components = [{"part_number": "PART-1", "needed_qty": 5, "prev_qty_cs": 0, "is_dash": 0}]
+
+            with patch("app.routers.schedule.db.get_order", return_value=order), \
+                 patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_bom_files_by_models", return_value=[bom_file]), \
+                 patch("app.routers.schedule.db.get_bom_components", return_value=components), \
+                 patch("app.routers.schedule.merge_row_to_main", return_value={"merged_parts": 1, "backup_path": "C:/backup.xlsx"}), \
+                 patch("app.routers.schedule.db.save_dispatch_records") as mock_records, \
+                 patch("app.routers.schedule.db.save_dispatch_session") as mock_session, \
+                 patch("app.routers.schedule.db.update_order"), \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/orders/1/dispatch", json={"decisions": {}})
+
+        self.assertEqual(response.status_code, 200)
+        mock_records.assert_called_once()
+        mock_session.assert_called_once_with(
+            order_id=1,
+            previous_status="merged",
+            backup_path="C:/backup.xlsx",
+            main_file_path=str(main_path),
+        )
+
+    def test_rollback_preview_returns_tail_orders(self):
+        orders = {
+            5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
+            6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
+        }
+        session = {"id": 9, "order_id": 5, "backup_path": "C:/backup.xlsx", "main_file_path": "C:/main.xlsx"}
+        tail = [
+            {"id": 9, "order_id": 5, "previous_status": "merged"},
+            {"id": 10, "order_id": 6, "previous_status": "pending"},
+        ]
+
+        with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
+            response = self.client.get("/api/schedule/orders/5/rollback-preview")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(
+            data["orders"],
+            [
+                {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched", "restore_status": "merged"},
+                {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed", "restore_status": "pending"},
+            ],
+        )
+
+    def test_rollback_restores_backup_and_reverts_tail_orders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            backup_path = Path(temp_dir) / "backup.xlsx"
+            main_path.write_text("after-dispatch", encoding="utf-8")
+            backup_path.write_text("before-dispatch", encoding="utf-8")
+
+            orders = {
+                5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
+                6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
+            }
+            session = {"id": 9, "order_id": 5, "backup_path": str(backup_path), "main_file_path": str(main_path)}
+            tail = [
+                {"id": 9, "order_id": 5, "previous_status": "merged"},
+                {"id": 10, "order_id": 6, "previous_status": "pending"},
+            ]
+
+            with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+                 patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+                 patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail), \
+                 patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.delete_dispatch_records_for_orders") as mock_delete_records, \
+                 patch("app.routers.schedule.db.mark_dispatch_sessions_rolled_back") as mock_mark_rolled_back, \
+                 patch("app.routers.schedule.db.update_order") as mock_update_order, \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/orders/5/rollback")
+                restored_text = main_path.read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(restored_text, "before-dispatch")
+        mock_delete_records.assert_called_once_with([5, 6])
+        mock_mark_rolled_back.assert_called_once_with([9, 10])
+        mock_update_order.assert_has_calls([
+            call(5, status="merged", folder=""),
+            call(6, status="pending", folder=""),
+        ])
 
     def test_main_file_data_backfills_missing_moq_from_live_main_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
