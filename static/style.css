@@ -410,6 +410,21 @@ body {
 .bom-item-actions { display: flex; align-items: center; gap: 6px; }
 .bom-del { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 14px; flex-shrink: 0; }
 
+.bom-history-list { display: flex; flex-direction: column; gap: 10px; }
+.bom-history-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+}
+.bom-history-main { flex: 1; min-width: 0; }
+.bom-history-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.bom-history-action { font-size: 12px; font-weight: 600; color: #1d4ed8; }
+.bom-history-meta { font-size: 11px; color: #6b7280; line-height: 1.4; }
+
 .editor-note {
   background: #f8fafc;
   border: 1px solid #dbeafe;
@@ -590,6 +605,16 @@ body.desktop-dark .shortage-item {
   background: #241313;
   border-color: #7f1d1d;
 }
+body.desktop-dark .bom-history-item {
+  background: #111827;
+  border-color: #243041;
+}
+body.desktop-dark .bom-history-action {
+  color: #93c5fd;
+}
+body.desktop-dark .bom-history-meta {
+  color: #94a3b8;
+}
 body.desktop-dark .shortage-item.cs-item {
   background: #2a220f;
   border-color: #a16207;
@@ -648,10 +673,23 @@ input[type="file"] { display: none; }
   min-width: 220px;
   margin-right: 6px;
 }
+.modal-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
 .modal-progress-label {
   font-size: 12px;
   font-weight: 600;
   color: #e5e7eb;
+}
+.modal-progress-percent {
+  font-size: 12px;
+  font-weight: 700;
+  color: #60a5fa;
+  min-width: 40px;
+  text-align: right;
 }
 .modal-progress-detail {
   font-size: 11px;
@@ -665,13 +703,13 @@ input[type="file"] { display: none; }
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.22);
 }
-.modal-progress-indeterminate {
+.modal-progress-fill {
   position: absolute;
-  inset: 0 auto 0 -36%;
-  width: 36%;
+  inset: 0 auto 0 0;
+  width: 0;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.15), #38bdf8, rgba(59, 130, 246, 0.15));
-  animation: modal-progress-slide 1.15s ease-in-out infinite;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  transition: width 0.18s ease-out;
 }
 .modal-footer .btn {
   flex: 0 0 auto;
@@ -681,23 +719,17 @@ input[type="file"] { display: none; }
 body.desktop-dark .modal-progress-label {
   color: #e5e7eb;
 }
+body.desktop-dark .modal-progress-percent {
+  color: #93c5fd;
+}
 body.desktop-dark .modal-progress-detail {
   color: #94a3b8;
 }
 body.desktop-dark .modal-progress-bar {
   background: rgba(30, 41, 59, 0.9);
 }
-body.desktop-dark .modal-progress-indeterminate {
-  background: linear-gradient(90deg, rgba(96, 165, 250, 0.1), #60a5fa, rgba(96, 165, 250, 0.1));
-}
-
-@keyframes modal-progress-slide {
-  0% {
-    left: -36%;
-  }
-  100% {
-    left: 100%;
-  }
+body.desktop-dark .modal-progress-fill {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
 }
 
 /* Toast */

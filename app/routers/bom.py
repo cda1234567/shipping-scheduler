@@ -25,6 +25,11 @@ from ..services.bom_editor import (
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
 )
+from ..services.bom_revision import (
+    delete_bom_revision_files,
+    ensure_bom_revision_history,
+    snapshot_bom_revision,
+)
 from ..services.download_names import append_minute_timestamp, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from ..services.order_supplements import build_order_supplement_allocations
@@ -36,6 +41,14 @@ def _get_required_bom(bom_id: str) -> dict:
     if not bom:
         raise HTTPException(404, "找不到 BOM")
     return bom
+
+
+def _build_revision_download_name(revision: dict) -> str:
+    filename = str(revision.get("filename") or "bom.xlsx")
+    stem = Path(filename).stem or "bom"
+    suffix = Path(filename).suffix or ".xlsx"
+    revision_number = int(revision.get("revision_number") or 0)
+    return append_minute_timestamp(f"{stem}_v{revision_number:03d}{suffix}")
 
 
 def _ensure_editable_bom_record(bom: dict) -> dict:
@@ -88,7 +101,9 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 source_format=str(stored["source_format"]),
                 is_converted=bool(stored["is_converted"]),
             )
-            db.save_bom_file(build_bom_storage_payload(parsed))
+            payload = build_bom_storage_payload(parsed)
+            db.save_bom_file(payload)
+            snapshot_bom_revision(payload, "upload", "上傳 BOM")
             saved.append({
                 "id": parsed.id,
                 "filename": parsed.filename,
@@ -170,6 +185,7 @@ async def reorder_bom_files(req: BomReorderRequest):
 async def delete_bom(bom_id: str):
     bom = _get_required_bom(bom_id)
     Path(bom["filepath"]).unlink(missing_ok=True)
+    delete_bom_revision_files(bom_id)
     db.delete_bom_file(bom_id)
     db.log_activity("bom_delete", f"刪除 BOM {bom['filename']}")
     return {"ok": True}
@@ -277,6 +293,37 @@ async def get_bom_editor(bom_id: str):
     return payload
 
 
+@router.get("/bom/{bom_id}/revisions")
+async def list_bom_revisions(bom_id: str):
+    bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
+    revisions = ensure_bom_revision_history(bom)
+    return {
+        "bom": {
+            "id": bom["id"],
+            "filename": bom["filename"],
+            "source_filename": bom.get("source_filename") or bom["filename"],
+        },
+        "revisions": revisions,
+    }
+
+
+@router.get("/bom/{bom_id}/revisions/{revision_id}/file")
+async def download_bom_revision(bom_id: str, revision_id: int):
+    revision = db.get_bom_revision(int(revision_id))
+    if not revision or str(revision.get("bom_file_id")) != str(bom_id):
+        raise HTTPException(404, "找不到 BOM 歷史版本")
+
+    file_path = Path(str(revision.get("filepath") or ""))
+    if not file_path.exists():
+        raise HTTPException(404, "BOM 歷史檔案不存在")
+
+    return FileResponse(
+        path=str(file_path),
+        filename=_build_revision_download_name(revision),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @router.put("/bom/{bom_id}/editor")
 async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
     bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
@@ -284,6 +331,7 @@ async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
     if not file_path.exists():
         raise HTTPException(404, "BOM 檔案不存在")
 
+    ensure_bom_revision_history(bom)
     backup_path = backup_bom_file(str(file_path))
     try:
         apply_bom_editor_changes(str(file_path), req)
@@ -297,7 +345,9 @@ async def save_bom_editor(bom_id: str, req: BomEditorSaveRequest):
             source_format=bom.get("source_format", ""),
             is_converted=bool(bom.get("is_converted")),
         )
-        db.save_bom_file(build_bom_storage_payload(parsed))
+        payload = build_bom_storage_payload(parsed)
+        db.save_bom_file(payload)
+        snapshot_bom_revision(payload, "edit", "編輯後儲存")
     except Exception as exc:
         shutil.copy2(backup_path, file_path)
         raise HTTPException(400, f"儲存 BOM 失敗：{exc}")

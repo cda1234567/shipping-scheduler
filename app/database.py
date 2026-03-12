@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS bom_components (
     is_customer_supplied INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS bom_revisions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    bom_file_id     TEXT    NOT NULL REFERENCES bom_files(id) ON DELETE CASCADE,
+    revision_number INTEGER NOT NULL DEFAULT 0,
+    filename        TEXT    NOT NULL DEFAULT '',
+    filepath        TEXT    NOT NULL DEFAULT '',
+    source_action   TEXT    NOT NULL DEFAULT '',
+    note            TEXT    NOT NULL DEFAULT '',
+    created_at      TEXT    NOT NULL DEFAULT '',
+    UNIQUE(bom_file_id, revision_number)
+);
+
 CREATE TABLE IF NOT EXISTS dispatch_records (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id      INTEGER NOT NULL REFERENCES orders(id),
@@ -131,6 +143,7 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
+CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
@@ -644,8 +657,59 @@ def get_bom_files_by_models(models: list[str]) -> list[dict]:
     return matched
 
 
+def save_bom_revision(revision: dict) -> dict:
+    created_at = revision.get("created_at") or _now()
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(revision_number), 0) AS max_revision FROM bom_revisions WHERE bom_file_id=?",
+            (revision["bom_file_id"],),
+        ).fetchone()
+        next_revision = int(row["max_revision"] or 0) + 1
+        cur = conn.execute(
+            "INSERT INTO bom_revisions("
+            "bom_file_id, revision_number, filename, filepath, source_action, note, created_at"
+            ") VALUES(?,?,?,?,?,?,?)",
+            (
+                revision["bom_file_id"],
+                next_revision,
+                revision["filename"],
+                revision["filepath"],
+                revision.get("source_action", ""),
+                revision.get("note", ""),
+                created_at,
+            ),
+        )
+        revision_id = cur.lastrowid
+    return {
+        "id": revision_id,
+        "bom_file_id": revision["bom_file_id"],
+        "revision_number": next_revision,
+        "filename": revision["filename"],
+        "filepath": revision["filepath"],
+        "source_action": revision.get("source_action", ""),
+        "note": revision.get("note", ""),
+        "created_at": created_at,
+    }
+
+
+def get_bom_revisions(bom_file_id: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM bom_revisions WHERE bom_file_id=? ORDER BY revision_number DESC, id DESC",
+            (bom_file_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_bom_revision(revision_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM bom_revisions WHERE id=?", (revision_id,)).fetchone()
+    return dict(row) if row else None
+
+
 def delete_bom_file(bom_id: str):
     with get_conn() as conn:
+        conn.execute("DELETE FROM bom_revisions WHERE bom_file_id=?", (bom_id,))
         conn.execute("DELETE FROM bom_components WHERE bom_file_id=?", (bom_id,))
         conn.execute("DELETE FROM bom_files WHERE id=?", (bom_id,))
 

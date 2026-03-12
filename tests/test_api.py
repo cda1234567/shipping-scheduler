@@ -233,6 +233,137 @@ class ApiTests(unittest.TestCase):
         self.assertIn("legacy_20260312_1740.xlsx", response.headers["content-disposition"])
         mock_ensure.assert_called_once_with(raw_bom_record)
 
+    def test_bom_revision_list_returns_history(self):
+        bom_record = {
+            "id": "bom-1",
+            "filename": "formal.xlsx",
+            "filepath": "C:/formal.xlsx",
+            "source_filename": "legacy.xls",
+        }
+        revisions = [
+            {
+                "id": 11,
+                "bom_file_id": "bom-1",
+                "revision_number": 2,
+                "filename": "formal.xlsx",
+                "filepath": "C:/history/v2.xlsx",
+                "source_action": "edit",
+                "note": "編輯後儲存",
+                "created_at": "2026-03-12T17:40:00",
+            },
+            {
+                "id": 7,
+                "bom_file_id": "bom-1",
+                "revision_number": 1,
+                "filename": "formal.xlsx",
+                "filepath": "C:/history/v1.xlsx",
+                "source_action": "upload",
+                "note": "上傳 BOM",
+                "created_at": "2026-03-12T16:00:00",
+            },
+        ]
+
+        with patch("app.routers.bom._get_required_bom", return_value=bom_record), \
+             patch("app.routers.bom._ensure_editable_bom_record", return_value=bom_record), \
+             patch("app.routers.bom.ensure_bom_revision_history", return_value=revisions) as mock_history:
+            response = self.client.get("/api/bom/bom-1/revisions")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["bom"]["id"], "bom-1")
+        self.assertEqual(data["bom"]["source_filename"], "legacy.xls")
+        self.assertEqual(len(data["revisions"]), 2)
+        self.assertEqual(data["revisions"][0]["revision_number"], 2)
+        mock_history.assert_called_once_with(bom_record)
+
+    def test_download_bom_revision_uses_versioned_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            revision_path = Path(temp_dir) / "revision.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws["A1"] = "revision"
+            wb.save(revision_path)
+            wb.close()
+
+            revision = {
+                "id": 9,
+                "bom_file_id": "bom-1",
+                "revision_number": 3,
+                "filename": "formal.xlsx",
+                "filepath": str(revision_path),
+            }
+
+            with patch("app.routers.bom.db.get_bom_revision", return_value=revision), \
+                 patch("app.routers.bom._build_revision_download_name", return_value="formal_v003_20260312_1740.xlsx"):
+                response = self.client.get("/api/bom/bom-1/revisions/9/file")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("formal_v003_20260312_1740.xlsx", response.headers["content-disposition"])
+
+    def test_save_bom_editor_creates_revision_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "formal.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws["A1"] = "formal"
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-1",
+                "filename": "formal.xlsx",
+                "filepath": str(bom_path),
+                "uploaded_at": "2026-03-12T08:00:00",
+                "source_filename": "formal.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+            }
+            parsed = BomFile(
+                id="bom-1",
+                filename="formal.xlsx",
+                path=str(bom_path),
+                po_number=123,
+                model="MODEL-A",
+                pcb="PCB-A",
+                group_model="MODEL-A",
+                order_qty=10,
+                uploaded_at="2026-03-12T08:00:00",
+                components=[BomComponent(part_number="PART-1", source_row=5)],
+            )
+
+            with patch("app.routers.bom._get_required_bom", return_value=bom_record), \
+                 patch("app.routers.bom._ensure_editable_bom_record", return_value=bom_record), \
+                 patch("app.routers.bom.ensure_bom_revision_history") as mock_ensure_history, \
+                 patch("app.routers.bom.backup_bom_file", return_value=str(Path(temp_dir) / "backup.xlsx")), \
+                 patch("app.routers.bom.apply_bom_editor_changes"), \
+                 patch("app.routers.bom.parse_bom_for_storage", return_value=parsed), \
+                 patch("app.routers.bom.db.save_bom_file") as mock_save_bom, \
+                 patch("app.routers.bom.snapshot_bom_revision") as mock_snapshot_revision, \
+                 patch("app.routers.bom.db.log_activity"):
+                response = self.client.put("/api/bom/bom-1/editor", json={
+                    "po_number": 123,
+                    "order_qty": 10,
+                    "model": "MODEL-A",
+                    "pcb": "PCB-A",
+                    "group_model": "MODEL-A",
+                    "components": [
+                        {
+                            "source_row": 5,
+                            "part_number": "PART-1",
+                            "description": "",
+                            "qty_per_board": 1,
+                            "needed_qty": 2,
+                            "prev_qty_cs": 3,
+                            "is_dash": False,
+                        }
+                    ],
+                })
+
+        self.assertEqual(response.status_code, 200)
+        mock_ensure_history.assert_called_once_with(bom_record)
+        mock_save_bom.assert_called_once()
+        mock_snapshot_revision.assert_called_once()
+
     def test_bom_download_zip_entries_include_timestamp(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             first_path = Path(temp_dir) / "first.xlsx"

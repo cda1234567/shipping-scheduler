@@ -5,6 +5,7 @@ let _onRefresh = null;
 let _outerSortable = null;
 const _innerSortables = [];
 let _editorBom = null;
+let _historyBom = null;
 let _bomOrderDirty = false;
 
 export function initBomManager(onRefreshCallback) {
@@ -38,6 +39,7 @@ export function initBomManager(onRefreshCallback) {
   document.getElementById("btn-save-bom-order")?.addEventListener("click", saveBomOrder);
 
   bindEditorModal();
+  bindHistoryModal();
   setBomOrderDirty(false);
   renderBomGroups();
 }
@@ -171,6 +173,18 @@ export async function renderBomGroups() {
       });
     }
 
+    container.querySelectorAll(".bom-item-row").forEach(row => {
+      const actions = row.querySelector(".bom-item-actions");
+      if (!actions || actions.querySelector(".bom-history")) return;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn btn-secondary btn-sm bom-history";
+      button.dataset.id = row.dataset.id || "";
+      button.title = "查看歷史版本";
+      button.textContent = "歷史";
+      actions.insertBefore(button, actions.querySelector(".bom-edit"));
+    });
+
     container.querySelectorAll(".bom-edit").forEach(button => {
       button.addEventListener("click", () => openEditor(button.dataset.id));
     });
@@ -185,6 +199,9 @@ export async function renderBomGroups() {
           showToast(`下載 BOM 失敗: ${error.message}`);
         }
       });
+    });
+    container.querySelectorAll(".bom-history").forEach(button => {
+      button.addEventListener("click", () => openHistory(button.dataset.id));
     });
     container.querySelectorAll(".bom-del").forEach(button => {
       button.addEventListener("click", () => deleteBom(button.dataset.id));
@@ -244,6 +261,100 @@ function bindEditorModal() {
   document.getElementById("bom-editor-modal")?.addEventListener("click", event => {
     if (event.target.id === "bom-editor-modal") closeEditor();
   });
+}
+
+function bindHistoryModal() {
+  document.getElementById("bom-history-close")?.addEventListener("click", closeHistory);
+  document.getElementById("bom-history-cancel")?.addEventListener("click", closeHistory);
+  document.getElementById("bom-history-modal")?.addEventListener("click", event => {
+    if (event.target.id === "bom-history-modal") closeHistory();
+  });
+}
+
+function closeHistory() {
+  document.getElementById("bom-history-modal").style.display = "none";
+  document.getElementById("bom-history-list").innerHTML = "";
+  document.getElementById("bom-history-source").textContent = "";
+  _historyBom = null;
+}
+
+function formatHistoryTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text.slice(0, 16).replace("T", " ");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hours}:${minutes}`;
+}
+
+function historyActionLabel(action) {
+  switch (String(action || "").toLowerCase()) {
+    case "upload":
+      return "上傳";
+    case "edit":
+      return "編輯";
+    case "baseline":
+      return "基準版";
+    default:
+      return action || "快照";
+  }
+}
+
+function renderHistoryList(data) {
+  const list = document.getElementById("bom-history-list");
+  const source = document.getElementById("bom-history-source");
+  const bom = data?.bom || {};
+  const revisions = data?.revisions || [];
+
+  document.getElementById("bom-history-title").textContent = `BOM 歷史版本：${bom.filename || ""}`;
+  source.textContent = bom.source_filename ? `來源：${bom.source_filename}` : "";
+
+  if (!revisions.length) {
+    list.innerHTML = '<div class="empty-state">目前還沒有歷史版本。</div>';
+    return;
+  }
+
+  list.innerHTML = revisions.map((revision, index) => `
+    <div class="bom-history-item">
+      <div class="bom-history-main">
+        <div class="bom-history-top">
+          <span class="tag tag-pcb">v${revision.revision_number}</span>
+          <span class="bom-history-action">${esc(historyActionLabel(revision.source_action))}</span>
+          ${index === 0 ? '<span class="tag tag-converted">目前版本</span>' : ""}
+        </div>
+        <div class="bom-history-meta">${esc(formatHistoryTime(revision.created_at))}${revision.note ? ` ・ ${esc(revision.note)}` : ""}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm bom-history-download" data-id="${revision.id}">下載</button>
+    </div>
+  `).join("");
+
+  list.querySelectorAll(".bom-history-download").forEach(button => {
+    button.addEventListener("click", async () => {
+      if (!_historyBom) return;
+      try {
+        const result = await desktopDownload({ path: `/api/bom/${_historyBom.id}/revisions/${button.dataset.id}/file` });
+        if (result.directory) {
+          showToast(`歷史版本已下載到 ${result.directory}`);
+        }
+      } catch (error) {
+        showToast(`下載歷史版本失敗：${error.message}`);
+      }
+    });
+  });
+}
+
+async function openHistory(bomId) {
+  try {
+    const data = await apiJson(`/api/bom/${bomId}/revisions`);
+    _historyBom = data?.bom || null;
+    renderHistoryList(data);
+    document.getElementById("bom-history-modal").style.display = "flex";
+  } catch (error) {
+    showToast(`讀取歷史版本失敗：${error.message}`);
+  }
 }
 
 async function openEditor(bomId) {

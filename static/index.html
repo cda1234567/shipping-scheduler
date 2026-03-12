@@ -407,6 +407,28 @@ init();
   </div>
 </div>
 
+<!-- BOM 歷史版本 Modal -->
+<div id="bom-history-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:min(760px, 92vw)">
+    <div class="modal-header">
+      <div>
+        <h3 id="bom-history-title" style="margin:0;font-size:16px">BOM 歷史版本</h3>
+        <div id="bom-history-source" class="modal-subtitle"></div>
+      </div>
+      <button id="bom-history-close" class="modal-close-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="editor-note" style="margin-bottom:10px">
+        每次上傳或儲存編輯後，系統都會留下一份歷史快照，方便回頭下載查看。
+      </div>
+      <div id="bom-history-list" class="bom-history-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="bom-history-cancel" class="btn btn-secondary btn-sm">關閉</button>
+    </div>
+  </div>
+</div>
+
 <!-- BOM 編輯 Modal -->
 <div id="bom-editor-modal" class="modal-overlay" style="display:none">
   <div class="modal-box modal-box-wide">
