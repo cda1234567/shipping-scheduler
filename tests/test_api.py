@@ -194,6 +194,34 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(data["is_converted"])
         self.assertEqual(data["component_count"], 1)
 
+    def test_get_bom_file_normalizes_legacy_xls_before_download(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "legacy.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws["A1"] = "legacy"
+            wb.save(bom_path)
+            wb.close()
+
+            raw_bom_record = {
+                "id": "bom-legacy",
+                "filename": "legacy.xls",
+                "filepath": str(Path(temp_dir) / "legacy.xls"),
+            }
+            converted_bom_record = {
+                **raw_bom_record,
+                "filename": "legacy.xlsx",
+                "filepath": str(bom_path),
+            }
+
+            with patch("app.routers.bom._get_required_bom", return_value=raw_bom_record), \
+                 patch("app.routers.bom._ensure_editable_bom_record", return_value=converted_bom_record) as mock_ensure:
+                response = self.client.get("/api/bom/bom-legacy/file")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("legacy.xlsx", response.headers["content-disposition"])
+        mock_ensure.assert_called_once_with(raw_bom_record)
+
     def test_dispatch_download_writes_prev_batch_and_supplements_to_separate_columns(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bom_path = Path(temp_dir) / "dispatch.xlsx"
@@ -257,4 +285,56 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=7, column=8).value, 0)
         self.assertEqual(ws.cell(row=8, column=7).value, 12)
         self.assertEqual(ws.cell(row=8, column=8).value, 0)
+        downloaded.close()
+
+    def test_dispatch_download_normalizes_legacy_xls_before_export(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.merge_cells("G1:H1")
+            ws.cell(row=1, column=7).value = "鋆賢?ⅣM/O:"
+            ws.cell(row=3, column=7).value = "銝擗?"
+            ws.cell(row=3, column=8).value = "憓溶?"
+            ws.cell(row=5, column=3).value = "PART-1"
+            ws.cell(row=5, column=7).value = 0
+            ws.cell(row=5, column=8).value = 0
+            wb.save(bom_path)
+            wb.close()
+
+            raw_bom_record = {
+                "id": "bom-legacy",
+                "filename": "dispatch.xls",
+                "filepath": str(Path(temp_dir) / "dispatch.xls"),
+                "source_filename": "dispatch.xls",
+                "source_format": ".xls",
+                "is_converted": 0,
+                "po_number": "0",
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+            converted_bom_record = {
+                **raw_bom_record,
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "is_converted": 1,
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[raw_bom_record]), \
+                 patch("app.routers.bom._ensure_editable_bom_record", return_value=converted_bom_record) as mock_ensure:
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-legacy"],
+                    "supplements": {"PART-1": 7},
+                    "header_overrides": {"bom-legacy": {"po_number": "4500059234"}},
+                    "carry_overs": {"bom-legacy": {"PART-1": 135}},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        mock_ensure.assert_called_once_with(raw_bom_record)
+        downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = downloaded.active
+        self.assertEqual(ws.cell(row=1, column=7).value, "鋆賢?ⅣM/O:4500059234")
+        self.assertEqual(ws.cell(row=5, column=7).value, 135)
+        self.assertEqual(ws.cell(row=5, column=8).value, 7)
         downloaded.close()

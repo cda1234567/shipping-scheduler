@@ -25,8 +25,6 @@ from ..services.bom_editor import (
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
 )
-from ..services.xls_reader import open_workbook_any
-
 router = APIRouter()
 
 
@@ -182,7 +180,7 @@ async def get_bom_data():
 
 @router.get("/bom/{bom_id}/file")
 async def get_bom_file(bom_id: str):
-    bom = _get_required_bom(bom_id)
+    bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
     file_path = Path(bom["filepath"])
     if not file_path.exists():
         raise HTTPException(404, "BOM 檔案不存在")
@@ -199,7 +197,7 @@ class BomLookupRequest(BaseModel):
 
 @router.post("/bom/lookup")
 async def lookup_bom_files(req: BomLookupRequest):
-    bom_files = db.get_bom_files_by_models(req.models)
+    bom_files = [_ensure_editable_bom_record(bom) for bom in db.get_bom_files_by_models(req.models)]
     return {
         "files": [
             {
@@ -393,7 +391,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         raise HTTPException(400, "請提供 BOM ID")
 
     target_ids = set(req.bom_ids)
-    target_boms = [bom for bom in db.get_bom_files() if bom["id"] in target_ids]
+    target_boms = [_ensure_editable_bom_record(bom) for bom in db.get_bom_files() if bom["id"] in target_ids]
     if not target_boms:
         raise HTTPException(404, "找不到指定的 BOM")
 
@@ -407,11 +405,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
 
         ext = src.suffix.lower()
         output_name = bom["filename"] or src.name
-        if ext == ".xls":
-            wb = open_workbook_any(str(src))
-            output_name = str(Path(output_name).with_suffix(".xlsx"))
-        else:
-            wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
+        wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
         override = req.header_overrides.get(bom["id"], {})
         override_po = str(override.get("po_number", "") or "").strip()
