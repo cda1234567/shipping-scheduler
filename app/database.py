@@ -231,6 +231,34 @@ def update_snapshot_stock(stock_updates: dict[str, float]) -> int:
     return updated
 
 
+def upsert_snapshot_moq(part_number: str, moq: float) -> str:
+    normalized = str(part_number or "").strip().upper()
+    if not normalized:
+        return ""
+
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT stock_qty FROM inventory_snapshot WHERE part_number=?",
+            (normalized,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE inventory_snapshot SET moq=? WHERE part_number=?",
+                (moq, normalized),
+            )
+            return normalized
+
+        snapshot_row = conn.execute(
+            "SELECT MAX(snapshot_at) AS snapshot_at FROM inventory_snapshot"
+        ).fetchone()
+        snapshot_at = (snapshot_row["snapshot_at"] if snapshot_row and snapshot_row["snapshot_at"] else "") or _now()
+        conn.execute(
+            "INSERT INTO inventory_snapshot(part_number, stock_qty, moq, snapshot_at) VALUES(?,?,?,?)",
+            (normalized, 0, moq, snapshot_at),
+        )
+    return normalized
+
+
 def get_snapshot() -> dict[str, dict]:
     """取得快照 {PART: {stock_qty, moq}}"""
     with get_conn() as conn:

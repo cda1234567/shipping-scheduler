@@ -146,3 +146,8 @@ def calc_suggested_qty(shortage: float, moq: float) -> float:
     if moq and moq > 0:
         return math.ceil(shortage / moq) * moq
     return shortage
+
+
+class UpdateMoqRequest(BaseModel):
+    part_number: str
+    moq: float = Field(ge=0)

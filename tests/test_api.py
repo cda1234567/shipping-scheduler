@@ -116,6 +116,23 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["stock"]["AAA"], 0.0)
         self.assertEqual(data["stock"]["BBB"], 5)
 
+    def test_update_snapshot_moq_endpoint_normalizes_part_number(self):
+        with patch("app.routers.main_file.db.upsert_snapshot_moq", return_value="IC-LD39100PUR-TAB") as mock_update, \
+             patch("app.routers.main_file.db.log_activity") as mock_log:
+            response = self.client.patch("/api/main-file/moq", json={
+                "part_number": " ic-ld39100pur-tab ",
+                "moq": 2500,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "ok": True,
+            "part_number": "IC-LD39100PUR-TAB",
+            "moq": 2500,
+        })
+        mock_update.assert_called_once_with("IC-LD39100PUR-TAB", 2500)
+        mock_log.assert_called_once()
+
     def test_bom_editor_returns_source_metadata(self):
         bom_record = {
             "id": "bom-1",

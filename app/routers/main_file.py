@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 
 from .. import database as db
 from ..config import MAIN_FILE_DIR
+from ..models import UpdateMoqRequest
 from ..services.main_reader import (
     find_legacy_snapshot_stock_fixes,
     read_moq,
@@ -99,6 +100,17 @@ async def get_main_data():
         "filename": db.get_setting("main_filename") or Path(main_path).name,
         "has_snapshot": bool(snapshot),
     }
+
+
+@router.patch("/main-file/moq")
+async def update_snapshot_moq(req: UpdateMoqRequest):
+    part_number = str(req.part_number or "").strip().upper()
+    if not part_number:
+        raise HTTPException(400, "料號不可空白")
+
+    saved_part = db.upsert_snapshot_moq(part_number, req.moq)
+    db.log_activity("snapshot_moq_updated", f"{saved_part} MOQ -> {req.moq}")
+    return {"ok": True, "part_number": saved_part, "moq": req.moq}
 
 
 @router.get("/main-file/download")

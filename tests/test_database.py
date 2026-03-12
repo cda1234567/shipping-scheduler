@@ -57,6 +57,37 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(snapshot["AAA"]["stock_qty"], 0)
         self.assertEqual(snapshot["BBB"]["stock_qty"], 5)
 
+    def test_upsert_snapshot_moq_updates_existing_part_without_changing_cutoff(self):
+        db.save_snapshot({"AAA": 8}, {"AAA": 0})
+        self.conn.execute(
+            "UPDATE inventory_snapshot SET snapshot_at='2026-03-12T11:05:45.000000' WHERE part_number='AAA'"
+        )
+
+        saved_part = db.upsert_snapshot_moq("aaa", 1200)
+        row = self.conn.execute(
+            "SELECT moq, snapshot_at FROM inventory_snapshot WHERE part_number='AAA'"
+        ).fetchone()
+
+        self.assertEqual(saved_part, "AAA")
+        self.assertEqual(row["moq"], 1200)
+        self.assertEqual(row["snapshot_at"], "2026-03-12T11:05:45.000000")
+
+    def test_upsert_snapshot_moq_inserts_missing_part_with_existing_snapshot_cutoff(self):
+        db.save_snapshot({"AAA": 8}, {"AAA": 500})
+        self.conn.execute(
+            "UPDATE inventory_snapshot SET snapshot_at='2026-03-12T11:05:45.000000' WHERE part_number='AAA'"
+        )
+
+        saved_part = db.upsert_snapshot_moq("bbb", 3000)
+        row = self.conn.execute(
+            "SELECT stock_qty, moq, snapshot_at FROM inventory_snapshot WHERE part_number='BBB'"
+        ).fetchone()
+
+        self.assertEqual(saved_part, "BBB")
+        self.assertEqual(row["stock_qty"], 0)
+        self.assertEqual(row["moq"], 3000)
+        self.assertEqual(row["snapshot_at"], "2026-03-12T11:05:45.000000")
+
     def test_save_bom_file_keeps_source_metadata(self):
         db.save_bom_file({
             "id": "bom-1",

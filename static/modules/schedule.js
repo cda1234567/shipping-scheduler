@@ -457,6 +457,8 @@ async function showShortageModal(targets) {
   });
 
   // 重設 footer
+  bindMoqEditors(list);
+
   footer.innerHTML = `
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載 BOM</button>
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
@@ -480,6 +482,7 @@ function modalShortageItem(s, isCS) {
       <span>需 ${fmt(s.needed)}</span>
       ${moqBadgeHtml(s)}
     </div>
+    ${missingMoqEditorHtml(s)}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
       <label style="font-size:12px;color:#374151;white-space:nowrap">補料:</label>
@@ -515,6 +518,78 @@ function suggestedQtyHtml(shortage) {
     return `<span class="blue">建議補 ${fmt(suggested)}（MOQ ${fmt(shortage.moq)}）</span>`;
   }
   return `<span class="amber">建議補 ${fmt(suggested)}（未寫 MOQ）</span>`;
+}
+
+function missingMoqEditorHtml(shortage) {
+  if (hasMoqValue(shortage)) return "";
+  return `
+    <div class="moq-editor" style="display:flex;align-items:center;gap:8px;margin-top:6px">
+      <label style="font-size:12px;color:#fbbf24;white-space:nowrap">MOQ:</label>
+      <input type="number" class="moq-input" data-part="${shortage.part_number}" min="0" step="0.01"
+             placeholder="輸入 MOQ"
+             style="width:96px;padding:2px 6px;border:1px solid #f59e0b;border-radius:4px;font-size:12px;text-align:right;background:#2a2a2a;color:#fff">
+      <button type="button" class="save-moq-btn"
+              style="border:1px solid #f59e0b;background:#78350f;color:#fef3c7;border-radius:4px;padding:3px 8px;font-size:12px;cursor:pointer;white-space:nowrap">
+        記住 MOQ
+      </button>
+    </div>`;
+}
+
+async function saveManualMoq(partNumber, input, button) {
+  const key = normalizePartKey(partNumber);
+  const moqValue = parseFloat(input?.value ?? "");
+  if (!key) {
+    showToast("料號不可空白");
+    return;
+  }
+  if (!Number.isFinite(moqValue) || moqValue <= 0) {
+    showToast("MOQ 請輸入大於 0 的數字");
+    input?.focus();
+    input?.select();
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = "儲存中...";
+  }
+
+  try {
+    await apiPatch("/api/main-file/moq", { part_number: key, moq: moqValue });
+    _moq[key] = moqValue;
+    recalculate();
+    updateStatusOnly();
+    if (_modalTargets.length && document.getElementById("shortage-modal")?.style.display === "flex") {
+      await showShortageModal(_modalTargets);
+    }
+    showToast(`${key} MOQ 已儲存`);
+  } catch (e) {
+    showToast("MOQ 儲存失敗: " + e.message);
+    if (button) {
+      button.disabled = false;
+      button.textContent = "記住 MOQ";
+    }
+  }
+}
+
+function bindMoqEditors(root) {
+  if (!root) return;
+
+  root.querySelectorAll(".save-moq-btn").forEach(button => {
+    button.addEventListener("click", async () => {
+      const wrapper = button.closest(".moq-editor");
+      const input = wrapper?.querySelector(".moq-input");
+      await saveManualMoq(input?.dataset.part, input, button);
+    });
+  });
+
+  root.querySelectorAll(".moq-input").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      input.closest(".moq-editor")?.querySelector(".save-moq-btn")?.click();
+    });
+  });
 }
 
 function _collectModalDecisions() {
@@ -852,6 +927,7 @@ function renderShortagePanel(shortages, csShortages = []) {
       }
     });
   });
+  bindMoqEditors(scroll);
 }
 
 function shortageItemHtml(s, isCS) {
@@ -870,6 +946,7 @@ function shortageItemHtml(s, isCS) {
       <span>需 ${fmt(s.needed)}</span>
       ${suggestedQtyHtml(s)}
     </div>
+    ${missingMoqEditorHtml(s)}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : `
     <div class="decision-btns">
       <button class="dec-btn ${dec === "CreateRequirement" ? "active-create" : ""}" data-dec="CreateRequirement" data-part="${s.part_number}">需採購</button>
