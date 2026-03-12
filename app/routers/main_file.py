@@ -65,7 +65,10 @@ async def get_main_data():
     snapshot = db.get_snapshot()
     if snapshot:
         stock = {k: v["stock_qty"] for k, v in snapshot.items()}
-        moq = {k: v["moq"] for k, v in snapshot.items()}
+        snapshot_moq = {k: v["moq"] for k, v in snapshot.items()}
+        # 舊版快照可能漏掉只有 MOQ、沒有庫存值的料號，這裡用主檔補齊缺失鍵。
+        moq = read_moq(main_path)
+        moq.update(snapshot_moq)
     else:
         stock = read_stock(main_path)
         moq = read_moq(main_path)

@@ -118,6 +118,11 @@ async def calculate_shortage():
         from ..services.main_reader import read_stock, read_moq
         snapshot_stock = read_stock(main_path)
         moq = read_moq(main_path)
+    else:
+        from ..services.main_reader import read_moq
+        live_moq = read_moq(main_path)
+        live_moq.update(moq)
+        moq = live_moq
 
     dispatched_consumption = db.get_all_dispatched_consumption()
     orders = db.get_orders(["pending", "merged"])

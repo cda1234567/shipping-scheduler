@@ -31,6 +31,27 @@ run.bat
 
 伺服器啟動後瀏覽 `http://localhost:8000`。
 
+專案的 `data/`、`__pycache__/` 與本機設定不會提交到 GitHub；首次啟動時會自動建立需要的資料夾。
+
+---
+
+## 驗證
+
+發布前建議至少跑一次：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\verify.ps1
+```
+
+這會依序執行：
+
+- Python 單元測試：`python -m unittest discover -s tests -p test_*.py`
+- 前端 JavaScript 語法檢查：`node tools\check_js.mjs`
+
+如果是在新的 terminal / 重新開啟的 Codex 視窗中，`node` 會直接可用。
+GitHub 端也有 `.github/workflows/checks.yml` 會自動執行同一批檢查。
+如果要從檔案總管或 `cmd` 執行，也可以用 `verify.bat`。
+
 ---
 
 ## 功能模組
@@ -132,7 +153,15 @@ opentext大改版/
 │       ├── calculator.js    # 前端計算
 │       ├── alerts.js        # 提醒 UI
 │       └── logs.js          # 日誌 UI
-└── data/
+├── tests/                   # 單元測試
+├── tools/
+│   └── check_js.mjs         # 前端語法檢查
+├── verify.ps1               # PowerShell 一鍵驗證
+├── verify.bat               # 本機一鍵驗證
+└── .github/workflows/       # GitHub Actions
+    ...
+
+data/
     ├── system.db            # SQLite DB
     ├── main_file/           # 主檔存放
     ├── schedule/            # 排程表存放
