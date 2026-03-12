@@ -111,6 +111,11 @@
           <input type="text" id="bom-group-model" placeholder="例如：T7U 或 T7U,T7U-U/A"
             style="flex:1;border:1px solid #e5e5ea;border-radius:6px;padding:5px 10px;font-size:13px;outline:none">
         </div>
+        <div class="bom-toolbar">
+          <span id="bom-order-status" class="bom-order-status">排序已儲存</span>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-sm" id="btn-save-bom-order" disabled>儲存排序</button>
+        </div>
       </div>
       <div id="bom-upload-area">
         <div style="font-size:28px">📂</div>
@@ -363,7 +368,7 @@ init();
           </label>
         </div>
         <div class="editor-note" style="margin-top:10px">
-          客供判斷會依描述關鍵字重新計算；此版本先支援編輯既有列，不做任意插列刪列。
+          此版本先支援編輯既有列，不做任意插列刪列。
         </div>
         <div class="bom-editor-table-wrap">
           <table class="bom-editor-table">
@@ -376,7 +381,6 @@ init();
                 <th>需求量</th>
                 <th>H 欄 / 上批餘料</th>
                 <th>跳過</th>
-                <th>客供</th>
               </tr>
             </thead>
             <tbody id="bom-editor-table-body"></tbody>

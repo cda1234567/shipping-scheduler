@@ -6,9 +6,6 @@ from ..models import BomFile, BomComponent
 
 _DASH_LIKE = {"-", "—", "－", "–", "x", "X", "n", "N", "?", "N/A", "n/a", "無"}
 
-# 客供料關鍵字（在說明或備註中出現表示客供料）
-_CUSTOMER_SUPPLIED_KEYWORDS = {"客供", "客供料", "CUST", "customer supplied", "CS"}
-
 
 def _try_float(v) -> float | None:
     if v is None:
@@ -21,15 +18,6 @@ def _try_float(v) -> float | None:
 
 def _is_dash(v) -> bool:
     return v is not None and str(v).strip() in _DASH_LIKE
-
-
-def _is_customer_supplied(desc: str) -> bool:
-    """根據說明欄判斷是否為客供料。"""
-    upper = desc.upper()
-    for kw in _CUSTOMER_SUPPLIED_KEYWORDS:
-        if kw.upper() in upper:
-            return True
-    return False
 
 
 def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFile:
@@ -102,7 +90,7 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
             needed_qty=needed_qty,
             prev_qty_cs=prev_cs,
             is_dash=is_dash_flag,
-            is_customer_supplied=_is_customer_supplied(desc),
+            is_customer_supplied=False,
             source_row=row_number,
             source_sheet=ws.title,
         ))

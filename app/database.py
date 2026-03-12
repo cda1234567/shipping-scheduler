@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS bom_files (
     pcb         TEXT NOT NULL DEFAULT '',
     group_model TEXT NOT NULL DEFAULT '',
     order_qty   REAL NOT NULL DEFAULT 0,
-    uploaded_at TEXT NOT NULL DEFAULT ''
+    uploaded_at TEXT NOT NULL DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS bom_components (
@@ -146,6 +147,8 @@ def init_db():
             conn.execute("ALTER TABLE bom_files ADD COLUMN source_format TEXT NOT NULL DEFAULT ''")
         if "is_converted" not in bom_cols:
             conn.execute("ALTER TABLE bom_files ADD COLUMN is_converted INTEGER NOT NULL DEFAULT 0")
+        if "sort_order" not in bom_cols:
+            conn.execute("ALTER TABLE bom_files ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager
@@ -412,11 +415,24 @@ def batch_merge_orders(order_ids: list[int]):
 def save_bom_file(bom: dict):
     """儲存一個 BOM 檔案及其 components。"""
     with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT sort_order FROM bom_files WHERE id=?",
+            (bom["id"],),
+        ).fetchone()
+        if bom.get("sort_order") is not None:
+            sort_order = int(bom.get("sort_order", 0))
+        elif existing:
+            sort_order = int(existing["sort_order"])
+        else:
+            row = conn.execute("SELECT COALESCE(MAX(sort_order), -1) AS max_sort FROM bom_files").fetchone()
+            max_sort = row["max_sort"] if row and row["max_sort"] is not None else -1
+            sort_order = int(max_sort) + 1
+
         conn.execute(
             "INSERT OR REPLACE INTO bom_files("
             "id, filename, filepath, source_filename, source_format, is_converted, "
-            "po_number, model, pcb, group_model, order_qty, uploaded_at"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "po_number, model, pcb, group_model, order_qty, uploaded_at, sort_order"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 bom["id"],
                 bom["filename"],
@@ -430,6 +446,7 @@ def save_bom_file(bom: dict):
                 bom.get("group_model", ""),
                 bom.get("order_qty", 0),
                 bom.get("uploaded_at", ""),
+                sort_order,
             ),
         )
         # 清除舊 components
@@ -453,8 +470,56 @@ def get_bom_file(bom_id: str) -> dict | None:
 
 def get_bom_files() -> list[dict]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM bom_files ORDER BY uploaded_at").fetchall()
+        rows = conn.execute("SELECT * FROM bom_files ORDER BY sort_order, uploaded_at, filename").fetchall()
     return [dict(r) for r in rows]
+
+
+def save_bom_order(groups: list[dict]) -> int:
+    normalized_groups = []
+    for group in groups or []:
+        model = str(group.get("model", "") or "").strip()
+        item_ids = [
+            str(item_id).strip()
+            for item_id in group.get("item_ids", [])
+            if str(item_id).strip()
+        ]
+        if not item_ids:
+            continue
+        normalized_groups.append({"model": model, "item_ids": item_ids})
+
+    if not normalized_groups:
+        return 0
+
+    updated = 0
+    with get_conn() as conn:
+        rows = conn.execute("SELECT id, group_model, sort_order FROM bom_files ORDER BY sort_order, uploaded_at, filename").fetchall()
+        existing = {r["id"]: dict(r) for r in rows}
+        seen_ids: set[str] = set()
+        next_sort = 0
+
+        for group in normalized_groups:
+            for item_id in group["item_ids"]:
+                if item_id not in existing or item_id in seen_ids:
+                    continue
+                conn.execute(
+                    "UPDATE bom_files SET group_model=?, sort_order=? WHERE id=?",
+                    (group["model"], next_sort, item_id),
+                )
+                seen_ids.add(item_id)
+                updated += 1
+                next_sort += 1
+
+        for row in rows:
+            if row["id"] in seen_ids:
+                continue
+            conn.execute(
+                "UPDATE bom_files SET sort_order=? WHERE id=?",
+                (next_sort, row["id"]),
+            )
+            updated += 1
+            next_sort += 1
+
+    return updated
 
 
 def get_bom_components(bom_file_id: str) -> list[dict]:

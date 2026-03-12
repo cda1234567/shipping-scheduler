@@ -4,7 +4,6 @@
 1. 從快照取起始庫存
 2. 先扣掉所有「已發料」的消耗（鎖死不動）
 3. 再對未發料的行跑 running balance（保留現有邏輯的可讀性）
-4. 客供料單獨標記，不計入採購清單
 """
 from __future__ import annotations
 from ..models import calc_suggested_qty
@@ -22,7 +21,6 @@ def _build_shortage_item(summary: dict, moq: dict[str, float]) -> dict:
         "moq": item_moq,
         "suggested_qty": calc_suggested_qty(shortage_amt, item_moq),
         "decision": "None",
-        "is_customer_supplied": summary["is_customer_supplied"],
     }
 
 
@@ -77,7 +75,6 @@ def run(
             continue
 
         shortages: list[dict] = []
-        cs_shortages: list[dict] = []
         part_summaries: dict[str, dict] = {}
 
         for comp in components:
@@ -87,7 +84,6 @@ def run(
                 continue
 
             part = comp.get("part_number", "").upper()
-            is_cs = comp.get("is_customer_supplied", False)
             summary = part_summaries.get(part)
             if summary is None:
                 summary = {
@@ -97,7 +93,6 @@ def run(
                     "current_stock": running.get(part, 0.0),
                     "needed": 0.0,
                     "ending_stock": running.get(part, 0.0),
-                    "is_customer_supplied": is_cs,
                 }
                 part_summaries[part] = summary
             elif not summary["description"] and comp.get("description", ""):
@@ -110,19 +105,14 @@ def run(
             running[part] = j
             summary["needed"] += f
             summary["ending_stock"] = j
-            summary["is_customer_supplied"] = summary["is_customer_supplied"] or is_cs
 
         for summary in part_summaries.values():
             if summary["ending_stock"] >= 0:
                 continue
 
-            shortage_item = _build_shortage_item(summary, moq)
-            if summary["is_customer_supplied"]:
-                cs_shortages.append(shortage_item)
-            else:
-                shortages.append(shortage_item)
+            shortages.append(_build_shortage_item(summary, moq))
 
-        has_shortage = bool(shortages) or bool(cs_shortages)
+        has_shortage = bool(shortages)
         results.append({
             "order_id":   order.get("id"),
             "po_number":  order.get("po_number"),
@@ -130,7 +120,7 @@ def run(
             "model":      order.get("model"),
             "status":     "shortage" if has_shortage else "ok",
             "shortages":  shortages,
-            "customer_material_shortages": cs_shortages,
+            "customer_material_shortages": [],
         })
 
     return results

@@ -12,7 +12,7 @@ from uuid import uuid4
 import openpyxl
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import database as db
 from ..config import BOM_DIR, cfg
@@ -99,7 +99,6 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 "pcb": parsed.pcb,
                 "order_qty": parsed.order_qty,
                 "components": len(parsed.components),
-                "customer_supplied_count": sum(1 for c in parsed.components if c.is_customer_supplied),
             })
         except Exception as exc:
             if stored and stored.get("filepath"):
@@ -130,7 +129,6 @@ async def list_bom_files():
         model_key = bom["group_model"] or bom["model"] or "未指定機種"
         groups.setdefault(model_key, [])
         components = db.get_bom_components(bom["id"])
-        cs_count = sum(1 for comp in components if comp.get("is_customer_supplied"))
         groups[model_key].append({
             "id": bom["id"],
             "filename": bom["filename"],
@@ -143,10 +141,28 @@ async def list_bom_files():
             "order_qty": bom["order_qty"],
             "components": len(components),
             "uploaded_at": bom["uploaded_at"],
-            "customer_supplied_count": cs_count,
         })
 
     return {"groups": [{"model": model, "items": items} for model, items in groups.items()]}
+
+
+class BomOrderGroupRequest(BaseModel):
+    model: str = ""
+    item_ids: List[str] = Field(default_factory=list)
+
+
+class BomReorderRequest(BaseModel):
+    groups: List[BomOrderGroupRequest] = Field(default_factory=list)
+
+
+@router.post("/bom/reorder")
+async def reorder_bom_files(req: BomReorderRequest):
+    if not req.groups:
+        raise HTTPException(400, "請提供排序資料")
+
+    updated = db.save_bom_order([group.dict() for group in req.groups])
+    db.log_activity("bom_reorder", f"BOM 排序已更新，{updated} 筆")
+    return {"ok": True, "updated": updated}
 
 
 @router.delete("/bom/{bom_id}")

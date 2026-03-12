@@ -1,9 +1,10 @@
-import { apiFetch, apiJson, apiPut, showToast, esc } from "./api.js";
+import { apiFetch, apiJson, apiPost, apiPut, showToast, esc } from "./api.js";
 
 let _onRefresh = null;
 let _outerSortable = null;
 const _innerSortables = [];
 let _editorBom = null;
+let _bomOrderDirty = false;
 
 export function initBomManager(onRefreshCallback) {
   _onRefresh = onRefreshCallback;
@@ -33,8 +34,59 @@ export function initBomManager(onRefreshCallback) {
     bomInput.value = "";
   });
 
+  document.getElementById("btn-save-bom-order")?.addEventListener("click", saveBomOrder);
+
   bindEditorModal();
+  setBomOrderDirty(false);
   renderBomGroups();
+}
+
+function setBomOrderDirty(dirty) {
+  _bomOrderDirty = !!dirty;
+  const button = document.getElementById("btn-save-bom-order");
+  const status = document.getElementById("bom-order-status");
+  if (button) button.disabled = !_bomOrderDirty;
+  if (status) {
+    status.textContent = _bomOrderDirty ? "排序尚未儲存" : "排序已儲存";
+    status.className = _bomOrderDirty ? "bom-order-status dirty" : "bom-order-status";
+  }
+}
+
+function collectBomOrderPayload() {
+  return Array.from(document.querySelectorAll("#bom-group-list .bom-model-group"))
+    .map(group => ({
+      model: group.dataset.model || "",
+      item_ids: Array.from(group.querySelectorAll(".bom-item-row")).map(item => item.dataset.id).filter(Boolean),
+    }))
+    .filter(group => group.item_ids.length);
+}
+
+async function saveBomOrder() {
+  if (!_bomOrderDirty) return;
+
+  const button = document.getElementById("btn-save-bom-order");
+  const payload = { groups: collectBomOrderPayload() };
+  if (!payload.groups.length) {
+    setBomOrderDirty(false);
+    return;
+  }
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "儲存中...";
+    }
+    const result = await apiPost("/api/bom/reorder", payload);
+    setBomOrderDirty(false);
+    showToast(`BOM 排序已儲存，${result.updated} 筆已更新`);
+    await renderBomGroups();
+    if (_onRefresh) await _onRefresh();
+  } catch (error) {
+    showToast(`儲存排序失敗：${error.message}`);
+    if (button) button.disabled = false;
+  } finally {
+    if (button) button.textContent = "儲存排序";
+  }
 }
 
 async function uploadBom(files) {
@@ -82,6 +134,7 @@ export async function renderBomGroups() {
 
     if (!groups.length) {
       container.innerHTML = '<div class="empty-state">尚未上傳 BOM 檔案</div>';
+      setBomOrderDirty(false);
       return;
     }
 
@@ -102,6 +155,7 @@ export async function renderBomGroups() {
         animation: 150,
         handle: ".drag-handle-model",
         ghostClass: "sortable-ghost",
+        onEnd: () => setBomOrderDirty(true),
       });
 
       container.querySelectorAll(".bom-items-list").forEach(list => {
@@ -110,6 +164,7 @@ export async function renderBomGroups() {
           handle: ".drag-handle-item",
           ghostClass: "sortable-ghost",
           group: "bom-items",
+          onEnd: () => setBomOrderDirty(true),
         });
         _innerSortables.push(sortable);
       });
@@ -126,8 +181,11 @@ export async function renderBomGroups() {
     container.querySelectorAll(".bom-del").forEach(button => {
       button.addEventListener("click", () => deleteBom(button.dataset.id));
     });
+
+    setBomOrderDirty(false);
   } catch (error) {
     container.innerHTML = `<div class="empty-state">載入 BOM 失敗：${esc(error.message)}</div>`;
+    setBomOrderDirty(false);
   }
 }
 
@@ -137,9 +195,6 @@ function itemHtml(item) {
   const convertedTag = item.is_converted
     ? '<span class="tag tag-converted">XLS→XLSX</span>'
     : "";
-  const csTag = item.customer_supplied_count
-    ? `<span class="tag tag-cs">${item.customer_supplied_count} 客供</span>`
-    : "";
 
   return `<li class="bom-item-row" data-id="${item.id}">
     <span class="drag-handle-item" title="拖曳排序檔案">⋮⋮</span>
@@ -148,7 +203,6 @@ function itemHtml(item) {
         <span class="tag tag-pcb">${esc(item.pcb)}</span>
         <span class="bom-item-filename" title="${esc(item.filename)}">${esc(item.filename)}</span>
         ${convertedTag}
-        ${csTag}
       </div>
       <div class="bom-item-sub" title="${esc(sourceName)}">
         ${item.is_converted ? `原始 ${esc(sourceName)}，已轉為正式 xlsx` : `來源 ${esc(sourceName)}`}
@@ -230,7 +284,6 @@ function renderEditor(bom) {
           跳過
         </label>
       </td>
-      <td>${component.is_customer_supplied ? '<span class="tag tag-cs">客供</span>' : '<span class="bom-auto-tag">自動判斷</span>'}</td>
     </tr>`).join("");
 }
 

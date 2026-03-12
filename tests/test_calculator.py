@@ -69,6 +69,30 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 3)
         self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 4)
 
+    def test_customer_supplied_flag_is_ignored_and_uses_normal_shortage_list(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 789, "pcb": "C", "model": "MODEL-C"}],
+            bom_map={
+                "MODEL-C": [
+                    {
+                        "part_number": "PART-3",
+                        "description": "Connector",
+                        "needed_qty": 6,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": True,
+                    },
+                ],
+            },
+            snapshot_stock={"PART-3": 2},
+            moq={"PART-3": 0},
+        )
+
+        self.assertEqual(results[0]["status"], "shortage")
+        self.assertEqual(len(results[0]["shortages"]), 1)
+        self.assertEqual(results[0]["shortages"][0]["part_number"], "PART-3")
+        self.assertEqual(results[0]["customer_material_shortages"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

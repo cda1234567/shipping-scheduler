@@ -47,7 +47,6 @@ async def generate(req: DispatchRequest):
                 "qty":         int(comp.get("needed_qty", 0)),
                 "fill_color":  "FFC000" if decision == "CreateRequirement" else None,
                 "is_shortage": decision == "Shortage",
-                "is_customer_supplied": comp.get("is_customer_supplied", False),
             })
 
         if not items:

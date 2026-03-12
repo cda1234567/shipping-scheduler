@@ -161,3 +161,41 @@ class DispatchConsumptionTests(InMemoryDbTestCase):
         consumption = db.get_all_dispatched_consumption(db.get_snapshot_taken_at())
 
         self.assertEqual(consumption, {"PART-1": 15.0})
+
+
+class BomOrderTests(InMemoryDbTestCase):
+    def test_save_bom_order_updates_group_and_sort_order(self):
+        db.save_bom_file({
+            "id": "bom-1",
+            "filename": "one.xlsx",
+            "filepath": "C:/one.xlsx",
+            "po_number": "1",
+            "model": "MODEL-1",
+            "pcb": "PCB-1",
+            "group_model": "GROUP-A",
+            "order_qty": 10,
+            "uploaded_at": "2026-03-12T10:00:00",
+            "components": [],
+        })
+        db.save_bom_file({
+            "id": "bom-2",
+            "filename": "two.xlsx",
+            "filepath": "C:/two.xlsx",
+            "po_number": "2",
+            "model": "MODEL-2",
+            "pcb": "PCB-2",
+            "group_model": "GROUP-B",
+            "order_qty": 20,
+            "uploaded_at": "2026-03-12T10:01:00",
+            "components": [],
+        })
+
+        updated = db.save_bom_order([
+            {"model": "GROUP-B", "item_ids": ["bom-2", "bom-1"]},
+        ])
+        bom_files = db.get_bom_files()
+
+        self.assertEqual(updated, 2)
+        self.assertEqual([bom["id"] for bom in bom_files], ["bom-2", "bom-1"])
+        self.assertEqual(bom_files[0]["group_model"], "GROUP-B")
+        self.assertEqual(bom_files[1]["group_model"], "GROUP-B")
