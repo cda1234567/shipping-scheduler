@@ -1057,7 +1057,10 @@ function buildCompletedCard(r, allFolders) {
       ${code}
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
-      <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
+      <div class="completed-card-actions">
+        <button class="btn btn-secondary btn-sm btn-rollback-order" data-order-id="${r.id}" title="反悔此筆與之後的已發料訂單">反悔</button>
+        <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
+      </div>
     </div>`;
 
   // 移動資料夾
@@ -1067,6 +1070,9 @@ function buildCompletedCard(r, allFolders) {
       await apiPost("/api/schedule/orders/move-folder", { order_ids: [r.id], folder: newFolder });
       await refreshCompleted();
     } catch (err) { showToast("移動失敗：" + err.message); }
+  });
+  div.querySelector(".btn-rollback-order").addEventListener("click", event => {
+    void handleRollbackDispatch(r.id, event.currentTarget);
   });
 
   return div;
@@ -1085,6 +1091,39 @@ async function handleCreateFolder() {
   input.value = "";
   showToast(`資料夾「${name}」已建立，請將訂單移入`);
   renderCompletedTab();
+}
+
+async function handleRollbackDispatch(orderId, trigger) {
+  if (!Number.isInteger(orderId)) return;
+
+  const button = trigger || document.querySelector(`.btn-rollback-order[data-order-id="${orderId}"]`);
+  const originalText = button?.textContent || "反悔";
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "讀取中...";
+    }
+    const preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview`);
+    const orderLines = (preview.orders || []).map((item, index) => `${index + 1}. ${item.po_number} ${item.model}`).join("\n");
+    const confirmed = confirm(
+      `這會從所選訂單開始反悔，共 ${preview.count} 筆已發料訂單：\n${orderLines}\n\n主檔會一併還原到當時備份。確定繼續嗎？`
+    );
+    if (!confirmed) return;
+
+    if (button) button.textContent = "反悔中...";
+    const result = await apiPost(`/api/schedule/orders/${orderId}/rollback`);
+    showToast(`已反悔 ${result.count} 筆訂單\n主檔已同步還原`);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    showToast("反悔失敗：" + error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
 }
 
 // ── SortableJS ────────────────────────────────────────────────────────────────
