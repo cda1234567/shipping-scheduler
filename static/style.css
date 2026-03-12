@@ -252,6 +252,20 @@ body {
   background: #ffedd5;
   color: #c2410c;
 }
+.moq-edit-trigger {
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  background: #f8fafc;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.moq-edit-trigger:hover {
+  background: #eff6ff;
+}
 .decision-btns { display: flex; gap: 4px; flex-wrap: wrap; }
 .dec-btn {
   border: 1px solid #e5e5ea; background: #fff; border-radius: 6px;

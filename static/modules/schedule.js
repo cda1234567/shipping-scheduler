@@ -458,6 +458,7 @@ async function showShortageModal(targets) {
 
   // 重設 footer
   bindMoqEditors(list);
+  bindShortageMoqBadgeEditors(list);
 
   footer.innerHTML = `
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載 BOM</button>
@@ -485,6 +486,7 @@ function modalShortageItem(s, isCS) {
       <span style="color:#16a34a">庫存 ${fmt(s.current_stock)}</span>
       <span>需 ${fmt(s.needed)}</span>
       ${moqBadgeHtml(s)}
+      ${moqEditTriggerHtml(s)}
     </div>
     ${missingMoqEditorHtml(s)}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
@@ -522,6 +524,12 @@ function moqBadgeHtml(shortage) {
     return `<span class="moq-badge moq-badge-present moq-badge-editable" data-part="${partNumber}" data-moq="${rawMoq}" title="雙擊可編輯 MOQ">MOQ ${fmt(roundShortageUiValue(shortage.moq))}</span>`;
   }
   return `<span class="moq-badge moq-badge-missing moq-badge-editable" data-part="${partNumber}" data-moq="0" title="雙擊可編輯 MOQ">未寫 MOQ</span>`;
+}
+
+function moqEditTriggerHtml(shortage) {
+  const partNumber = esc(shortage?.part_number || "");
+  const rawMoq = Number(shortage?.moq || 0);
+  return `<button type="button" class="moq-edit-trigger" data-part="${partNumber}" data-moq="${rawMoq}" title="編輯 MOQ" aria-label="編輯 MOQ">編</button>`;
 }
 
 function suggestedQtyHtml(shortage) {
@@ -665,6 +673,17 @@ function bindShortageMoqBadgeEditors(root) {
     badge.addEventListener("dblclick", event => {
       event.preventDefault();
       event.stopPropagation();
+      void handleShortageBadgeMoqEdit(badge);
+    });
+  });
+  root.querySelectorAll(".moq-edit-trigger").forEach(button => {
+    if (button.dataset.moqButtonBound === "1") return;
+    button.dataset.moqButtonBound = "1";
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const badge = button.parentElement?.querySelector(".moq-badge-editable");
+      if (!badge) return;
       void handleShortageBadgeMoqEdit(badge);
     });
   });
