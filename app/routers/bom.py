@@ -366,13 +366,23 @@ def _build_dispatch_running_stock() -> dict[str, float]:
     return running
 
 
-def _build_order_based_carry_overs(target_boms: list[dict], order_ids: list[int]) -> dict[str, dict[str, float]]:
+def _build_order_based_export_values(
+    target_boms: list[dict],
+    order_ids: list[int],
+    supplements: dict[str, float],
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
     if not order_ids or not target_boms:
-        return {}
+        return {}, {}
 
     running = _build_dispatch_running_stock()
     components_by_bom = {str(bom["id"]): db.get_bom_components(str(bom["id"])) for bom in target_boms}
     carry_overs: dict[str, dict[str, float]] = {}
+    supplement_allocations: dict[str, dict[str, float]] = {}
+    remaining_supplements = {
+        _normalize_lookup_key(part): float(qty or 0)
+        for part, qty in (supplements or {}).items()
+        if _normalize_lookup_key(part) and float(qty or 0) > 0
+    }
 
     for order_id in order_ids:
         order = db.get_order(int(order_id))
@@ -390,6 +400,7 @@ def _build_order_based_carry_overs(target_boms: list[dict], order_ids: list[int]
                 continue
 
             part_map: dict[str, float] = {}
+            supplement_map: dict[str, float] = {}
             for component in components_by_bom.get(bom_id, []):
                 needed_qty = float(component.get("needed_qty") or 0)
                 if component.get("is_dash") or needed_qty <= 0:
@@ -402,12 +413,19 @@ def _build_order_based_carry_overs(target_boms: list[dict], order_ids: list[int]
                 if part not in part_map:
                     part_map[part] = float(running.get(part, 0))
 
+                supplement_qty = 0.0
+                if remaining_supplements.get(part, 0) > 0 and part not in supplement_map:
+                    supplement_qty = float(remaining_supplements.get(part, 0))
+                    supplement_map[part] = supplement_qty
+                    remaining_supplements[part] = 0.0
+
                 prev_qty = float(component.get("prev_qty_cs") or 0)
-                running[part] = float(running.get(part, 0)) + prev_qty - needed_qty
+                running[part] = float(running.get(part, 0)) + prev_qty + supplement_qty - needed_qty
 
             carry_overs[bom_id] = part_map
+            supplement_allocations[bom_id] = supplement_map
 
-    return carry_overs
+    return carry_overs, supplement_allocations
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -488,7 +506,11 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         raise HTTPException(404, "找不到指定的 BOM")
 
     supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
-    computed_carry_overs = _build_order_based_carry_overs(target_boms, req.order_ids)
+    computed_carry_overs, computed_supplements = _build_order_based_export_values(
+        target_boms,
+        req.order_ids,
+        supplements,
+    )
     output_files: list[tuple[str, io.BytesIO]] = []
 
     for bom in target_boms:
@@ -503,14 +525,24 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         override = req.header_overrides.get(bom["id"], {})
         override_po = str(override.get("po_number", "") or "").strip()
         po_number = override_po or str(bom.get("po_number") or "").strip()
-        carry_over_source = computed_carry_overs.get(bom["id"]) or req.carry_overs.get(bom["id"], {})
+        if req.order_ids:
+            carry_over_source = computed_carry_overs.get(bom["id"], {})
+            supplement_source = computed_supplements.get(bom["id"], {})
+        else:
+            carry_over_source = req.carry_overs.get(bom["id"], {})
+            supplement_source = supplements
         carry_overs = {
             str(part).strip().upper(): qty
             for part, qty in carry_over_source.items()
             if str(part).strip()
         }
+        per_bom_supplements = {
+            str(part).strip().upper(): qty
+            for part, qty in supplement_source.items()
+            if str(part).strip()
+        }
         _write_bom_header_values(wb.active, po_number)
-        _write_dispatch_values_to_ws(wb.active, supplements, carry_overs)
+        _write_dispatch_values_to_ws(wb.active, per_bom_supplements, carry_overs)
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()
