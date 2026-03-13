@@ -2,6 +2,7 @@ import { showToast } from "./api.js";
 
 let _desktopState = null;
 let _initialized = false;
+let _stateHydrationStarted = false;
 
 function hasDesktopApi() {
   return Boolean(window.pywebview?.api);
@@ -28,6 +29,17 @@ async function readDesktopState() {
   _desktopState = await window.pywebview.api.get_state();
   applyDesktopTheme();
   return _desktopState;
+}
+
+async function hydrateDesktopState() {
+  if (_stateHydrationStarted || !hasDesktopApi()) return;
+  _stateHydrationStarted = true;
+  try {
+    await readDesktopState();
+    renderDesktopState();
+  } catch (error) {
+    console.warn("desktop bridge state hydration failed", error);
+  }
 }
 
 function renderDesktopState() {
@@ -76,6 +88,7 @@ function renderDesktopState() {
 
 function openDesktopModal() {
   document.getElementById("desktop-modal").style.display = "flex";
+  void hydrateDesktopState();
 }
 
 function closeDesktopModal() {
@@ -236,8 +249,10 @@ async function bootDesktopBridge() {
   _initialized = true;
   bindDesktopEvents();
   document.getElementById("btn-desktop-controls").style.display = "inline-flex";
-  await readDesktopState();
   renderDesktopState();
+  window.setTimeout(() => {
+    void hydrateDesktopState();
+  }, 300);
 }
 
 export async function initDesktopBridge() {
