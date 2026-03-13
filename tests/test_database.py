@@ -265,6 +265,59 @@ class OrderReloadTests(InMemoryDbTestCase):
         self.assertEqual(supplements, {order_id: {"PART-1": 3000.0}})
 
 
+class MergeDraftTests(InMemoryDbTestCase):
+    def test_replace_merge_draft_round_trip_and_commit(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500059234', 'MODEL-A', 'PCB-A', 10, 'merged', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+
+        draft = db.replace_merge_draft(
+            order_id=order_id,
+            main_file_path="C:/main.xlsx",
+            main_file_mtime_ns="123456",
+            main_loaded_at="2026-03-13T09:00:00",
+            decisions={"PART-1": "Shortage"},
+            supplements={"PART-1": 3000},
+            shortages=[{"part_number": "PART-1", "shortage_amount": 12}],
+        )
+        db.replace_merge_draft_files(
+            draft["id"],
+            [
+                {
+                    "bom_file_id": "bom-1",
+                    "filename": "draft-a.xlsx",
+                    "filepath": "C:/draft-a.xlsx",
+                    "source_filename": "source-a.xlsx",
+                    "source_format": ".xlsx",
+                    "model": "MODEL-A",
+                    "group_model": "MODEL-A",
+                    "carry_overs": {"PART-1": 100},
+                    "supplements": {"PART-1": 3000},
+                }
+            ],
+        )
+
+        active = db.get_active_merge_draft_for_order(order_id)
+        active_list = db.get_active_merge_drafts([order_id])
+        mapping = db.get_active_merge_draft_ids_by_order_ids([order_id])
+
+        self.assertEqual(active["main_file_mtime_ns"], "123456")
+        self.assertEqual(active["decisions"], {"PART-1": "Shortage"})
+        self.assertEqual(active["supplements"], {"PART-1": 3000})
+        self.assertEqual(active["shortages"], [{"part_number": "PART-1", "shortage_amount": 12}])
+        self.assertEqual(mapping, {order_id: draft["id"]})
+        self.assertEqual(len(active_list), 1)
+        self.assertEqual(active_list[0]["files"][0]["carry_overs"], {"PART-1": 100})
+        self.assertEqual(active_list[0]["files"][0]["supplements"], {"PART-1": 3000})
+
+        marked = db.mark_merge_draft_committed(draft["id"])
+
+        self.assertEqual(marked, 1)
+        self.assertIsNone(db.get_active_merge_draft_for_order(order_id))
+
+
 class DispatchConsumptionTests(InMemoryDbTestCase):
     def test_get_all_dispatched_consumption_ignores_records_at_or_before_snapshot(self):
         self.conn.execute(

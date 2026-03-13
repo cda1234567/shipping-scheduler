@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, apiPost, apiPatch, showToast, esc, fmt } from "./api.js";
+import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, esc, fmt } from "./api.js";
 import { calculate } from "./calculator.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
@@ -10,6 +10,7 @@ let _moq = {};
 let _dispatchedConsumption = {};
 let _calcResults = [];
 let _decisions = {};
+let _draftsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
 let _onRefreshMain = null;
@@ -17,6 +18,8 @@ let _checkedIds = new Set();
 let _modalProgressTimer = null;
 let _modalProgressValue = 0;
 let _completedFolderCollapsedState = loadCompletedFolderCollapsedState();
+let _modalDraftId = null;
+let _modalDraftReadOnly = false;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -154,6 +157,7 @@ async function loadScheduleRows() {
     _rows = d.rows || [];
     _dispatchedConsumption = d.dispatched_consumption || {};
     _decisions = normalizeDecisionMap(d.decisions || {});
+    _draftsByOrderId = d.merge_drafts || {};
     const completedBadge = document.getElementById("completed-count");
     if (completedBadge && d.completed_count > 0) {
       completedBadge.textContent = d.completed_count;
@@ -165,6 +169,7 @@ async function loadScheduleRows() {
     _rows = [];
     _dispatchedConsumption = {};
     _decisions = {};
+    _draftsByOrderId = {};
   }
 }
 
@@ -229,6 +234,38 @@ function renderSchedule() {
   renderShortagePanel(allShortages, allCSShortages);
 }
 
+function formatDraftTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.slice(5, 16).replace("T", " ");
+}
+
+function buildDraftPanelHtml(draft) {
+  const files = draft?.files || [];
+  const shortages = draft?.shortages || [];
+  const updatedAt = formatDraftTime(draft?.updated_at);
+  const fileHtml = files.length
+    ? files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")
+    : '<span class="merge-draft-file merge-draft-file-empty">副檔尚未生成</span>';
+
+  return `
+    <div class="merge-draft-panel">
+      <div class="merge-draft-summary">
+        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
+        <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
+        ${updatedAt ? `<span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>` : ""}
+      </div>
+      <div class="merge-draft-files">${fileHtml}</div>
+      <div class="merge-draft-actions">
+        <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}">預覽</button>
+        <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
+        <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
+        <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
+      </div>
+    </div>
+    ${draftHtml}`;
+}
+
 // ── Build single-row card ─────────────────────────────────────────────────────
 function buildRowCard(r, resultMap) {
   const div = document.createElement("div");
@@ -236,6 +273,7 @@ function buildRowCard(r, resultMap) {
   div.dataset.orderId = r.id;
 
   const res = resultMap[r.id];
+  const draft = _draftsByOrderId?.[r.id] || null;
   const badge = cardBadge(res, r.id);
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
@@ -249,6 +287,12 @@ function buildRowCard(r, resultMap) {
   const remarkSpan = r.remark
     ? `<span class="po-ship-date" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.remark)}">${esc(r.remark.slice(0, 24))}${r.remark.length > 24 ? "..." : ""}</span>`
     : `<span></span>`;
+  const completeTitle = draft
+    ? "照副檔寫入主檔"
+    : r.status === "merged"
+      ? "請先重新 merge 生成副檔"
+      : "直接發料";
+  const draftHtml = draft ? buildDraftPanelHtml(draft) : "";
 
   div.innerHTML = `
     <div class="po-group-header">
@@ -333,8 +377,21 @@ function buildRowCard(r, resultMap) {
   });
 
   // 發料（直接鎖定）
-  div.querySelector(".btn-complete").addEventListener("click", () => {
-    handleDispatch(r.id, r.model);
+  const completeButton = div.querySelector(".btn-complete");
+  if (completeButton) {
+    completeButton.title = completeTitle;
+    completeButton.innerHTML = "&#10003;";
+  }
+  completeButton?.addEventListener("click", () => {
+    if (draft) {
+      void handleCommitDraft(draft.id, r.model);
+      return;
+    }
+    if (r.status === "merged") {
+      showToast("這筆還沒有副檔，請先重新 merge");
+      return;
+    }
+    void handleDispatch(r.id, r.model);
   });
 
   // 改交期
@@ -346,6 +403,21 @@ function buildRowCard(r, resultMap) {
   div.querySelector(".btn-cancel-order").addEventListener("click", () => {
     handleCancel(r.id, r.model);
   });
+
+  if (draft) {
+    div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
+      void showDraftModal(draft.id, { readOnly: true });
+    });
+    div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
+      void showDraftModal(draft.id, { readOnly: false });
+    });
+    div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
+      void downloadDraft(draft.id);
+    });
+    div.querySelector(".btn-draft-delete")?.addEventListener("click", () => {
+      void handleDeleteDraft(draft.id, r.model);
+    });
+  }
 
   return div;
 }
@@ -413,7 +485,7 @@ async function handleBatchMerge() {
   if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
   if (!targets.length) { showToast("勾選的訂單中沒有可 merge 的"); return; }
   try {
-    await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
+    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
     await refresh();
     const shouldWriteMain = confirm(`已完成 ${targets.length} 筆 merge。\n要接著寫入主檔嗎？`);
     if (shouldWriteMain) {
@@ -512,6 +584,109 @@ function buildModalCarryOverOverrides() {
     overrides[bomFile.id] = { ...(_modalCarryOversByModel[modelKey] || {}) };
   });
   return overrides;
+}
+
+async function saveCurrentDraftFromModal({ silent = false } = {}) {
+  if (!_modalDraftId) return null;
+  const supplements = _collectModalSupplements();
+  const decisions = _collectModalDecisions();
+  const response = await apiPut(`/api/schedule/drafts/${_modalDraftId}`, { decisions, supplements });
+  if (!silent) showToast("副檔已更新");
+  await refresh();
+  return response?.draft || null;
+}
+
+async function showDraftModal(draftId, { readOnly = false } = {}) {
+  const modal = document.getElementById("shortage-modal");
+  const list = document.getElementById("modal-shortage-list");
+  const footer = document.getElementById("modal-footer");
+  const detail = await apiJson(`/api/schedule/drafts/${draftId}`);
+  const draft = detail.draft || {};
+  const order = detail.order || {};
+
+  _modalDraftId = draftId;
+  _modalDraftReadOnly = Boolean(readOnly);
+  _modalTargets = order?.id ? [order] : [];
+  _modalBomFiles = draft.files || [];
+  _modalCarryOversByModel = {};
+  _modalMode = readOnly ? "draft-preview" : "draft-edit";
+  _modalPreviewShortages = draft.shortages || [];
+
+  const fileSummary = (draft.files || []).length
+    ? `<div class="merge-draft-inline-files">${draft.files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")}</div>`
+    : '<div class="merge-draft-empty-note">這份副檔目前沒有可用檔案。</div>';
+
+  const grouped = {};
+  (draft.shortages || []).forEach(item => {
+    const modelKey = item._row_model || order.model || "副檔";
+    if (!grouped[modelKey]) grouped[modelKey] = [];
+    grouped[modelKey].push(item);
+  });
+
+  let html = `
+    <div class="merge-draft-modal-head">
+      <div class="merge-draft-modal-title">${esc(order.po_number || "")} ${esc(order.model || "")}</div>
+      <div class="merge-draft-modal-meta">副檔 ${draft.files?.length || 0} 份，更新 ${esc(formatDraftTime(draft.updated_at) || "--")}</div>
+      ${fileSummary}
+    </div>
+
+  const models = Object.keys(grouped);
+  if (!models.length) {
+    html += '<div class="merge-draft-empty-note">目前這份副檔沒有掛缺料，可直接下載或按勾提交。</div>';
+  } else {
+    models.sort((a, b) => compareText(a, b, "zh-Hant"));
+    models.forEach(modelKey => {
+      html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(modelKey)}</div>`;
+      html += grouped[modelKey].map(item => modalShortageItem(item, false)).join("");
+    });
+  }
+
+  list.innerHTML = html;
+  list.querySelectorAll(".shortage-item").forEach(itemEl => {
+    const input = itemEl.querySelector(".supplement-input");
+    const checkbox = itemEl.querySelector(".shortage-mark");
+    const part = normalizePartKey(input?.dataset.part || checkbox?.dataset.part);
+    const decision = draft.decisions?.[part] || "None";
+    if (checkbox) checkbox.checked = decision === "Shortage";
+    if (input && checkbox?.checked) input.disabled = true;
+  });
+  list.querySelectorAll(".supplement-input, .shortage-mark").forEach(el => {
+    el.disabled = readOnly;
+  });
+  bindMoqEditors(list);
+  bindShortageMoqBadgeEditors(list);
+
+  footer.innerHTML = readOnly
+    ? `
+      <button id="modal-download-bom" class="btn btn-primary btn-sm">下載副檔</button>
+      <button id="modal-cancel" class="btn btn-secondary btn-sm">關閉</button>`
+    : `
+      <button id="modal-save-draft" class="btn btn-success btn-sm">儲存副檔</button>
+      <button id="modal-download-bom" class="btn btn-primary btn-sm">下載副檔</button>
+      <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
+
+  document.getElementById("modal-save-draft")?.addEventListener("click", async () => {
+    try {
+      await saveCurrentDraftFromModal();
+      closeShortageModal();
+    } catch (error) {
+      showToast("副檔儲存失敗: " + error.message);
+    }
+  });
+  document.getElementById("modal-download-bom")?.addEventListener("click", async () => {
+    try {
+      if (!_modalDraftReadOnly) {
+        await saveCurrentDraftFromModal({ silent: true });
+      }
+      await downloadDraft(draftId);
+      if (!_modalDraftReadOnly) closeShortageModal();
+    } catch (error) {
+      showToast("副檔下載失敗: " + error.message);
+    }
+  });
+  document.getElementById("modal-cancel")?.addEventListener("click", closeShortageModal);
+  document.getElementById("modal-close").onclick = closeShortageModal;
+  modal.style.display = "flex";
 }
 
 async function showShortageModal(targets) {
@@ -709,10 +884,11 @@ async function showWriteToMainModal(targets) {
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
-  const defaultQty = roundShortageUiValue(s.suggested_qty || s.shortage_amount || 0);
+  const defaultQty = roundShortageUiValue(s.default_supplement ?? s.supplement_qty ?? s.suggested_qty || s.shortage_amount || 0);
   const shortageAmount = roundShortageUiValue(s.shortage_amount);
   const currentStock = roundShortageUiValue(s.current_stock);
   const neededQty = roundShortageUiValue(s.needed);
+  const shortageChecked = s.decision === "Shortage";
   s = { ...s, shortage_amount: shortageAmount, current_stock: currentStock, needed: neededQty };
 
   return `<div class="shortage-item ${isCS ? "cs-item" : ""}" style="margin-bottom:8px">
@@ -729,7 +905,7 @@ function modalShortageItem(s, isCS) {
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
       <label style="font-size:12px;color:#374151;white-space:nowrap">補料:</label>
-      <input type="number" class="supplement-input" data-part="${s.part_number}" value="${defaultQty}" min="0"
+      <input type="number" class="supplement-input" data-part="${s.part_number}" value="${defaultQty}" min="0" ${shortageChecked ? "disabled" : ""}
              style="width:80px;padding:2px 6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-align:right">
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:#dc2626;cursor:pointer;white-space:nowrap">
         <input type="checkbox" class="shortage-mark" data-part="${s.part_number}"> 缺料
@@ -747,6 +923,8 @@ function closeShortageModal() {
   _modalCarryOversByModel = {};
   _modalMode = "download";
   _modalPreviewShortages = [];
+  _modalDraftId = null;
+  _modalDraftReadOnly = false;
 }
 
 function hasMoqValue(shortage) {
@@ -832,6 +1010,77 @@ async function saveManualMoq(partNumber, input, button) {
       button.disabled = false;
       button.textContent = "記住 MOQ";
     }
+  }
+}
+
+async function handleCommitDraft(draftId, model) {
+  if (!confirm(`確認要依照 ${model} 的副檔寫入主檔嗎？`)) return;
+
+  try {
+    const result = await apiPost(`/api/schedule/drafts/${draftId}/commit`);
+    showToast(`已依副檔寫入主檔，merge ${result.merged_parts} 筆`);
+    _checkedIds.delete(result.order_id);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    showToast("副檔提交失敗: " + error.message);
+  }
+}
+
+async function downloadDraft(draftId) {
+  try {
+    const result = await desktopDownload({ path: `/api/schedule/drafts/${draftId}/download` });
+    showDownloadToast(result, "副檔");
+  } catch (error) {
+    showToast("副檔下載失敗: " + error.message);
+  }
+}
+
+async function handleDeleteDraft(draftId, model) {
+  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
+  try {
+    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
+    showToast("副檔已刪除");
+    await refresh();
+    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
+  } catch (error) {
+    showToast("副檔刪除失敗: " + error.message);
+  }
+}
+
+function buildDraftPanelHtml(draft) {
+  const files = draft?.files || [];
+  const shortages = draft?.shortages || [];
+  const updatedAt = formatDraftTime(draft?.updated_at);
+  const fileHtml = files.length
+    ? files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")
+    : '<span class="merge-draft-file merge-draft-file-empty">副檔尚未生成</span>';
+
+  return `
+    <div class="merge-draft-panel">
+      <div class="merge-draft-summary">
+        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
+        <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
+        ${updatedAt ? `<span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>` : ""}
+      </div>
+      <div class="merge-draft-files">${fileHtml}</div>
+      <div class="merge-draft-actions">
+        <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}">預覽</button>
+        <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
+        <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
+        <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
+      </div>
+    </div>`;
+}
+
+async function handleDeleteDraft(draftId, model) {
+  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
+  try {
+    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
+    showToast("副檔已刪除");
+    await refresh();
+  } catch (error) {
+    showToast("副檔刪除失敗: " + error.message);
   }
 }
 
@@ -1349,6 +1598,201 @@ async function handleRollbackDispatch(orderId, trigger) {
 }
 
 // ── SortableJS ────────────────────────────────────────────────────────────────
+function buildRowCard(r, resultMap) {
+  const div = document.createElement("div");
+  div.className = "po-group";
+  div.dataset.orderId = r.id;
+
+  const res = resultMap[r.id];
+  const draft = _draftsByOrderId?.[r.id] || null;
+  const badge = cardBadge(res, r.id);
+  const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "--";
+  const qty = r.order_qty != null ? r.order_qty : "--";
+  const code = esc(r.code || "");
+  const isChecked = _checkedIds.has(r.id);
+  const remarkSpan = r.remark
+    ? `<span class="po-ship-date" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.remark)}">${esc(r.remark.slice(0, 24))}${r.remark.length > 24 ? "..." : ""}</span>`
+    : "<span></span>";
+  const completeTitle = draft
+    ? "照副檔寫入主檔"
+    : r.status === "merged"
+      ? "請先重新 merge 生成副檔"
+      : "直接發料";
+  const draftHtml = draft ? buildDraftPanelHtml(draft) : "";
+
+  div.innerHTML = `
+    <div class="po-group-header">
+      <input type="checkbox" class="row-check" data-order-id="${r.id}" ${isChecked ? "checked" : ""}
+             style="width:16px;height:16px;margin:0;cursor:pointer;accent-color:#34c759">
+      <span class="drag-handle" title="拖曳排序">⋮</span>
+      <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊可改機種">${esc(r.model)}</span>
+      <span style="color:#c7c7cc;font-size:13px;text-align:center">|</span>
+      <span class="po-number" style="color:#6b7280;font-weight:500">${esc(r.po_number || "")}</span>
+      <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
+      <span style="font-size:13px;color:#3c3c43;font-weight:500;white-space:nowrap">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
+      <span class="po-ship-date">${date}</span>
+      <input class="code-input" type="text" value="${code}"
+             data-order-id="${r.id}" placeholder="代碼"
+             style="width:100%;box-sizing:border-box;border:1px solid #e5e5ea;border-radius:4px;padding:2px 6px;font-size:12px;text-align:center;background:transparent">
+      ${remarkSpan}
+      <span class="po-status-badge ${badge.cls}">${badge.text}</span>
+      <div class="row-actions">
+        <button class="btn-complete" data-order-id="${r.id}" title="${esc(completeTitle)}">&#10003;</button>
+        <button class="btn-edit-date" data-order-id="${r.id}" title="修改日期">✎</button>
+        <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">×</button>
+      </div>
+    </div>
+    ${draftHtml}`;
+
+  div.querySelector(".row-check")?.addEventListener("change", e => {
+    const id = parseInt(e.target.dataset.orderId, 10);
+    if (e.target.checked) _checkedIds.add(id);
+    else _checkedIds.delete(id);
+    recalculate();
+    updateStatusOnly();
+  });
+
+  div.querySelector(".model-editable")?.addEventListener("dblclick", e => {
+    const span = e.currentTarget;
+    const currentModel = span.textContent;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = currentModel;
+    input.className = "model-edit-input";
+    input.style.cssText = "width:100%;box-sizing:border-box;border:1px solid #007aff;border-radius:4px;padding:2px 6px;font-size:14px;font-weight:600;outline:none;background:#fff";
+    span.replaceWith(input);
+    input.focus();
+    input.select();
+
+    const save = async () => {
+      const newModel = input.value.trim();
+      if (newModel && newModel !== currentModel) {
+        try {
+          await apiPatch(`/api/schedule/orders/${r.id}/model`, { model: newModel });
+          showToast("機種已更新");
+          await refresh();
+          return;
+        } catch (err) {
+          showToast("機種更新失敗: " + err.message);
+        }
+      }
+      const newSpan = document.createElement("span");
+      newSpan.className = "po-number model-editable";
+      newSpan.dataset.orderId = r.id;
+      newSpan.title = "雙擊可改機種";
+      newSpan.textContent = newModel || currentModel;
+      input.replaceWith(newSpan);
+      newSpan.addEventListener("dblclick", () => {
+        div.querySelector(".model-editable")?.dispatchEvent(new MouseEvent("dblclick"));
+      });
+    };
+
+    input.addEventListener("blur", save);
+    input.addEventListener("keydown", event => {
+      if (event.key === "Enter") { event.preventDefault(); input.blur(); }
+      if (event.key === "Escape") { input.value = currentModel; input.blur(); }
+    });
+  });
+
+  div.querySelector(".code-input")?.addEventListener("change", async e => {
+    const orderId = parseInt(e.target.dataset.orderId, 10);
+    const codeVal = e.target.value.trim();
+    try {
+      await apiPatch(`/api/schedule/orders/${orderId}/code`, { code: codeVal });
+    } catch (_) {}
+  });
+
+  div.querySelector(".btn-complete")?.addEventListener("click", () => {
+    if (draft) {
+      void handleCommitDraft(draft.id, r.model);
+      return;
+    }
+    if (r.status === "merged") {
+      showToast("這筆還沒有副檔，請先重新 merge");
+      return;
+    }
+    void handleDispatch(r.id, r.model);
+  });
+  div.querySelector(".btn-edit-date")?.addEventListener("click", () => {
+    void handleEditDelivery(r.id, r.delivery_date || r.ship_date || "");
+  });
+  div.querySelector(".btn-cancel-order")?.addEventListener("click", () => {
+    void handleCancel(r.id, r.model);
+  });
+
+  if (draft) {
+    div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
+      void showDraftModal(draft.id, { readOnly: true });
+    });
+    div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
+      void showDraftModal(draft.id, { readOnly: false });
+    });
+    div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
+      void downloadDraft(draft.id);
+    });
+    div.querySelector(".btn-draft-delete")?.addEventListener("click", () => {
+      void handleDeleteDraft(draft.id, r.model);
+    });
+  }
+
+  return div;
+}
+
+async function handleBatchMerge() {
+  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
+  if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
+  if (!targets.length) { showToast("目前勾選的訂單不能 merge"); return; }
+  try {
+    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
+    await refresh();
+    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
+  } catch (error) {
+    showToast("批次 merge 失敗: " + error.message);
+  }
+}
+
+async function handleBatchDispatch() {
+  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
+  if (!_checkedIds.size) { showToast("請先勾選要發料的訂單"); return; }
+  if (!targets.length) { showToast("目前勾選的訂單沒有可發料項目"); return; }
+
+  const preview = targets.slice(0, 6).map(item => `${item.po_number} ${item.model}`).join("\n");
+  const extra = targets.length > 6 ? `\n... 另 ${targets.length - 6} 筆` : "";
+  if (!confirm(`確認要依副檔批次寫入主檔嗎？\n${preview}${extra}`)) return;
+
+  const button = document.getElementById("btn-batch-dispatch");
+  const originalText = button?.textContent || "批次發料";
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "發料中...";
+    }
+    const result = await apiPost("/api/schedule/batch-dispatch", { order_ids: targets.map(item => item.id) });
+    targets.forEach(item => _checkedIds.delete(item.id));
+    showToast(`已批次寫入 ${result.count} 筆訂單，merge ${result.merged_parts} 筆`);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    showToast("批次發料失敗: " + error.message);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function handleDeleteDraft(draftId, model) {
+  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
+  try {
+    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
+    showToast("副檔已刪除");
+    await refresh();
+  } catch (error) {
+    showToast("副檔刪除失敗: " + error.message);
+  }
+}
+
 function initSortable(container) {
   if (typeof Sortable === "undefined") return;
   Sortable.create(container, {

@@ -134,6 +134,39 @@ CREATE TABLE IF NOT EXISTS order_supplements (
     UNIQUE(order_id, part_number)
 );
 
+CREATE TABLE IF NOT EXISTS merge_drafts (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id          INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    status            TEXT    NOT NULL DEFAULT 'active',
+    main_file_path    TEXT    NOT NULL DEFAULT '',
+    main_file_mtime_ns TEXT   NOT NULL DEFAULT '',
+    main_loaded_at    TEXT    NOT NULL DEFAULT '',
+    decisions_json    TEXT    NOT NULL DEFAULT '{}',
+    supplements_json  TEXT    NOT NULL DEFAULT '{}',
+    shortages_json    TEXT    NOT NULL DEFAULT '[]',
+    created_at        TEXT    NOT NULL DEFAULT '',
+    updated_at        TEXT    NOT NULL DEFAULT '',
+    committed_at      TEXT    NOT NULL DEFAULT '',
+    deleted_at        TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS merge_draft_files (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id         INTEGER NOT NULL REFERENCES merge_drafts(id) ON DELETE CASCADE,
+    bom_file_id      TEXT    NOT NULL DEFAULT '',
+    filename         TEXT    NOT NULL DEFAULT '',
+    filepath         TEXT    NOT NULL DEFAULT '',
+    source_filename  TEXT    NOT NULL DEFAULT '',
+    source_format    TEXT    NOT NULL DEFAULT '',
+    model            TEXT    NOT NULL DEFAULT '',
+    group_model      TEXT    NOT NULL DEFAULT '',
+    carry_overs_json TEXT    NOT NULL DEFAULT '{}',
+    supplements_json TEXT    NOT NULL DEFAULT '{}',
+    created_at       TEXT    NOT NULL DEFAULT '',
+    updated_at       TEXT    NOT NULL DEFAULT '',
+    UNIQUE(draft_id, bom_file_id)
+);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     alert_type TEXT    NOT NULL DEFAULT '',
@@ -158,12 +191,28 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
+CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_id, status, id);
+CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
 """
 
 
 def _now() -> str:
     return datetime.now().isoformat()
+
+
+def _json_dumps(value) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_loads(value: str, default):
+    text = str(value or "").strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return default
 
 
 def init_db():
@@ -187,6 +236,9 @@ def init_db():
             conn.execute("ALTER TABLE bom_files ADD COLUMN is_converted INTEGER NOT NULL DEFAULT 0")
         if "sort_order" not in bom_cols:
             conn.execute("ALTER TABLE bom_files ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
+        if draft_cols and "main_file_mtime_ns" not in draft_cols:
+            conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager
@@ -963,6 +1015,227 @@ def get_order_supplements(order_ids: list[int] | None = None) -> dict[int, dict[
         result.setdefault(order_id, {})
         result[order_id][str(row["part_number"]).strip().upper()] = float(row["supplement_qty"] or 0)
     return result
+
+
+def replace_merge_draft(
+    *,
+    order_id: int,
+    main_file_path: str,
+    main_file_mtime_ns: str,
+    main_loaded_at: str,
+    decisions: dict[str, str] | None = None,
+    supplements: dict[str, float] | None = None,
+    shortages: list[dict] | None = None,
+) -> dict:
+    now = _now()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id, created_at FROM merge_drafts WHERE order_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if existing:
+            draft_id = int(existing["id"])
+            created_at = str(existing["created_at"] or now)
+            conn.execute(
+                "UPDATE merge_drafts SET "
+                "main_file_path=?, main_file_mtime_ns=?, main_loaded_at=?, "
+                "decisions_json=?, supplements_json=?, shortages_json=?, updated_at=?, deleted_at='' "
+                "WHERE id=?",
+                (
+                    main_file_path,
+                    str(main_file_mtime_ns or ""),
+                    main_loaded_at,
+                    _json_dumps(decisions or {}),
+                    _json_dumps(supplements or {}),
+                    _json_dumps(shortages or []),
+                    now,
+                    draft_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                "INSERT INTO merge_drafts("
+                "order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, "
+                "decisions_json, supplements_json, shortages_json, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    order_id,
+                    "active",
+                    main_file_path,
+                    str(main_file_mtime_ns or ""),
+                    main_loaded_at,
+                    _json_dumps(decisions or {}),
+                    _json_dumps(supplements or {}),
+                    _json_dumps(shortages or []),
+                    now,
+                    now,
+                ),
+            )
+            draft_id = int(cur.lastrowid)
+            created_at = now
+
+    return {
+        "id": draft_id,
+        "order_id": int(order_id),
+        "status": "active",
+        "main_file_path": main_file_path,
+        "main_file_mtime_ns": str(main_file_mtime_ns or ""),
+        "main_loaded_at": main_loaded_at,
+        "decisions": dict(decisions or {}),
+        "supplements": dict(supplements or {}),
+        "shortages": list(shortages or []),
+        "created_at": created_at,
+        "updated_at": now,
+        "committed_at": "",
+        "deleted_at": "",
+    }
+
+
+def replace_merge_draft_files(draft_id: int, files: list[dict]):
+    now = _now()
+    with get_conn() as conn:
+        conn.execute("DELETE FROM merge_draft_files WHERE draft_id=?", (draft_id,))
+        for item in files or []:
+            conn.execute(
+                "INSERT INTO merge_draft_files("
+                "draft_id, bom_file_id, filename, filepath, source_filename, source_format, "
+                "model, group_model, carry_overs_json, supplements_json, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    draft_id,
+                    str(item.get("bom_file_id") or ""),
+                    str(item.get("filename") or ""),
+                    str(item.get("filepath") or ""),
+                    str(item.get("source_filename") or ""),
+                    str(item.get("source_format") or ""),
+                    str(item.get("model") or ""),
+                    str(item.get("group_model") or ""),
+                    _json_dumps(item.get("carry_overs") or {}),
+                    _json_dumps(item.get("supplements") or {}),
+                    now,
+                    now,
+                ),
+            )
+
+
+def get_merge_draft(draft_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM merge_drafts WHERE id=? ORDER BY id DESC LIMIT 1",
+            (draft_id,),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["decisions"] = _json_loads(result.get("decisions_json", ""), {})
+    result["supplements"] = _json_loads(result.get("supplements_json", ""), {})
+    result["shortages"] = _json_loads(result.get("shortages_json", ""), [])
+    return result
+
+
+def get_active_merge_draft_for_order(order_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM merge_drafts WHERE order_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (order_id,),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["decisions"] = _json_loads(result.get("decisions_json", ""), {})
+    result["supplements"] = _json_loads(result.get("supplements_json", ""), {})
+    result["shortages"] = _json_loads(result.get("shortages_json", ""), [])
+    return result
+
+
+def get_merge_draft_files(draft_id: int) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM merge_draft_files WHERE draft_id=? ORDER BY id",
+            (draft_id,),
+        ).fetchall()
+    items = [dict(row) for row in rows]
+    for item in items:
+        item["carry_overs"] = _json_loads(item.get("carry_overs_json", ""), {})
+        item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+    return items
+
+
+def get_active_merge_drafts(order_ids: list[int] | None = None) -> list[dict]:
+    normalized_ids = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+
+    sql = (
+        "SELECT md.*, o.po_number, o.model, o.pcb, o.order_qty, o.delivery_date, o.ship_date, o.sort_order, o.row_index "
+        "FROM merge_drafts md "
+        "JOIN orders o ON o.id = md.order_id "
+        "WHERE md.status='active'"
+    )
+    params: list[int] = []
+    if normalized_ids:
+        placeholders = ",".join("?" * len(normalized_ids))
+        sql += f" AND md.order_id IN ({placeholders})"
+        params.extend(normalized_ids)
+    sql += " ORDER BY o.sort_order, o.delivery_date, o.row_index, md.id"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    results = [dict(row) for row in rows]
+    for item in results:
+        item["decisions"] = _json_loads(item.get("decisions_json", ""), {})
+        item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        item["shortages"] = _json_loads(item.get("shortages_json", ""), [])
+        item["files"] = get_merge_draft_files(int(item["id"]))
+    return results
+
+
+def get_active_merge_draft_ids_by_order_ids(order_ids: list[int]) -> dict[int, int]:
+    normalized_ids = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT order_id, id FROM merge_drafts WHERE status='active' AND order_id IN ({placeholders}) ORDER BY id DESC",
+            normalized_ids,
+        ).fetchall()
+
+    mapping: dict[int, int] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        if order_id not in mapping:
+            mapping[order_id] = int(row["id"])
+    return mapping
+
+
+def mark_merge_draft_committed(draft_id: int) -> int:
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE merge_drafts SET status='committed', committed_at=?, updated_at=? "
+            "WHERE id=? AND status='active'",
+            (now, now, draft_id),
+        )
+    return int(cur.rowcount or 0)
+
+
+def delete_merge_draft(draft_id: int) -> int:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM merge_drafts WHERE id=?", (draft_id,))
+    return int(cur.rowcount or 0)
 
 
 # ── Alerts ────────────────────────────────────────────────────────────────────

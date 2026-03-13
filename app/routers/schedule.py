@@ -19,6 +19,13 @@ from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main, preview_order_batches
 from ..services.order_supplements import build_order_supplement_allocations
+from ..services.merge_drafts import (
+    rebuild_merge_drafts,
+    delete_merge_draft_and_refresh,
+    get_schedule_draft_map,
+    get_draft_detail,
+    download_merge_draft,
+)
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
@@ -268,6 +275,34 @@ def _execute_dispatch(
     }
 
 
+def _current_main_signature(main_path: str) -> str:
+    return str(Path(main_path).stat().st_mtime_ns)
+
+
+def _load_active_merge_draft_context(draft_id: int, main_path: str) -> dict:
+    draft = db.get_merge_draft(draft_id)
+    if not draft or draft.get("status") != "active":
+        raise HTTPException(404, "找不到可提交的副檔草稿")
+
+    draft_main_path = str(draft.get("main_file_path") or "").strip()
+    if draft_main_path and Path(draft_main_path) != Path(main_path):
+        raise HTTPException(400, "主檔路徑已變更，請重新整理副檔後再提交")
+
+    current_signature = _current_main_signature(main_path)
+    if str(draft.get("main_file_mtime_ns") or "") != current_signature:
+        raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
+
+    order, groups, all_components = _prepare_dispatch_context(int(draft["order_id"]), main_path)
+    return {
+        "draft": draft,
+        "order": order,
+        "groups": groups,
+        "all_components": all_components,
+        "decisions": _normalize_decisions(draft.get("decisions")),
+        "supplements": _normalize_supplements(draft.get("supplements")),
+    }
+
+
 # ── Upload schedule ───────────────────────────────────────────────────────────
 
 @router.post("/schedule/upload")
@@ -310,6 +345,7 @@ async def get_schedule_rows():
         "completed_count": dispatched_count,
         "dispatched_consumption": _get_active_dispatched_consumption(),
         "decisions": db.get_all_decisions(),
+        "merge_drafts": get_schedule_draft_map(),
     }
 
 
@@ -384,9 +420,10 @@ async def batch_merge(req: BatchMergeRequest):
     if not req.order_ids:
         raise HTTPException(400, "請選擇要 merge 的訂單")
     db.batch_merge_orders(req.order_ids)
+    drafts = rebuild_merge_drafts(req.order_ids)
     db.log_activity("batch_merge", f"批次 merge {len(req.order_ids)} 筆訂單")
     db.create_alert(AlertType.BATCH_MERGE_DONE, f"批次 merge 完成，共 {len(req.order_ids)} 筆")
-    return {"ok": True, "count": len(req.order_ids)}
+    return {"ok": True, "count": len(req.order_ids), "draft_count": len(drafts)}
 
 
 @router.post("/schedule/auto-merge")
@@ -545,28 +582,72 @@ async def batch_dispatch(req: BatchDispatchRequest):
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先上傳主檔")
 
-    decisions = _normalize_decisions(req.decisions)
-    supplements = _normalize_supplements(req.supplements)
-    supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
-    contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
+    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
+    if missing_orders and draft_id_map:
+        raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
+    if draft_id_map:
+        contexts = [_load_active_merge_draft_context(draft_id_map[order_id], main_path) for order_id in normalized_order_ids]
+        use_drafts = True
+    else:
+        decisions = _normalize_decisions(req.decisions)
+        supplements = _normalize_supplements(req.supplements)
+        supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
+        raw_contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
+        contexts = [
+            {
+                "draft": None,
+                "order": order,
+                "groups": groups,
+                "all_components": all_components,
+                "decisions": decisions,
+                "supplements": supplement_allocations.get(int(order["id"]), {}),
+            }
+            for order, groups, all_components in raw_contexts
+        ]
+        use_drafts = False
 
     results: list[dict] = []
     processed_sessions: list[dict] = []
+    committed_draft_ids: list[int] = []
     try:
-        for order, groups, all_components in contexts:
-            order_supplements = supplement_allocations.get(int(order["id"]), {})
-            result = _execute_dispatch(order, groups, all_components, main_path, decisions, order_supplements)
+        for context in contexts:
+            result = _execute_dispatch(
+                context["order"],
+                context["groups"],
+                context["all_components"],
+                main_path,
+                context["decisions"],
+                context["supplements"],
+            )
             results.append(result)
             if result.get("session"):
                 processed_sessions.append(result["session"])
+            if context.get("draft"):
+                committed_draft_ids.append(int(context["draft"]["id"]))
     except Exception:
         if processed_sessions:
             _rollback_dispatch_sessions(processed_sessions)
             db.log_activity("batch_dispatch_rollback", f"批次發料失敗，已回復 {len(processed_sessions)} 筆")
         raise
 
-    if supplement_allocations:
-        db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+    if use_drafts:
+        for context in contexts:
+            db.replace_order_supplements(
+                [int(context["order"]["id"])],
+                {int(context["order"]["id"]): context["supplements"]},
+            )
+    else:
+        db.replace_order_supplements(
+            normalized_order_ids,
+            {int(context["order"]["id"]): context["supplements"] for context in contexts},
+        )
+    if use_drafts:
+        for draft_id in committed_draft_ids:
+            db.mark_merge_draft_committed(draft_id)
+        remaining_active_orders = [item["order_id"] for item in db.get_active_merge_drafts()]
+        if remaining_active_orders:
+            rebuild_merge_drafts(remaining_active_orders)
 
     total_merged_parts = sum(int(item.get("merged_parts") or 0) for item in results)
     db.log_activity("batch_dispatch", f"批次發料 {len(results)} 筆訂單，合計 {total_merged_parts} 筆 merge")
@@ -575,6 +656,87 @@ async def batch_dispatch(req: BatchDispatchRequest):
         "count": len(results),
         "merged_parts": total_merged_parts,
         "order_ids": [int(item["order_id"]) for item in results],
+    }
+
+
+@router.get("/schedule/drafts")
+async def get_schedule_drafts():
+    return {"drafts": get_schedule_draft_map()}
+
+
+@router.get("/schedule/drafts/{draft_id}")
+async def get_schedule_draft_detail(draft_id: int):
+    detail = get_draft_detail(draft_id)
+    return {"ok": True, **detail}
+
+
+@router.get("/schedule/drafts/{draft_id}/download")
+async def download_schedule_draft(draft_id: int):
+    return download_merge_draft(draft_id)
+
+
+@router.put("/schedule/drafts/{draft_id}")
+async def update_schedule_draft(draft_id: int, req: DecisionRequest):
+    draft = db.get_merge_draft(draft_id)
+    if not draft or draft.get("status") != "active":
+        raise HTTPException(404, "找不到副檔草稿")
+    refreshed = rebuild_merge_drafts(
+        [int(draft["order_id"])],
+        {
+            int(draft["order_id"]): {
+                "decisions": req.decisions,
+                "supplements": req.supplements,
+            }
+        },
+    )
+    current = db.get_active_merge_draft_for_order(int(draft["order_id"]))
+    if not current:
+        raise HTTPException(404, "副檔草稿更新後不存在")
+    db.log_activity("merge_draft_update", f"更新副檔草稿 {current['id']} / order {current['order_id']}")
+    return {"ok": True, "draft": get_draft_detail(int(current["id"]))["draft"], "refreshed_count": len(refreshed)}
+
+
+@router.delete("/schedule/drafts/{draft_id}")
+async def delete_schedule_draft(draft_id: int):
+    detail = get_draft_detail(draft_id)
+    delete_merge_draft_and_refresh(draft_id)
+    order = detail.get("order") or {}
+    db.log_activity("merge_draft_delete", f"刪除副檔草稿 {draft_id} / {order.get('po_number', '')} {order.get('model', '')}")
+    return {"ok": True, "draft_id": draft_id}
+
+
+@router.post("/schedule/drafts/{draft_id}/commit")
+async def commit_schedule_draft(draft_id: int):
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先載入主檔")
+
+    context = _load_active_merge_draft_context(draft_id, main_path)
+    result = _execute_dispatch(
+        context["order"],
+        context["groups"],
+        context["all_components"],
+        main_path,
+        context["decisions"],
+        context["supplements"],
+    )
+    db.replace_order_supplements(
+        [int(context["order"]["id"])],
+        {int(context["order"]["id"]): context["supplements"]},
+    )
+    db.mark_merge_draft_committed(draft_id)
+    remaining_active_orders = [item["order_id"] for item in db.get_active_merge_drafts()]
+    if remaining_active_orders:
+        rebuild_merge_drafts(remaining_active_orders)
+    db.log_activity(
+        "merge_draft_commit",
+        f"提交副檔草稿 {draft_id} / {context['order'].get('po_number', '')} {context['order'].get('model', '')}",
+    )
+    return {
+        "ok": True,
+        "draft_id": draft_id,
+        "order_id": int(context["order"]["id"]),
+        "merged_parts": int(result.get("merged_parts") or 0),
     }
 
 

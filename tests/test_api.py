@@ -38,7 +38,8 @@ class ApiTests(unittest.TestCase):
                  "schedule_filename": "schedule.xlsx",
              }.get(key, default)), \
              patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-1": 12}), \
-             patch("app.routers.schedule.db.get_all_decisions", return_value={"PART-1": "CreateRequirement"}):
+             patch("app.routers.schedule.db.get_all_decisions", return_value={"PART-1": "CreateRequirement"}), \
+             patch("app.routers.schedule.get_schedule_draft_map", return_value={1: {"id": 9, "files": [], "shortages": []}}):
             response = self.client.get("/api/schedule/rows")
 
         self.assertEqual(response.status_code, 200)
@@ -47,6 +48,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["completed_count"], 1)
         self.assertEqual(data["dispatched_consumption"], {"PART-1": 12})
         self.assertEqual(data["decisions"], {"PART-1": "CreateRequirement"})
+        self.assertEqual(data["merge_drafts"], {"1": {"id": 9, "files": [], "shortages": []}})
 
     def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
         with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \
@@ -59,6 +61,18 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["dispatched_consumption"], {"PART-2": 15})
         mock_consumption.assert_called_once_with("2026-03-12T11:05:45.000000")
+
+    def test_batch_merge_creates_merge_drafts(self):
+        with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 7}, {"id": 8}]) as mock_rebuild, \
+             patch("app.routers.schedule.db.log_activity"), \
+             patch("app.routers.schedule.db.create_alert"):
+            response = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1, 2]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "count": 2, "draft_count": 2})
+        mock_batch_merge.assert_called_once_with([1, 2])
+        mock_rebuild.assert_called_once_with([1, 2])
 
     def test_dispatch_order_saves_dispatch_session(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -219,6 +233,62 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["detail"], "第二筆發料失敗")
         mock_rollback.assert_called_once_with([{"id": 11, "order_id": 1}])
+
+    def test_update_schedule_draft_rebuilds_from_saved_payload(self):
+        with patch("app.routers.schedule.db.get_merge_draft", return_value={"id": 5, "order_id": 1, "status": "active"}), \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 8}]) as mock_rebuild, \
+             patch("app.routers.schedule.db.get_active_merge_draft_for_order", return_value={"id": 8, "order_id": 1, "status": "active"}), \
+             patch("app.routers.schedule.get_draft_detail", return_value={"draft": {"id": 8, "supplements": {"PART-1": 3000}}}), \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.put("/api/schedule/drafts/5", json={
+                "decisions": {"part-1": "Shortage"},
+                "supplements": {"part-1": 3000},
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["draft"]["id"], 8)
+        self.assertEqual(response.json()["refreshed_count"], 1)
+        mock_rebuild.assert_called_once_with(
+            [1],
+            {
+                1: {
+                    "decisions": {"part-1": "Shortage"},
+                    "supplements": {"part-1": 3000},
+                }
+            },
+        )
+
+    def test_commit_schedule_draft_uses_latest_saved_draft_context(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+            context = {
+                "draft": {"id": 5, "order_id": 1},
+                "order": {"id": 1, "po_number": "4500059234", "model": "MODEL-A"},
+                "groups": [{"components": []}],
+                "all_components": [{"part_number": "PART-1", "needed_qty": 5}],
+                "decisions": {"PART-1": "Shortage"},
+                "supplements": {"PART-1": 3000},
+            }
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule._load_active_merge_draft_context", return_value=context) as mock_context, \
+                 patch("app.routers.schedule._execute_dispatch", return_value={"order_id": 1, "merged_parts": 4}) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.schedule.db.mark_merge_draft_committed") as mock_mark, \
+                 patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/drafts/5/commit")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["draft_id"], 5)
+        self.assertEqual(response.json()["order_id"], 1)
+        self.assertEqual(response.json()["merged_parts"], 4)
+        mock_context.assert_called_once_with(5, str(main_path))
+        self.assertEqual(mock_execute.call_args.args[4], {"PART-1": "Shortage"})
+        self.assertEqual(mock_execute.call_args.args[5], {"PART-1": 3000})
+        mock_replace.assert_called_once_with([1], {1: {"PART-1": 3000}})
+        mock_mark.assert_called_once_with(5)
 
     def test_rollback_preview_returns_tail_orders(self):
         orders = {

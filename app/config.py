@@ -12,12 +12,13 @@ MAIN_FILE_DIR = DATA_DIR / "main_file"
 SCHEDULE_DIR  = DATA_DIR / "schedule"
 BOM_DIR       = DATA_DIR / "bom"
 BOM_HISTORY_DIR = DATA_DIR / "bom_history"
+MERGE_DRAFT_DIR = DATA_DIR / "merge_drafts"
 METADATA_FILE = DATA_DIR / "metadata.json"
 BACKUP_DIR    = DATA_DIR / "backups"
 STATIC_DIR    = BASE_DIR / "static"
 CONFIG_FILE   = BASE_DIR / "config.yaml"
 
-for _d in [MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, BACKUP_DIR]:
+for _d in [MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR, BACKUP_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 

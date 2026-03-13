@@ -250,6 +250,83 @@ body {
 .btn-edit-date:hover { border-color: #007aff; color: #007aff; }
 .btn-cancel-order:hover { border-color: #ef4444; color: #ef4444; }
 
+.merge-draft-panel {
+  border-top: 1px solid #eef2f7;
+  background: linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+  padding: 10px 14px 12px;
+}
+.merge-draft-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.merge-draft-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+}
+.merge-draft-meta {
+  font-size: 11px;
+  color: #64748b;
+}
+.merge-draft-files,
+.merge-draft-inline-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.merge-draft-file {
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 600;
+}
+.merge-draft-file-empty,
+.merge-draft-empty-note {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+}
+.merge-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.merge-draft-modal-head {
+  margin-bottom: 12px;
+}
+.merge-draft-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111827;
+}
+.merge-draft-modal-meta {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
 /* ── Right panel (補料明細) ─────────────── */
 #right-panel {
   width: 290px; border-left: 1px solid #e5e5ea; background: #fff;
