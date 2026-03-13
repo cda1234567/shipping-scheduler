@@ -3,9 +3,37 @@ import { showToast } from "./api.js";
 let _desktopState = null;
 let _initialized = false;
 let _stateHydrationStarted = false;
+let _stateHydrationStatus = "idle";
+
+function getDesktopApi() {
+  const api = window.pywebview?.api;
+  if (!api) return null;
+  const requiredMethods = [
+    "get_state",
+    "set_autostart",
+    "set_dark_mode",
+    "choose_download_directory",
+    "minimize_window",
+    "open_in_browser",
+    "quit_app",
+    "download_from_app",
+    "reload_app",
+  ];
+  return requiredMethods.every(name => typeof api[name] === "function") ? api : null;
+}
 
 function hasDesktopApi() {
-  return Boolean(window.pywebview?.api);
+  return Boolean(getDesktopApi());
+}
+
+async function waitForDesktopApi(timeoutMs = 8000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const api = getDesktopApi();
+    if (api) return api;
+    await new Promise(resolve => window.setTimeout(resolve, 120));
+  }
+  return null;
 }
 
 function parseFilenameFromContentDisposition(headerValue) {
@@ -25,20 +53,27 @@ function applyDesktopTheme() {
 }
 
 async function readDesktopState() {
-  if (!hasDesktopApi()) return null;
-  _desktopState = await window.pywebview.api.get_state();
+  const api = await waitForDesktopApi();
+  if (!api) return null;
+  _desktopState = await api.get_state();
   applyDesktopTheme();
   return _desktopState;
 }
 
-async function hydrateDesktopState() {
-  if (_stateHydrationStarted || !hasDesktopApi()) return;
+async function hydrateDesktopState(force = false) {
+  if (_stateHydrationStarted && !force) return;
   _stateHydrationStarted = true;
+  _stateHydrationStatus = "loading";
+  renderDesktopState();
   try {
     await readDesktopState();
+    _stateHydrationStatus = _desktopState ? "ready" : "idle";
     renderDesktopState();
   } catch (error) {
+    _stateHydrationStatus = "error";
+    _stateHydrationStarted = false;
     console.warn("desktop bridge state hydration failed", error);
+    renderDesktopState();
   }
 }
 
@@ -52,9 +87,9 @@ function renderDesktopState() {
   if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !darkModeEl) return;
 
   if (!_desktopState) {
-    statusEl.textContent = "桌面版未連線";
+    statusEl.textContent = _stateHydrationStatus === "loading" ? "桌面版連線中..." : "桌面版未連線";
     urlEl.textContent = "";
-    startupEl.textContent = "";
+    startupEl.textContent = _stateHydrationStatus === "error" ? "桌面橋接尚未就緒，請稍後再試一次。" : "";
     folderEl.textContent = "尚未指定下載資料夾";
     checkbox.checked = false;
     checkbox.disabled = true;
@@ -88,7 +123,7 @@ function renderDesktopState() {
 
 function openDesktopModal() {
   document.getElementById("desktop-modal").style.display = "flex";
-  void hydrateDesktopState();
+  void hydrateDesktopState(true);
 }
 
 function closeDesktopModal() {
@@ -100,7 +135,9 @@ async function handleAutostartChange(event) {
   const enabled = checkbox.checked;
   checkbox.disabled = true;
   try {
-    const nextState = await window.pywebview.api.set_autostart(enabled);
+    const api = await waitForDesktopApi();
+    if (!api) throw new Error("桌面版尚未連線完成");
+    const nextState = await api.set_autostart(enabled);
     if (!nextState?.ok && nextState?.message) {
       throw new Error(nextState.message);
     }
@@ -116,7 +153,9 @@ async function handleAutostartChange(event) {
 
 async function handleChooseDownloadDirectory() {
   try {
-    const nextState = await window.pywebview.api.choose_download_directory();
+    const api = await waitForDesktopApi();
+    if (!api) throw new Error("桌面版尚未連線完成");
+    const nextState = await api.choose_download_directory();
     if (nextState?.cancelled) return;
     if (!nextState?.ok && nextState?.message) {
       throw new Error(nextState.message);
@@ -134,7 +173,9 @@ async function handleDarkModeChange(event) {
   const enabled = checkbox.checked;
   checkbox.disabled = true;
   try {
-    const nextState = await window.pywebview.api.set_dark_mode(enabled);
+    const api = await waitForDesktopApi();
+    if (!api) throw new Error("桌面版尚未連線完成");
+    const nextState = await api.set_dark_mode(enabled);
     if (!nextState?.ok && nextState?.message) {
       throw new Error(nextState.message);
     }
@@ -149,19 +190,25 @@ async function handleDarkModeChange(event) {
 }
 
 async function handleMinimize() {
-  await window.pywebview.api.minimize_window();
+  const api = await waitForDesktopApi();
+  if (!api) throw new Error("桌面版尚未連線完成");
+  await api.minimize_window();
   closeDesktopModal();
 }
 
 async function handleOpenBrowser() {
-  await window.pywebview.api.open_in_browser();
+  const api = await waitForDesktopApi();
+  if (!api) throw new Error("桌面版尚未連線完成");
+  await api.open_in_browser();
   showToast("已在外部瀏覽器開啟");
 }
 
 async function handleQuitDesktop() {
   const confirmed = window.confirm("要結束桌面版嗎？結束後桌面視窗和內建服務都會關閉。");
   if (!confirmed) return;
-  await window.pywebview.api.quit_app();
+  const api = await waitForDesktopApi();
+  if (!api) throw new Error("桌面版尚未連線完成");
+  await api.quit_app();
 }
 
 function bindDesktopEvents() {
@@ -234,7 +281,11 @@ export async function desktopDownload({ path, method = "GET", body = null, filen
     return fallbackBrowserDownload({ path, method, body, filename });
   }
 
-  const result = await window.pywebview.api.download_from_app({ path, method, body, filename });
+  const api = await waitForDesktopApi();
+  if (!api) {
+    throw new Error("桌面版尚未連線完成");
+  }
+  const result = await api.download_from_app({ path, method, body, filename });
   if (result?.cancelled) {
     throw new Error("已取消選擇下載資料夾");
   }
@@ -249,6 +300,7 @@ async function bootDesktopBridge() {
   _initialized = true;
   bindDesktopEvents();
   document.getElementById("btn-desktop-controls").style.display = "inline-flex";
+  _stateHydrationStatus = "loading";
   renderDesktopState();
   window.setTimeout(() => {
     void hydrateDesktopState();
@@ -266,4 +318,19 @@ export async function initDesktopBridge() {
       showToast("桌面版初始化失敗: " + error.message);
     });
   }, { once: true });
+
+  let attempts = 0;
+  const pollTimer = window.setInterval(() => {
+    attempts += 1;
+    if (hasDesktopApi()) {
+      window.clearInterval(pollTimer);
+      bootDesktopBridge().catch(error => {
+        showToast("桌面版初始化失敗: " + error.message);
+      });
+      return;
+    }
+    if (attempts >= 50) {
+      window.clearInterval(pollTimer);
+    }
+  }, 120);
 }
