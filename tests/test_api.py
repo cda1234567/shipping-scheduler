@@ -9,6 +9,7 @@ from unittest.mock import call, patch
 
 import openpyxl
 from fastapi import HTTPException
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 from openpyxl.styles import Font, PatternFill
 
@@ -73,6 +74,53 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json(), {"ok": True, "count": 2, "draft_count": 2})
         mock_batch_merge.assert_called_once_with([1, 2])
         mock_rebuild.assert_called_once_with([1, 2])
+
+    def test_update_selected_schedule_drafts_allocates_supplements_per_order(self):
+        with patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
+             patch("app.routers.schedule.build_order_supplement_allocations", return_value={
+                 1: {"PART-1": 3000},
+                 2: {},
+             }) as mock_allocations, \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]) as mock_rebuild, \
+             patch("app.routers.schedule.get_schedule_draft_map", return_value={
+                 1: {"id": 11, "order_id": 1},
+                 2: {"id": 12, "order_id": 2},
+             }), \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.put("/api/schedule/drafts", json={
+                "order_ids": [1, 2],
+                "decisions": {"part-1": "Shortage"},
+                "supplements": {"part-1": 3000},
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["count"], 2)
+        self.assertEqual(response.json()["draft_count"], 2)
+        mock_allocations.assert_called_once_with([1, 2], {"part-1": 3000})
+        mock_rebuild.assert_called_once_with(
+            [1, 2],
+            {
+                1: {
+                    "decisions": {"part-1": "Shortage"},
+                    "supplements": {"PART-1": 3000},
+                },
+                2: {
+                    "decisions": {"part-1": "Shortage"},
+                    "supplements": {},
+                },
+            },
+        )
+
+    def test_download_selected_schedule_drafts_proxies_to_bundle_service(self):
+        with patch(
+            "app.routers.schedule.download_selected_merge_drafts",
+            return_value=Response(content=b"ok", media_type="application/zip"),
+        ) as mock_download:
+            response = self.client.post("/api/schedule/drafts/download", json={"order_ids": [1, 2]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"ok")
+        mock_download.assert_called_once_with([1, 2])
 
     def test_dispatch_order_saves_dispatch_session(self):
         with tempfile.TemporaryDirectory() as temp_dir:

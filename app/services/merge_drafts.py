@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -19,6 +20,15 @@ from ..models import calc_suggested_qty
 
 def normalize_part_key(value) -> str:
     return str(value or "").strip().upper()
+
+
+def _sanitize_filename_piece(value: str, fallback: str = "draft") -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    text = re.sub(r'[\\/:*?"<>|]+', "-", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text or fallback
 
 
 def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, str]:
@@ -139,6 +149,39 @@ def _cleanup_draft_files(draft_id: int):
     draft_dir = MERGE_DRAFT_DIR / f"draft_{draft_id}"
     if draft_dir.exists():
         shutil.rmtree(draft_dir, ignore_errors=True)
+
+
+def _build_download_response(file_entries: list[dict], archive_label: str = "副檔草稿"):
+    if not file_entries:
+        raise HTTPException(404, "副檔檔案不存在")
+
+    if len(file_entries) == 1:
+        entry = file_entries[0]
+        return FileResponse(
+            path=str(entry["path"]),
+            filename=entry["download_name"],
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    zip_buffer = io.BytesIO()
+    used_names: set[str] = set()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for entry in file_entries:
+            target_name = entry["download_name"]
+            stem = Path(target_name).stem
+            suffix = Path(target_name).suffix or entry["path"].suffix
+            counter = 1
+            while target_name in used_names:
+                target_name = f"{stem}_{counter}{suffix}"
+                counter += 1
+            used_names.add(target_name)
+            zf.write(str(entry["path"]), target_name)
+    zip_buffer.seek(0)
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(build_generated_filename(archive_label, '.zip'))}"},
+    )
 
 
 def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_stock: dict[str, float], moq_map: dict[str, float]) -> dict:
@@ -424,25 +467,49 @@ def download_merge_draft(draft_id: int):
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到副檔草稿")
     files = db.get_merge_draft_files(draft_id)
-    valid_files = [(item, Path(str(item.get("filepath") or ""))) for item in files if Path(str(item.get("filepath") or "")).exists()]
-    if not valid_files:
-        raise HTTPException(404, "副檔檔案不存在")
+    valid_files = [
+        {
+            "path": file_path,
+            "download_name": item.get("filename") or file_path.name,
+        }
+        for item in files
+        for file_path in [Path(str(item.get("filepath") or ""))]
+        if file_path.exists()
+    ]
+    return _build_download_response(valid_files)
 
-    if len(valid_files) == 1:
-        item, file_path = valid_files[0]
-        return FileResponse(
-            path=str(file_path),
-            filename=item.get("filename") or file_path.name,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for item, file_path in valid_files:
-            zf.write(str(file_path), item.get("filename") or file_path.name)
-    zip_buffer.seek(0)
-    return StreamingResponse(
-        zip_buffer,
-        media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(build_generated_filename('副檔草稿', '.zip'))}"},
-    )
+def download_selected_merge_drafts(order_ids: list[int]):
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        raise HTTPException(400, "請先選擇要下載副檔的訂單")
+
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_ids)
+    missing_orders = [order_id for order_id in normalized_ids if order_id not in draft_id_map]
+    if missing_orders:
+        raise HTTPException(404, "部分訂單尚未建立副檔")
+
+    file_entries: list[dict] = []
+    for order_id in normalized_ids:
+        order = db.get_order(order_id) or {}
+        po_prefix = _sanitize_filename_piece(order.get("po_number", ""), "PO")
+        model_prefix = _sanitize_filename_piece(order.get("model", ""), "MODEL")
+        draft_files = db.get_merge_draft_files(int(draft_id_map[order_id]))
+        for item in draft_files:
+            file_path = Path(str(item.get("filepath") or ""))
+            if not file_path.exists():
+                continue
+            original_name = item.get("filename") or file_path.name
+            download_name = f"{po_prefix}_{model_prefix}_{original_name}"
+            file_entries.append({
+                "path": file_path,
+                "download_name": download_name,
+            })
+
+    return _build_download_response(file_entries)

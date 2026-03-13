@@ -25,6 +25,7 @@ from ..services.merge_drafts import (
     get_schedule_draft_map,
     get_draft_detail,
     download_merge_draft,
+    download_selected_merge_drafts,
 )
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
@@ -664,10 +665,53 @@ async def get_schedule_drafts():
     return {"drafts": get_schedule_draft_map()}
 
 
+@router.put("/schedule/drafts")
+async def update_selected_schedule_drafts(req: BatchDispatchRequest):
+    normalized_order_ids = []
+    for order_id in req.order_ids:
+        try:
+            normalized_order_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    if not normalized_order_ids:
+        raise HTTPException(400, "請先選擇要更新副檔的訂單")
+
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
+    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
+    if missing_orders:
+        raise HTTPException(400, "部分訂單尚未建立副檔，請先重新 merge")
+
+    allocations = build_order_supplement_allocations(normalized_order_ids, req.supplements)
+    refreshed = rebuild_merge_drafts(
+        normalized_order_ids,
+        {
+            order_id: {
+                "decisions": req.decisions,
+                "supplements": allocations.get(order_id, {}),
+            }
+            for order_id in normalized_order_ids
+        },
+    )
+    drafts = get_schedule_draft_map()
+    db.log_activity("merge_draft_batch_update", f"批次更新副檔 {len(normalized_order_ids)} 筆")
+    return {
+        "ok": True,
+        "count": len(normalized_order_ids),
+        "draft_count": len(refreshed),
+        "drafts": {str(order_id): drafts.get(order_id) for order_id in normalized_order_ids},
+    }
+
+
 @router.get("/schedule/drafts/{draft_id}")
 async def get_schedule_draft_detail(draft_id: int):
     detail = get_draft_detail(draft_id)
     return {"ok": True, **detail}
+
+
+@router.post("/schedule/drafts/download")
+async def download_selected_schedule_drafts(req: BatchMergeRequest):
+    return download_selected_merge_drafts(req.order_ids)
 
 
 @router.get("/schedule/drafts/{draft_id}/download")

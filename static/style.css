@@ -1251,7 +1251,8 @@ body.desktop-dark .modal-progress-fill {
 
 .merge-draft-panel {
   position: relative;
-  margin: 12px 0 4px;
+  width: min(76%, 960px);
+  margin: 12px 0 4px 46px;
   padding: 16px;
   border: 1px solid #d7e3f4;
   border-radius: 16px;
@@ -1389,6 +1390,12 @@ body.desktop-dark .modal-progress-fill {
   border-color: #fecaca;
   background: rgba(254, 242, 242, 0.96);
   color: #b91c1c;
+}
+@media (max-width: 1100px) {
+  .merge-draft-panel {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 .merge-draft-modal-head {
   margin-bottom: 14px;

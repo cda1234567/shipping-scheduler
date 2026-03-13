@@ -792,6 +792,171 @@ async function showShortageModal(targets) {
   modal.style.display = "flex";
 }
 
+async function saveBatchDraftsFromModal({ silent = false } = {}) {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) return null;
+
+  const supplements = _collectModalSupplements();
+  const decisions = _collectModalDecisions();
+  await persistDecisionsForOrders(decisions, targetOrderIds);
+  Object.entries(decisions).forEach(([part, decision]) => {
+    setLocalDecision(part, decision);
+  });
+
+  const response = await apiPut("/api/schedule/drafts", {
+    order_ids: targetOrderIds,
+    decisions,
+    supplements,
+  });
+  await refresh();
+  if (!silent) showToast("補料已寫入副檔");
+  return response?.drafts || null;
+}
+
+async function handleModalSaveDrafts() {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) {
+    showToast("找不到要儲存補料的訂單");
+    return;
+  }
+
+  try {
+    setModalDownloadProgress(true, "正在保存補料到副檔...", "補料完成後，副檔會顯示在該機種下方，之後再按發料即可。", 14);
+    startModalProgressAnimation(94, 180);
+    await saveBatchDraftsFromModal({ silent: true });
+    setModalDownloadProgress(true, "副檔已更新", "現在可以在機種下方預覽、編輯、下載，或最後再發料。", 100);
+    await new Promise(resolve => setTimeout(resolve, 180));
+    closeShortageModal();
+    showToast("補料已寫入副檔，請在訂單下方確認後再發料");
+  } catch (error) {
+    showToast("保存補料失敗: " + error.message);
+    setModalDownloadProgress(false, "", "", 0);
+  }
+}
+
+async function handleModalDownloadDrafts() {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) {
+    showToast("找不到可下載副檔的訂單");
+    return;
+  }
+
+  try {
+    setModalDownloadProgress(true, "正在保存補料到副檔...", "會把這次補料與缺料決策正式寫進副檔。", 12);
+    startModalProgressAnimation(46, 140);
+    await saveBatchDraftsFromModal({ silent: true });
+
+    setModalDownloadProgress(true, "正在下載副檔...", `共 ${targetOrderIds.length} 筆訂單，會依目前副檔內容輸出。`, 58);
+    startModalProgressAnimation(92, 220);
+    const result = await desktopDownload({
+      path: "/api/schedule/drafts/download",
+      method: "POST",
+      body: { order_ids: targetOrderIds },
+    });
+    showDownloadToast(result, "副檔");
+
+    setModalDownloadProgress(true, "副檔下載完成", "補料內容已保存，後續也能在機種下方繼續預覽與編輯。", 100);
+    await new Promise(resolve => setTimeout(resolve, 220));
+    closeShortageModal();
+  } catch (error) {
+    showToast("副檔下載失敗: " + error.message);
+    setModalDownloadProgress(false, "", "", 0);
+  }
+}
+
+async function showBatchMergeDraftModal(targets) {
+  _modalTargets = targets;
+  _modalBomFiles = [];
+  _modalCarryOversByModel = {};
+  _modalMode = "download";
+  _modalPreviewShortages = [];
+  _modalDraftId = null;
+  _modalDraftReadOnly = false;
+
+  const modal = document.getElementById("shortage-modal");
+  const list = document.getElementById("modal-shortage-list");
+  const footer = document.getElementById("modal-footer");
+  const targetIds = new Set(targets.map(target => target.id));
+
+  const shortagesByModel = {};
+  const csShortagesByModel = {};
+  _calcResults.forEach((result, index) => {
+    if (!result) return;
+    if (!targetIds.has(_rows[index]?.id)) return;
+    const model = _rows[index]?.model || "未分類機種";
+    const code = _rows[index]?.code || model;
+    (result.shortages || []).forEach(item => {
+      if (!shortagesByModel[model]) shortagesByModel[model] = [];
+      shortagesByModel[model].push({ ...item, _row_code: code, _row_model: model });
+    });
+    (result.customer_material_shortages || []).forEach(item => {
+      if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
+      csShortagesByModel[model].push({ ...item, _row_code: code, _row_model: model });
+    });
+  });
+
+  for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
+  for (const items of Object.values(csShortagesByModel)) items.sort(compareShortageItems);
+
+  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])]
+    .sort((a, b) => compareText(a, b, "zh-Hant"));
+
+  let html = "";
+  if (!allModels.length) {
+    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
+      目前沒有缺料，確認後仍會建立可預覽、可編輯的副檔。
+    </div>`;
+  } else {
+    for (const model of allModels) {
+      html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
+      const csItems = csShortagesByModel[model] || [];
+      const items = shortagesByModel[model] || [];
+      if (csItems.length) {
+        html += '<div style="margin-bottom:8px"><h4 style="font-size:12px;color:#ca8a04;margin:4px 0">客供料</h4>';
+        html += csItems.map(item => modalShortageItem(item, true)).join("");
+        html += "</div>";
+      }
+      if (items.length) {
+        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
+        html += items.map(item => modalShortageItem(item, false)).join("");
+      }
+    }
+  }
+
+  list.innerHTML = html;
+  list.querySelectorAll(".shortage-mark").forEach(chk => {
+    chk.addEventListener("change", () => {
+      const input = chk.closest(".shortage-item")?.querySelector(".supplement-input");
+      if (!input) return;
+      input.disabled = chk.checked;
+      if (chk.checked) input.value = "0";
+    });
+  });
+
+  bindMoqEditors(list);
+  bindShortageMoqBadgeEditors(list);
+
+  footer.innerHTML = `
+    <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
+      <div class="modal-progress-head">
+        <div id="modal-download-status" class="modal-progress-label">正在準備副檔...</div>
+        <div id="modal-download-percent" class="modal-progress-percent">0%</div>
+      </div>
+      <div id="modal-download-detail" class="modal-progress-detail">補料確認後，副檔會顯示在該機種下方。</div>
+      <div class="modal-progress-bar">
+        <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
+      </div>
+    </div>
+    <button id="modal-save-draft" class="btn btn-success btn-sm">確認補料</button>
+    <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載副檔</button>
+    <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
+  document.getElementById("modal-save-draft").onclick = handleModalSaveDrafts;
+  document.getElementById("modal-download-bom").onclick = handleModalDownloadDrafts;
+  document.getElementById("modal-cancel").onclick = closeShortageModal;
+  document.getElementById("modal-close").onclick = closeShortageModal;
+  modal.style.display = "flex";
+}
+
 async function showWriteToMainModal(targets) {
   _modalTargets = targets;
   _modalMode = "write";
@@ -1959,6 +2124,29 @@ async function handleAutoSort() {
 }
 
 // Safe overrides for draft workbench rendering.
+async function handleBatchMerge() {
+  const targets = _rows.filter(row => _checkedIds.has(row.id) && (row.status === "pending" || row.status === "merged"));
+  if (!_checkedIds.size) {
+    showToast("請先勾選要 merge 的訂單");
+    return;
+  }
+  if (!targets.length) {
+    showToast("勾選的訂單中沒有可 merge 的");
+    return;
+  }
+
+  try {
+    const targetIds = targets.map(row => row.id);
+    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
+    await refresh();
+    const refreshedTargets = _rows.filter(row => targetIds.includes(row.id));
+    showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`);
+    await showBatchMergeDraftModal(refreshedTargets);
+  } catch (error) {
+    showToast("批次 merge 失敗: " + error.message);
+  }
+}
+
 function buildDraftPanelHtml(draft) {
   const files = Array.isArray(draft?.files) ? draft.files : [];
   const shortages = Array.isArray(draft?.shortages) ? draft.shortages : [];
