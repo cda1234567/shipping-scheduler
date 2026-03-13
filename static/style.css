@@ -1149,9 +1149,172 @@ body.desktop-dark .modal-progress-fill {
 }
 #toast.show { opacity: 1; }
 
+.merge-draft-panel {
+  position: relative;
+  margin: 12px 0 4px;
+  padding: 16px;
+  border: 1px solid #d7e3f4;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.14), transparent 32%),
+    linear-gradient(180deg, #fcfdff 0%, #f4f8fc 100%);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+.merge-draft-panel::before {
+  content: "副檔工作台";
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.merge-draft-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.merge-draft-pill {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-radius: 14px;
+  background: linear-gradient(135deg, #e0f2fe 0%, #dbeafe 100%);
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+.merge-draft-meta {
+  display: flex;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+.merge-draft-files,
+.merge-draft-inline-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(191, 219, 254, 0.9);
+  border-radius: 14px;
+  background: rgba(239, 246, 255, 0.72);
+}
+.merge-draft-files::before,
+.merge-draft-inline-files::before {
+  content: "副檔清單";
+  flex-basis: 100%;
+  margin-bottom: 2px;
+  color: #0f172a;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+.merge-draft-file {
+  display: flex;
+  align-items: center;
+  min-height: 38px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 12px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #1e293b;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 14px rgba(148, 163, 184, 0.12);
+}
+.merge-draft-file-empty,
+.merge-draft-empty-note {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(248, 250, 252, 0.94);
+  color: #64748b;
+  font-size: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.35);
+}
+.merge-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+}
+.merge-draft-actions .btn {
+  min-width: 88px;
+  border-radius: 10px;
+  font-weight: 700;
+  box-shadow: none;
+}
+.merge-draft-actions .btn-draft-preview {
+  border-color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.96);
+  color: #334155;
+}
+.merge-draft-actions .btn-draft-edit {
+  border-color: #1d4ed8;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #eff6ff;
+}
+.merge-draft-actions .btn-draft-download {
+  border-color: #93c5fd;
+  background: rgba(219, 234, 254, 0.82);
+  color: #1d4ed8;
+}
+.merge-draft-actions .btn-draft-delete {
+  border-color: #fecaca;
+  background: rgba(254, 242, 242, 0.96);
+  color: #b91c1c;
+}
+.merge-draft-modal-head {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.98));
+}
+.merge-draft-modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111827;
+}
+.merge-draft-modal-meta {
+  margin-top: 4px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #64748b;
+}
+
 @media (max-width: 1100px) {
   #sidebar { display: none; }
   #right-panel { display: none; }
+  .merge-draft-summary { grid-template-columns: 1fr; }
+  .merge-draft-actions { justify-content: stretch; }
+  .merge-draft-actions .btn { flex: 1 1 140px; }
 }
 
 @media (max-width: 768px) {
