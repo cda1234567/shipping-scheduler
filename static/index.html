@@ -7,7 +7,22 @@
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 </head>
-<body>
+<body class="app-loading">
+
+<div id="app-boot-overlay" aria-live="polite">
+  <div class="app-boot-card">
+    <div class="app-boot-eyebrow">OpenText 出貨排程系統</div>
+    <div class="app-boot-title">正在準備工作台</div>
+    <div id="app-boot-message" class="app-boot-message">正在啟動桌面版與系統資料...</div>
+    <div class="app-boot-progress">
+      <div id="app-boot-progress-bar" class="app-boot-progress-bar"></div>
+    </div>
+    <div class="app-boot-meta">
+      <span id="app-boot-percent">0%</span>
+      <button id="app-boot-retry" class="btn btn-secondary btn-sm" type="button" style="display:none">重新載入</button>
+    </div>
+  </div>
+</div>
 
 <!-- Header -->
 <header id="header">
@@ -205,6 +220,35 @@ function getActiveTabName() {
   return document.querySelector(".tab-btn.active")?.dataset.tab || "schedule";
 }
 
+const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+function setBootProgress(percent, message) {
+  const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
+  const bar = document.getElementById("app-boot-progress-bar");
+  const text = document.getElementById("app-boot-percent");
+  const msg = document.getElementById("app-boot-message");
+  if (bar) bar.style.width = `${safePercent}%`;
+  if (text) text.textContent = `${Math.round(safePercent)}%`;
+  if (msg && message) msg.textContent = message;
+}
+
+async function finishBoot() {
+  setBootProgress(100, "載入完成，正在顯示畫面...");
+  await nextFrame();
+  document.body.classList.remove("app-loading");
+}
+
+function failBoot(error) {
+  document.body.classList.add("app-boot-failed");
+  setBootProgress(100, `載入失敗：${error?.message || "未知錯誤"}`);
+  const retryButton = document.getElementById("app-boot-retry");
+  if (retryButton) retryButton.style.display = "inline-flex";
+}
+
+document.getElementById("app-boot-retry")?.addEventListener("click", () => {
+  window.location.reload();
+});
+
 async function refreshCurrentView() {
   const refreshButton = document.getElementById("btn-refresh-app");
   const bomOrderDirty = !document.getElementById("btn-save-bom-order")?.disabled;
@@ -340,9 +384,19 @@ async function handleMainMutation() {
 }
 
 async function init() {
+  setBootProgress(8, "正在啟動桌面版橋接...");
+  await nextFrame();
   await initDesktopBridge();
+
+  setBootProgress(20, "正在準備主檔預覽...");
+  await nextFrame();
   await initMainPreview();
+
+  setBootProgress(34, "正在讀取主檔與快照狀態...");
+  await nextFrame();
   await refreshMainStatus();
+
+  setBootProgress(48, "正在讀取排程摘要...");
   try {
     const d = await apiJson("/api/schedule/rows");
     if (d.rows?.length) {
@@ -351,10 +405,20 @@ async function init() {
       setStatus("schedule-status", fn ? `${fn}\n${d.rows.length} 筆 (${at})` : `${d.rows.length} 筆 (${at})`, "ok");
     }
   } catch (_) {}
+
+  setBootProgress(62, "正在載入 BOM 管理...");
+  await nextFrame();
   initBomManager(async () => { await refreshSchedule(); });
   await renderBomGroups();
+
+  setBootProgress(82, "正在建立排程畫面...");
+  await nextFrame();
   await initSchedule(handleMainMutation);
+
+  setBootProgress(94, "正在同步提醒與紀錄...");
+  await nextFrame();
   await initAlerts();
+  await finishBoot();
 }
 
 function setStatus(id, text, cls) {
@@ -363,7 +427,11 @@ function setStatus(id, text, cls) {
   el.className = "file-status" + (cls ? " " + cls : "");
 }
 
-init();
+init().catch(error => {
+  console.error("init failed", error);
+  failBoot(error);
+  showToast("系統初始化失敗：" + error.message);
+});
 </script>
 <!-- Desktop Modal -->
 <div id="desktop-modal" class="modal-overlay" style="display:none">
