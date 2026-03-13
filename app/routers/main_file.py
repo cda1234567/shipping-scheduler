@@ -143,8 +143,9 @@ async def get_main_preview(sheet: str | None = None):
 async def get_main_info():
     main_path = db.get_setting("main_file_path")
     snapshot = db.get_snapshot()
+    exists = bool(main_path and Path(main_path).exists())
     return {
-        "loaded": bool(main_path),
+        "loaded": exists,
         "filename": db.get_setting("main_filename") or (Path(main_path).name if main_path else ""),
         "part_count": int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),

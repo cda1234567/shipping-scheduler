@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+import tempfile
 import unittest
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import app.database as db
@@ -263,6 +265,38 @@ class OrderReloadTests(InMemoryDbTestCase):
         supplements = db.get_order_supplements([order_id])
 
         self.assertEqual(supplements, {order_id: {"PART-1": 3000.0}})
+
+
+class ManagedPathRepairTests(InMemoryDbTestCase):
+    def test_get_setting_repairs_stale_main_file_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            managed_dir = Path(temp_dir)
+            candidate = managed_dir / "main.xlsx"
+            candidate.write_bytes(b"main")
+
+            with patch.dict(db._MANAGED_PATH_FALLBACKS, {"main_file_path": managed_dir}, clear=False):
+                db.set_setting("main_file_path", r"Z:\Andy\Job\code\-\opentext大改版\data\main_file\main.xlsx")
+
+                repaired = db.get_setting("main_file_path")
+
+        stored = self.conn.execute(
+            "SELECT value FROM settings WHERE key='main_file_path'"
+        ).fetchone()["value"]
+        self.assertEqual(repaired, str(candidate))
+        self.assertEqual(stored, str(candidate))
+
+    def test_resolve_managed_path_can_repair_dispatch_session_path_without_setting_key(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            managed_dir = Path(temp_dir)
+            candidate = managed_dir / "main.xlsx"
+            candidate.write_bytes(b"main")
+
+            with patch.dict(db._MANAGED_PATH_FALLBACKS, {"main_file_path": managed_dir}, clear=False):
+                repaired = db.resolve_managed_path(
+                    r"Z:\Andy\Job\code\-\opentext大改版\data\main_file\main.xlsx"
+                )
+
+        self.assertEqual(repaired, str(candidate))
 
 
 class MergeDraftTests(InMemoryDbTestCase):

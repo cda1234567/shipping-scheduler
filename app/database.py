@@ -19,9 +19,13 @@ from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
 
-from .config import DATA_DIR
+from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR
 
 DB_PATH = DATA_DIR / "system.db"
+_MANAGED_PATH_FALLBACKS = {
+    "main_file_path": MAIN_FILE_DIR,
+    "schedule_file_path": SCHEDULE_DIR,
+}
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -260,10 +264,39 @@ def get_conn():
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
+def resolve_managed_path(path_value: str, setting_key: str = "") -> str:
+    normalized = str(path_value or "").strip()
+    if not normalized:
+        return ""
+
+    path = Path(normalized).expanduser()
+    if path.exists():
+        return str(path)
+
+    fallback_dirs = []
+    if setting_key and setting_key in _MANAGED_PATH_FALLBACKS:
+        fallback_dirs.append(_MANAGED_PATH_FALLBACKS[setting_key])
+    else:
+        fallback_dirs.extend(_MANAGED_PATH_FALLBACKS.values())
+
+    for fallback_dir in fallback_dirs:
+        candidate = fallback_dir / path.name
+        if candidate.exists():
+            return str(candidate)
+
+    return normalized
+
+
 def get_setting(key: str, default: str = "") -> str:
     with get_conn() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-        return row["value"] if row else default
+        value = row["value"] if row else default
+        if key in _MANAGED_PATH_FALLBACKS:
+            repaired = resolve_managed_path(value, setting_key=key)
+            if row and repaired and repaired != value:
+                conn.execute("UPDATE settings SET value=? WHERE key=?", (repaired, key))
+                return repaired
+        return value
 
 
 def set_setting(key: str, value: str):

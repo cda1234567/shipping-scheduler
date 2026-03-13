@@ -168,9 +168,9 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     if not backup_path.exists():
         raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
 
-    current_main_path = str(db.get_setting("main_file_path") or "").strip()
+    current_main_path = db.resolve_managed_path(str(db.get_setting("main_file_path") or "").strip(), "main_file_path")
     session_paths = {
-        str(session.get("main_file_path") or "").strip()
+        db.resolve_managed_path(str(session.get("main_file_path") or "").strip(), "main_file_path")
         for session in normalized_sessions
         if str(session.get("main_file_path") or "").strip()
     }
