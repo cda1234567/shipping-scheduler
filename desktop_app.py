@@ -35,6 +35,11 @@ APP_PORT = 8765
 APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
 
 
+def build_app_url() -> str:
+    # Force a fresh page load on every desktop launch to avoid stale WebView caches.
+    return f"{APP_URL}?_desktop_shell=1&_desktop={int(time.time() * 1000)}"
+
+
 class LocalServer:
     def __init__(self, app_url: str):
         self.app_url = app_url
@@ -254,7 +259,9 @@ class DesktopBridge:
         if self.server.started_here:
             self.server.restart()
         if self.window:
-            refresh_url = f"{APP_URL}?_reload={int(time.time() * 1000)}"
+            refresh_url = (
+                f"{APP_URL}?_desktop_shell=1&_reload={int(time.time() * 1000)}"
+            )
             self.window.load_url(refresh_url)
         return {"ok": True}
 
@@ -281,7 +288,7 @@ def main():
     bridge = DesktopBridge(server, args)
     window = webview.create_window(
         "OpenText 出貨排程系統",
-        APP_URL,
+        build_app_url(),
         js_api=bridge,
         width=1480,
         height=920,
@@ -299,7 +306,7 @@ def main():
     window.events.closing += on_closing
 
     try:
-        webview.start(debug=False, private_mode=False)
+        webview.start(debug=False, private_mode=True)
     finally:
         server.stop()
 

@@ -192,6 +192,43 @@
 
 <div id="toast"></div>
 
+<script>
+(function () {
+  const params = new URLSearchParams(window.location.search);
+  const isDesktopShell = params.has("_desktop_shell");
+  if (!isDesktopShell) return;
+
+  const MAX_BOOT_RETRIES = 1;
+  const retryCount = Number(params.get("_boot_retry") || "0");
+  const overlay = document.getElementById("app-boot-overlay");
+  const message = document.getElementById("app-boot-message");
+  const percent = document.getElementById("app-boot-percent");
+  const bar = document.getElementById("app-boot-progress-bar");
+
+  window.setTimeout(() => {
+    if (!document.body.classList.contains("app-loading")) return;
+
+    if (retryCount < MAX_BOOT_RETRIES) {
+      if (message) message.textContent = "桌面版啟動較慢，正在重新載入工作台...";
+      if (percent) percent.textContent = "12%";
+      if (bar) bar.style.width = "12%";
+      const url = new URL(window.location.href);
+      url.searchParams.set("_desktop_shell", "1");
+      url.searchParams.set("_boot_retry", String(retryCount + 1));
+      url.searchParams.set("_reload", String(Date.now()));
+      window.location.replace(url.toString());
+      return;
+    }
+
+    document.body.classList.remove("app-loading");
+    if (overlay) overlay.classList.add("boot-overlay-soft-fail");
+    if (message) {
+      message.textContent = "桌面版啟動逾時，已先顯示工作台；若畫面仍異常，可用右上角重新整理。";
+    }
+  }, 5000);
+})();
+</script>
+
 <script type="module">
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions } from "/static/modules/schedule.js";
