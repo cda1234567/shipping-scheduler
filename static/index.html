@@ -220,7 +220,18 @@ function getActiveTabName() {
   return document.querySelector(".tab-btn.active")?.dataset.tab || "schedule";
 }
 
-const nextFrame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const nextFrame = () => new Promise(resolve => {
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    resolve();
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(finish));
+  }
+  setTimeout(finish, 40);
+});
 
 function setBootProgress(percent, message) {
   const safePercent = Math.max(0, Math.min(100, Number(percent) || 0));
