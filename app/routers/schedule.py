@@ -138,6 +138,15 @@ def _prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list
     return order, groups, all_components
 
 
+def _get_effective_moq(main_path: str) -> dict[str, float]:
+    live_moq = read_moq(main_path) if main_path and Path(main_path).exists() else {}
+    snapshot = db.get_snapshot()
+    if snapshot:
+        snapshot_moq = {part: float((row or {}).get("moq") or 0) for part, row in snapshot.items()}
+        live_moq.update(snapshot_moq)
+    return live_moq
+
+
 def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     if not sessions:
         raise HTTPException(400, "找不到可反悔的發料紀錄")
@@ -503,7 +512,12 @@ async def preview_main_write(req: BatchDispatchRequest):
             "supplements": supplement_allocations.get(int(order["id"]), {}),
         })
 
-    preview = preview_order_batches(main_path, batches, decisions)
+    preview = preview_order_batches(
+        main_path,
+        batches,
+        decisions,
+        moq_map=_get_effective_moq(main_path),
+    )
     return {
         "ok": True,
         "count": len(batches),

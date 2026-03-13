@@ -16,6 +16,7 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
+from ..models import calc_suggested_qty
 
 PART_COL = 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
@@ -95,13 +96,23 @@ def backup_main_file(main_path: str, backup_dir: str) -> str:
     return str(destination)
 
 
-def _build_preview_for_batches(ws, batches: list[dict], decisions: dict[str, str]) -> dict:
+def _build_preview_for_batches(
+    ws,
+    batches: list[dict],
+    decisions: dict[str, str],
+    moq_map: dict[str, float] | None = None,
+) -> dict:
     part_row_map = _build_part_row_map(ws)
     running_stock: dict[str, float] = {}
     planned_batches: list[dict] = []
     shortages: list[dict] = []
     max_col = ws.max_column
     total_merged = 0
+    effective_moq = {
+        str(part or "").strip().upper(): float(qty or 0)
+        for part, qty in (moq_map or {}).items()
+        if str(part or "").strip()
+    }
 
     for batch in batches:
         remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
@@ -177,6 +188,7 @@ def _build_preview_for_batches(ws, batches: list[dict], decisions: dict[str, str
                 group_rows.append(row_plan)
 
                 if shortage_after > 0:
+                    item_moq = float(effective_moq.get(part_upper, 0) or 0)
                     shortage = {
                         "order_id": batch.get("order_id"),
                         "batch_code": group.get("batch_code", ""),
@@ -188,9 +200,10 @@ def _build_preview_for_batches(ws, batches: list[dict], decisions: dict[str, str
                         "current_stock": available_after_supply,
                         "needed": needed_qty,
                         "shortage_amount": shortage_after,
+                        "moq": item_moq,
                         "supplement_qty": supplement_qty,
                         "resulting_stock": ending_stock,
-                        "suggested_qty": shortage_after,
+                        "suggested_qty": calc_suggested_qty(shortage_after, item_moq),
                     }
                     group_shortages.append(shortage)
                     shortages.append(shortage)
@@ -222,10 +235,20 @@ def _build_preview_for_batches(ws, batches: list[dict], decisions: dict[str, str
     }
 
 
-def preview_order_batches(main_path: str, batches: list[dict], decisions: dict[str, str] | None = None) -> dict:
+def preview_order_batches(
+    main_path: str,
+    batches: list[dict],
+    decisions: dict[str, str] | None = None,
+    moq_map: dict[str, float] | None = None,
+) -> dict:
     workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
     try:
-        return _build_preview_for_batches(workbook.active, batches, _normalize_decisions(decisions))
+        return _build_preview_for_batches(
+            workbook.active,
+            batches,
+            _normalize_decisions(decisions),
+            moq_map=moq_map,
+        )
     finally:
         workbook.close()
 

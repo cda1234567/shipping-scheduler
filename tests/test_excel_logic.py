@@ -7,7 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
-from app.services.merge_to_main import merge_row_to_main
+from app.services.merge_to_main import merge_row_to_main, preview_order_batches
 
 
 class ExcelLogicTests(unittest.TestCase):
@@ -109,3 +109,35 @@ class ExcelLogicTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=2, column=10).value, 50)
             self.assertEqual(ws.cell(row=2, column=11).value, 20)
             wb.close()
+
+    def test_preview_order_batches_includes_moq_and_rounded_suggestion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(path)
+
+            preview = preview_order_batches(
+                str(path),
+                batches=[{
+                    "order_id": 1,
+                    "model": "MODEL-A",
+                    "groups": [{
+                        "batch_code": "1-3",
+                        "po_number": "4500059234",
+                        "bom_model": "MODEL-A",
+                        "components": [{
+                            "part_number": "PART-A",
+                            "description": "CAP",
+                            "is_dash": False,
+                            "needed_qty": 1200,
+                            "prev_qty_cs": 0,
+                        }],
+                    }],
+                    "supplements": {},
+                }],
+                decisions={},
+                moq_map={"PART-A": 1000},
+            )
+
+        self.assertEqual(len(preview["shortages"]), 1)
+        self.assertEqual(preview["shortages"][0]["moq"], 1000)
+        self.assertEqual(preview["shortages"][0]["suggested_qty"], 2000)

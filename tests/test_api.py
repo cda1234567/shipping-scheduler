@@ -138,9 +138,10 @@ class ApiTests(unittest.TestCase):
                      1: {"PART-1": 3000},
                      2: {},
                  }) as mock_allocations, \
+                 patch("app.routers.schedule._get_effective_moq", return_value={"PART-1": 500}), \
                  patch("app.routers.schedule.preview_order_batches", return_value={
                      "merged_parts": 4,
-                     "shortages": [{"part_number": "PART-1", "shortage_amount": 12}],
+                     "shortages": [{"part_number": "PART-1", "moq": 500, "shortage_amount": 12}],
                  }) as mock_preview:
                 response = self.client.post("/api/schedule/main-write-preview", json={
                     "order_ids": [1, 2],
@@ -152,8 +153,9 @@ class ApiTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["count"], 2)
         self.assertEqual(data["merged_parts"], 4)
-        self.assertEqual(data["shortages"], [{"part_number": "PART-1", "shortage_amount": 12}])
+        self.assertEqual(data["shortages"], [{"part_number": "PART-1", "moq": 500, "shortage_amount": 12}])
         mock_allocations.assert_called_once_with([1, 2], {"PART-1": 3000.0})
+        self.assertEqual(mock_preview.call_args.kwargs["moq_map"], {"PART-1": 500})
         self.assertEqual(
             mock_preview.call_args.args[1],
             [
