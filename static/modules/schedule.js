@@ -203,7 +203,7 @@ function recalculate() {
 }
 
 // ── Render schedule ───────────────────────────────────────────────────────────
-function renderSchedule() {
+function renderScheduleLegacyBase() {
   const container = document.getElementById("schedule-scroll");
   container.innerHTML = "";
 
@@ -240,7 +240,7 @@ function formatDraftTime(value) {
   return text.slice(5, 16).replace("T", " ");
 }
 
-function buildDraftPanelHtml(draft) {
+function buildDraftPanelHtmlLegacyBase(draft) {
   const files = draft?.files || [];
   const shortages = draft?.shortages || [];
   const updatedAt = formatDraftTime(draft?.updated_at);
@@ -629,6 +629,7 @@ async function showDraftModal(draftId, { readOnly = false } = {}) {
       <div class="merge-draft-modal-meta">副檔 ${draft.files?.length || 0} 份，更新 ${esc(formatDraftTime(draft.updated_at) || "--")}</div>
       ${fileSummary}
     </div>
+  `;
 
   const models = Object.keys(grouped);
   if (!models.length) {
@@ -884,7 +885,9 @@ async function showWriteToMainModal(targets) {
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
-  const defaultQty = roundShortageUiValue(s.default_supplement ?? s.supplement_qty ?? s.suggested_qty || s.shortage_amount || 0);
+  const defaultQty = roundShortageUiValue(
+    s.default_supplement ?? s.supplement_qty ?? s.suggested_qty ?? s.shortage_amount ?? 0
+  );
   const shortageAmount = roundShortageUiValue(s.shortage_amount);
   const currentStock = roundShortageUiValue(s.current_stock);
   const neededQty = roundShortageUiValue(s.needed);
@@ -1036,7 +1039,7 @@ async function downloadDraft(draftId) {
   }
 }
 
-async function handleDeleteDraft(draftId, model) {
+async function handleDeleteDraftLegacyBroken(draftId, model) {
   if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
@@ -1048,7 +1051,7 @@ async function handleDeleteDraft(draftId, model) {
   }
 }
 
-function buildDraftPanelHtml(draft) {
+function buildDraftPanelHtmlLegacyV2(draft) {
   const files = draft?.files || [];
   const shortages = draft?.shortages || [];
   const updatedAt = formatDraftTime(draft?.updated_at);
@@ -1073,7 +1076,7 @@ function buildDraftPanelHtml(draft) {
     </div>`;
 }
 
-async function handleDeleteDraft(draftId, model) {
+async function handleDeleteDraftLegacyV2(draftId, model) {
   if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
@@ -1084,7 +1087,7 @@ async function handleDeleteDraft(draftId, model) {
   }
 }
 
-async function handleBatchDispatch() {
+async function handleBatchDispatchLegacyV1() {
   const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
   if (!_checkedIds.size) { showToast("請先勾選要發料的訂單"); return; }
   if (!targets.length) { showToast("勾選的訂單中沒有可發料的"); return; }
@@ -1598,7 +1601,7 @@ async function handleRollbackDispatch(orderId, trigger) {
 }
 
 // ── SortableJS ────────────────────────────────────────────────────────────────
-function buildRowCard(r, resultMap) {
+function buildRowCardLegacyBase(r, resultMap) {
   const div = document.createElement("div");
   div.className = "po-group";
   div.dataset.orderId = r.id;
@@ -1738,7 +1741,7 @@ function buildRowCard(r, resultMap) {
   return div;
 }
 
-async function handleBatchMerge() {
+async function handleBatchMergeLegacyFlow() {
   const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
   if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
   if (!targets.length) { showToast("目前勾選的訂單不能 merge"); return; }
@@ -1782,7 +1785,7 @@ async function handleBatchDispatch() {
   }
 }
 
-async function handleDeleteDraft(draftId, model) {
+async function handleDeleteDraftLegacyV3(draftId, model) {
   if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
@@ -1997,7 +2000,7 @@ async function handleDeleteDraft(draftId, model) {
   }
 }
 
-function buildRowCard(r, resultMap) {
+function buildRowCardLegacyOriginal(r, resultMap) {
   const div = document.createElement("div");
   div.className = "po-group";
   div.dataset.orderId = r.id;
