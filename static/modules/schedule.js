@@ -487,12 +487,7 @@ async function handleBatchMerge() {
   try {
     const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
     await refresh();
-    const shouldWriteMain = confirm(`已完成 ${targets.length} 筆 merge。\n要接著寫入主檔嗎？`);
-    if (shouldWriteMain) {
-      await showWriteToMainModal(targets);
-    } else {
-      await showShortageModal(targets);
-    }
+    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
   } catch (e) { showToast("失敗：" + e.message); }
 }
 
