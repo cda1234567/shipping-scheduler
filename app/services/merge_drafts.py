@@ -636,12 +636,10 @@ def get_draft_detail(draft_id: int) -> dict:
     }
 
 
-def _build_po_model_download_name(po: str, model: str, index: int, total: int, suffix: str = ".xlsx") -> str:
-    po_part = _sanitize_filename_piece(po, "PO")
-    model_part = _sanitize_filename_piece(model, "MODEL")
-    if total > 1:
-        return f"{po_part}_{model_part}_{index}{suffix}"
-    return f"{po_part}_{model_part}{suffix}"
+def _replace_po_in_filename(filename: str, po_number: str) -> str:
+    """將檔名中的 PO#xxxx 換成訂單實際的 PO 號。"""
+    safe_po = _sanitize_filename_piece(po_number, "PO")
+    return re.sub(r"PO#\S+", safe_po, filename, count=1)
 
 
 def download_merge_draft(draft_id: int):
@@ -650,16 +648,16 @@ def download_merge_draft(draft_id: int):
         raise HTTPException(404, "找不到副檔草稿")
     order = db.get_order(int(draft["order_id"])) or {}
     po = order.get("po_number", "")
-    model = order.get("model", "")
     files = db.get_merge_draft_files(draft_id)
-    valid_files = []
-    for item in files:
-        file_path = Path(str(item.get("filepath") or ""))
-        if not file_path.exists():
-            continue
-        valid_files.append({"path": file_path, "suffix": file_path.suffix or ".xlsx"})
-    for idx, entry in enumerate(valid_files, start=1):
-        entry["download_name"] = _build_po_model_download_name(po, model, idx, len(valid_files), entry.pop("suffix"))
+    valid_files = [
+        {
+            "path": file_path,
+            "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
+        }
+        for item in files
+        for file_path in [Path(str(item.get("filepath") or ""))]
+        if file_path.exists()
+    ]
     return _build_download_response(valid_files)
 
 
@@ -683,16 +681,14 @@ def download_selected_merge_drafts(order_ids: list[int]):
     for order_id in normalized_ids:
         order = db.get_order(order_id) or {}
         po = order.get("po_number", "")
-        model = order.get("model", "")
         draft_files = db.get_merge_draft_files(int(draft_id_map[order_id]))
-        order_valid = []
         for item in draft_files:
             file_path = Path(str(item.get("filepath") or ""))
             if not file_path.exists():
                 continue
-            order_valid.append({"path": file_path, "suffix": file_path.suffix or ".xlsx"})
-        for idx, entry in enumerate(order_valid, start=1):
-            entry["download_name"] = _build_po_model_download_name(po, model, idx, len(order_valid), entry.pop("suffix"))
-        file_entries.extend(order_valid)
+            file_entries.append({
+                "path": file_path,
+                "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
+            })
 
     return _build_download_response(file_entries)
