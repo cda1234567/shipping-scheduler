@@ -8,6 +8,7 @@
 <title>OpenText 出貨排程</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body class="app-loading">
 
@@ -99,6 +100,8 @@
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
+      <button class="tab-btn" data-tab="analytics-tab">分析</button>
+      <button class="tab-btn" data-tab="defectives-tab">不良品</button>
     </div>
 
     <!-- ── Tab: 排程 ── -->
@@ -254,6 +257,119 @@
       </div>
     </div>
 
+    <!-- ── Tab: 分析 ── -->
+    <div id="tab-analytics-tab" class="tab-content">
+      <div class="analytics-shell">
+        <!-- 發料趨勢 -->
+        <section class="analytics-card">
+          <div class="analytics-card-header">
+            <h4>發料趨勢（用量最大料號）</h4>
+            <select id="trend-period-select" class="analytics-select">
+              <option value="month">按月</option>
+              <option value="week">按週</option>
+            </select>
+          </div>
+          <div class="chart-container"><canvas id="trend-chart"></canvas></div>
+          <div id="top-parts-table"></div>
+        </section>
+
+        <!-- 發料歷史 -->
+        <section class="analytics-card">
+          <div class="analytics-card-header">
+            <h4>發料歷史統計</h4>
+            <select id="history-group-select" class="analytics-select">
+              <option value="model">按機種</option>
+              <option value="month">按月份</option>
+            </select>
+          </div>
+          <div class="chart-container"><canvas id="history-chart"></canvas></div>
+          <div id="history-table"></div>
+        </section>
+
+        <!-- 排程差異 -->
+        <section class="analytics-card">
+          <div class="analytics-card-header">
+            <h4>排程表差異比對</h4>
+            <div style="display:flex;gap:6px">
+              <button class="btn btn-secondary btn-sm" id="btn-schedule-diff">上傳比對</button>
+              <button class="btn btn-primary btn-sm" id="btn-diff-apply" style="display:none">套用新排程</button>
+            </div>
+          </div>
+          <input type="file" id="schedule-diff-input" accept=".xlsx,.xls,.xlsm" style="display:none">
+          <div id="schedule-diff-result">
+            <div class="no-shortage-msg">上傳排程檔即可與目前排程比對差異</div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ── Tab: 不良品 ── -->
+    <div id="tab-defectives-tab" class="tab-content">
+      <div class="defectives-shell">
+        <div class="defectives-toolbar">
+          <h4 style="margin:0;font-size:16px;font-weight:600">不良品處理</h4>
+          <select id="defective-status-filter" class="analytics-select">
+            <option value="all">全部</option>
+            <option value="open">待處理</option>
+            <option value="confirmed">已確認</option>
+            <option value="closed">已結案</option>
+          </select>
+          <span class="spacer"></span>
+          <button class="btn btn-primary btn-sm" id="btn-add-defective">新增不良品</button>
+        </div>
+        <div id="defective-list"></div>
+      </div>
+    </div>
+
+    <!-- 不良品 Modal -->
+    <div id="defective-modal" class="modal-overlay" style="display:none">
+      <div class="modal-box" style="width:min(520px,90vw)">
+        <div class="modal-header">
+          <h3 id="defective-modal-title" style="margin:0;font-size:16px">新增不良品</h3>
+          <button id="defective-modal-cancel" class="modal-close-btn" type="button">&times;</button>
+        </div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+          <label class="form-field">
+            <span>料號 *</span>
+            <input type="text" id="def-part-number" placeholder="例：EC-10264A">
+          </label>
+          <label class="form-field">
+            <span>描述</span>
+            <input type="text" id="def-description" placeholder="料件描述">
+          </label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <label class="form-field">
+              <span>不良數量 *</span>
+              <input type="number" id="def-qty" min="0" step="1" placeholder="0">
+            </label>
+            <label class="form-field">
+              <span>處理方式</span>
+              <select id="def-action">
+                <option value="">—</option>
+                <option value="rework">重工</option>
+                <option value="scrap">報廢</option>
+                <option value="return_supplier">退回供應商</option>
+                <option value="replace">換料</option>
+                <option value="other">其他</option>
+              </select>
+            </label>
+          </div>
+          <label class="form-field">
+            <span>備註</span>
+            <textarea id="def-note" rows="3" placeholder="處理細節、原因說明..."></textarea>
+          </label>
+          <label class="form-field">
+            <span>回報人</span>
+            <input type="text" id="def-reported-by" placeholder="姓名">
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary btn-sm" id="defective-modal-cancel-2" onclick="document.getElementById('defective-modal').style.display='none'">取消</button>
+          <button class="btn btn-primary btn-sm" id="defective-modal-save">儲存</button>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /main-content -->
 
 </div><!-- /layout -->
@@ -338,6 +454,8 @@ import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js
 import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/modules/desktop_bridge.js";
 import { initVersionInfo } from "/static/modules/version_info.js";
 import { initStInventory } from "/static/modules/st_inventory.js";
+import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
+import { initDefectives, refreshDefectives } from "/static/modules/defectives.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -351,6 +469,8 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") refreshDbBackupPanel();
+    if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
+    if (btn.dataset.tab === "defectives-tab") refreshDefectives();
   });
 });
 
@@ -579,6 +699,8 @@ async function init() {
   await nextFrame();
   await initAlerts();
   await initDbBackup({ reloadApp: () => refreshCurrentView({ skipDirtyConfirm: true }), autoLoad: false });
+  await initAnalytics();
+  await initDefectives();
   await finishBoot();
 }
 

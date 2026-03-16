@@ -169,3 +169,32 @@ def calc_suggested_qty(shortage: float, moq: float) -> float:
 class UpdateMoqRequest(BaseModel):
     part_number: str
     moq: float = Field(ge=0)
+
+
+# ── Defective Records ────────────────────────────────────────────────────────
+
+class DefectiveAction(str, Enum):
+    REWORK          = "rework"
+    SCRAP           = "scrap"
+    RETURN_SUPPLIER = "return_supplier"
+    REPLACE         = "replace"
+    OTHER           = "other"
+
+
+class CreateDefectiveRequest(BaseModel):
+    order_id: Optional[int] = None
+    part_number: str
+    description: str = ""
+    defective_qty: float = Field(gt=0)
+    action_taken: str = ""
+    action_note: str = ""
+    reported_by: str = ""
+
+
+class UpdateDefectiveRequest(BaseModel):
+    part_number: Optional[str] = None
+    description: Optional[str] = None
+    defective_qty: Optional[float] = None
+    action_taken: Optional[str] = None
+    action_note: Optional[str] = None
+    reported_by: Optional[str] = None

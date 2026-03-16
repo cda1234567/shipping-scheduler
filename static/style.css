@@ -246,6 +246,8 @@ body {
 .tab-btn[data-tab="alerts-tab"] { order: 4; }
 .tab-btn[data-tab="logs-tab"] { order: 5; }
 .tab-btn[data-tab="backups-tab"] { order: 6; }
+.tab-btn[data-tab="analytics-tab"] { order: 7; }
+.tab-btn[data-tab="defectives-tab"] { order: 8; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -2246,4 +2248,180 @@ body.desktop-dark .modal-progress-fill {
   .draft-preview-editors .supplement-input {
     width: 100%;
   }
+}
+
+/* ── Analytics Tab ─────────────────────────── */
+.analytics-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  overflow: auto;
+}
+.analytics-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 16px;
+}
+.analytics-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.analytics-card-header h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+.analytics-select {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #fff;
+}
+.chart-container {
+  position: relative;
+  height: 260px;
+  margin-bottom: 12px;
+}
+.analytics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.analytics-table th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 2px solid #e5e7eb;
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.analytics-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid #f3f4f6;
+  color: #374151;
+}
+.analytics-table tbody tr:hover {
+  background: #f9fafb;
+}
+
+/* diff badges */
+.diff-summary {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.diff-badge {
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.diff-badge.diff-added { background: #dcfce7; color: #16a34a; }
+.diff-badge.diff-removed { background: #fee2e2; color: #dc2626; }
+.diff-badge.diff-changed { background: #fff7ed; color: #ea580c; }
+.diff-badge.diff-unchanged { background: #f3f4f6; color: #6b7280; }
+.diff-type-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.diff-type-badge.diff-added { background: #dcfce7; color: #16a34a; }
+.diff-type-badge.diff-removed { background: #fee2e2; color: #dc2626; }
+.diff-type-badge.diff-changed { background: #fff7ed; color: #ea580c; }
+.diff-table-wrap {
+  max-height: 400px;
+  overflow: auto;
+}
+
+/* ── Defectives Tab ────────────────────────── */
+.defectives-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow: auto;
+}
+.defectives-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.defective-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+}
+.defective-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.defective-part {
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.defective-desc {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+.defective-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 6px;
+}
+.defective-note {
+  font-size: 12px;
+  color: #374151;
+  background: #f9fafb;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+}
+.defective-actions {
+  display: flex;
+  gap: 6px;
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form-field span {
+  font-size: 11px;
+  color: #6b7280;
+  font-weight: 600;
+}
+.form-field input,
+.form-field select,
+.form-field textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.form-field textarea {
+  resize: vertical;
 }

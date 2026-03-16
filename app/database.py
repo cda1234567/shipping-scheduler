@@ -208,6 +208,25 @@ CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(orde
 CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
+
+CREATE TABLE IF NOT EXISTS defective_records (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id      INTEGER REFERENCES orders(id),
+    part_number   TEXT    NOT NULL DEFAULT '',
+    description   TEXT    NOT NULL DEFAULT '',
+    defective_qty REAL    NOT NULL DEFAULT 0,
+    action_taken  TEXT    NOT NULL DEFAULT '',
+    action_note   TEXT    NOT NULL DEFAULT '',
+    status        TEXT    NOT NULL DEFAULT 'open',
+    reported_by   TEXT    NOT NULL DEFAULT '',
+    created_at    TEXT    NOT NULL DEFAULT '',
+    confirmed_at  TEXT    NOT NULL DEFAULT '',
+    closed_at     TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_defective_status ON defective_records(status);
+CREATE INDEX IF NOT EXISTS idx_defective_order ON defective_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatched_at);
 """
 
 
@@ -1605,4 +1624,147 @@ def log_activity(action: str, detail: str = ""):
 def get_activity_logs(limit: int = 100) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM activity_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Defective Records ────────────────────────────────────────────────────────
+
+def create_defective_record(data: dict) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO defective_records
+               (order_id, part_number, description, defective_qty,
+                action_taken, action_note, status, reported_by, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                data.get("order_id"),
+                str(data.get("part_number") or "").strip(),
+                str(data.get("description") or "").strip(),
+                float(data.get("defective_qty") or 0),
+                str(data.get("action_taken") or "").strip(),
+                str(data.get("action_note") or "").strip(),
+                "open",
+                str(data.get("reported_by") or "").strip(),
+                _now(),
+            ),
+        )
+        return cur.lastrowid
+
+
+def get_defective_records(status: str = "all") -> list[dict]:
+    with get_conn() as conn:
+        if status and status != "all":
+            rows = conn.execute(
+                "SELECT * FROM defective_records WHERE status=? ORDER BY id DESC", (status,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM defective_records ORDER BY id DESC"
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_defective_record(record_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM defective_records WHERE id=?", (record_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_defective_record(record_id: int, data: dict) -> bool:
+    fields = []
+    values = []
+    for key in ("part_number", "description", "defective_qty", "action_taken", "action_note", "reported_by"):
+        if key in data:
+            fields.append(f"{key}=?")
+            values.append(data[key])
+    if not fields:
+        return False
+    values.append(record_id)
+    with get_conn() as conn:
+        conn.execute(f"UPDATE defective_records SET {','.join(fields)} WHERE id=?", values)
+    return True
+
+
+def confirm_defective_record(record_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE defective_records SET status='confirmed', confirmed_at=? WHERE id=? AND status='open'",
+            (_now(), record_id),
+        )
+    return cur.rowcount > 0
+
+
+def close_defective_record(record_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE defective_records SET status='closed', closed_at=? WHERE id=? AND status IN ('open','confirmed')",
+            (_now(), record_id),
+        )
+    return cur.rowcount > 0
+
+
+# ── Analytics Queries ────────────────────────────────────────────────────────
+
+def get_dispatch_trend(period: str = "month") -> list[dict]:
+    fmt = "%Y-%m" if period == "month" else "%Y-%W"
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT strftime('{fmt}', dispatched_at) AS period,
+                       part_number,
+                       SUM(needed_qty) AS total_qty,
+                       COUNT(*) AS record_count,
+                       decision
+                FROM dispatch_records
+                WHERE dispatched_at != ''
+                GROUP BY period, part_number, decision
+                ORDER BY period DESC, total_qty DESC""",
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_top_dispatched_parts(limit: int = 20, months: int = 6) -> list[dict]:
+    cutoff = (datetime.now() - timedelta(days=months * 30)).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT part_number,
+                      SUM(needed_qty) AS total_qty,
+                      COUNT(DISTINCT order_id) AS order_count,
+                      COUNT(*) AS record_count
+               FROM dispatch_records
+               WHERE dispatched_at >= ? AND decision != 'Shortage'
+               GROUP BY part_number
+               ORDER BY total_qty DESC
+               LIMIT ?""",
+            (cutoff, limit),
+        ).fetchall()
+    results = [dict(r) for r in rows]
+    st_stock = get_st_inventory_stock()
+    for item in results:
+        part = str(item["part_number"]).strip().upper()
+        item["st_stock_qty"] = st_stock.get(part, 0.0)
+        item["has_st_stock"] = st_stock.get(part, 0.0) > 0
+    return results
+
+
+def get_dispatch_history(group_by: str = "model") -> list[dict]:
+    if group_by == "month":
+        sql = """SELECT strftime('%Y-%m', ds.dispatched_at) AS period,
+                        COUNT(DISTINCT ds.order_id) AS order_count,
+                        SUM(o.order_qty) AS total_qty
+                 FROM dispatch_sessions ds
+                 JOIN orders o ON o.id = ds.order_id
+                 WHERE ds.dispatched_at != '' AND ds.rolled_back_at = ''
+                 GROUP BY period
+                 ORDER BY period DESC"""
+    else:
+        sql = """SELECT o.model AS label,
+                        COUNT(DISTINCT ds.order_id) AS order_count,
+                        SUM(o.order_qty) AS total_qty
+                 FROM dispatch_sessions ds
+                 JOIN orders o ON o.id = ds.order_id
+                 WHERE ds.dispatched_at != '' AND ds.rolled_back_at = ''
+                 GROUP BY o.model
+                 ORDER BY total_qty DESC"""
+    with get_conn() as conn:
+        rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]

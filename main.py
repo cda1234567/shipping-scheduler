@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import STATIC_DIR
 from app.database import init_db
-from app.routers import alerts, bom, dispatch, logs, main_file, schedule, system
+from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main_file, schedule, system
 from app.services.db_backup import database_backup_scheduler
 from app.services.merge_drafts import cleanup_expired_committed_merge_drafts
 from app.version_info import APP_VERSION
@@ -53,6 +53,8 @@ app.include_router(dispatch.router, prefix="/api")
 app.include_router(alerts.router, prefix="/api")
 app.include_router(logs.router, prefix="/api")
 app.include_router(system.router, prefix="/api")
+app.include_router(analytics.router, prefix="/api")
+app.include_router(defectives.router, prefix="/api")
 
 app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 
