@@ -47,15 +47,15 @@ class DispatchGenerationTests(unittest.TestCase):
             {
                 "order_id": 1,
                 "shortages": [
-                    {"part_number": "PART-SAVED", "description": "Saved desc", "suggested_qty": 999, "shortage_amount": 999},
-                    {"part_number": "PART-MISSING", "description": "Missing desc", "suggested_qty": 888, "shortage_amount": 888},
+                    {"part_number": "PART-SAVED", "description": "Saved desc", "suggested_qty": 999, "shortage_amount": 999, "purchase_needed_qty": 999},
+                    {"part_number": "PART-MISSING", "description": "Missing desc", "suggested_qty": 888, "shortage_amount": 888, "purchase_needed_qty": 0},
                 ],
                 "customer_material_shortages": [],
             },
             {
                 "order_id": 2,
                 "shortages": [
-                    {"part_number": "PART-PENDING", "description": "Pending desc", "suggested_qty": 2400, "shortage_amount": 2400},
+                    {"part_number": "PART-PENDING", "description": "Pending desc", "suggested_qty": 2400, "shortage_amount": 2400, "purchase_needed_qty": 2400},
                 ],
                 "customer_material_shortages": [],
             },
@@ -107,4 +107,59 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertFalse(str(ws["D1"].value).startswith(" "))
         self.assertEqual(ws["E2"].font.name, "Calibri")
         self.assertEqual(ws["E2"].font.sz, 9)
+        wb.close()
+
+    def test_dispatch_generate_keeps_st_covered_rows_white_when_no_purchase_is_needed(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "1-3",
+                "delivery_date": "2026-03-27",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "PART-ST", "description": "ST desc", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {
+                        "part_number": "PART-ST",
+                        "description": "ST desc",
+                        "suggested_qty": 8,
+                        "shortage_amount": 8,
+                        "st_available_qty": 8,
+                        "purchase_needed_qty": 0,
+                    },
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={}), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {"PART-ST": "CreateRequirement"},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        self.assertEqual(ws.cell(row=3, column=3).value, "PART-ST")
+        self.assertEqual(ws.cell(row=3, column=5).value, 8)
+        self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFFFFF")
         wb.close()

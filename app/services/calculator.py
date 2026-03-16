@@ -7,11 +7,17 @@
 """
 from __future__ import annotations
 from ..models import calc_suggested_qty
+from .shortage_rules import calculate_shortage_amount, summarize_st_supply
 
 
-def _build_shortage_item(summary: dict, moq: dict[str, float]) -> dict:
-    shortage_amt = abs(summary["ending_stock"])
+def _build_shortage_item(summary: dict, moq: dict[str, float], st_inventory_stock: dict[str, float] | None = None) -> dict:
+    shortage_amt = calculate_shortage_amount(summary["part_number"], summary["ending_stock"])
     item_moq = moq.get(summary["part_key"], 0.0)
+    st_context = summarize_st_supply(shortage_amt, (st_inventory_stock or {}).get(summary["part_key"], 0.0))
+    st_available_qty = float(st_context["st_available_qty"] or 0.0)
+    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+    purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
+    suggested_qty = calc_suggested_qty(shortage_amt, item_moq)
     return {
         "part_number": summary["part_number"],
         "description": summary["description"],
@@ -19,8 +25,10 @@ def _build_shortage_item(summary: dict, moq: dict[str, float]) -> dict:
         "current_stock": summary["current_stock"],
         "needed": summary["needed"],
         "moq": item_moq,
-        "suggested_qty": calc_suggested_qty(shortage_amt, item_moq),
+        "suggested_qty": suggested_qty if shortage_amt > 0 else 0.0,
+        "purchase_suggested_qty": purchase_suggested_qty,
         "decision": "None",
+        **st_context,
     }
 
 
@@ -30,6 +38,7 @@ def run(
     snapshot_stock: dict[str, float],
     moq: dict[str, float],
     dispatched_consumption: dict[str, float] | None = None,
+    st_inventory_stock: dict[str, float] | None = None,
 ) -> list[dict]:
     """
     依 orders 順序做 running balance，回傳每個 order 的料況。
@@ -107,10 +116,10 @@ def run(
             summary["ending_stock"] = j
 
         for summary in part_summaries.values():
-            if summary["ending_stock"] >= 0:
+            if calculate_shortage_amount(summary["part_number"], summary["ending_stock"]) <= 0:
                 continue
 
-            shortages.append(_build_shortage_item(summary, moq))
+            shortages.append(_build_shortage_item(summary, moq, st_inventory_stock))
 
         has_shortage = bool(shortages)
         results.append({

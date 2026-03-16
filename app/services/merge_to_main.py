@@ -17,6 +17,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
 from ..models import calc_suggested_qty
+from .shortage_rules import calculate_shortage_amount, summarize_st_supply
 
 PART_COL = 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
@@ -101,6 +102,7 @@ def _build_preview_for_batches(
     batches: list[dict],
     decisions: dict[str, str],
     moq_map: dict[str, float] | None = None,
+    st_inventory_stock: dict[str, float] | None = None,
 ) -> dict:
     part_row_map = _build_part_row_map(ws)
     running_stock: dict[str, float] = {}
@@ -149,7 +151,8 @@ def _build_preview_for_batches(
 
                 available_before = current_stock + prev_qty_cs
                 supplement_qty = 0.0
-                shortage_before = max(0.0, needed_qty - available_before)
+                ending_without_supplement = available_before - needed_qty
+                shortage_before = calculate_shortage_amount(part_upper, ending_without_supplement)
                 if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part_upper, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part_upper, 0))
                     remaining_supplements[part_upper] = 0.0
@@ -162,7 +165,7 @@ def _build_preview_for_batches(
                     f_value = "缺料"
                 else:
                     ending_stock = available_after_supply - needed_qty
-                    shortage_after = max(0.0, needed_qty - available_after_supply)
+                    shortage_after = calculate_shortage_amount(part_upper, ending_stock)
                     f_value = _round_away(needed_qty)
 
                 running_stock[part_upper] = ending_stock
@@ -189,6 +192,15 @@ def _build_preview_for_batches(
 
                 if shortage_after > 0:
                     item_moq = float(effective_moq.get(part_upper, 0) or 0)
+                    st_context = summarize_st_supply(shortage_after, (st_inventory_stock or {}).get(part_upper, 0.0))
+                    st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                    purchase_suggested_qty = (
+                        calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
+                    )
+                    suggested_qty = st_available_qty + (
+                        purchase_suggested_qty
+                    )
                     shortage = {
                         "order_id": batch.get("order_id"),
                         "batch_code": group.get("batch_code", ""),
@@ -202,8 +214,11 @@ def _build_preview_for_batches(
                         "shortage_amount": shortage_after,
                         "moq": item_moq,
                         "supplement_qty": supplement_qty,
+                        "decision": decision,
                         "resulting_stock": ending_stock,
-                        "suggested_qty": calc_suggested_qty(shortage_after, item_moq),
+                        "suggested_qty": suggested_qty if shortage_after > 0 else 0.0,
+                        "purchase_suggested_qty": purchase_suggested_qty,
+                        **st_context,
                     }
                     group_shortages.append(shortage)
                     shortages.append(shortage)
@@ -240,6 +255,7 @@ def preview_order_batches(
     batches: list[dict],
     decisions: dict[str, str] | None = None,
     moq_map: dict[str, float] | None = None,
+    st_inventory_stock: dict[str, float] | None = None,
 ) -> dict:
     workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
     try:
@@ -248,6 +264,7 @@ def preview_order_batches(
             batches,
             _normalize_decisions(decisions),
             moq_map=moq_map,
+            st_inventory_stock=st_inventory_stock,
         )
     finally:
         workbook.close()

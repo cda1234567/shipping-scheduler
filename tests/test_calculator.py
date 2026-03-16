@@ -93,6 +93,62 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["part_number"], "PART-3")
         self.assertEqual(results[0]["customer_material_shortages"], [])
 
+    def test_ec_part_below_100_is_treated_as_shortage(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 999, "pcb": "D", "model": "MODEL-D"}],
+            bom_map={
+                "MODEL-D": [
+                    {
+                        "part_number": "EC-001",
+                        "description": "EC Part",
+                        "needed_qty": 30,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"EC-001": 120},
+            moq={"EC-001": 5},
+        )
+
+        self.assertEqual(results[0]["status"], "shortage")
+        self.assertEqual(len(results[0]["shortages"]), 1)
+        self.assertEqual(results[0]["shortages"][0]["part_number"], "EC-001")
+        self.assertEqual(results[0]["shortages"][0]["current_stock"], 120)
+        self.assertEqual(results[0]["shortages"][0]["needed"], 30)
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 10)
+        self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 10)
+
+    def test_st_stock_reduces_purchase_needed_without_losing_total_supply_suggestion(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 1001, "pcb": "E", "model": "MODEL-E"}],
+            bom_map={
+                "MODEL-E": [
+                    {
+                        "part_number": "PART-4",
+                        "description": "ST assisted part",
+                        "needed_qty": 10,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"PART-4": 2},
+            moq={"PART-4": 5},
+            st_inventory_stock={"PART-4": 6},
+        )
+
+        shortage = results[0]["shortages"][0]
+        self.assertEqual(shortage["shortage_amount"], 8)
+        self.assertEqual(shortage["st_stock_qty"], 6)
+        self.assertEqual(shortage["st_available_qty"], 6)
+        self.assertEqual(shortage["purchase_needed_qty"], 2)
+        self.assertEqual(shortage["purchase_suggested_qty"], 5)
+        self.assertTrue(shortage["needs_purchase"])
+        self.assertEqual(shortage["suggested_qty"], 11)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -129,7 +129,7 @@ async def generate(req: DispatchRequest):
         raise HTTPException(400, "勾選的訂單沒有可生成的待處理內容")
 
     stock, moq, dispatched_consumption = _load_shortage_inputs()
-    calc_results = calc_run(orders, bom_map, stock, moq, dispatched_consumption)
+    calc_results = calc_run(orders, bom_map, stock, moq, dispatched_consumption, db.get_st_inventory_stock())
     result_by_order = {int(result.get("order_id")): result for result in calc_results if result.get("order_id") is not None}
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
@@ -174,6 +174,8 @@ async def generate(req: DispatchRequest):
                 continue
 
             shortage_item = shortages_by_part.get(part)
+            purchase_needed_qty = float((shortage_item or {}).get("purchase_needed_qty") or 0)
+            fill_color = "FFFFC000" if purchase_needed_qty > 0 else None
             description = descriptions.get(part) or (shortage_item or {}).get("description", "")
             display_part = (shortage_item or {}).get("part_number") or part
 
@@ -193,7 +195,7 @@ async def generate(req: DispatchRequest):
                     "part": display_part,
                     "desc": description,
                     "qty": round(supplement_qty),
-                    "fill_color": "FFC000",
+                    "fill_color": fill_color,
                     "is_shortage": False,
                 })
                 continue
@@ -209,7 +211,7 @@ async def generate(req: DispatchRequest):
                 "part": display_part,
                 "desc": description,
                 "qty": round(suggested_qty),
-                "fill_color": "FFC000",
+                "fill_color": fill_color,
                 "is_shortage": False,
             })
 

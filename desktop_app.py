@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import sys
@@ -22,6 +23,7 @@ from app.services.desktop_launcher import (
     build_unique_download_path,
     format_bool_setting,
     get_default_download_directory,
+    get_desktop_app_icon_path,
     is_autostart_enabled,
     normalize_download_directory,
     parse_bool_setting,
@@ -30,6 +32,8 @@ from app.services.desktop_launcher import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_ICON_PATH = BASE_DIR / "static" / "assets" / "opentext_app_icon.ico"
+APP_USER_MODEL_ID = "OpenText.ShippingScheduler.Desktop"
 APP_HOST = "127.0.0.1"
 APP_PORT = 8765
 APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
@@ -38,6 +42,46 @@ APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
 def build_app_url() -> str:
     # Force a fresh page load on every desktop launch to avoid stale WebView caches.
     return f"{APP_URL}?_desktop_shell=1&_desktop={int(time.time() * 1000)}"
+
+
+def apply_windows_app_identity():
+    if os.name != "nt":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+def apply_windows_window_icon(window: webview.Window):
+    if os.name != "nt" or not APP_ICON_PATH.exists():
+        return
+    try:
+        native = getattr(window, "native", None)
+        hwnd = int(getattr(native, "Handle", 0))
+        if not hwnd:
+            return
+
+        image_icon = 1
+        load_from_file = 0x0010
+        default_size = 0x0040
+        icon_small = 0
+        icon_big = 1
+        wm_seticon = 0x0080
+        hicon = ctypes.windll.user32.LoadImageW(
+            None,
+            str(APP_ICON_PATH),
+            image_icon,
+            0,
+            0,
+            load_from_file | default_size,
+        )
+        if not hicon:
+            return
+        ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, icon_small, hicon)
+        ctypes.windll.user32.SendMessageW(hwnd, wm_seticon, icon_big, hicon)
+    except Exception:
+        pass
 
 
 class LocalServer:
@@ -141,6 +185,7 @@ class DesktopBridge:
             entry_script=str(BASE_DIR / "desktop_app.py"),
             current_executable=sys.executable,
             frozen=bool(getattr(sys, "frozen", False)),
+            icon_path=str(get_desktop_app_icon_path(BASE_DIR)),
         )
         state = self._build_state()
         state["ok"] = True
@@ -281,6 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main():
     os.chdir(BASE_DIR)
+    apply_windows_app_identity()
     args = build_parser().parse_args()
     server = LocalServer(APP_URL)
     server.ensure_started()
@@ -305,8 +351,16 @@ def main():
 
     window.events.closing += on_closing
 
+    def on_webview_ready():
+        apply_windows_window_icon(window)
+
     try:
-        webview.start(debug=False, private_mode=True)
+        webview.start(
+            on_webview_ready,
+            debug=False,
+            private_mode=True,
+            icon=str(APP_ICON_PATH) if APP_ICON_PATH.exists() else None,
+        )
     finally:
         server.stop()
 

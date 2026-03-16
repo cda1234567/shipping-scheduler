@@ -4,10 +4,12 @@ import io
 import re
 import shutil
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
 import openpyxl
+from openpyxl.styles import PatternFill
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -16,6 +18,10 @@ from ..config import MERGE_DRAFT_DIR, cfg
 from .download_names import append_minute_timestamp, build_generated_filename
 from .main_reader import read_moq, read_stock
 from ..models import calc_suggested_qty
+from .shortage_rules import calculate_shortage_amount, summarize_st_supply
+
+COMMITTED_DRAFT_RETENTION_DAYS = 30
+ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
 
 
 def normalize_part_key(value) -> str:
@@ -115,7 +121,12 @@ def _write_bom_header_values(ws, po_number):
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
 
 
-def _write_dispatch_values_to_ws(ws, supplements: dict[str, float], carry_overs: dict[str, float]):
+def _write_dispatch_values_to_ws(
+    ws,
+    supplements: dict[str, float],
+    carry_overs: dict[str, float],
+    purchase_parts: set[str] | None = None,
+):
     part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -140,7 +151,10 @@ def _write_dispatch_values_to_ws(ws, supplements: dict[str, float], carry_overs:
         if part not in supplemented_parts and part in supplements:
             supplement_qty = supplements[part]
             supplemented_parts.add(part)
-        _set_cell_value(ws, row_idx, h_col, supplement_qty)
+        target_h_cell = _resolve_cell_for_write(ws, row_idx, h_col)
+        target_h_cell.value = supplement_qty
+        if supplement_qty and part in (purchase_parts or set()):
+            target_h_cell.fill = ORANGE_FILL
 
 
 def _cleanup_draft_files(draft_id: int):
@@ -149,6 +163,57 @@ def _cleanup_draft_files(draft_id: int):
     draft_dir = MERGE_DRAFT_DIR / f"draft_{draft_id}"
     if draft_dir.exists():
         shutil.rmtree(draft_dir, ignore_errors=True)
+
+
+def _build_retention_cutoff_iso(retention_days: int = COMMITTED_DRAFT_RETENTION_DAYS) -> str:
+    try:
+        days = max(int(retention_days), 1)
+    except (TypeError, ValueError):
+        days = COMMITTED_DRAFT_RETENTION_DAYS
+    return (datetime.now() - timedelta(days=days)).isoformat()
+
+
+def cleanup_expired_committed_merge_drafts(retention_days: int = COMMITTED_DRAFT_RETENTION_DAYS) -> int:
+    expired = db.get_expired_committed_merge_drafts(retention_days)
+    cleaned = 0
+    for draft in expired:
+        draft_id = int(draft.get("id") or 0)
+        if draft_id <= 0:
+            continue
+        _cleanup_draft_files(draft_id)
+        cleaned += db.delete_merge_draft(draft_id)
+    return cleaned
+
+
+def restore_recent_committed_merge_drafts(
+    order_ids: list[int],
+    retention_days: int = COMMITTED_DRAFT_RETENTION_DAYS,
+) -> list[int]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return []
+
+    cutoff_iso = _build_retention_cutoff_iso(retention_days)
+    restored_order_ids: list[int] = []
+    for order_id in normalized_ids:
+        if db.get_active_merge_draft_for_order(order_id):
+            continue
+        committed = db.get_latest_committed_merge_draft_for_order(order_id, committed_after=cutoff_iso)
+        if not committed:
+            continue
+        if db.reactivate_merge_draft(int(committed["id"])):
+            restored_order_ids.append(order_id)
+
+    active_order_ids = [int(item["order_id"]) for item in db.get_active_merge_drafts()]
+    if active_order_ids:
+        rebuild_merge_drafts(active_order_ids)
+    return restored_order_ids
 
 
 def _build_download_response(file_entries: list[dict], archive_label: str = "副檔草稿"):
@@ -184,7 +249,15 @@ def _build_download_response(file_entries: list[dict], archive_label: str = "副
     )
 
 
-def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_stock: dict[str, float], moq_map: dict[str, float]) -> dict:
+def _plan_order_draft(
+    order: dict,
+    draft: dict,
+    bom_files: list[dict],
+    running_stock: dict[str, float],
+    moq_map: dict[str, float],
+    st_inventory_stock: dict[str, float] | None = None,
+) -> dict:
+    st_inventory_stock = st_inventory_stock or {}
     decisions = _normalize_decisions(draft.get("decisions"))
     remaining_supplements = _normalize_supplements(draft.get("supplements"))
     file_plans: list[dict] = []
@@ -197,6 +270,7 @@ def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_s
 
         carry_overs: dict[str, float] = {}
         supplement_allocations: dict[str, float] = {}
+        purchase_parts: set[str] = set()
         part_totals: dict[str, dict[str, float]] = {}
 
         for component in components:
@@ -227,9 +301,10 @@ def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_s
             decision = decisions.get(part, "None")
 
             available_before = current_stock + prev_qty_cs
-            shortage_before = max(0.0, needed_qty - available_before)
+            ending_without_supplement = available_before - needed_qty
+            shortage_before = calculate_shortage_amount(part, ending_without_supplement)
             supplement_qty = 0.0
-            if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part, 0) > 0:
+            if decision != "Shortage" and remaining_supplements.get(part, 0) > 0:
                 supplement_qty = float(remaining_supplements.get(part, 0))
                 remaining_supplements[part] = 0.0
                 supplement_allocations[part] = supplement_qty
@@ -240,24 +315,35 @@ def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_s
                 shortage_after = shortage_before
             else:
                 ending_stock = available_after_supply - needed_qty
-                shortage_after = max(0.0, needed_qty - available_after_supply)
+                shortage_after = calculate_shortage_amount(part, ending_stock)
 
             running_stock[part] = ending_stock
 
             if shortage_after > 0:
                 moq = float(moq_map.get(part, 0) or 0)
+                st_context = summarize_st_supply(shortage_after, st_inventory_stock.get(part, 0.0))
+                st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, moq) if purchase_needed_qty > 0 else 0.0
+                suggested_qty = calc_suggested_qty(shortage_after, moq)
+                if purchase_needed_qty > 0:
+                    purchase_parts.add(part)
                 shortages.append({
                     "part_number": summary.get("part_number") or part,
                     "description": summary.get("description") or "",
                     "current_stock": float(carry_overs.get(part, current_stock)),
                     "needed": needed_qty,
+                    "prev_qty_cs": prev_qty_cs,
                     "shortage_amount": shortage_after,
                     "moq": moq,
-                    "suggested_qty": calc_suggested_qty(shortage_after, moq),
+                    "suggested_qty": suggested_qty if shortage_after > 0 else 0.0,
+                    "purchase_suggested_qty": purchase_suggested_qty,
                     "decision": decision,
                     "supplement_qty": supplement_qty,
+                    "resulting_stock": ending_stock,
                     "_row_code": order.get("code") or order.get("model") or "",
                     "_row_model": order.get("model") or "",
+                    **st_context,
                 })
 
         file_plans.append({
@@ -269,6 +355,7 @@ def _plan_order_draft(order: dict, draft: dict, bom_files: list[dict], running_s
             "po_number": str(order.get("po_number") or bom.get("po_number") or ""),
             "carry_overs": carry_overs,
             "supplements": supplement_allocations,
+            "purchase_parts": sorted(purchase_parts),
         })
 
     return {
@@ -301,7 +388,12 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         try:
             sheet = workbook.active
             _write_bom_header_values(sheet, plan.get("po_number", ""))
-            _write_dispatch_values_to_ws(sheet, plan.get("supplements") or {}, plan.get("carry_overs") or {})
+            _write_dispatch_values_to_ws(
+                sheet,
+                plan.get("supplements") or {},
+                plan.get("carry_overs") or {},
+                purchase_parts={normalize_part_key(part) for part in (plan.get("purchase_parts") or [])},
+            )
             workbook.save(output_path)
         finally:
             workbook.close()
@@ -368,6 +460,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
     active_drafts = db.get_active_merge_drafts()
     running_stock = _build_running_stock(main_path)
     moq_map = _load_effective_moq(main_path)
+    st_inventory_stock = db.get_st_inventory_stock()
     refreshed_ids: set[int] = set()
 
     for draft in active_drafts:
@@ -379,7 +472,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             continue
 
         bom_files = db.get_bom_files_by_models([str(order.get("model") or "")])
-        plan = _plan_order_draft(order, draft, bom_files, running_stock, moq_map)
+        plan = _plan_order_draft(order, draft, bom_files, running_stock, moq_map, st_inventory_stock)
         db.replace_merge_draft(
             order_id=int(order["id"]),
             main_file_path=main_path,
@@ -409,6 +502,73 @@ def delete_merge_draft_and_refresh(draft_id: int):
     remaining = [item["order_id"] for item in db.get_active_merge_drafts()]
     if remaining:
         rebuild_merge_drafts(remaining)
+
+
+def _build_draft_file_preview_rows(
+    file_item: dict,
+    decisions: dict[str, str],
+    shortages_by_part: dict[str, dict],
+) -> list[dict]:
+    bom_file_id = str(file_item.get("bom_file_id") or "").strip()
+    if not bom_file_id:
+        return []
+
+    carry_overs = {
+        normalize_part_key(part): float(qty or 0)
+        for part, qty in (file_item.get("carry_overs") or {}).items()
+        if normalize_part_key(part)
+    }
+    supplements = {
+        normalize_part_key(part): float(qty or 0)
+        for part, qty in (file_item.get("supplements") or {}).items()
+        if normalize_part_key(part)
+    }
+
+    grouped: dict[str, dict] = {}
+    for component in db.get_bom_components(bom_file_id):
+        needed_qty = float(component.get("needed_qty") or 0)
+        if component.get("is_dash") or needed_qty <= 0:
+            continue
+
+        part_key = normalize_part_key(component.get("part_number"))
+        if not part_key:
+            continue
+
+        item = grouped.setdefault(part_key, {
+            "part_number": str(component.get("part_number") or part_key),
+            "description": str(component.get("description") or ""),
+            "needed": 0.0,
+            "prev_qty_cs": 0.0,
+            "carry_over": float(carry_overs.get(part_key, 0)),
+            "supplement_qty": float(supplements.get(part_key, 0)),
+            "decision": decisions.get(part_key, "None"),
+            "shortage_amount": 0.0,
+            "suggested_qty": 0.0,
+            "moq": 0.0,
+            "st_stock_qty": 0.0,
+            "st_available_qty": 0.0,
+            "purchase_needed_qty": 0.0,
+            "purchase_suggested_qty": 0.0,
+            "needs_purchase": False,
+            "is_customer_supplied": bool(component.get("is_customer_supplied")),
+        })
+        item["needed"] += needed_qty
+        item["prev_qty_cs"] += float(component.get("prev_qty_cs") or 0)
+        item["is_customer_supplied"] = item["is_customer_supplied"] or bool(component.get("is_customer_supplied"))
+
+    for part_key, shortage in shortages_by_part.items():
+        if part_key not in grouped:
+            continue
+        grouped[part_key]["shortage_amount"] = float(shortage.get("shortage_amount") or 0)
+        grouped[part_key]["suggested_qty"] = float(shortage.get("suggested_qty") or 0)
+        grouped[part_key]["moq"] = float(shortage.get("moq") or 0)
+        grouped[part_key]["st_stock_qty"] = float(shortage.get("st_stock_qty") or 0)
+        grouped[part_key]["st_available_qty"] = float(shortage.get("st_available_qty") or 0)
+        grouped[part_key]["purchase_needed_qty"] = float(shortage.get("purchase_needed_qty") or 0)
+        grouped[part_key]["purchase_suggested_qty"] = float(shortage.get("purchase_suggested_qty") or 0)
+        grouped[part_key]["needs_purchase"] = bool(shortage.get("needs_purchase"))
+
+    return list(grouped.values())
 
 
 def get_schedule_draft_map() -> dict[int, dict]:
@@ -445,7 +605,21 @@ def get_draft_detail(draft_id: int) -> dict:
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到副檔草稿")
     order = db.get_order(int(draft["order_id"]))
-    files = db.get_merge_draft_files(draft_id)
+    decisions = _normalize_decisions(draft.get("decisions"))
+    shortages_by_part = {
+        normalize_part_key(item.get("part_number")): item
+        for item in (draft.get("shortages") or [])
+        if normalize_part_key(item.get("part_number"))
+    }
+    files = []
+    for file_item in db.get_merge_draft_files(draft_id):
+        enriched = dict(file_item)
+        enriched["preview_rows"] = _build_draft_file_preview_rows(
+            enriched,
+            decisions,
+            shortages_by_part,
+        )
+        files.append(enriched)
     return {
         "draft": {
             "id": int(draft["id"]),

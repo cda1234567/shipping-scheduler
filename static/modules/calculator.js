@@ -5,7 +5,7 @@
  * 2. 扣掉已發料消耗（dispatched_consumption）
  * 3. 對未發料訂單跑 running balance
  */
-export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}) {
+export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}) {
   const running = { ...stock };
 
   for (const [part, consumed] of Object.entries(dispatchedConsumption)) {
@@ -65,10 +65,16 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
     }
 
     for (const summary of Object.values(partSummaries)) {
-      if (summary.ending_stock >= 0) continue;
+      const requiredMin = getRequiredMinStock(summary.part_number);
+      const shortage_amount = Math.max(0, requiredMin - summary.ending_stock);
+      if (shortage_amount <= 0) continue;
 
-      const shortage_amount = Math.abs(summary.ending_stock);
+      const st_stock_qty = Math.max(0, Number(stStock[summary.part_key] ?? 0) || 0);
+      const st_available_qty = Math.min(shortage_amount, st_stock_qty);
+      const purchase_needed_qty = Math.max(0, shortage_amount - st_available_qty);
       const item_moq = moq[summary.part_key] ?? 0;
+      const purchase_suggested_qty = purchase_needed_qty > 0 ? calcSuggested(purchase_needed_qty, item_moq) : 0;
+      const suggested_qty = calcSuggested(shortage_amount, item_moq);
       const item = {
         part_number: summary.part_number,
         description: summary.description,
@@ -76,8 +82,13 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
         current_stock: summary.current_stock,
         needed: summary.needed,
         moq: item_moq,
-        suggested_qty: calcSuggested(shortage_amount, item_moq),
+        suggested_qty,
+        purchase_suggested_qty,
         decision: "None",
+        st_stock_qty,
+        st_available_qty,
+        purchase_needed_qty,
+        needs_purchase: purchase_needed_qty > 0,
       };
       shortages.push(item);
     }
@@ -97,4 +108,8 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
 function calcSuggested(shortage, moq) {
   if (moq > 0) return Math.ceil(shortage / moq) * moq;
   return shortage;
+}
+
+function getRequiredMinStock(partNumber) {
+  return String(partNumber || "").trim().toUpperCase().startsWith("EC-") ? 100 : 0;
 }

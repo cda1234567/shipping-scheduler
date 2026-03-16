@@ -16,6 +16,11 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def get_desktop_app_icon_path(base_dir: str | Path | None = None) -> Path:
+    root = Path(base_dir).resolve() if base_dir else Path(__file__).resolve().parents[2]
+    return root / "static" / "assets" / "opentext_app_icon.ico"
+
+
 def parse_bool_setting(value: str | bool | None) -> bool:
     if isinstance(value, bool):
         return value
@@ -113,7 +118,14 @@ def build_autostart_command(
     )
 
 
-def create_windows_shortcut(shortcut_path: str, target_path: str, arguments: str = "", working_directory: str = ""):
+def create_windows_shortcut(
+    shortcut_path: str,
+    target_path: str,
+    arguments: str = "",
+    working_directory: str = "",
+    icon_path: str = "",
+):
+    icon_location = icon_path or target_path
     script = f"""
 $ErrorActionPreference = 'Stop'
 $shell = New-Object -ComObject WScript.Shell
@@ -121,7 +133,7 @@ $shortcut = $shell.CreateShortcut({_ps_quote(shortcut_path)})
 $shortcut.TargetPath = {_ps_quote(target_path)}
 $shortcut.Arguments = {_ps_quote(arguments)}
 $shortcut.WorkingDirectory = {_ps_quote(working_directory)}
-$shortcut.IconLocation = {_ps_quote(target_path)}
+$shortcut.IconLocation = {_ps_quote(icon_location)}
 $shortcut.Save()
 """
     subprocess.run(
@@ -144,6 +156,7 @@ def set_autostart_enabled(
     frozen: bool | None = None,
     appdata: str | None = None,
     shortcut_name: str = SHORTCUT_NAME,
+    icon_path: str | None = None,
 ):
     shortcut_path = get_startup_shortcut_path(appdata, shortcut_name)
     shortcut_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,10 +170,12 @@ def set_autostart_enabled(
         current_executable=current_executable,
         frozen=frozen,
     )
+    resolved_icon_path = str(Path(icon_path).resolve()) if icon_path else ""
     create_windows_shortcut(
         str(shortcut_path),
         target_path,
         arguments=arguments,
         working_directory=working_directory,
+        icon_path=resolved_icon_path,
     )
     return shortcut_path

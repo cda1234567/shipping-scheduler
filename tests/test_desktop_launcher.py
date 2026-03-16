@@ -9,6 +9,7 @@ from app.services.desktop_launcher import (
     build_autostart_command,
     build_unique_download_path,
     format_bool_setting,
+    get_desktop_app_icon_path,
     get_default_download_directory,
     get_startup_shortcut_path,
     is_autostart_enabled,
@@ -74,6 +75,10 @@ class DesktopLauncherTests(unittest.TestCase):
             shortcut_path,
             Path(r"C:\Users\Andy\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\App.lnk"),
         )
+
+    def test_get_desktop_app_icon_path_points_to_static_asset(self):
+        icon_path = get_desktop_app_icon_path(r"C:\OpenText")
+        self.assertEqual(icon_path, Path(r"C:\OpenText\static\assets\opentext_app_icon.ico"))
 
     def test_parse_bool_setting(self):
         self.assertTrue(parse_bool_setting("1"))
@@ -154,6 +159,32 @@ class DesktopLauncherTests(unittest.TestCase):
                 self.assertIn("--autostart", kwargs["arguments"])
                 self.assertIn("--minimized", kwargs["arguments"])
                 self.assertEqual(Path(kwargs["working_directory"]).name, script_path.parent.name)
+                self.assertEqual(kwargs["icon_path"], "")
+
+    def test_set_autostart_enabled_passes_icon_path_to_shortcut(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_path = Path(temp_dir) / "desktop_app.py"
+            python_exe = Path(temp_dir) / "python.exe"
+            pythonw_exe = Path(temp_dir) / "pythonw.exe"
+            icon_path = Path(temp_dir) / "static" / "assets" / "opentext_app_icon.ico"
+            script_path.write_text("", encoding="utf-8")
+            python_exe.write_text("", encoding="utf-8")
+            pythonw_exe.write_text("", encoding="utf-8")
+            icon_path.parent.mkdir(parents=True, exist_ok=True)
+            icon_path.write_text("", encoding="utf-8")
+
+            with patch("app.services.desktop_launcher.create_windows_shortcut") as mock_shortcut:
+                set_autostart_enabled(
+                    True,
+                    entry_script=str(script_path),
+                    current_executable=str(python_exe),
+                    frozen=False,
+                    appdata=temp_dir,
+                    icon_path=str(icon_path),
+                )
+
+                _, kwargs = mock_shortcut.call_args
+                self.assertEqual(kwargs["icon_path"], str(icon_path.resolve()))
 
     def test_is_autostart_enabled_checks_shortcut_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:

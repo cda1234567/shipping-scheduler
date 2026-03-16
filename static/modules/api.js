@@ -41,12 +41,54 @@ export async function apiPut(path, body = {}) {
 }
 
 // ── Toast ────────────────────────────────────────────────────────────────────
-export function showToast(msg) {
+let _toastTimer = null;
+
+export function hideToast() {
   const t = document.getElementById("toast");
   if (!t) return;
-  t.textContent = msg;
+  if (_toastTimer) {
+    clearTimeout(_toastTimer);
+    _toastTimer = null;
+  }
+  t.classList.remove("show", "is-sticky", "tone-error", "tone-success");
+  t.dataset.tone = "default";
+}
+
+export function showToast(msg, options = {}) {
+  const t = document.getElementById("toast");
+  if (!t) return;
+
+  const config = typeof options === "number"
+    ? { duration: options }
+    : { duration: 2500, sticky: false, tone: "default", ...options };
+
+  if (_toastTimer) {
+    clearTimeout(_toastTimer);
+    _toastTimer = null;
+  }
+
+  const messageEl = t.querySelector(".toast-message");
+  const closeBtn = t.querySelector(".toast-close");
+  if (messageEl) {
+    messageEl.textContent = msg;
+  } else {
+    t.textContent = msg;
+  }
+
+  t.classList.remove("tone-error", "tone-success");
+  if (config.tone === "error") t.classList.add("tone-error");
+  if (config.tone === "success") t.classList.add("tone-success");
+  t.classList.toggle("is-sticky", Boolean(config.sticky));
   t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2500);
+
+  if (closeBtn) {
+    closeBtn.style.display = config.sticky ? "inline-flex" : "none";
+    closeBtn.onclick = () => hideToast();
+  }
+
+  if (!config.sticky && Number(config.duration) > 0) {
+    _toastTimer = setTimeout(() => hideToast(), Number(config.duration));
+  }
 }
 
 // ── Escape HTML ──────────────────────────────────────────────────────────────

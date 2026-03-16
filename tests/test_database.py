@@ -110,6 +110,23 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertTrue(snapshot["BBB"]["moq_manual"])
         self.assertEqual(manual_moq, {"BBB": 1200})
 
+    def test_save_st_inventory_snapshot_normalizes_part_numbers(self):
+        db.save_st_inventory_snapshot(
+            {" part-1 ": 8, "PART-2": 0},
+            {"part-1": "Capacitor", " part-2 ": "Resistor"},
+        )
+
+        snapshot = db.get_st_inventory_snapshot()
+        stock = db.get_st_inventory_stock()
+        loaded_at = db.get_st_inventory_taken_at()
+
+        self.assertEqual(snapshot["PART-1"]["stock_qty"], 8.0)
+        self.assertEqual(snapshot["PART-1"]["description"], "Capacitor")
+        self.assertEqual(snapshot["PART-2"]["stock_qty"], 0.0)
+        self.assertEqual(snapshot["PART-2"]["description"], "Resistor")
+        self.assertEqual(stock, {"PART-1": 8.0, "PART-2": 0.0})
+        self.assertTrue(loaded_at)
+
     def test_save_bom_file_keeps_source_metadata(self):
         db.save_bom_file({
             "id": "bom-1",
@@ -267,7 +284,7 @@ class OrderReloadTests(InMemoryDbTestCase):
         self.assertEqual(supplements, {order_id: {"PART-1": 3000.0}})
 
 
-class ManagedPathRepairTests(InMemoryDbTestCase):
+class ManagedPathMigrationTests(InMemoryDbTestCase):
     def test_get_setting_repairs_stale_main_file_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             managed_dir = Path(temp_dir)
@@ -297,6 +314,40 @@ class ManagedPathRepairTests(InMemoryDbTestCase):
                 )
 
         self.assertEqual(repaired, str(candidate))
+
+    def test_get_bom_file_repairs_stale_bom_filepath(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_dir = Path(temp_dir) / "bom"
+            bom_dir.mkdir()
+            candidate = bom_dir / "bom-1.xlsx"
+            candidate.write_bytes(b"bom")
+
+            db.save_bom_file({
+                "id": "bom-1",
+                "filename": "bom-1.xlsx",
+                "filepath": r"Z:\Andy\Job\code\-\opentext大改版\data\bom\bom-1.xlsx",
+                "source_filename": "bom-1.xls",
+                "source_format": ".xls",
+                "is_converted": True,
+                "po_number": "4500059162",
+                "model": "TDA3-3",
+                "pcb": "PCB-A1109",
+                "group_model": "TDA3-3",
+                "order_qty": 10,
+                "uploaded_at": "2026-03-13T14:40:00",
+                "components": [],
+            })
+
+            with patch.object(db, "_BOM_FILE_FALLBACK_DIRS", (bom_dir,)):
+                bom = db.get_bom_file("bom-1")
+                matched = db.get_bom_files_by_models(["TDA3-3"])
+
+        stored = self.conn.execute(
+            "SELECT filepath FROM bom_files WHERE id='bom-1'"
+        ).fetchone()["filepath"]
+        self.assertEqual(bom["filepath"], str(candidate))
+        self.assertEqual(matched[0]["filepath"], str(candidate))
+        self.assertEqual(stored, str(candidate))
 
 
 class MergeDraftTests(InMemoryDbTestCase):
@@ -350,6 +401,58 @@ class MergeDraftTests(InMemoryDbTestCase):
 
         self.assertEqual(marked, 1)
         self.assertIsNone(db.get_active_merge_draft_for_order(order_id))
+
+    def test_reactivate_merge_draft_restores_last_committed_record(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500059235', 'MODEL-B', 'PCB-B', 8, 'merged', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+
+        draft = db.replace_merge_draft(
+            order_id=order_id,
+            main_file_path="C:/main.xlsx",
+            main_file_mtime_ns="123456",
+            main_loaded_at="2026-03-13T09:00:00",
+            decisions={"PART-2": "CreateRequirement"},
+            supplements={"PART-2": 1200},
+            shortages=[{"part_number": "PART-2", "shortage_amount": 12}],
+        )
+        db.mark_merge_draft_committed(draft["id"])
+
+        committed = db.get_latest_committed_merge_draft_for_order(order_id)
+        reactivated = db.reactivate_merge_draft(draft["id"])
+        active = db.get_active_merge_draft_for_order(order_id)
+
+        self.assertIsNotNone(committed)
+        self.assertEqual(committed["id"], draft["id"])
+        self.assertEqual(reactivated, 1)
+        self.assertIsNotNone(active)
+        self.assertEqual(active["id"], draft["id"])
+        self.assertEqual(active["supplements"], {"PART-2": 1200})
+
+    def test_get_expired_committed_merge_drafts_only_returns_records_older_than_retention(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500059236', 'MODEL-C', 'PCB-C', 5, 'merged', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+
+        self.conn.execute(
+            "INSERT INTO merge_drafts(order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, decisions_json, supplements_json, shortages_json, created_at, updated_at, committed_at, deleted_at) "
+            "VALUES(?, 'committed', 'C:/main.xlsx', '', '', '{}', '{}', '[]', '2026-01-01T00:00:00', '2026-01-01T00:00:00', '2026-01-02T00:00:00', '')",
+            (order_id,),
+        )
+        self.conn.execute(
+            "INSERT INTO merge_drafts(order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, decisions_json, supplements_json, shortages_json, created_at, updated_at, committed_at, deleted_at) "
+            "VALUES(?, 'committed', 'C:/main.xlsx', '', '', '{}', '{}', '[]', '2099-01-01T00:00:00', '2099-01-01T00:00:00', '2099-01-02T00:00:00', '')",
+            (order_id,),
+        )
+
+        expired = db.get_expired_committed_merge_drafts(retention_days=30)
+
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(expired[0]["committed_at"], "2026-01-02T00:00:00")
 
 
 class DispatchConsumptionTests(InMemoryDbTestCase):
@@ -464,3 +567,82 @@ class BomOrderTests(InMemoryDbTestCase):
         self.assertEqual([bom["id"] for bom in bom_files], ["bom-2", "bom-1"])
         self.assertEqual(bom_files[0]["group_model"], "GROUP-B")
         self.assertEqual(bom_files[1]["group_model"], "GROUP-B")
+
+
+class ManagedPathRepairTests(InMemoryDbTestCase):
+    def test_get_setting_repairs_managed_main_file_path_in_place(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_dir = Path(temp_dir) / "main_file"
+            schedule_dir = Path(temp_dir) / "schedule"
+            main_dir.mkdir()
+            schedule_dir.mkdir()
+            repaired_main = main_dir / "main.xlsx"
+            repaired_main.write_bytes(b"main")
+
+            self.conn.execute(
+                "INSERT INTO settings(key, value) VALUES('main_file_path', 'Z:/legacy/main.xlsx')"
+            )
+
+            with patch.dict(
+                db._MANAGED_PATH_FALLBACKS,
+                {"main_file_path": main_dir, "schedule_file_path": schedule_dir},
+                clear=True,
+            ):
+                value = db.get_setting("main_file_path")
+
+            stored = self.conn.execute(
+                "SELECT value FROM settings WHERE key='main_file_path'"
+            ).fetchone()["value"]
+            self.assertEqual(value, str(repaired_main))
+            self.assertEqual(stored, str(repaired_main))
+
+    def test_repair_managed_paths_updates_draft_and_dispatch_main_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_dir = Path(temp_dir) / "main_file"
+            schedule_dir = Path(temp_dir) / "schedule"
+            main_dir.mkdir()
+            schedule_dir.mkdir()
+            repaired_main = main_dir / "main.xlsx"
+            repaired_main.write_bytes(b"main")
+
+            self.conn.execute(
+                "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+                "VALUES('4500059234', 'MODEL-A', 'PCB-A', 1, 'merged', 0, 1, 'n', 'n', '')"
+            )
+            order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+            self.conn.execute(
+                "INSERT INTO settings(key, value) VALUES('main_file_path', 'Z:/legacy/main.xlsx')"
+            )
+            self.conn.execute(
+                "INSERT INTO dispatch_sessions(order_id, previous_status, backup_path, main_file_path, dispatched_at, rolled_back_at) "
+                "VALUES(?, 'merged', 'backup.xlsx', 'Z:/legacy/main.xlsx', '2026-03-13T10:00:00', '')",
+                (order_id,),
+            )
+            self.conn.execute(
+                "INSERT INTO merge_drafts(order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, decisions_json, supplements_json, shortages_json, created_at, updated_at, committed_at, deleted_at) "
+                "VALUES(?, 'active', 'Z:/legacy/main.xlsx', '', '', '{}', '{}', '[]', 'n', 'n', '', '')",
+                (order_id,),
+            )
+
+            with patch.dict(
+                db._MANAGED_PATH_FALLBACKS,
+                {"main_file_path": main_dir, "schedule_file_path": schedule_dir},
+                clear=True,
+            ):
+                repaired_count = db._repair_managed_paths(self.conn)
+
+            self.assertEqual(repaired_count, 3)
+            setting_value = self.conn.execute(
+                "SELECT value FROM settings WHERE key='main_file_path'"
+            ).fetchone()["value"]
+            dispatch_value = self.conn.execute(
+                "SELECT main_file_path FROM dispatch_sessions WHERE order_id=?",
+                (order_id,),
+            ).fetchone()["main_file_path"]
+            draft_value = self.conn.execute(
+                "SELECT main_file_path FROM merge_drafts WHERE order_id=?",
+                (order_id,),
+            ).fetchone()["main_file_path"]
+            self.assertEqual(setting_value, str(repaired_main))
+            self.assertEqual(dispatch_value, str(repaired_main))
+            self.assertEqual(draft_value, str(repaired_main))

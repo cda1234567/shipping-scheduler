@@ -42,3 +42,10 @@ alerts:
 # 日誌
 logging:
   max_entries: 2000
+
+database_backup:
+  enabled: true
+  hour: 2
+  minute: 0
+  keep_count: 14
+  check_interval_seconds: 60

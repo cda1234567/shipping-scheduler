@@ -93,6 +93,18 @@ def _coerce_po_number(po_number):
     return text
 
 
+def _build_fill(fill_color: str | None, is_shortage: bool):
+    if is_shortage:
+        return copy(WHITE_FILL)
+
+    color = str(fill_color or "").strip().lstrip("#").upper()
+    if len(color) == 6:
+        color = f"FF{color}"
+    if len(color) == 8:
+        return PatternFill(start_color=color, end_color=color, fill_type="solid")
+    return copy(WHITE_FILL)
+
+
 def _write_section_header(source_ws, target_ws, start_row: int, group: dict, now: datetime):
     for offset, source_row in enumerate(HEADER_ROWS):
         _copy_row_template(source_ws, source_row, target_ws, start_row + offset)
@@ -122,7 +134,7 @@ def _write_item_row(source_ws, target_ws, row_idx: int, index: int, item: dict):
     target_ws.cell(row_idx, 3).value = item.get("part", "")
     target_ws.cell(row_idx, 4).value = description
     target_ws.cell(row_idx, 5).value = qty_value
-    target_ws.cell(row_idx, 5).fill = copy(WHITE_FILL if is_shortage else ORANGE_FILL)
+    target_ws.cell(row_idx, 5).fill = _build_fill(item.get("fill_color"), is_shortage)
 
     if len(description) > 90 or is_shortage:
         target_ws.row_dimensions[row_idx].height = 24.0

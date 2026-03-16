@@ -1,4 +1,4 @@
-import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, esc, fmt } from "./api.js";
+import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, hideToast, esc, fmt } from "./api.js";
 import { calculate } from "./calculator.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
@@ -7,19 +7,27 @@ let _rows = [];
 let _bomData = {};
 let _stock = {};
 let _moq = {};
+let _stStock = {};
 let _dispatchedConsumption = {};
 let _calcResults = [];
 let _decisions = {};
 let _draftsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
+let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
 let _modalProgressTimer = null;
 let _modalProgressValue = 0;
 let _completedFolderCollapsedState = loadCompletedFolderCollapsedState();
+let _draftPanelCollapsedState = loadDraftPanelCollapsedState();
+let _draftFileSelectionState = loadDraftFileSelectionState();
 let _modalDraftId = null;
 let _modalDraftReadOnly = false;
+let _modalDraftBaseDecisions = {};
+let _modalDraftBaseSupplements = {};
+let _modalDraftVisibleParts = [];
+let _globalBusyDepth = 0;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -29,11 +37,12 @@ export async function initSchedule(onRefreshMain) {
   document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
   document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
   document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
+  document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
   await refresh();
 }
 
 export async function refresh() {
-  await Promise.all([loadMainData(), loadScheduleRows(), loadBomData()]);
+  await Promise.all([loadMainData(), loadStInventoryData(), loadScheduleRows(), loadBomData()]);
   recalculate();
   renderSchedule();
 }
@@ -51,6 +60,10 @@ export function getCheckedOrderIds() {
   return _rows
     .filter(row => _checkedIds.has(row.id))
     .map(row => row.id);
+}
+
+export function getScheduleMeta() {
+  return { ..._scheduleMeta };
 }
 
 function normalizePartKey(partNumber) {
@@ -93,6 +106,120 @@ function setCompletedFolderCollapsed(folderName, collapsed) {
   saveCompletedFolderCollapsedState();
 }
 
+function loadDraftPanelCollapsedState() {
+  try {
+    const raw = window.localStorage?.getItem("merge-draft-panel-collapsed-state");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveDraftPanelCollapsedState() {
+  try {
+    window.localStorage?.setItem(
+      "merge-draft-panel-collapsed-state",
+      JSON.stringify(_draftPanelCollapsedState || {}),
+    );
+  } catch (_) {}
+}
+
+function isDraftPanelCollapsed(orderId) {
+  const key = String(orderId || "");
+  if (!key) return true;
+  if (Object.prototype.hasOwnProperty.call(_draftPanelCollapsedState, key)) {
+    return Boolean(_draftPanelCollapsedState[key]);
+  }
+  return true;
+}
+
+function setDraftPanelCollapsed(orderId, collapsed) {
+  const key = String(orderId || "");
+  if (!key) return;
+  _draftPanelCollapsedState[key] = Boolean(collapsed);
+  saveDraftPanelCollapsedState();
+}
+
+function loadDraftFileSelectionState() {
+  try {
+    const raw = window.localStorage?.getItem("merge-draft-file-selection-state");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveDraftFileSelectionState() {
+  try {
+    window.localStorage?.setItem(
+      "merge-draft-file-selection-state",
+      JSON.stringify(_draftFileSelectionState || {}),
+    );
+  } catch (_) {}
+}
+
+function getSelectedDraftFileId(draftId, files = []) {
+  const key = String(draftId || "");
+  if (!key) return null;
+
+  const selected = String(_draftFileSelectionState[key] || "").trim();
+  if (!selected) return null;
+
+  const exists = Array.isArray(files) && files.some(file => String(file?.id || "").trim() === selected);
+  if (!exists) {
+    delete _draftFileSelectionState[key];
+    saveDraftFileSelectionState();
+    return null;
+  }
+
+  return selected;
+}
+
+function setSelectedDraftFileId(draftId, fileId) {
+  const key = String(draftId || "");
+  if (!key) return;
+
+  const normalized = String(fileId || "").trim();
+  if (!normalized) {
+    delete _draftFileSelectionState[key];
+  } else {
+    _draftFileSelectionState[key] = normalized;
+  }
+  saveDraftFileSelectionState();
+}
+
+function setGlobalBusyState(active, { title = "系統正在處理中", detail = "大型批次可能需要幾秒鐘，請稍候，不用重複點擊。" } = {}) {
+  const overlay = document.getElementById("action-busy-overlay");
+  if (!overlay) return;
+  const titleEl = document.getElementById("busy-overlay-title");
+  const detailEl = document.getElementById("busy-overlay-detail");
+
+  if (active) {
+    _globalBusyDepth += 1;
+    if (titleEl) titleEl.textContent = title;
+    if (detailEl) detailEl.textContent = detail;
+    overlay.style.display = "flex";
+    return;
+  }
+
+  _globalBusyDepth = Math.max(0, _globalBusyDepth - 1);
+  if (_globalBusyDepth === 0) {
+    overlay.style.display = "none";
+  }
+}
+
+async function withGlobalBusy(task, options = {}) {
+  hideToast();
+  setGlobalBusyState(true, options);
+  try {
+    return await task();
+  } finally {
+    setGlobalBusyState(false);
+  }
+}
+
 function normalizeDecisionMap(decisions = {}) {
   const normalized = {};
   for (const [part, decision] of Object.entries(decisions || {})) {
@@ -101,6 +228,70 @@ function normalizeDecisionMap(decisions = {}) {
     normalized[key] = decision;
   }
   return normalized;
+}
+
+function normalizeSupplementMap(supplements = {}) {
+  const normalized = {};
+  for (const [part, qty] of Object.entries(supplements || {})) {
+    const key = normalizePartKey(part);
+    const amount = Number(qty || 0);
+    if (!key || !Number.isFinite(amount) || amount <= 0) continue;
+    normalized[key] = amount;
+  }
+  return normalized;
+}
+
+function isEcPart(partNumber) {
+  return normalizePartKey(partNumber).startsWith("EC-");
+}
+
+function isMainWriteBlockingShortage(shortage) {
+  const shortageAmount = Number(shortage?.shortage_amount || 0);
+  if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
+  if (String(shortage?.decision || "") === "Shortage") return true;
+  if (!isEcPart(shortage?.part_number)) return true;
+
+  const resultingStock = Number(shortage?.resulting_stock);
+  return !Number.isFinite(resultingStock) || resultingStock < 0;
+}
+
+function getMainWriteBlockingShortages(shortages = []) {
+  return (Array.isArray(shortages) ? shortages : []).filter(isMainWriteBlockingShortage);
+}
+
+function buildMainWriteBlockedMessage(shortages = [], model = "") {
+  const prefix = model ? `${model}\n` : "";
+  const lines = [...new Map(
+    (shortages || [])
+      .filter(item => String(item?.part_number || "").trim())
+      .map(item => [String(item.part_number).trim(), item]),
+  ).values()].slice(0, 6).map(item => {
+    const part = String(item?.part_number || "").trim();
+    const shortageAmount = Number(item?.shortage_amount || 0);
+    if (isEcPart(part)) {
+      const resultingStock = Number(item?.resulting_stock);
+      if (Number.isFinite(resultingStock)) {
+        return `- ${part}: 寫入後結存 ${fmt(resultingStock)}，EC 料不能為負數`;
+      }
+      return `- ${part}: EC 料結存無法判定，暫時不能寫入主檔`;
+    }
+    if (Number.isFinite(shortageAmount) && shortageAmount > 0) {
+      return `- ${part}: 仍缺 ${fmt(shortageAmount)}`;
+    }
+    return `- ${part}: 仍有缺料`;
+  });
+
+  const hiddenCount = Math.max(0, getMainWriteBlockingShortages(shortages).length - lines.length);
+  if (hiddenCount) lines.push(`- 另有 ${hiddenCount} 項未展開`);
+  return `${prefix}以下料號仍不能寫入主檔，請先補料或調整決策：\n${lines.join("\n")}`;
+}
+
+function isMainWriteBlockedMessage(message) {
+  return String(message || "").includes("不能寫入主檔");
+}
+
+function showMainWriteBlockedNotice(message) {
+  showToast(message, { sticky: true, tone: "error" });
 }
 
 function setLocalDecision(partNumber, decision) {
@@ -151,6 +342,13 @@ async function loadMainData() {
   } catch (_) { _stock = {}; _moq = {}; }
 }
 
+async function loadStInventoryData() {
+  try {
+    const d = await apiJson("/api/system/st-inventory/data");
+    _stStock = d.stock || {};
+  } catch (_) { _stStock = {}; }
+}
+
 async function loadScheduleRows() {
   try {
     const d = await apiJson("/api/schedule/rows");
@@ -158,6 +356,11 @@ async function loadScheduleRows() {
     _dispatchedConsumption = d.dispatched_consumption || {};
     _decisions = normalizeDecisionMap(d.decisions || {});
     _draftsByOrderId = d.merge_drafts || {};
+    _scheduleMeta = {
+      filename: String(d.filename || ""),
+      loaded_at: String(d.loaded_at || ""),
+      row_count: Array.isArray(d.rows) ? d.rows.length : 0,
+    };
     const completedBadge = document.getElementById("completed-count");
     if (completedBadge && d.completed_count > 0) {
       completedBadge.textContent = d.completed_count;
@@ -170,6 +373,7 @@ async function loadScheduleRows() {
     _dispatchedConsumption = {};
     _decisions = {};
     _draftsByOrderId = {};
+    _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
   }
 }
 
@@ -193,7 +397,7 @@ function recalculate() {
   // 只計算勾選的訂單
   const checkedOrders = _rows.filter(r => _checkedIds.has(r.id));
   const checkedResults = checkedOrders.length
-    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption)
+    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption, _stStock)
     : [];
   // 建立以 order id 為 key 的結果 map
   const resultById = new Map();
@@ -262,8 +466,7 @@ function buildDraftPanelHtmlLegacyBase(draft) {
         <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
         <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
       </div>
-    </div>
-    ${draftHtml}`;
+    </div>`;
 }
 
 // ── Build single-row card ─────────────────────────────────────────────────────
@@ -274,7 +477,7 @@ function buildRowCard(r, resultMap) {
 
   const res = resultMap[r.id];
   const draft = _draftsByOrderId?.[r.id] || null;
-  const badge = cardBadge(res, r.id);
+  const badge = buildOrderBadge(r, res);
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
   const code = esc(r.code || "");
@@ -311,11 +514,11 @@ function buildRowCard(r, resultMap) {
       ${remarkSpan}
       <span class="po-status-badge ${badge.cls}">${badge.text}</span>
       <div class="row-actions">
-        <button class="btn-complete" data-order-id="${r.id}" title="標記已發料並 Merge">✓</button>
         <button class="btn-edit-date" data-order-id="${r.id}" title="改交期">📅</button>
         <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">✕</button>
       </div>
-    </div>`;
+    </div>
+    ${draftHtml}`;
 
   // 勾選控制
   div.querySelector(".row-check").addEventListener("change", e => {
@@ -405,11 +608,16 @@ function buildRowCard(r, resultMap) {
   });
 
   if (draft) {
+    div.querySelector(".btn-draft-commit")?.addEventListener("click", () => {
+      void handleCommitDraft(draft.id, r.model);
+    });
     div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
-      void showDraftModal(draft.id, { readOnly: true });
+      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
+      void showDraftModal(draft.id, { readOnly: true, fileId: selectedFileId });
     });
     div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
-      void showDraftModal(draft.id, { readOnly: false });
+      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
+      void showDraftModal(draft.id, { readOnly: false, fileId: selectedFileId });
     });
     div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
       void downloadDraft(draft.id);
@@ -422,6 +630,41 @@ function buildRowCard(r, resultMap) {
   return div;
 }
 
+function handleDraftPanelToggleClick(event) {
+  const fileButton = event.target.closest(".merge-draft-file-select");
+  if (fileButton) {
+    const draftId = parseInt(fileButton.dataset.draftId || "", 10);
+    if (!Number.isInteger(draftId)) return;
+
+    const nextFileId = String(fileButton.dataset.fileId || "").trim();
+    const panel = fileButton.closest(".merge-draft-panel");
+    setSelectedDraftFileId(draftId, nextFileId);
+
+    panel?.querySelectorAll(".merge-draft-file-select").forEach(button => {
+      const buttonFileId = String(button.dataset.fileId || "").trim();
+      const isActive = nextFileId ? buttonFileId === nextFileId : !buttonFileId;
+      button.classList.toggle("is-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+    return;
+  }
+
+  const button = event.target.closest(".btn-draft-toggle");
+  if (!button) return;
+
+  const orderId = parseInt(button.dataset.orderId || "", 10);
+  if (!Number.isInteger(orderId)) return;
+
+  const panel = button.closest(".merge-draft-panel");
+  if (!panel) return;
+
+  const nextCollapsed = !panel.classList.contains("is-collapsed");
+  panel.classList.toggle("is-collapsed", nextCollapsed);
+  button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+  button.textContent = nextCollapsed ? "展開" : "收起";
+  setDraftPanelCollapsed(orderId, nextCollapsed);
+}
+
 function cardBadge(res, orderId) {
   if (!res && orderId !== undefined && !_checkedIds.has(orderId)) return { cls: "badge-unchecked", text: "—" };
   if (!res) return { cls: "badge-no-bom", text: "BOM未上傳" };
@@ -432,6 +675,65 @@ function cardBadge(res, orderId) {
     return { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` };
   }
   return { cls: "badge-no-bom", text: "BOM未上傳" };
+}
+
+function buildShortageItemsForRow(row, items = []) {
+  return (items || []).map(item => ({
+    ...item,
+    _row_code: item?._row_code || row?.code || row?.model || "",
+    _row_model: item?._row_model || row?.model || "",
+  }));
+}
+
+function getEffectiveShortageState(row, res = null) {
+  const draft = row ? _draftsByOrderId?.[row.id] || null : null;
+  if (draft) {
+    return {
+      hasDraft: true,
+      shortages: buildShortageItemsForRow(row, draft.shortages || []),
+      customer_material_shortages: [],
+      status: Array.isArray(draft.shortages) && draft.shortages.length ? "shortage" : "ok",
+    };
+  }
+
+  return {
+    hasDraft: false,
+    shortages: buildShortageItemsForRow(row, res?.shortages || []),
+    customer_material_shortages: buildShortageItemsForRow(row, res?.customer_material_shortages || []),
+    status: res?.status || (!res ? "no_bom" : "ok"),
+  };
+}
+
+function buildOrderBadge(row, res) {
+  if (!res && row?.id !== undefined && !_checkedIds.has(row.id)) {
+    return { cls: "badge-unchecked", text: "—" };
+  }
+
+  const effective = getEffectiveShortageState(row, res);
+  if (effective.hasDraft) {
+    const total = [...effective.shortages, ...effective.customer_material_shortages]
+      .reduce((sum, item) => sum + (item.shortage_amount || 0), 0);
+    return total > 0
+      ? { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` }
+      : { cls: "badge-ok", text: "OK" };
+  }
+
+  return cardBadge(res, row?.id);
+}
+
+function buildRightPanelShortageData() {
+  const shortages = [];
+  const csShortages = [];
+
+  _rows.forEach((row, index) => {
+    if (!_checkedIds.has(row.id)) return;
+
+    const effective = getEffectiveShortageState(row, _calcResults[index]);
+    shortages.push(...effective.shortages);
+    csShortages.push(...effective.customer_material_shortages);
+  });
+
+  return { shortages, csShortages };
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -477,17 +779,6 @@ async function handleCancel(orderId, model) {
       showToast("訂單已取消");
     }
     await refresh();
-  } catch (e) { showToast("失敗：" + e.message); }
-}
-
-async function handleBatchMerge() {
-  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
-  if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
-  if (!targets.length) { showToast("勾選的訂單中沒有可 merge 的"); return; }
-  try {
-    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
-    await refresh();
-    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
   } catch (e) { showToast("失敗：" + e.message); }
 }
 
@@ -583,15 +874,178 @@ function buildModalCarryOverOverrides() {
 
 async function saveCurrentDraftFromModal({ silent = false } = {}) {
   if (!_modalDraftId) return null;
-  const supplements = _collectModalSupplements();
-  const decisions = _collectModalDecisions();
+  const visibleParts = new Set((_modalDraftVisibleParts || []).map(normalizePartKey).filter(Boolean));
+  const supplements = { ...(_modalDraftBaseSupplements || {}) };
+  const decisions = { ...(_modalDraftBaseDecisions || {}) };
+
+  visibleParts.forEach(part => {
+    delete supplements[part];
+    delete decisions[part];
+  });
+
+  Object.assign(supplements, _collectModalSupplements());
+  Object.entries(_collectModalDecisions()).forEach(([part, decision]) => {
+    const key = normalizePartKey(part);
+    if (!key || !decision || decision === "None") return;
+    decisions[key] = decision;
+  });
   const response = await apiPut(`/api/schedule/drafts/${_modalDraftId}`, { decisions, supplements });
   if (!silent) showToast("副檔已更新");
   await refresh();
   return response?.draft || null;
 }
 
-async function showDraftModal(draftId, { readOnly = false } = {}) {
+function draftDecisionLabel(decision) {
+  const labels = {
+    CreateRequirement: "建立需求",
+    MarkHasPO: "已有 PO",
+    IgnoreOnce: "忽略一次",
+    Shortage: "保留缺料",
+    None: "一般",
+  };
+  return labels[decision] || "一般";
+}
+
+function draftInlineStatHtml(label, value, cls = "") {
+  return `<span class="draft-preview-inline-stat ${cls}"><span>${esc(label)}</span><strong>${fmt(roundShortageUiValue(value))}</strong></span>`;
+}
+
+function syncDraftPartControls(list, part, { qty = null, shortageChecked = null } = {}) {
+  const partKey = normalizePartKey(part);
+  if (!partKey || !list) return;
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    if (normalizePartKey(input.dataset.part) !== partKey) return;
+    if (qty !== null && document.activeElement !== input) {
+      input.value = String(qty);
+    }
+    if (shortageChecked !== null) {
+      input.disabled = Boolean(shortageChecked);
+      if (shortageChecked) input.value = "0";
+    }
+  });
+
+  list.querySelectorAll(".shortage-mark").forEach(checkbox => {
+    if (normalizePartKey(checkbox.dataset.part) !== partKey) return;
+    if (shortageChecked !== null && document.activeElement !== checkbox) {
+      checkbox.checked = Boolean(shortageChecked);
+    }
+  });
+}
+
+function bindDraftPreviewEditors(list) {
+  if (!list) return;
+
+  list.querySelectorAll(".shortage-mark").forEach(checkbox => {
+    checkbox.addEventListener("change", () => {
+      syncDraftPartControls(list, checkbox.dataset.part, {
+        shortageChecked: checkbox.checked,
+      });
+    });
+  });
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    input.addEventListener("input", () => {
+      syncDraftPartControls(list, input.dataset.part, {
+        qty: parseFloat(input.value) || 0,
+      });
+    });
+  });
+}
+
+function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
+  const partNumber = String(row.part_number || "");
+  const shortageChecked = row.decision === "Shortage";
+  const supplementQty = roundShortageUiValue(row.supplement_qty || 0);
+  const shortageAmount = roundShortageUiValue(row.shortage_amount || 0);
+  const badges = [
+    shortageAmount > 0 ? `<span class="draft-preview-badge is-shortage">缺 ${fmt(shortageAmount)}</span>` : "",
+    row.decision && !["None", "CreateRequirement"].includes(row.decision)
+      ? `<span class="draft-preview-badge is-decision">${esc(draftDecisionLabel(row.decision))}</span>`
+      : "",
+  ].filter(Boolean).join("");
+
+  return `
+    <div class="draft-preview-row ${editable ? "is-editable" : ""}">
+      <div class="draft-preview-top">
+        <div class="draft-preview-part">${esc(partNumber)}</div>
+        ${badges ? `<div class="draft-preview-badges">${badges}</div>` : ""}
+      </div>
+      <div class="draft-preview-desc">${esc(row.description || "未填說明")}</div>
+      <div class="draft-preview-inline-stats">
+        ${draftInlineStatHtml("需求", row.needed)}
+        ${draftInlineStatHtml("上批餘料", row.carry_over, "is-carry")}
+        ${draftInlineStatHtml("補料", supplementQty, "is-supplement")}
+      </div>
+      ${editable ? `
+        <div class="draft-preview-editors">
+          <label class="draft-preview-editor-label">補料</label>
+          <input
+            type="number"
+            class="supplement-input"
+            data-part="${esc(partNumber)}"
+            value="${supplementQty}"
+            min="0"
+            ${shortageChecked ? "disabled" : ""}
+          >
+          <label class="draft-preview-check">
+            <input
+              type="checkbox"
+              class="shortage-mark"
+              data-part="${esc(partNumber)}"
+              ${shortageChecked ? "checked" : ""}
+            >
+            保留缺料
+          </label>
+        </div>` : ""}
+    </div>`;
+}
+
+function buildDraftFileSectionHtml(file, { editable = false } = {}) {
+  const rows = Array.isArray(file?.preview_rows) ? file.preview_rows : [];
+  const body = rows.length
+    ? rows.map(row => buildDraftPreviewRowHtml(row, { editable })).join("")
+    : '<div class="merge-draft-empty-note">這份副檔目前沒有可顯示的寫入明細。</div>';
+
+  return `
+    <section class="draft-preview-section">
+      <div class="draft-preview-section-head">
+        <div class="draft-preview-section-title">${esc(file.filename || "未命名副檔")}</div>
+        <div class="draft-preview-section-meta">寫入列數 ${rows.length}</div>
+      </div>
+      <div class="draft-preview-section-body">${body}</div>
+    </section>`;
+}
+
+function buildDraftFileListHtml(files, {
+  label = "副檔清單",
+  selectable = false,
+  draftId = null,
+  selectedFileId = null,
+} = {}) {
+  if (!Array.isArray(files) || !files.length) {
+    return '<div class="merge-draft-empty-note">副檔尚未生成</div>';
+  }
+
+  const items = selectable
+    ? [
+      `<button class="merge-draft-file merge-draft-file-select merge-draft-file-all ${selectedFileId ? "" : "is-active"}" type="button" data-draft-id="${Number.isInteger(draftId) ? draftId : ""}" data-file-id="" aria-pressed="${selectedFileId ? "false" : "true"}">全部</button>`,
+      ...files.map(file => {
+        const fileId = String(file?.id || "").trim();
+        const isActive = Boolean(selectedFileId) && fileId === selectedFileId;
+        return `<button class="merge-draft-file merge-draft-file-select ${isActive ? "is-active" : ""}" type="button" data-draft-id="${Number.isInteger(draftId) ? draftId : ""}" data-file-id="${esc(fileId)}" aria-pressed="${isActive ? "true" : "false"}" title="${esc(file.filename || "")}">${esc(file.filename || "")}</button>`;
+      }),
+    ].join("")
+    : files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("");
+
+  return `
+    <div class="${selectable ? "merge-draft-files" : "merge-draft-inline-files"}">
+      <div class="merge-draft-files-label">${esc(label)}</div>
+      <div class="merge-draft-file-strip">${items}</div>
+    </div>`;
+}
+
+async function showDraftModal(draftId, { readOnly = false, fileId = null } = {}) {
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
@@ -602,63 +1056,60 @@ async function showDraftModal(draftId, { readOnly = false } = {}) {
   _modalDraftId = draftId;
   _modalDraftReadOnly = Boolean(readOnly);
   _modalTargets = order?.id ? [order] : [];
-  _modalBomFiles = draft.files || [];
   _modalCarryOversByModel = {};
   _modalMode = readOnly ? "draft-preview" : "draft-edit";
   _modalPreviewShortages = draft.shortages || [];
+  _modalDraftBaseDecisions = normalizeDecisionMap(draft.decisions || {});
+  _modalDraftBaseSupplements = normalizeSupplementMap(draft.supplements || {});
 
-  const fileSummary = (draft.files || []).length
-    ? `<div class="merge-draft-inline-files">${draft.files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")}</div>`
+  const allFiles = Array.isArray(draft.files) ? draft.files : [];
+  const selectedFileId = String(fileId || "").trim();
+  const selectedFile = selectedFileId
+    ? allFiles.find(file => String(file?.id || "").trim() === selectedFileId) || null
+    : null;
+  const files = selectedFile ? [selectedFile] : allFiles;
+  _modalBomFiles = files;
+  _modalDraftVisibleParts = files.flatMap(file => (file?.preview_rows || []).map(row => normalizePartKey(row?.part_number)));
+  const fileSummary = files.length
+    ? buildDraftFileListHtml(files, { label: selectedFile ? "目前預覽" : "副檔清單" })
     : '<div class="merge-draft-empty-note">這份副檔目前沒有可用檔案。</div>';
+  const previewSections = files.length
+    ? files.map(file => buildDraftFileSectionHtml(file, { editable: !readOnly })).join("")
+    : '<div class="merge-draft-empty-note">目前沒有可預覽的副檔內容。</div>';
+  const modalMeta = selectedFile
+    ? `指定副檔預覽 1 / 全部 ${allFiles.length} 份，更新 ${esc(formatDraftTime(draft.updated_at) || "--")}`
+    : `副檔 ${files.length} 份，更新 ${esc(formatDraftTime(draft.updated_at) || "--")}`;
+  const downloadLabel = selectedFile && readOnly ? "下載全部副檔" : "下載副檔";
 
-  const grouped = {};
-  (draft.shortages || []).forEach(item => {
-    const modelKey = item._row_model || order.model || "副檔";
-    if (!grouped[modelKey]) grouped[modelKey] = [];
-    grouped[modelKey].push(item);
-  });
-
-  let html = `
+  list.innerHTML = `
     <div class="merge-draft-modal-head">
       <div class="merge-draft-modal-title">${esc(order.po_number || "")} ${esc(order.model || "")}</div>
-      <div class="merge-draft-modal-meta">副檔 ${draft.files?.length || 0} 份，更新 ${esc(formatDraftTime(draft.updated_at) || "--")}</div>
+      <div class="merge-draft-modal-meta">${modalMeta}</div>
       ${fileSummary}
     </div>
+    <section class="draft-preview-wrap">
+      <div class="draft-adjust-title">${readOnly ? "副檔寫入明細" : "副檔寫入明細 / 補料調整"}</div>
+      ${previewSections}
+    </section>
   `;
 
-  const models = Object.keys(grouped);
-  if (!models.length) {
-    html += '<div class="merge-draft-empty-note">目前這份副檔沒有掛缺料，可直接下載或按勾提交。</div>';
+  if (!readOnly) {
+    bindDraftPreviewEditors(list);
   } else {
-    models.sort((a, b) => compareText(a, b, "zh-Hant"));
-    models.forEach(modelKey => {
-      html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(modelKey)}</div>`;
-      html += grouped[modelKey].map(item => modalShortageItem(item, false)).join("");
+    list.querySelectorAll(".supplement-input, .shortage-mark").forEach(el => {
+      el.disabled = true;
     });
   }
-
-  list.innerHTML = html;
-  list.querySelectorAll(".shortage-item").forEach(itemEl => {
-    const input = itemEl.querySelector(".supplement-input");
-    const checkbox = itemEl.querySelector(".shortage-mark");
-    const part = normalizePartKey(input?.dataset.part || checkbox?.dataset.part);
-    const decision = draft.decisions?.[part] || "None";
-    if (checkbox) checkbox.checked = decision === "Shortage";
-    if (input && checkbox?.checked) input.disabled = true;
-  });
-  list.querySelectorAll(".supplement-input, .shortage-mark").forEach(el => {
-    el.disabled = readOnly;
-  });
   bindMoqEditors(list);
   bindShortageMoqBadgeEditors(list);
 
   footer.innerHTML = readOnly
     ? `
-      <button id="modal-download-bom" class="btn btn-primary btn-sm">下載副檔</button>
+      <button id="modal-download-bom" class="btn btn-primary btn-sm">${downloadLabel}</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">關閉</button>`
     : `
       <button id="modal-save-draft" class="btn btn-success btn-sm">儲存副檔</button>
-      <button id="modal-download-bom" class="btn btn-primary btn-sm">下載副檔</button>
+      <button id="modal-download-bom" class="btn btn-primary btn-sm">${downloadLabel}</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
 
   document.getElementById("modal-save-draft")?.addEventListener("click", async () => {
@@ -1042,25 +1493,48 @@ async function showWriteToMainModal(targets) {
   modal.style.display = "flex";
 }
 
+function shortageToneClass(shortage, isCS = false) {
+  const classNames = ["shortage-item"];
+  if (isCS) classNames.push("cs-item");
+  if (Number(shortage?.purchase_needed_qty || 0) > 0) classNames.push("is-st-purchase");
+  return classNames.join(" ");
+}
+
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const defaultQty = roundShortageUiValue(
-    s.default_supplement ?? s.supplement_qty ?? s.suggested_qty ?? s.shortage_amount ?? 0
+    Number(s.default_supplement) > 0
+      ? s.default_supplement
+      : Number(s.supplement_qty) > 0
+        ? s.supplement_qty
+        : Number(s.suggested_qty) > 0
+          ? s.suggested_qty
+          : s.shortage_amount ?? 0
   );
   const shortageAmount = roundShortageUiValue(s.shortage_amount);
   const currentStock = roundShortageUiValue(s.current_stock);
   const neededQty = roundShortageUiValue(s.needed);
+  const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
+  const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
   const shortageChecked = s.decision === "Shortage";
-  s = { ...s, shortage_amount: shortageAmount, current_stock: currentStock, needed: neededQty };
+  s = {
+    ...s,
+    shortage_amount: shortageAmount,
+    current_stock: currentStock,
+    needed: neededQty,
+    st_available_qty: stAvailableQty,
+    purchase_needed_qty: purchaseNeededQty,
+  };
 
-  return `<div class="shortage-item ${isCS ? "cs-item" : ""}" style="margin-bottom:8px">
+  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px">
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
     <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
       <span style="color:#dc2626">缺 ${fmt(s.shortage_amount)}</span>
       <span style="color:#16a34a">庫存 ${fmt(s.current_stock)}</span>
       <span>需 ${fmt(s.needed)}</span>
+      ${stSupplySummaryHtml(s)}
       ${moqBadgeHtml(s)}
       ${moqEditTriggerHtml(s)}
     </div>
@@ -1088,6 +1562,9 @@ function closeShortageModal() {
   _modalPreviewShortages = [];
   _modalDraftId = null;
   _modalDraftReadOnly = false;
+  _modalDraftBaseDecisions = {};
+  _modalDraftBaseSupplements = {};
+  _modalDraftVisibleParts = [];
 }
 
 function hasMoqValue(shortage) {
@@ -1118,10 +1595,34 @@ function moqEditTriggerHtml(shortage) {
 function suggestedQtyHtml(shortage) {
   shortage = { ...shortage, moq: roundShortageUiValue(shortage.moq) };
   const suggested = roundShortageUiValue(shortage.suggested_qty || shortage.shortage_amount || 0);
+  const purchaseNeeded = roundShortageUiValue(
+    shortage.purchase_suggested_qty || shortage.purchase_needed_qty || 0
+  );
+  if (purchaseNeeded > 0) {
+    if (hasMoqValue(shortage)) {
+      return `<span class="amber">建議補 ${fmt(suggested)}（其中需買 ${fmt(purchaseNeeded)}，MOQ ${fmt(shortage.moq)}）</span>`;
+    }
+    return `<span class="amber">建議補 ${fmt(suggested)}（其中需買 ${fmt(purchaseNeeded)}，未寫 MOQ）</span>`;
+  }
   if (hasMoqValue(shortage)) {
     return `<span class="blue">建議補 ${fmt(suggested)}（MOQ ${fmt(shortage.moq)}）</span>`;
   }
   return `<span class="amber">建議補 ${fmt(suggested)}（未寫 MOQ）</span>`;
+}
+
+function stSupplySummaryHtml(shortage) {
+  const stAvailable = roundShortageUiValue(shortage?.st_available_qty || 0);
+  const purchaseNeeded = roundShortageUiValue(
+    shortage?.purchase_suggested_qty || shortage?.purchase_needed_qty || 0
+  );
+  const summary = [];
+  if (stAvailable > 0) {
+    summary.push(`<span class="blue">ST 可補 ${fmt(stAvailable)}</span>`);
+  }
+  if (purchaseNeeded > 0) {
+    summary.push(`<span class="amber">需買 ${fmt(purchaseNeeded)}</span>`);
+  }
+  return summary.join("");
 }
 
 function missingMoqEditorHtml(shortage) {
@@ -1177,16 +1678,26 @@ async function saveManualMoq(partNumber, input, button) {
 }
 
 async function handleCommitDraft(draftId, model) {
+  const draft = Object.values(_draftsByOrderId || {}).find(item => Number(item?.id || 0) === Number(draftId)) || null;
+  const blockingShortages = getMainWriteBlockingShortages(draft?.shortages || []);
+  if (blockingShortages.length) {
+    showMainWriteBlockedNotice(buildMainWriteBlockedMessage(blockingShortages, model));
+    return;
+  }
   if (!confirm(`確認要依照 ${model} 的副檔寫入主檔嗎？`)) return;
 
   try {
     const result = await apiPost(`/api/schedule/drafts/${draftId}/commit`);
-    showToast(`已依副檔寫入主檔，merge ${result.merged_parts} 筆`);
+    showToast(`已依副檔寫入主檔，merge ${result.merged_parts} 筆`, { tone: "success" });
     _checkedIds.delete(result.order_id);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
-    showToast("副檔提交失敗: " + error.message);
+    if (isMainWriteBlockedMessage(error.message)) {
+      showMainWriteBlockedNotice(error.message);
+    } else {
+      showToast("副檔提交失敗: " + error.message, { tone: "error" });
+    }
   }
 }
 
@@ -1410,11 +1921,16 @@ function _collectModalDecisions() {
   const list = document.getElementById("modal-shortage-list");
   if (!list) return {};
   const decisions = {};
+  const handled = new Set();
 
   list.querySelectorAll(".supplement-input").forEach(input => {
     const part = normalizePartKey(input.dataset.part);
+    if (!part || handled.has(part)) return;
+    handled.add(part);
+
     const qty = parseFloat(input.value) || 0;
-    const isShortage = input.closest(".shortage-item")?.querySelector(".shortage-mark")?.checked;
+    const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
+      || Array.from(list.querySelectorAll(".shortage-mark")).some(checkbox => normalizePartKey(checkbox.dataset.part) === part && checkbox.checked);
 
     if (isShortage) {
       decisions[part] = "Shortage";
@@ -1432,10 +1948,17 @@ function _collectModalSupplements() {
   const supplements = {};
   const list = document.getElementById("modal-shortage-list");
   if (!list) return supplements;
+  const handled = new Set();
+
   list.querySelectorAll(".supplement-input").forEach(input => {
     const part = normalizePartKey(input.dataset.part);
+    if (!part || handled.has(part)) return;
+    handled.add(part);
+
     const qty = parseFloat(input.value) || 0;
-    if (qty > 0) supplements[part] = qty;
+    const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
+      || Array.from(list.querySelectorAll(".shortage-mark")).some(checkbox => normalizePartKey(checkbox.dataset.part) === part && checkbox.checked);
+    if (!isShortage && qty > 0) supplements[part] = qty;
   });
   return supplements;
 }
@@ -1469,7 +1992,7 @@ function startModalProgressAnimation(targetPercent, intervalMs = 180) {
   }, intervalMs);
 }
 
-function setModalDownloadProgress(active, statusText = "", detailText = "", percent = null) {
+function setModalDownloadProgress(active, statusText = "", detailText = "", percent = null, options = {}) {
   const progress = document.getElementById("modal-download-progress");
   const status = document.getElementById("modal-download-status");
   const detail = document.getElementById("modal-download-detail");
@@ -1477,26 +2000,37 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   const writeBtn = document.getElementById("modal-write-main");
   const cancelBtn = document.getElementById("modal-cancel");
   const closeBtn = document.getElementById("modal-close");
+  const config = {
+    lockUi: active,
+    tone: "default",
+    ...options,
+  };
 
   if (progress) progress.style.display = active ? "block" : "none";
   if (status && statusText) status.textContent = statusText;
   if (detail && detailText) detail.textContent = detailText;
+  if (progress) {
+    progress.classList.remove("is-error", "is-success");
+    if (config.tone === "error") progress.classList.add("is-error");
+    if (config.tone === "success") progress.classList.add("is-success");
+  }
   if (percent != null) setModalProgressPercent(percent);
 
   if (downloadBtn) {
-    downloadBtn.disabled = active;
+    downloadBtn.disabled = Boolean(config.lockUi);
     downloadBtn.textContent = active ? "下載中..." : "下載 BOM";
     downloadBtn.textContent = active ? "下載中..." : "確認補料並下載 BOM";
   }
   if (writeBtn) {
-    writeBtn.disabled = active;
+    writeBtn.disabled = Boolean(config.lockUi);
     writeBtn.textContent = active ? "寫入中..." : "寫入主檔";
   }
-  if (cancelBtn) cancelBtn.disabled = active;
-  if (closeBtn) closeBtn.disabled = active;
+  if (cancelBtn) cancelBtn.disabled = Boolean(config.lockUi);
+  if (closeBtn) closeBtn.disabled = Boolean(config.lockUi);
   if (!active) {
     stopModalProgressAnimation();
     setModalProgressPercent(percent ?? 0);
+    if (progress) progress.classList.remove("is-error", "is-success");
   }
 }
 
@@ -1532,10 +2066,29 @@ async function handleModalWriteMain() {
     if (_onRefreshMain) await _onRefreshMain();
     await new Promise(resolve => setTimeout(resolve, 200));
     closeShortageModal();
-    showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`);
+    showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
   } catch (error) {
-    showToast("寫入主檔失敗: " + error.message);
-    setModalDownloadProgress(false, "", "", 0);
+    if (isMainWriteBlockedMessage(error.message)) {
+      stopModalProgressAnimation();
+      setModalDownloadProgress(
+        true,
+        "已停止寫入主檔",
+        error.message,
+        100,
+        { tone: "error", lockUi: false },
+      );
+      showMainWriteBlockedNotice(error.message);
+    } else {
+      stopModalProgressAnimation();
+      setModalDownloadProgress(
+        true,
+        "寫入主檔失敗",
+        error.message,
+        100,
+        { tone: "error", lockUi: false },
+      );
+      showToast("寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
+    }
   }
 }
 
@@ -1747,11 +2300,14 @@ async function handleRollbackDispatch(orderId, trigger) {
 
     if (button) button.textContent = "反悔中...";
     const result = await apiPost(`/api/schedule/orders/${orderId}/rollback`);
-    showToast(`已反悔 ${result.count} 筆訂單\n主檔已同步還原`);
+    const draftNote = Number(result.restored_draft_count || 0) > 0
+      ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
+      : "";
+    showToast(`已反悔 ${result.count} 筆訂單\n主檔已同步還原${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
-    showToast("反悔失敗：" + error.message);
+    showToast("反悔失敗：" + error.message, { tone: "error" });
   } finally {
     if (button) {
       button.disabled = false;
@@ -1800,7 +2356,6 @@ function buildRowCardLegacyBase(r, resultMap) {
       ${remarkSpan}
       <span class="po-status-badge ${badge.cls}">${badge.text}</span>
       <div class="row-actions">
-        <button class="btn-complete" data-order-id="${r.id}" title="${esc(completeTitle)}">&#10003;</button>
         <button class="btn-edit-date" data-order-id="${r.id}" title="修改日期">✎</button>
         <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">×</button>
       </div>
@@ -1916,27 +2471,31 @@ async function handleBatchMergeLegacyFlow() {
 
 async function handleBatchDispatch() {
   const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
-  if (!_checkedIds.size) { showToast("請先勾選要發料的訂單"); return; }
-  if (!targets.length) { showToast("目前勾選的訂單沒有可發料項目"); return; }
-
-  const preview = targets.slice(0, 6).map(item => `${item.po_number} ${item.model}`).join("\n");
-  const extra = targets.length > 6 ? `\n... 另 ${targets.length - 6} 筆` : "";
-  if (!confirm(`確認要依副檔批次寫入主檔嗎？\n${preview}${extra}`)) return;
+  if (!_checkedIds.size) { showToast("請先勾選要寫入主檔的訂單"); return; }
+  if (!targets.length) { showToast("目前勾選的訂單沒有可寫入主檔的項目"); return; }
 
   const button = document.getElementById("btn-batch-dispatch");
-  const originalText = button?.textContent || "批次發料";
+  const originalText = button?.textContent || "寫入主檔";
   try {
     if (button) {
       button.disabled = true;
-      button.textContent = "發料中...";
+      button.textContent = "整理中...";
     }
-    const result = await apiPost("/api/schedule/batch-dispatch", { order_ids: targets.map(item => item.id) });
-    targets.forEach(item => _checkedIds.delete(item.id));
-    showToast(`已批次寫入 ${result.count} 筆訂單，merge ${result.merged_parts} 筆`);
-    await Promise.all([refresh(), refreshCompleted()]);
-    if (_onRefreshMain) await _onRefreshMain();
+    await withGlobalBusy(
+      async () => {
+        await showWriteToMainModal(targets);
+      },
+      {
+        title: "正在整理寫入主檔預覽",
+        detail: `共 ${targets.length} 筆訂單，正在整理補料與缺料結果，請稍候。`,
+      },
+    );
   } catch (error) {
-    showToast("批次發料失敗: " + error.message);
+    if (isMainWriteBlockedMessage(error.message)) {
+      showMainWriteBlockedNotice(error.message);
+    } else {
+      showToast("開啟寫入主檔預覽失敗: " + error.message, { sticky: true, tone: "error" });
+    }
   } finally {
     if (button) {
       button.disabled = false;
@@ -1980,25 +2539,18 @@ function updateStatusOnly() {
 
   document.querySelectorAll("#schedule-scroll .po-group[data-order-id]").forEach(div => {
     const orderId = parseInt(div.dataset.orderId);
+    const row = _rows.find(item => item.id === orderId) || null;
     const res = resultMap[orderId];
     const badge = div.querySelector(".po-status-badge");
     if (badge) {
-      const b = cardBadge(res, orderId);
+      const b = buildOrderBadge(row, res);
       badge.className = `po-status-badge ${b.cls}`;
       badge.textContent = b.text;
     }
   });
 
-  const allShortages = [];
-  const allCSShortages = [];
-  _calcResults.forEach((r, i) => {
-    if (!r) return;
-    const code = _rows[i]?.code || "";
-    const model = _rows[i]?.model || "";
-    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
-    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
-  });
-  renderShortagePanel(allShortages, allCSShortages);
+  const { shortages, csShortages } = buildRightPanelShortageData();
+  renderShortagePanel(shortages, csShortages);
 }
 
 // ── Shortage panel ────────────────────────────────────────────────────────────
@@ -2085,20 +2637,30 @@ function shortageItemHtml(s, isCS) {
   const shortageAmount = roundShortageUiValue(s.shortage_amount);
   const currentStock = roundShortageUiValue(s.current_stock);
   const neededQty = roundShortageUiValue(s.needed);
-  s = { ...s, shortage_amount: shortageAmount, current_stock: currentStock, needed: neededQty };
+  const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
+  const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
+  s = {
+    ...s,
+    shortage_amount: shortageAmount,
+    current_stock: currentStock,
+    needed: neededQty,
+    st_available_qty: stAvailableQty,
+    purchase_needed_qty: purchaseNeededQty,
+  };
   const dec = _decisions[normalizePartKey(s.part_number)] || "None";
   const codeTag = s._row_code
     ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
     : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
 
-  return `<div class="shortage-item ${isCS ? "cs-item" : ""}">
+  return `<div class="${shortageToneClass(s, isCS)}">
     <div class="part">${s.part_number}${codeTag}${csTag}</div>
     <div class="desc">${s.description || "—"}</div>
     <div class="amounts">
       <span class="red">缺 ${fmt(s.shortage_amount)}</span>
       <span class="green">庫存 ${fmt(s.current_stock)}</span>
       <span>需 ${fmt(s.needed)}</span>
+      ${stSupplySummaryHtml(s)}
       ${suggestedQtyHtml(s)}
     </div>
     ${missingMoqEditorHtml(s)}
@@ -2135,15 +2697,35 @@ async function handleBatchMerge() {
     return;
   }
 
+  const button = document.getElementById("btn-batch-merge");
+  const originalText = button?.textContent || "批次 Merge";
   try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = "建立中...";
+    }
     const targetIds = targets.map(row => row.id);
-    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
-    await refresh();
+    const result = await withGlobalBusy(
+      async () => {
+        const response = await apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
+        await refresh();
+        return response;
+      },
+      {
+        title: "正在批次建立副檔",
+        detail: `共 ${targets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
+      },
+    );
     const refreshedTargets = _rows.filter(row => targetIds.includes(row.id));
-    showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`);
+    showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
     await showBatchMergeDraftModal(refreshedTargets);
   } catch (error) {
-    showToast("批次 merge 失敗: " + error.message);
+    showToast("批次 merge 失敗: " + error.message, { sticky: true, tone: "error" });
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
   }
 }
 
@@ -2151,23 +2733,40 @@ function buildDraftPanelHtml(draft) {
   const files = Array.isArray(draft?.files) ? draft.files : [];
   const shortages = Array.isArray(draft?.shortages) ? draft.shortages : [];
   const updatedAt = formatDraftTime(draft?.updated_at) || "--";
-  const fileHtml = files.length
-    ? files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")
-    : '<span class="merge-draft-file merge-draft-file-empty">副檔尚未生成</span>';
+  const draftId = Number.parseInt(String(draft?.id || ""), 10);
+  const orderId = Number.parseInt(String(draft?.order_id || ""), 10);
+  const collapsed = Number.isInteger(orderId) ? isDraftPanelCollapsed(orderId) : false;
+  const selectedFileId = Number.isInteger(draftId) ? getSelectedDraftFileId(draftId, files) : null;
+  const fileHtml = buildDraftFileListHtml(files, {
+    label: "預覽目標",
+    selectable: true,
+    draftId,
+    selectedFileId,
+  });
+  const previewTitle = selectedFileId ? "只預覽所選副檔" : "預覽全部副檔";
 
   return `
-    <div class="merge-draft-panel">
-      <div class="merge-draft-summary">
-        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
-        <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
-        <span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>
+    <div class="merge-draft-panel ${collapsed ? "is-collapsed" : ""}">
+      <div class="merge-draft-head">
+        <div class="merge-draft-head-label">副檔工作台</div>
+        <button class="btn-draft-toggle" type="button" data-order-id="${Number.isInteger(orderId) ? orderId : ""}" aria-expanded="${collapsed ? "false" : "true"}">
+          ${collapsed ? "展開" : "收起"}
+        </button>
       </div>
-      <div class="merge-draft-files">${fileHtml}</div>
-      <div class="merge-draft-actions">
-        <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}">預覽</button>
-        <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
-        <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
-        <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
+      <div class="merge-draft-body">
+        <div class="merge-draft-summary">
+          <span class="merge-draft-pill">副檔 ${files.length} 份</span>
+          <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
+          <span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>
+        </div>
+        ${fileHtml}
+        <div class="merge-draft-actions">
+          <button class="btn btn-success btn-sm btn-draft-commit" data-draft-id="${draft.id}">寫入主檔</button>
+          <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}" title="${previewTitle}">預覽</button>
+          <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
+          <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
+          <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
+        </div>
       </div>
     </div>`;
 }
@@ -2218,7 +2817,6 @@ function buildRowCardLegacyOriginal(r, resultMap) {
       ${remarkSpan}
       <span class="po-status-badge ${badge.cls}">${badge.text}</span>
       <div class="row-actions">
-        <button class="btn-complete" data-order-id="${r.id}" title="${esc(completeTitle)}">&#10003;</button>
         <button class="btn-edit-date" data-order-id="${r.id}" title="修改日期">✎</button>
         <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">×</button>
       </div>
@@ -2340,16 +2938,8 @@ function renderSchedule() {
 
     initSortable(container);
 
-    const allShortages = [];
-    const allCSShortages = [];
-    _calcResults.forEach((r, i) => {
-      if (!r) return;
-      const rowCode = _rows[i]?.code || "";
-      const rowModel = _rows[i]?.model || "";
-      (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: rowCode, _row_model: rowModel }));
-      (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: rowCode, _row_model: rowModel }));
-    });
-    renderShortagePanel(allShortages, allCSShortages);
+    const { shortages, csShortages } = buildRightPanelShortageData();
+    renderShortagePanel(shortages, csShortages);
   } catch (error) {
     console.error("renderSchedule failed", error);
     container.innerHTML = `<div class="empty-state">畫面載入失敗：${esc(error?.message || "未知錯誤")}</div>`;

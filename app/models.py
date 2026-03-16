@@ -147,6 +147,17 @@ class UpdateModelRequest(BaseModel):
     model: str
 
 
+class DatabaseBackupSettingsRequest(BaseModel):
+    enabled: bool = True
+    hour: int = Field(ge=0, le=23)
+    minute: int = Field(ge=0, le=59)
+    keep_count: int = Field(ge=1, le=365)
+
+
+class DatabaseBackupRestoreRequest(BaseModel):
+    backup_name: str = Field(min_length=1)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def calc_suggested_qty(shortage: float, moq: float) -> float:

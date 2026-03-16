@@ -8,6 +8,9 @@ let _searchMatches = [];
 let _searchCursor = -1;
 let _currentQuery = "";
 let _initialized = false;
+const MAIN_PREVIEW_ROW_HEADER_WIDTH = 56;
+const MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30;
+const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3;
 
 export async function initMainPreview() {
   if (_initialized) return;
@@ -188,6 +191,7 @@ function renderActiveSheet() {
   const currentMatch = getCurrentMatch();
   const styles = sheet.styles || [];
   const columns = sheet.columns || [];
+  const frozenColumnOffsets = buildFrozenColumnOffsets(columns);
 
   let html = `
     <div class="main-preview-sheet-card">
@@ -202,13 +206,13 @@ function renderActiveSheet() {
       <div class="main-preview-grid-wrap">
         <table class="main-preview-grid">
           <colgroup>
-            <col style="width:56px">
+            <col style="width:${MAIN_PREVIEW_ROW_HEADER_WIDTH}px">
             ${columns.map(column => `<col style="width:${column.width_px}px">`).join("")}
           </colgroup>
           <thead>
             <tr>
               <th class="main-preview-corner"></th>
-              ${columns.map(column => `<th class="main-preview-col-header">${column.letter}</th>`).join("")}
+              ${columns.map((column, index) => buildColumnHeaderHtml(column, index, frozenColumnOffsets)).join("")}
             </tr>
           </thead>
           <tbody>
@@ -217,12 +221,12 @@ function renderActiveSheet() {
   (sheet.rows || []).forEach(row => {
     const rowClass = matchMap.rowSet.has(row.index) ? "main-preview-row-match" : "";
     html += `<tr class="${rowClass}" data-row-index="${row.index}" style="height:${row.height_px}px">`;
-    html += `<th class="main-preview-row-header">${row.index}</th>`;
+    html += buildRowHeaderHtml(row.index);
     (row.cells || []).forEach(cell => {
       const cellKey = `${row.index}:${cell.col}`;
       const isMatched = matchMap.cellSet.has(cellKey);
       const isFocused = currentMatch && currentMatch.row === row.index && currentMatch.col === cell.col;
-      html += buildCellHtml(cell, styles[cell.style_id] || {}, row.index, isMatched, isFocused);
+      html += buildCellHtml(cell, styles[cell.style_id] || {}, row.index, isMatched, isFocused, frozenColumnOffsets);
     });
     html += "</tr>";
   });
@@ -239,7 +243,44 @@ function renderActiveSheet() {
   scrollToCurrentMatch();
 }
 
-function buildCellHtml(cell, style, rowIndex, isMatched, isFocused) {
+function buildFrozenColumnOffsets(columns) {
+  const offsets = [];
+  let left = MAIN_PREVIEW_ROW_HEADER_WIDTH;
+
+  columns.slice(0, MAIN_PREVIEW_FROZEN_COLUMN_COUNT).forEach(column => {
+    offsets.push(left);
+    left += Number(column?.width_px || 0);
+  });
+
+  return offsets;
+}
+
+function buildColumnHeaderHtml(column, index, frozenColumnOffsets) {
+  const columnIndex = index + 1;
+  const classes = ["main-preview-col-header"];
+  const styles = [];
+
+  if (columnIndex <= MAIN_PREVIEW_FROZEN_COLUMN_COUNT) {
+    classes.push("is-frozen-col");
+    styles.push(`left:${frozenColumnOffsets[columnIndex - 1]}px`);
+  }
+
+  return `<th class="${classes.join(" ")}" ${styles.length ? `style="${styles.join(";")}"` : ""}>${column.letter}</th>`;
+}
+
+function buildRowHeaderHtml(rowIndex) {
+  const classes = ["main-preview-row-header"];
+  const styles = [];
+
+  if (rowIndex === 1) {
+    classes.push("is-frozen-row", "is-frozen-corner");
+    styles.push(`top:${MAIN_PREVIEW_COLUMN_HEADER_HEIGHT}px`);
+  }
+
+  return `<th class="${classes.join(" ")}" ${styles.length ? `style="${styles.join(";")}"` : ""}>${rowIndex}</th>`;
+}
+
+function buildCellHtml(cell, style, rowIndex, isMatched, isFocused, frozenColumnOffsets = []) {
   const attrs = [
     `data-row-index="${rowIndex}"`,
     `data-col-index="${cell.col}"`,
@@ -248,11 +289,23 @@ function buildCellHtml(cell, style, rowIndex, isMatched, isFocused) {
   if (cell.colspan && cell.colspan > 1) attrs.push(`colspan="${cell.colspan}"`);
 
   const classes = ["main-preview-cell"];
+  const inlineStyles = [styleToCss(style)];
   if (isMatched) classes.push("main-preview-cell-match");
   if (isFocused) classes.push("main-preview-cell-current");
+  if (cell.col <= MAIN_PREVIEW_FROZEN_COLUMN_COUNT) {
+    classes.push("is-frozen-col");
+    inlineStyles.push(`left:${frozenColumnOffsets[cell.col - 1] || MAIN_PREVIEW_ROW_HEADER_WIDTH}px`);
+  }
+  if (rowIndex === 1) {
+    classes.push("is-frozen-row");
+    inlineStyles.push(`top:${MAIN_PREVIEW_COLUMN_HEADER_HEIGHT}px`);
+  }
+  if (rowIndex === 1 && cell.col <= MAIN_PREVIEW_FROZEN_COLUMN_COUNT) {
+    classes.push("is-frozen-corner");
+  }
 
   const text = String(cell.value ?? "");
-  return `<td class="${classes.join(" ")}" ${attrs.join(" ")} style="${styleToCss(style)}" title="${esc(text)}">${renderCellContent(text, style)}</td>`;
+  return `<td class="${classes.join(" ")}" ${attrs.join(" ")} style="${inlineStyles.filter(Boolean).join(";")}" title="${esc(text)}">${renderCellContent(text, style)}</td>`;
 }
 
 function renderCellContent(text, style) {

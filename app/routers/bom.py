@@ -10,6 +10,7 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import openpyxl
+from openpyxl.styles import PatternFill
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -33,7 +34,10 @@ from ..services.bom_revision import (
 from ..services.download_names import append_minute_timestamp, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from ..services.order_supplements import build_order_supplement_allocations
+from ..services.shortage_rules import calculate_shortage_amount, summarize_st_supply
 router = APIRouter()
+
+ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
 
 
 def _get_required_bom(bom_id: str) -> dict:
@@ -411,14 +415,16 @@ def _build_order_based_export_values(
     target_boms: list[dict],
     order_ids: list[int],
     supplements: dict[str, float],
-) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]]]:
     if not order_ids or not target_boms:
-        return {}, {}
+        return {}, {}, {}
 
     running = _build_dispatch_running_stock()
+    st_inventory_stock = db.get_st_inventory_stock()
     components_by_bom = {str(bom["id"]): db.get_bom_components(str(bom["id"])) for bom in target_boms}
     carry_overs: dict[str, dict[str, float]] = {}
     supplement_allocations: dict[str, dict[str, float]] = {}
+    purchase_highlights: dict[str, set[str]] = {}
     remaining_supplements = {
         _normalize_lookup_key(part): float(qty or 0)
         for part, qty in (supplements or {}).items()
@@ -442,6 +448,7 @@ def _build_order_based_export_values(
 
             part_map: dict[str, float] = {}
             supplement_map: dict[str, float] = {}
+            purchase_parts: set[str] = set()
             part_totals: dict[str, dict[str, float]] = {}
             for component in components_by_bom.get(bom_id, []):
                 needed_qty = float(component.get("needed_qty") or 0)
@@ -466,9 +473,13 @@ def _build_order_based_export_values(
                     + float(totals.get("prev_qty_cs") or 0)
                     - float(totals.get("needed_qty") or 0)
                 )
+                shortage_without_supplement = calculate_shortage_amount(part, ending_without_supplement)
+                st_context = summarize_st_supply(shortage_without_supplement, st_inventory_stock.get(part, 0.0))
+                if float(st_context["purchase_needed_qty"] or 0) > 0:
+                    purchase_parts.add(part)
 
                 supplement_qty = 0.0
-                if ending_without_supplement < 0 and remaining_supplements.get(part, 0) > 0:
+                if shortage_without_supplement > 0 and remaining_supplements.get(part, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part, 0))
                     supplement_map[part] = supplement_qty
                     remaining_supplements[part] = 0.0
@@ -477,8 +488,9 @@ def _build_order_based_export_values(
 
             carry_overs[bom_id] = part_map
             supplement_allocations[bom_id] = supplement_map
+            purchase_highlights[bom_id] = purchase_parts
 
-    return carry_overs, supplement_allocations
+    return carry_overs, supplement_allocations, purchase_highlights
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -513,7 +525,12 @@ def _write_bom_header_values(ws, po_number):
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
 
 
-def _write_dispatch_values_to_ws(ws, supplements: dict[str, float], carry_overs: dict[str, float]):
+def _write_dispatch_values_to_ws(
+    ws,
+    supplements: dict[str, float],
+    carry_overs: dict[str, float],
+    purchase_parts: set[str] | None = None,
+):
     part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -542,7 +559,10 @@ def _write_dispatch_values_to_ws(ws, supplements: dict[str, float], carry_overs:
             _set_cell_value(ws, row_idx, g_col, carry_over_qty)
         elif g_text == "":
             _set_cell_value(ws, row_idx, g_col, 0)
-        _set_cell_value(ws, row_idx, h_col, supplement_qty)
+        h_cell = _resolve_cell_for_write(ws, row_idx, h_col)
+        h_cell.value = supplement_qty
+        if supplement_qty and part in (purchase_parts or set()):
+            h_cell.fill = ORANGE_FILL
         written += 1
 
     return written
@@ -559,7 +579,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         raise HTTPException(404, "找不到指定的 BOM")
 
     supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
-    computed_carry_overs, computed_supplements = _build_order_based_export_values(
+    computed_carry_overs, computed_supplements, computed_purchase_highlights = _build_order_based_export_values(
         target_boms,
         req.order_ids,
         supplements,
@@ -586,9 +606,11 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         if req.order_ids:
             carry_over_source = computed_carry_overs.get(bom["id"], {})
             supplement_source = computed_supplements.get(bom["id"], {})
+            purchase_parts = computed_purchase_highlights.get(bom["id"], set())
         else:
             carry_over_source = req.carry_overs.get(bom["id"], {})
             supplement_source = supplements
+            purchase_parts = set()
         carry_overs = {
             str(part).strip().upper(): qty
             for part, qty in carry_over_source.items()
@@ -600,7 +622,12 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             if str(part).strip()
         }
         _write_bom_header_values(wb.active, po_number)
-        _write_dispatch_values_to_ws(wb.active, per_bom_supplements, carry_overs)
+        _write_dispatch_values_to_ws(
+            wb.active,
+            per_bom_supplements,
+            carry_overs,
+            purchase_parts={str(part).strip().upper() for part in purchase_parts if str(part).strip()},
+        )
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()

@@ -15,17 +15,20 @@ SQLite 資料庫管理模組 — 所有持久化資料都存在這裡。
 from __future__ import annotations
 import sqlite3
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import contextmanager
 
-from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR
+from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR
 
 DB_PATH = DATA_DIR / "system.db"
 _MANAGED_PATH_FALLBACKS = {
     "main_file_path": MAIN_FILE_DIR,
     "schedule_file_path": SCHEDULE_DIR,
 }
+_BOM_FILE_FALLBACK_DIRS = (BOM_DIR,)
+_BOM_REVISION_FALLBACK_DIRS = (BOM_HISTORY_DIR,)
+_MERGE_DRAFT_FILE_FALLBACK_DIRS = (MERGE_DRAFT_DIR,)
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -40,6 +43,13 @@ CREATE TABLE IF NOT EXISTS inventory_snapshot (
     moq_manual  INTEGER NOT NULL DEFAULT 0,
     description TEXT NOT NULL DEFAULT '',
     snapshot_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS st_inventory_snapshot (
+    part_number TEXT PRIMARY KEY,
+    stock_qty   REAL NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    loaded_at   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -219,6 +229,91 @@ def _json_loads(value: str, default):
         return default
 
 
+def _repair_managed_path_setting(conn: sqlite3.Connection, key: str) -> int:
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if not row:
+        return 0
+
+    original = str(row["value"] or "").strip()
+    repaired = resolve_managed_path(original, setting_key=key)
+    if not repaired or repaired == original:
+        return 0
+
+    conn.execute("UPDATE settings SET value=? WHERE key=?", (repaired, key))
+    return 1
+
+
+def _repair_managed_path_column(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    column: str,
+    setting_key: str = "",
+    fallback_dirs: tuple[Path, ...] | list[Path] | None = None,
+    recursive: bool = False,
+) -> int:
+    rows = conn.execute(
+        f"SELECT id, {column} AS path_value FROM {table} WHERE {column} != ''"
+    ).fetchall()
+    repaired_rows = 0
+    for row in rows:
+        original = str(row["path_value"] or "").strip()
+        repaired = resolve_managed_path(
+            original,
+            setting_key=setting_key,
+            fallback_dirs=fallback_dirs,
+            recursive=recursive,
+        )
+        if not repaired or repaired == original:
+            continue
+        conn.execute(
+            f"UPDATE {table} SET {column}=? WHERE id=?",
+            (repaired, row["id"]),
+        )
+        repaired_rows += 1
+    return repaired_rows
+
+
+def _repair_managed_paths(conn: sqlite3.Connection) -> int:
+    repaired = 0
+    for key in _MANAGED_PATH_FALLBACKS:
+        repaired += _repair_managed_path_setting(conn, key)
+
+    repaired += _repair_managed_path_column(
+        conn,
+        table="dispatch_sessions",
+        column="main_file_path",
+        setting_key="main_file_path",
+    )
+    repaired += _repair_managed_path_column(
+        conn,
+        table="merge_drafts",
+        column="main_file_path",
+        setting_key="main_file_path",
+    )
+    repaired += _repair_managed_path_column(
+        conn,
+        table="bom_files",
+        column="filepath",
+        fallback_dirs=_BOM_FILE_FALLBACK_DIRS,
+    )
+    repaired += _repair_managed_path_column(
+        conn,
+        table="bom_revisions",
+        column="filepath",
+        fallback_dirs=_BOM_REVISION_FALLBACK_DIRS,
+        recursive=True,
+    )
+    repaired += _repair_managed_path_column(
+        conn,
+        table="merge_draft_files",
+        column="filepath",
+        fallback_dirs=_MERGE_DRAFT_FILE_FALLBACK_DIRS,
+        recursive=True,
+    )
+    return repaired
+
+
 def init_db():
     """建立所有表（若不存在）+ migration。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,6 +338,7 @@ def init_db():
         draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
         if draft_cols and "main_file_mtime_ns" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
+        _repair_managed_paths(conn)
 
 
 @contextmanager
@@ -264,7 +360,13 @@ def get_conn():
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
-def resolve_managed_path(path_value: str, setting_key: str = "") -> str:
+def resolve_managed_path(
+    path_value: str,
+    setting_key: str = "",
+    *,
+    fallback_dirs: tuple[Path, ...] | list[Path] | None = None,
+    recursive: bool = False,
+) -> str:
     normalized = str(path_value or "").strip()
     if not normalized:
         return ""
@@ -273,18 +375,76 @@ def resolve_managed_path(path_value: str, setting_key: str = "") -> str:
     if path.exists():
         return str(path)
 
-    fallback_dirs = []
-    if setting_key and setting_key in _MANAGED_PATH_FALLBACKS:
-        fallback_dirs.append(_MANAGED_PATH_FALLBACKS[setting_key])
+    candidate_dirs: list[Path] = []
+    if fallback_dirs:
+        candidate_dirs.extend(Path(item) for item in fallback_dirs)
+    elif setting_key and setting_key in _MANAGED_PATH_FALLBACKS:
+        candidate_dirs.append(_MANAGED_PATH_FALLBACKS[setting_key])
     else:
-        fallback_dirs.extend(_MANAGED_PATH_FALLBACKS.values())
+        candidate_dirs.extend(_MANAGED_PATH_FALLBACKS.values())
 
-    for fallback_dir in fallback_dirs:
+    for fallback_dir in candidate_dirs:
         candidate = fallback_dir / path.name
         if candidate.exists():
             return str(candidate)
+        if recursive and fallback_dir.exists():
+            try:
+                nested_candidate = next(fallback_dir.rglob(path.name))
+            except StopIteration:
+                nested_candidate = None
+            if nested_candidate and nested_candidate.exists():
+                return str(nested_candidate)
 
     return normalized
+
+
+def _repair_row_path(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row | dict | None,
+    *,
+    table: str,
+    column: str,
+    fallback_dirs: tuple[Path, ...] | list[Path] | None = None,
+    recursive: bool = False,
+) -> dict | None:
+    if not row:
+        return None
+
+    data = dict(row)
+    original = str(data.get(column) or "").strip()
+    repaired = resolve_managed_path(
+        original,
+        fallback_dirs=fallback_dirs,
+        recursive=recursive,
+    )
+    if repaired and repaired != original:
+        conn.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (repaired, data["id"]))
+        data[column] = repaired
+    return data
+
+
+def _repair_row_paths(
+    conn: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    *,
+    table: str,
+    column: str,
+    fallback_dirs: tuple[Path, ...] | list[Path] | None = None,
+    recursive: bool = False,
+) -> list[dict]:
+    repaired_rows: list[dict] = []
+    for row in rows:
+        repaired = _repair_row_path(
+            conn,
+            row,
+            table=table,
+            column=column,
+            fallback_dirs=fallback_dirs,
+            recursive=recursive,
+        )
+        if repaired:
+            repaired_rows.append(repaired)
+    return repaired_rows
 
 
 def get_setting(key: str, default: str = "") -> str:
@@ -403,6 +563,52 @@ def get_snapshot() -> dict[str, dict]:
         }
         for r in rows
     }
+
+
+def save_st_inventory_snapshot(stock: dict[str, float], descriptions: dict[str, str] | None = None):
+    normalized_stock = {
+        str(part).strip().upper(): float(qty or 0)
+        for part, qty in (stock or {}).items()
+        if str(part).strip()
+    }
+    normalized_desc = {
+        str(part).strip().upper(): str(description or "").strip()
+        for part, description in (descriptions or {}).items()
+        if str(part).strip()
+    }
+    all_parts = sorted(set(normalized_stock) | set(normalized_desc))
+    loaded_at = _now()
+
+    with get_conn() as conn:
+        conn.execute("DELETE FROM st_inventory_snapshot")
+        for part in all_parts:
+            conn.execute(
+                "INSERT INTO st_inventory_snapshot(part_number, stock_qty, description, loaded_at) VALUES(?,?,?,?)",
+                (part, normalized_stock.get(part, 0.0), normalized_desc.get(part, ""), loaded_at),
+            )
+
+
+def get_st_inventory_snapshot() -> dict[str, dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part_number, stock_qty, description FROM st_inventory_snapshot").fetchall()
+    return {
+        str(row["part_number"]): {
+            "stock_qty": float(row["stock_qty"] or 0),
+            "description": str(row["description"] or ""),
+        }
+        for row in rows
+    }
+
+
+def get_st_inventory_stock() -> dict[str, float]:
+    snapshot = get_st_inventory_snapshot()
+    return {part: float(item.get("stock_qty") or 0) for part, item in snapshot.items()}
+
+
+def get_st_inventory_taken_at() -> str:
+    with get_conn() as conn:
+        row = conn.execute("SELECT MAX(loaded_at) AS loaded_at FROM st_inventory_snapshot").fetchone()
+    return (row["loaded_at"] if row and row["loaded_at"] else "") or ""
 
 
 def get_snapshot_taken_at() -> str:
@@ -657,13 +863,25 @@ def save_bom_file(bom: dict):
 def get_bom_file(bom_id: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM bom_files WHERE id=?", (bom_id,)).fetchone()
-    return dict(row) if row else None
+        return _repair_row_path(
+            conn,
+            row,
+            table="bom_files",
+            column="filepath",
+            fallback_dirs=_BOM_FILE_FALLBACK_DIRS,
+        )
 
 
 def get_bom_files() -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM bom_files ORDER BY sort_order, uploaded_at, filename").fetchall()
-    return [dict(r) for r in rows]
+        return _repair_row_paths(
+            conn,
+            rows,
+            table="bom_files",
+            column="filepath",
+            fallback_dirs=_BOM_FILE_FALLBACK_DIRS,
+        )
 
 
 def save_bom_order(groups: list[dict]) -> int:
@@ -750,10 +968,7 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
 
 def get_bom_files_by_models(models: list[str]) -> list[dict]:
     """依機種名稱查詢對應的 BOM 檔案（支援 group_model 逗號分隔）。"""
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM bom_files ORDER BY sort_order, uploaded_at, filename"
-        ).fetchall()
+    rows = get_bom_files()
     matched = []
     seen_ids = set()
     upper_models = {m.upper() for m in models}
@@ -807,13 +1022,27 @@ def get_bom_revisions(bom_file_id: str) -> list[dict]:
             "SELECT * FROM bom_revisions WHERE bom_file_id=? ORDER BY revision_number DESC, id DESC",
             (bom_file_id,),
         ).fetchall()
-    return [dict(r) for r in rows]
+        return _repair_row_paths(
+            conn,
+            rows,
+            table="bom_revisions",
+            column="filepath",
+            fallback_dirs=_BOM_REVISION_FALLBACK_DIRS,
+            recursive=True,
+        )
 
 
 def get_bom_revision(revision_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM bom_revisions WHERE id=?", (revision_id,)).fetchone()
-    return dict(row) if row else None
+        return _repair_row_path(
+            conn,
+            row,
+            table="bom_revisions",
+            column="filepath",
+            fallback_dirs=_BOM_REVISION_FALLBACK_DIRS,
+            recursive=True,
+        )
 
 
 def delete_bom_file(bom_id: str):
@@ -1187,7 +1416,14 @@ def get_merge_draft_files(draft_id: int) -> list[dict]:
             "SELECT * FROM merge_draft_files WHERE draft_id=? ORDER BY id",
             (draft_id,),
         ).fetchall()
-    items = [dict(row) for row in rows]
+        items = _repair_row_paths(
+            conn,
+            rows,
+            table="merge_draft_files",
+            column="filepath",
+            fallback_dirs=_MERGE_DRAFT_FILE_FALLBACK_DIRS,
+            recursive=True,
+        )
     for item in items:
         item["carry_overs"] = _json_loads(item.get("carry_overs_json", ""), {})
         item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
@@ -1263,6 +1499,59 @@ def mark_merge_draft_committed(draft_id: int) -> int:
             (now, now, draft_id),
         )
     return int(cur.rowcount or 0)
+
+
+def reactivate_merge_draft(draft_id: int) -> int:
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE merge_drafts SET status='active', committed_at='', updated_at=?, deleted_at='' "
+            "WHERE id=? AND status='committed'",
+            (now, draft_id),
+        )
+    return int(cur.rowcount or 0)
+
+
+def get_latest_committed_merge_draft_for_order(order_id: int, committed_after: str = "") -> dict | None:
+    sql = (
+        "SELECT * FROM merge_drafts "
+        "WHERE order_id=? AND status='committed'"
+    )
+    params: list[object] = [order_id]
+    if str(committed_after or "").strip():
+        sql += " AND committed_at>=?"
+        params.append(str(committed_after).strip())
+    sql += " ORDER BY committed_at DESC, id DESC LIMIT 1"
+    with get_conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    result["decisions"] = _json_loads(result.get("decisions_json", ""), {})
+    result["supplements"] = _json_loads(result.get("supplements_json", ""), {})
+    result["shortages"] = _json_loads(result.get("shortages_json", ""), [])
+    return result
+
+
+def get_expired_committed_merge_drafts(retention_days: int = 30) -> list[dict]:
+    try:
+        days = max(int(retention_days), 1)
+    except (TypeError, ValueError):
+        days = 30
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM merge_drafts "
+            "WHERE status='committed' AND committed_at<>'' AND committed_at<? "
+            "ORDER BY committed_at, id",
+            (cutoff,),
+        ).fetchall()
+    results = [dict(row) for row in rows]
+    for item in results:
+        item["decisions"] = _json_loads(item.get("decisions_json", ""), {})
+        item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        item["shortages"] = _json_loads(item.get("shortages_json", ""), [])
+    return results
 
 
 def delete_merge_draft(draft_id: int) -> int:
