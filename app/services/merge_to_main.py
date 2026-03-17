@@ -192,7 +192,7 @@ def _build_preview_for_batches(
 
                 if shortage_after > 0:
                     item_moq = float(effective_moq.get(part_upper, 0) or 0)
-                    st_context = summarize_st_supply(shortage_after, (st_inventory_stock or {}).get(part_upper, 0.0))
+                    st_context = summarize_st_supply(shortage_after, (st_inventory_stock or {}).get(part_upper, 0.0), item_moq)
                     st_available_qty = float(st_context["st_available_qty"] or 0.0)
                     purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
                     purchase_suggested_qty = (
@@ -341,4 +341,71 @@ def merge_row_to_main(
         "merged_parts": plan["merged_parts"],
         "new_col_count": plan["new_col_count"],
         "shortages": plan["shortages"],
+    }
+
+
+def _find_latest_stock_col(ws, row_idx: int, max_col: int) -> int | None:
+    """找到該列最右邊有數值的欄位 index（從 max_col 往左掃）。"""
+    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
+        value = _try_float(ws.cell(row=row_idx, column=col_idx).value)
+        if value is not None:
+            return col_idx
+    return None
+
+
+def supplement_part_in_main(
+    main_path: str,
+    part_number: str,
+    supplement_qty: float,
+    backup_dir: str | None = None,
+) -> dict:
+    """對主檔中指定料號補料：直接在缺料欄位加上補料量，並連帶更新右邊所有欄位。"""
+    if supplement_qty <= 0:
+        return {"ok": False, "message": "補料數量必須大於 0"}
+
+    part_key = str(part_number or "").strip().upper()
+    if not part_key:
+        return {"ok": False, "message": "料號不能為空"}
+
+    backup_path = backup_main_file(main_path, backup_dir) if backup_dir else None
+
+    workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
+    try:
+        ws = workbook.active
+        part_row_map = _build_part_row_map(ws)
+        row_idx = part_row_map.get(part_key)
+        if row_idx is None:
+            workbook.close()
+            return {"ok": False, "message": f"主檔中找不到料號 {part_key}"}
+
+        max_col = ws.max_column
+        stock_col = _find_latest_stock_col(ws, row_idx, max_col)
+        if stock_col is None:
+            workbook.close()
+            return {"ok": False, "message": f"找不到 {part_key} 的庫存欄位"}
+
+        current_stock = _try_float(ws.cell(row=row_idx, column=stock_col).value) or 0.0
+        new_stock = current_stock + supplement_qty
+
+        # 直接更新缺料欄位的庫存值
+        ws.cell(row=row_idx, column=stock_col).value = new_stock
+
+        # 右邊如果還有數值欄位（後續 dispatch 的結存），也一併加上補料量
+        for col_idx in range(stock_col + 1, max_col + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            val = _try_float(cell.value)
+            if val is not None:
+                cell.value = val + supplement_qty
+
+        workbook.save(main_path)
+    finally:
+        workbook.close()
+
+    return {
+        "ok": True,
+        "part_number": part_key,
+        "stock_before": current_stock,
+        "supplement_qty": supplement_qty,
+        "stock_after": new_stock,
+        "backup_path": backup_path,
     }

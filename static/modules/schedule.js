@@ -36,9 +36,12 @@ export async function initSchedule(onRefreshMain) {
   document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
   document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
   document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
+  document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
   document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
   document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
+  _loadPostDispatchShortages();
   await refresh();
+  if (_postDispatchShortages.length) renderPostDispatchPanel();
 }
 
 export async function refresh() {
@@ -1447,11 +1450,14 @@ async function showWriteToMainModal(targets) {
   for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
 
   const allModels = Object.keys(shortagesByModel).sort((a, b) => compareText(a, b, "zh-Hant"));
+  const totalShortageCount = _modalPreviewShortages.length;
   let html = "";
   if (!allModels.length) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。</div>`;
   } else {
+    html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
+      ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
     for (const model of allModels) {
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
@@ -1678,12 +1684,6 @@ async function saveManualMoq(partNumber, input, button) {
 }
 
 async function handleCommitDraft(draftId, model) {
-  const draft = Object.values(_draftsByOrderId || {}).find(item => Number(item?.id || 0) === Number(draftId)) || null;
-  const blockingShortages = getMainWriteBlockingShortages(draft?.shortages || []);
-  if (blockingShortages.length) {
-    showMainWriteBlockedNotice(buildMainWriteBlockedMessage(blockingShortages, model));
-    return;
-  }
   if (!confirm(`確認要依照 ${model} 的副檔寫入主檔嗎？`)) return;
 
   try {
@@ -1692,12 +1692,11 @@ async function handleCommitDraft(draftId, model) {
     _checkedIds.delete(result.order_id);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
-  } catch (error) {
-    if (isMainWriteBlockedMessage(error.message)) {
-      showMainWriteBlockedNotice(error.message);
-    } else {
-      showToast("副檔提交失敗: " + error.message, { tone: "error" });
+    if (result.shortages?.length) {
+      showPostDispatchShortages(result.shortages);
     }
+  } catch (error) {
+    showToast("副檔提交失敗: " + error.message, { tone: "error" });
   }
 }
 
@@ -2066,29 +2065,23 @@ async function handleModalWriteMain() {
     if (_onRefreshMain) await _onRefreshMain();
     await new Promise(resolve => setTimeout(resolve, 200));
     closeShortageModal();
-    showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
-  } catch (error) {
-    if (isMainWriteBlockedMessage(error.message)) {
-      stopModalProgressAnimation();
-      setModalDownloadProgress(
-        true,
-        "已停止寫入主檔",
-        error.message,
-        100,
-        { tone: "error", lockUi: false },
-      );
-      showMainWriteBlockedNotice(error.message);
+    const shortageCount = (result.shortages || []).length;
+    if (shortageCount > 0) {
+      showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
+      showPostDispatchShortages(result.shortages);
     } else {
-      stopModalProgressAnimation();
-      setModalDownloadProgress(
-        true,
-        "寫入主檔失敗",
-        error.message,
-        100,
-        { tone: "error", lockUi: false },
-      );
-      showToast("寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
+      showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
     }
+  } catch (error) {
+    stopModalProgressAnimation();
+    setModalDownloadProgress(
+      true,
+      "寫入主檔失敗",
+      error.message,
+      100,
+      { tone: "error", lockUi: false },
+    );
+    showToast("寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
   }
 }
 
@@ -2674,6 +2667,176 @@ function shortageItemHtml(s, isCS) {
   </div>`;
 }
 
+// ── Post-dispatch shortage panel + single-part supplement modal ───────────────
+
+const POST_DISPATCH_STORAGE_KEY = "post-dispatch-shortages";
+let _postDispatchShortages = [];
+
+function _loadPostDispatchShortages() {
+  try {
+    const raw = window.localStorage?.getItem(POST_DISPATCH_STORAGE_KEY);
+    if (raw) _postDispatchShortages = JSON.parse(raw);
+  } catch (_) {}
+}
+
+function _savePostDispatchShortages() {
+  try {
+    if (_postDispatchShortages.length) {
+      window.localStorage?.setItem(POST_DISPATCH_STORAGE_KEY, JSON.stringify(_postDispatchShortages));
+    } else {
+      window.localStorage?.removeItem(POST_DISPATCH_STORAGE_KEY);
+    }
+  } catch (_) {}
+}
+
+function showPostDispatchShortages(shortages) {
+  // 追加新的缺料（合併，同料號取最新）
+  const newItems = (shortages || []).filter(s => Number(s.shortage_amount || 0) > 0);
+  const merged = new Map();
+  for (const s of _postDispatchShortages) merged.set(s.part_number, s);
+  for (const s of newItems) merged.set(s.part_number, s);
+  _postDispatchShortages = [...merged.values()];
+  _savePostDispatchShortages();
+  renderPostDispatchPanel();
+}
+
+function renderPostDispatchPanel() {
+  const scroll = document.getElementById("right-scroll");
+  const badge = document.getElementById("shortage-count");
+  if (!_postDispatchShortages.length) {
+    scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
+    badge.style.display = "none";
+    return;
+  }
+
+  badge.style.display = "inline";
+  badge.textContent = _postDispatchShortages.length;
+
+  const grouped = {};
+  for (const s of _postDispatchShortages) {
+    const model = s.model || s.bom_model || "未指定機種";
+    if (!grouped[model]) grouped[model] = [];
+    grouped[model].push(s);
+  }
+
+  let html = '<div style="padding:6px 10px;font-size:12px;font-weight:600;color:#dc2626;border-bottom:1px solid #fee2e2;margin-bottom:4px">寫入主檔後仍缺料（點擊可補料）</div>';
+  for (const [model, items] of Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"))) {
+    html += `<div style="font-size:11px;font-weight:600;color:#6b7280;margin:8px 10px 4px">${esc(model)}</div>`;
+    for (const s of items) {
+      const shortageAmt = roundShortageUiValue(s.shortage_amount);
+      const resultingStock = roundShortageUiValue(s.resulting_stock ?? s.current_stock);
+      const moqVal = roundShortageUiValue(s.moq || 0);
+      const suggestedQty = roundShortageUiValue(s.suggested_qty || shortageAmt);
+      html += `<div class="shortage-item is-st-purchase" style="cursor:pointer" data-part="${esc(s.part_number)}" data-shortage="${shortageAmt}" data-moq="${moqVal}" data-suggested="${suggestedQty}" data-stock="${resultingStock}" data-desc="${esc(s.description || "")}">
+        <div class="part">${esc(s.part_number)}</div>
+        <div class="desc">${esc(s.description || "—")}</div>
+        <div class="amounts">
+          <span class="red">缺 ${fmt(shortageAmt)}</span>
+          <span style="color:#6b7280">結存 ${fmt(resultingStock)}</span>
+          ${moqVal > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moqVal)}</span>` : ""}
+        </div>
+        <button class="btn btn-primary btn-xs post-supplement-btn" style="margin-top:4px">補料</button>
+      </div>`;
+    }
+  }
+  scroll.innerHTML = html;
+
+  scroll.querySelectorAll(".post-supplement-btn").forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const item = btn.closest(".shortage-item");
+      openSupplementModal({
+        part_number: item.dataset.part,
+        shortage_amount: Number(item.dataset.shortage),
+        moq: Number(item.dataset.moq),
+        suggested_qty: Number(item.dataset.suggested),
+        resulting_stock: Number(item.dataset.stock),
+        description: item.dataset.desc,
+      });
+    });
+  });
+
+  // 也允許點整個 card 打開 modal
+  scroll.querySelectorAll(".shortage-item[data-part]").forEach(card => {
+    card.addEventListener("click", () => {
+      const btn = card.querySelector(".post-supplement-btn");
+      if (btn) btn.click();
+    });
+  });
+}
+
+function openSupplementModal(item) {
+  // 移除舊 modal（如果有）
+  document.getElementById("supplement-modal")?.remove();
+
+  const suggestedQty = item.suggested_qty || item.shortage_amount;
+  const modal = document.createElement("div");
+  modal.id = "supplement-modal";
+  modal.className = "modal-overlay";
+  modal.style.display = "flex";
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:420px">
+      <div class="modal-header">
+        <h3>補料 — ${esc(item.part_number)}</h3>
+        <button class="modal-close-btn" id="supplement-modal-close">✕</button>
+      </div>
+      <div style="padding:16px">
+        <div style="font-size:13px;color:#6b7280;margin-bottom:12px">${esc(item.description || "")}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
+          <div style="font-size:12px"><span style="color:#6b7280">缺料量</span><br><strong class="red">${fmt(item.shortage_amount)}</strong></div>
+          <div style="font-size:12px"><span style="color:#6b7280">目前結存</span><br><strong>${fmt(item.resulting_stock)}</strong></div>
+          ${item.moq > 0 ? `<div style="font-size:12px"><span style="color:#6b7280">MOQ</span><br><strong>${fmt(item.moq)}</strong></div>` : ""}
+          <div style="font-size:12px"><span style="color:#6b7280">建議補料</span><br><strong style="color:#16a34a">${fmt(suggestedQty)}</strong></div>
+        </div>
+        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">補料數量</label>
+        <input type="number" id="supplement-qty-input" value="${suggestedQty}" min="0" step="any" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:14px">
+      </div>
+      <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;padding:12px 16px">
+        <button id="supplement-confirm" class="btn btn-success btn-sm">確認補料寫入主檔</button>
+        <button id="supplement-cancel" class="btn btn-secondary btn-sm">取消</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  document.getElementById("supplement-modal-close").onclick = close;
+  document.getElementById("supplement-cancel").onclick = close;
+  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+
+  document.getElementById("supplement-qty-input").focus();
+  document.getElementById("supplement-qty-input").select();
+
+  document.getElementById("supplement-confirm").onclick = async () => {
+    const qty = Number(document.getElementById("supplement-qty-input").value);
+    if (!qty || qty <= 0) {
+      showToast("補料數量必須大於 0");
+      return;
+    }
+    const confirmBtn = document.getElementById("supplement-confirm");
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "寫入中...";
+    try {
+      const result = await apiPost("/api/schedule/supplement-part", {
+        part_number: item.part_number,
+        supplement_qty: qty,
+      });
+      showToast(`${result.part_number} 已補料 ${fmt(qty)}，庫存 ${fmt(result.stock_before)} → ${fmt(result.stock_after)}`, { tone: "success", duration: 4000 });
+      // 從缺料列表中移除已補料的
+      _postDispatchShortages = _postDispatchShortages.filter(
+        s => s.part_number !== item.part_number
+      );
+      _savePostDispatchShortages();
+      close();
+      renderPostDispatchPanel();
+      if (_onRefreshMain) await _onRefreshMain();
+    } catch (e) {
+      showToast("補料失敗：" + e.message, { tone: "error" });
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "確認補料寫入主檔";
+    }
+  };
+}
+
 // ── Toolbar actions ───────────────────────────────────────────────────────────
 async function handleAutoSort() {
   try {
@@ -2683,6 +2846,28 @@ async function handleAutoSort() {
     renderSchedule();
     showToast("已恢復依出貨日自動排序");
   } catch (e) { showToast("錯誤：" + e.message); }
+}
+
+async function handleDedupSchedule() {
+  const btn = document.getElementById("btn-dedup-schedule");
+  if (btn) { btn.disabled = true; btn.textContent = "比對中..."; }
+  try {
+    const resp = await apiFetch("/api/schedule/dedup", { method: "POST" });
+    const data = await resp.json();
+    if (data.removed > 0) {
+      const poList = data.duplicates.map(d => d.po_number).join("、");
+      showToast(`已移除 ${data.removed} 筆已發料重複 PO：${poList}`, { tone: "success", duration: 5000 });
+      await loadScheduleRows();
+      recalculate();
+      renderSchedule();
+    } else {
+      showToast("沒有重複的 PO，排程表已是最新", { tone: "success" });
+    }
+  } catch (e) {
+    showToast("清理失敗：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "清理重複"; }
+  }
 }
 
 // Safe overrides for draft workbench rendering.

@@ -1274,6 +1274,23 @@ body:not(.app-loading):not(.app-boot-failed) #layout {
   box-shadow: inset 0 0 0 2px #374151 !important;
 }
 
+.main-preview-cell-input {
+  border: 2px solid #2563eb;
+  border-radius: 2px;
+  padding: 1px 4px;
+  font-size: inherit;
+  font-family: inherit;
+  background: #eff6ff;
+  color: #1e293b;
+  outline: none;
+  box-sizing: border-box;
+}
+body.desktop-dark .main-preview-cell-input {
+  background: #1e293b;
+  color: #e2e8f0;
+  border-color: #3b82f6;
+}
+
 #completed-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 #completed-toolbar { padding: 12px 16px; background: #fff; border-bottom: 1px solid #e5e5ea; flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 #completed-scroll { flex: 1; overflow-y: auto; padding: 12px 16px; }
@@ -1286,11 +1303,14 @@ body:not(.app-loading):not(.app-boot-failed) #layout {
 }
 .completed-folder-body { }
 
-.completed-card { opacity: .85; cursor: default; }
+.completed-card { opacity: 1; cursor: default; }
 .completed-card:active { cursor: default; }
 .completed-card-header {
   display: flex; align-items: center; gap: 10px; padding: 8px 14px;
   background: #f0fdf4; border-bottom: 1px solid #dcfce7;
+}
+.completed-card-header .po-number {
+  color: #1a1a1a;
 }
 .completed-card-actions {
   margin-left: auto;
@@ -1688,6 +1708,61 @@ body.desktop-dark .modal-progress-bar {
 }
 body.desktop-dark .modal-progress-fill {
   background: linear-gradient(90deg, #3b82f6, #60a5fa);
+}
+/* Analytics / Defectives dark */
+body.desktop-dark .analytics-card,
+body.desktop-dark .defective-card {
+  background: #111827;
+  border-color: #243041;
+  color: #e5e7eb;
+}
+body.desktop-dark .analytics-table th {
+  background: #172235;
+  color: #cbd5e1;
+  border-color: #334155;
+}
+body.desktop-dark .analytics-table td {
+  border-color: #243041;
+  color: #e5e7eb;
+}
+body.desktop-dark .defective-part,
+body.desktop-dark .analytics-card h4 {
+  color: #eff6ff;
+}
+body.desktop-dark .defective-desc,
+body.desktop-dark .defective-meta {
+  color: #94a3b8;
+}
+body.desktop-dark .defective-note {
+  background: #0f172a;
+  color: #cbd5e1;
+}
+body.desktop-dark .defective-batch {
+  border-color: #243041;
+}
+body.desktop-dark .defective-batch-header {
+  background: #0f172a;
+  border-color: #243041;
+}
+body.desktop-dark .defective-batch-header:hover {
+  background: #172235;
+}
+body.desktop-dark .defective-batch-name {
+  color: #eff6ff;
+}
+body.desktop-dark .defective-batch-date,
+body.desktop-dark .defective-batch-toggle {
+  color: #94a3b8;
+}
+body.desktop-dark .defective-batch-empty {
+  color: #64748b;
+}
+body.desktop-dark .stock-negative {
+  color: #f87171;
+}
+body.desktop-dark .defective-skipped {
+  color: #f87171;
+  border-color: #243041;
 }
 
 /* Toast */
@@ -2402,6 +2477,74 @@ body.desktop-dark .modal-progress-fill {
 .defective-actions {
   display: flex;
   gap: 6px;
+}
+.defective-batch {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+.defective-batch-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+.defective-batch-header:hover { background: #f3f4f6; }
+.defective-batch-toggle {
+  font-size: 11px;
+  color: #6b7280;
+  width: 14px;
+  flex-shrink: 0;
+}
+.defective-batch-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #0f172a;
+}
+.defective-batch-date {
+  font-size: 12px;
+  color: #6b7280;
+}
+.defective-batch-count {
+  font-size: 12px;
+  color: #3b82f6;
+  font-weight: 500;
+}
+.defective-batch-table {
+  margin: 0;
+  border-radius: 0;
+}
+.defective-batch-table td,
+.defective-batch-table th {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.defective-batch-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: #9ca3af;
+}
+.stock-negative {
+  color: #ef4444;
+  font-weight: 600;
+}
+.defective-skipped {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: #ef4444;
+  font-weight: 500;
+  border-top: 1px solid #e5e7eb;
+}
+.btn-xs {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
 }
 .form-field {
   display: flex;

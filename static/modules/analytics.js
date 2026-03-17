@@ -179,7 +179,7 @@ async function handleScheduleDiff() {
         body: formData,
       });
       _diffResult = await resp.json();
-      renderDiffResult(resp);
+      renderDiffResult(_diffResult);
     } catch (e) {
       showToast("比對失敗：" + e.message);
     }

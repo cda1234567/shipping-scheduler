@@ -198,3 +198,8 @@ class UpdateDefectiveRequest(BaseModel):
     action_taken: Optional[str] = None
     action_note: Optional[str] = None
     reported_by: Optional[str] = None
+
+
+class SupplementPartRequest(BaseModel):
+    part_number: str
+    supplement_qty: float

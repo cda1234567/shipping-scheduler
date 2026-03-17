@@ -13,7 +13,7 @@ from .shortage_rules import calculate_shortage_amount, summarize_st_supply
 def _build_shortage_item(summary: dict, moq: dict[str, float], st_inventory_stock: dict[str, float] | None = None) -> dict:
     shortage_amt = calculate_shortage_amount(summary["part_number"], summary["ending_stock"])
     item_moq = moq.get(summary["part_key"], 0.0)
-    st_context = summarize_st_supply(shortage_amt, (st_inventory_stock or {}).get(summary["part_key"], 0.0))
+    st_context = summarize_st_supply(shortage_amt, (st_inventory_stock or {}).get(summary["part_key"], 0.0), item_moq)
     st_available_qty = float(st_context["st_available_qty"] or 0.0)
     purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
     purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0

@@ -31,10 +31,20 @@ def calculate_shortage_amount(part_number: str, ending_stock: float) -> float:
     return max(0.0, float(required_min) - float(ending_stock or 0))
 
 
-def summarize_st_supply(shortage_amount: float, st_stock_qty: float) -> dict[str, float | bool]:
+def _ceil_to_moq(qty: float, moq: float) -> float:
+    if moq <= 0 or qty <= 0:
+        return qty
+    import math
+    return math.ceil(qty / moq) * moq
+
+
+def summarize_st_supply(shortage_amount: float, st_stock_qty: float, moq: float = 0) -> dict[str, float | bool]:
     shortage = max(0.0, float(shortage_amount or 0))
     st_stock = max(0.0, float(st_stock_qty or 0))
-    st_available = min(shortage, st_stock)
+    moq_val = max(0.0, float(moq or 0))
+    # ST 調撥量也要按 MOQ 向上取整，再跟 ST 庫存取較小值
+    shortage_rounded = _ceil_to_moq(shortage, moq_val)
+    st_available = min(shortage_rounded, st_stock)
     purchase_needed = max(0.0, shortage - st_available)
     return {
         "st_stock_qty": st_stock,

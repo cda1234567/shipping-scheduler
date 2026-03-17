@@ -321,7 +321,7 @@ def _plan_order_draft(
 
             if shortage_after > 0:
                 moq = float(moq_map.get(part, 0) or 0)
-                st_context = summarize_st_supply(shortage_after, st_inventory_stock.get(part, 0.0))
+                st_context = summarize_st_supply(shortage_after, st_inventory_stock.get(part, 0.0), moq)
                 st_available_qty = float(st_context["st_available_qty"] or 0.0)
                 purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
                 purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, moq) if purchase_needed_qty > 0 else 0.0

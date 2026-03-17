@@ -44,6 +44,19 @@ def build_app_url() -> str:
     return f"{APP_URL}?_desktop_shell=1&_desktop={int(time.time() * 1000)}"
 
 
+def hide_console_window():
+    """隱藏 python.exe 的 console 視窗（VBS 用 python 而非 pythonw 啟動時需要）。"""
+    if os.name != "nt":
+        return
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            SW_HIDE = 0
+            ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+    except Exception:
+        pass
+
+
 def apply_windows_app_identity():
     if os.name != "nt":
         return
@@ -84,6 +97,39 @@ def apply_windows_window_icon(window: webview.Window):
         pass
 
 
+def _kill_stale_server(port: int):
+    """找到佔用指定 port 的程序並強制結束。"""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["powershell", "-Command",
+             f"(Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pids = set()
+        for line in result.stdout.strip().splitlines():
+            line = line.strip()
+            if line.isdigit() and int(line) > 0:
+                pids.add(int(line))
+
+        my_pid = os.getpid()
+        for pid in pids:
+            if pid == my_pid:
+                continue
+            try:
+                subprocess.run(
+                    ["powershell", "-Command", f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"],
+                    timeout=5,
+                )
+            except Exception:
+                pass
+
+        if pids:
+            time.sleep(0.5)
+    except Exception:
+        pass
+
+
 class LocalServer:
     def __init__(self, app_url: str):
         self.app_url = app_url
@@ -99,9 +145,27 @@ class LocalServer:
         except Exception:
             return False
 
+    @staticmethod
+    def _health_ok() -> bool:
+        """確認 server 真的健康（不只是 port 有回應）。"""
+        try:
+            health_url = f"http://{APP_HOST}:{APP_PORT}/api/health"
+            with urllib.request.urlopen(health_url, timeout=3.0) as response:
+                if response.status == 200:
+                    data = json.loads(response.read())
+                    return data.get("ok") is True
+        except Exception:
+            pass
+        return False
+
     def ensure_started(self):
-        if self._url_ready(self.app_url):
+        if self._health_ok():
             return
+
+        # port 有佔用但不健康 → 殺掉舊程序
+        if self._url_ready(self.app_url):
+            _kill_stale_server(APP_PORT)
+            time.sleep(0.3)
 
         self._start_server()
         self._wait_until_ready()
@@ -123,9 +187,9 @@ class LocalServer:
     def _wait_until_ready(self):
         deadline = time.time() + 20
         while time.time() < deadline:
-            if self._url_ready(self.app_url):
+            if self._health_ok():
                 return
-            time.sleep(0.2)
+            time.sleep(0.3)
         raise RuntimeError("Desktop app failed to start the local server in time.")
 
     def stop(self):
@@ -352,6 +416,7 @@ def main():
     window.events.closing += on_closing
 
     def on_webview_ready():
+        hide_console_window()
         apply_windows_window_icon(window)
 
     try:

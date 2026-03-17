@@ -11,6 +11,7 @@ from app.database import init_db
 from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main_file, schedule, system
 from app.services.db_backup import database_backup_scheduler
 from app.services.merge_drafts import cleanup_expired_committed_merge_drafts
+from app.services.backup_cleanup import cleanup_old_backups
 from app.version_info import APP_VERSION
 
 
@@ -37,6 +38,7 @@ init_db()
 async def lifespan(_: FastAPI):
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         cleanup_expired_committed_merge_drafts()
+        cleanup_old_backups()
         database_backup_scheduler.start()
     try:
         yield
@@ -57,6 +59,11 @@ app.include_router(analytics.router, prefix="/api")
 app.include_router(defectives.router, prefix="/api")
 
 app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/api/health")
+async def health():
+    return {"ok": True, "version": APP_VERSION}
 
 
 @app.get("/")

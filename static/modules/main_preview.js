@@ -1,4 +1,4 @@
-import { apiJson, esc, showToast } from "./api.js";
+import { apiJson, apiFetch, esc, showToast } from "./api.js";
 
 let _sheetCache = new Map();
 let _sheetNames = [];
@@ -32,6 +32,13 @@ export async function initMainPreview() {
       event.preventDefault();
       clearSheetSearch();
     }
+  });
+
+  // 雙擊儲存格 → 進入編輯模式
+  document.getElementById("main-preview-stage")?.addEventListener("dblclick", event => {
+    const td = event.target.closest("td.main-preview-cell");
+    if (!td) return;
+    startCellEdit(td);
   });
 }
 
@@ -434,4 +441,103 @@ function buildSearchStatusText() {
 function formatLoadedAt(value) {
   if (!value) return "";
   return String(value).replace("T", " ").slice(0, 16);
+}
+
+/* ── 雙擊編輯儲存格 ── */
+
+let _editingCell = null;
+
+function startCellEdit(td) {
+  if (_editingCell) return;  // 已經在編輯中
+
+  const rowIndex = parseInt(td.dataset.rowIndex, 10);
+  const colIndex = parseInt(td.dataset.colIndex, 10);
+  if (!rowIndex || !colIndex) return;
+
+  _editingCell = td;
+  const originalText = td.title || "";
+
+  // 保留原本尺寸，替換成 input
+  const rect = td.getBoundingClientRect();
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = originalText;
+  input.className = "main-preview-cell-input";
+  input.style.cssText = `width:${Math.max(rect.width - 4, 40)}px;height:${Math.max(rect.height - 4, 20)}px;`;
+
+  td.textContent = "";
+  td.appendChild(input);
+  input.focus();
+  input.select();
+
+  const commit = async () => {
+    const newValue = input.value.trim();
+    cleanup();
+
+    if (newValue === originalText.trim()) {
+      // 沒改，還原顯示
+      restoreCellDisplay(td, originalText);
+      return;
+    }
+
+    td.textContent = "⏳";
+    try {
+      const res = await apiFetch("/api/main-file/cell", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sheet: _activeSheet,
+          row: rowIndex,
+          col: colIndex,
+          value: newValue,
+        }),
+      });
+      const json = await res.json();
+      if (!json.ok) throw new Error(json.detail || "儲存失敗");
+
+      showToast(`已修改 R${rowIndex}C${colIndex}: ${json.old_value} → ${json.new_value}`);
+      // 清快取，重新載入當前 sheet
+      _sheetCache.delete(_activeSheet);
+      await refreshMainPreview({ force: false, sheet: _activeSheet, eager: true });
+    } catch (err) {
+      showToast(`編輯失敗：${err.message}`, "error");
+      restoreCellDisplay(td, originalText);
+    }
+  };
+
+  const cancel = () => {
+    cleanup();
+    restoreCellDisplay(td, originalText);
+  };
+
+  const cleanup = () => {
+    _editingCell = null;
+    input.removeEventListener("blur", onBlur);
+    input.removeEventListener("keydown", onKeydown);
+  };
+
+  const onKeydown = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancel();
+    }
+  };
+
+  const onBlur = () => {
+    // 短暫延遲避免與 Enter 事件衝突
+    setTimeout(() => {
+      if (_editingCell === td) commit();
+    }, 100);
+  };
+
+  input.addEventListener("keydown", onKeydown);
+  input.addEventListener("blur", onBlur);
+}
+
+function restoreCellDisplay(td, text) {
+  td.textContent = text || "\u00a0";
+  td.title = text;
 }

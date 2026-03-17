@@ -17,7 +17,7 @@ from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
-from ..services.merge_to_main import merge_row_to_main, preview_order_batches
+from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
 from ..services.order_supplements import build_order_supplement_allocations
 from ..services.shortage_rules import (
     filter_main_write_blocking_shortages,
@@ -36,6 +36,7 @@ from ..services.merge_drafts import (
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
+    SupplementPartRequest,
 )
 from .. import database as db
 
@@ -378,19 +379,41 @@ async def upload_schedule(file: UploadFile = File(...)):
 
     rows = parse_schedule(str(dest))
     row_dicts = [r.dict() for r in rows]
-    db.upsert_orders_from_schedule(row_dicts)
+    diff = db.upsert_orders_from_schedule(row_dicts)
 
     db.set_setting("schedule_file_path", str(dest))
     db.set_setting("schedule_filename", file.filename or dest.name)
     db.set_setting("schedule_loaded_at", datetime.now().isoformat())
-    db.log_activity("schedule_upload", f"{file.filename}, {len(rows)} 筆")
+
+    summary_parts = [f"共 {len(rows)} 筆"]
+    if diff["added"]:
+        summary_parts.append(f"新增 {diff['added']}")
+    if diff["updated"]:
+        summary_parts.append(f"更新 {diff['updated']}")
+    if diff["skipped"]:
+        summary_parts.append(f"已發料跳過 {diff['skipped']}")
+    if diff["removed"]:
+        summary_parts.append(f"移除 {diff['removed']}")
+    db.log_activity("schedule_upload", f"{file.filename}：{'、'.join(summary_parts)}")
 
     return {
         "ok": True,
         "row_count": len(rows),
         "filename": file.filename,
         "loaded_at": db.get_setting("schedule_loaded_at"),
+        "diff": diff,
     }
+
+
+# ── 清理重複 PO（pending 與已發料重複）────────────────────────────────────
+
+@router.post("/schedule/dedup")
+async def dedup_schedule():
+    """比對 pending/merged 與已發料訂單，移除 PO 重複的待處理項。"""
+    result = db.remove_duplicate_pending_orders()
+    if result["removed"]:
+        db.log_activity("排程清理", f"移除 {result['removed']} 筆重複 PO")
+    return result
 
 
 # ── Get orders by status ─────────────────────────────────────────────────────
@@ -687,14 +710,16 @@ async def batch_dispatch(req: BatchDispatchRequest):
     missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
     if missing_orders and draft_id_map:
         raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
+    remaining_shortages: list[dict] = []
     if draft_id_map:
         rebuild_merge_drafts(normalized_order_ids)
         contexts = [_load_active_merge_draft_context(draft_id_map[order_id], main_path) for order_id in normalized_order_ids]
-        _ensure_main_write_allowed([
+        remaining_shortages = [
             shortage
             for context in contexts
             for shortage in (context.get("draft", {}) or {}).get("shortages", [])
-        ])
+            if float(shortage.get("shortage_amount") or 0) > 0
+        ]
         use_drafts = True
     else:
         decisions = _normalize_decisions(req.decisions)
@@ -727,7 +752,10 @@ async def batch_dispatch(req: BatchDispatchRequest):
             moq_map=_get_effective_moq(main_path),
             st_inventory_stock=_get_st_inventory_stock(),
         )
-        _ensure_main_write_allowed(preview["shortages"])
+        remaining_shortages = [
+            s for s in preview["shortages"]
+            if float(s.get("shortage_amount") or 0) > 0
+        ]
         use_drafts = False
 
     results: list[dict] = []
@@ -779,6 +807,7 @@ async def batch_dispatch(req: BatchDispatchRequest):
         "count": len(results),
         "merged_parts": total_merged_parts,
         "order_ids": [int(item["order_id"]) for item in results],
+        "shortages": remaining_shortages,
     }
 
 
@@ -889,7 +918,10 @@ async def commit_schedule_draft(draft_id: int):
         context["decisions"],
         moq_map=_get_effective_moq(main_path),
     )
-    _ensure_main_write_allowed(preview["shortages"])
+    commit_shortages = [
+        s for s in preview["shortages"]
+        if float(s.get("shortage_amount") or 0) > 0
+    ]
     result = _execute_dispatch(
         context["order"],
         context["groups"],
@@ -915,6 +947,7 @@ async def commit_schedule_draft(draft_id: int):
         "draft_id": draft_id,
         "order_id": int(context["order"]["id"]),
         "merged_parts": int(result.get("merged_parts") or 0),
+        "shortages": commit_shortages,
     }
 
 
@@ -993,3 +1026,26 @@ async def save_decisions(order_id: int, req: DecisionRequest):
 @router.get("/schedule/decisions")
 async def get_all_decisions_api():
     return {"decisions": db.get_all_decisions()}
+
+
+# ── Supplement (post-dispatch) ────────────────────────────────────────────────
+
+@router.post("/schedule/supplement-part")
+async def supplement_part(req: SupplementPartRequest):
+    """寫入後補料：直接對主檔指定料號新增一欄補料庫存。"""
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先載入主檔")
+    result = supplement_part_in_main(
+        main_path,
+        req.part_number,
+        req.supplement_qty,
+        backup_dir=str(BACKUP_DIR),
+    )
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("message", "補料失敗"))
+    db.log_activity(
+        "supplement_part",
+        f"補料 {result['part_number']}: {result['supplement_qty']:g} → 庫存 {result['stock_before']:g} → {result['stock_after']:g}",
+    )
+    return result

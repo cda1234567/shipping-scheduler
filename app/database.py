@@ -209,12 +209,23 @@ CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_i
 CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
 
+CREATE TABLE IF NOT EXISTS defective_batches (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename        TEXT    NOT NULL DEFAULT '',
+    imported_at     TEXT    NOT NULL DEFAULT '',
+    note            TEXT    NOT NULL DEFAULT '',
+    main_file_mtime REAL    NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS defective_records (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    batch_id      INTEGER REFERENCES defective_batches(id),
     order_id      INTEGER REFERENCES orders(id),
     part_number   TEXT    NOT NULL DEFAULT '',
     description   TEXT    NOT NULL DEFAULT '',
     defective_qty REAL    NOT NULL DEFAULT 0,
+    stock_before  REAL    NOT NULL DEFAULT 0,
+    stock_after   REAL    NOT NULL DEFAULT 0,
     action_taken  TEXT    NOT NULL DEFAULT '',
     action_note   TEXT    NOT NULL DEFAULT '',
     status        TEXT    NOT NULL DEFAULT 'open',
@@ -357,6 +368,22 @@ def init_db():
         draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
         if draft_cols and "main_file_mtime_ns" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
+        # migration: defective_records 加 batch_id / stock 欄位
+        def_cols = [r[1] for r in conn.execute("PRAGMA table_info(defective_records)").fetchall()]
+        if def_cols and "batch_id" not in def_cols:
+            conn.execute("ALTER TABLE defective_records ADD COLUMN batch_id INTEGER REFERENCES defective_batches(id)")
+        if def_cols and "stock_before" not in def_cols:
+            conn.execute("ALTER TABLE defective_records ADD COLUMN stock_before REAL NOT NULL DEFAULT 0")
+        if def_cols and "stock_after" not in def_cols:
+            conn.execute("ALTER TABLE defective_records ADD COLUMN stock_after REAL NOT NULL DEFAULT 0")
+        if def_cols and "batch_id" in [r[1] for r in conn.execute("PRAGMA table_info(defective_records)").fetchall()]:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_batch ON defective_records(batch_id)")
+
+        # defective_batches: 加 main_file_mtime 欄位
+        batch_cols = [r[1] for r in conn.execute("PRAGMA table_info(defective_batches)").fetchall()]
+        if batch_cols and "main_file_mtime" not in batch_cols:
+            conn.execute("ALTER TABLE defective_batches ADD COLUMN main_file_mtime REAL NOT NULL DEFAULT 0")
+
         _repair_managed_paths(conn)
 
 
@@ -675,17 +702,11 @@ def _get_bom_model_groups() -> dict[str, str]:
     return alias_map
 
 
-def upsert_orders_from_schedule(rows: list[dict]):
-    """從排程表解析結果批次寫入 orders 表。
-    自動合併共用 BOM 的行（如 T356789IU + T356789IU-U/A）。
-    status=pending/merged 的會被清除重建。
-    """
-    now = _now()
+def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
+    """合併共用 BOM 的行（如 T356789IU + T356789IU-U/A）。"""
     alias_map = _get_bom_model_groups()
-
-    # 合併共用 BOM 的行：相同 PO + 次要機種合入主要機種
     merged_rows: list[dict] = []
-    merge_targets: dict[str, int] = {}  # key="PO|PRIMARY_MODEL" → index in merged_rows
+    merge_targets: dict[str, int] = {}
 
     for r in rows:
         model_upper = (r.get("model") or "").strip().upper()
@@ -702,28 +723,125 @@ def upsert_orders_from_schedule(rows: list[dict]):
                 continue
 
         merge_key = f"{po}|{model_upper}"
+        if merge_key in merge_targets:
+            # 同 PO+機種重複行 → 合併數量
+            idx = merge_targets[merge_key]
+            target = merged_rows[idx]
+            target["order_qty"] = (target.get("order_qty") or 0) + (r.get("order_qty") or 0)
+            if r.get("pcb") and r["pcb"] not in (target.get("pcb") or ""):
+                target["pcb"] = f"{target['pcb']} / {r['pcb']}"
+            continue
         merge_targets[merge_key] = len(merged_rows)
         merged_rows.append(dict(r))
 
+    return merged_rows
+
+
+def _order_key(po, model) -> str:
+    """用 PO+機種 當唯一 key（同 PO 可有不同機種）。"""
+    return f"{str(po).strip()}|{str(model).strip().upper()}"
+
+
+def upsert_orders_from_schedule(rows: list[dict]) -> dict:
+    """從排程表解析結果批次寫入 orders 表。
+    自動比對已存在的 PO+機種（含已發料），不重複新增。
+    保留使用者手動輸入的 code（編號）。
+    回傳差異摘要 {added, updated, skipped, removed, diffs}。
+    """
+    now = _now()
+    merged_rows = _merge_schedule_rows(rows)
+
     with get_conn() as conn:
-        # 先刪掉待處理訂單的決策，避免外鍵擋住 orders 重建
-        conn.execute(
-            "DELETE FROM decisions WHERE order_id IN "
-            "(SELECT id FROM orders WHERE status IN ('pending','merged'))"
-        )
-        conn.execute(
-            "DELETE FROM order_supplements WHERE order_id IN "
-            "(SELECT id FROM orders WHERE status IN ('pending','merged'))"
-        )
-        conn.execute("DELETE FROM orders WHERE status IN ('pending','merged')")
+        all_orders = conn.execute(
+            "SELECT id, po_number, model, pcb, order_qty, ship_date, status, code FROM orders"
+        ).fetchall()
+
+        # 用 PO+機種 當 key，同 PO 不同機種分開處理
+        existing_by_key: dict[str, dict] = {}
+        for o in all_orders:
+            key = _order_key(o["po_number"], o["model"])
+            existing_by_key[key] = dict(o)
+
+        new_key_set = {
+            _order_key(r.get("po_number", ""), r.get("model", ""))
+            for r in merged_rows
+        }
+
+        added_count = 0
+        updated_count = 0
+        skipped_count = 0
+        diffs: list[dict] = []
+
+        # 刪掉「新排程表中不存在」的 pending/merged 訂單
+        removed_count = 0
+        for key, existing in list(existing_by_key.items()):
+            if key not in new_key_set and existing["status"] in ("pending", "merged"):
+                conn.execute("DELETE FROM decisions WHERE order_id = ?", (existing["id"],))
+                conn.execute("DELETE FROM order_supplements WHERE order_id = ?", (existing["id"],))
+                conn.execute("DELETE FROM orders WHERE id = ?", (existing["id"],))
+                diffs.append({
+                    "type": "removed",
+                    "po_number": existing.get("po_number", ""),
+                    "model": existing.get("model", ""),
+                })
+                removed_count += 1
+
         for i, r in enumerate(merged_rows):
+            po = str(r.get("po_number", "")).strip()
+            model = str(r.get("model", "")).strip()
+            if not po:
+                continue
+
+            key = _order_key(po, model)
+            existing = existing_by_key.get(key)
+
+            if existing and existing["status"] in ("dispatched", "completed"):
+                changes = _compare_order_fields(existing, r)
+                if changes:
+                    diffs.append({
+                        "type": "skipped_changed",
+                        "po_number": po, "model": model,
+                        "status": existing["status"],
+                        "changes": changes,
+                    })
+                skipped_count += 1
+                continue
+
+            if existing and existing["status"] in ("pending", "merged"):
+                changes = _compare_order_fields(existing, r)
+                # 保留使用者手動輸入的 code
+                preserved_code = existing.get("code", "") or ""
+                conn.execute(
+                    "UPDATE orders SET pcb=?, order_qty=?, balance_qty=?, "
+                    "delivery_date=?, ship_date=?, remark=?, "
+                    "sort_order=?, row_index=?, updated_at=? WHERE id=?",
+                    (
+                        r.get("pcb", ""),
+                        r.get("order_qty", 0),
+                        r.get("balance_qty"),
+                        r.get("ship_date"),
+                        r.get("ship_date"),
+                        r.get("remark", ""),
+                        i, r.get("row_index", 0),
+                        now, existing["id"],
+                    ),
+                )
+                if changes:
+                    diffs.append({
+                        "type": "updated",
+                        "po_number": po, "model": model,
+                        "changes": changes,
+                    })
+                    updated_count += 1
+                continue
+
+            # 全新 PO+機種 → 新增
             conn.execute(
                 "INSERT INTO orders(po_number, model, pcb, order_qty, balance_qty, "
                 "delivery_date, ship_date, status, code, remark, sort_order, row_index, "
                 "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    str(r.get("po_number", "")),
-                    r.get("model", ""),
+                    po, model,
                     r.get("pcb", ""),
                     r.get("order_qty", 0),
                     r.get("balance_qty"),
@@ -732,11 +850,45 @@ def upsert_orders_from_schedule(rows: list[dict]):
                     "pending",
                     r.get("code", ""),
                     r.get("remark", ""),
-                    i,
-                    r.get("row_index", 0),
+                    i, r.get("row_index", 0),
                     now, now,
                 ),
             )
+            diffs.append({
+                "type": "added",
+                "po_number": po, "model": model,
+            })
+            added_count += 1
+
+    return {
+        "added": added_count,
+        "updated": updated_count,
+        "skipped": skipped_count,
+        "removed": removed_count,
+        "diffs": diffs,
+    }
+
+
+def _compare_order_fields(existing: dict, new_row: dict) -> list[dict]:
+    """比對訂單欄位差異，回傳 [{field, label, old, new}]。"""
+    changes: list[dict] = []
+
+    old_qty = float(existing.get("order_qty") or 0)
+    new_qty = float(new_row.get("order_qty") or 0)
+    if old_qty != new_qty:
+        changes.append({"field": "order_qty", "label": "數量", "old": old_qty, "new": new_qty})
+
+    old_date = str(existing.get("ship_date") or "")
+    new_date = str(new_row.get("ship_date") or "")
+    if old_date != new_date:
+        changes.append({"field": "ship_date", "label": "交期", "old": old_date, "new": new_date})
+
+    old_model = str(existing.get("model") or "")
+    new_model = str(new_row.get("model") or "")
+    if old_model != new_model:
+        changes.append({"field": "model", "label": "機種", "old": old_model, "new": new_model})
+
+    return changes
 
 
 def get_orders(statuses: list[str] | None = None) -> list[dict]:
@@ -757,6 +909,34 @@ def get_order(order_id: int) -> dict | None:
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
     return dict(row) if row else None
+
+
+def remove_duplicate_pending_orders() -> dict:
+    """移除 pending/merged 中與已發料 PO+機種 完全重複的訂單。回傳 {removed, duplicates}。"""
+    with get_conn() as conn:
+        dispatched = conn.execute(
+            "SELECT po_number, model FROM orders WHERE status IN ('dispatched','completed')"
+        ).fetchall()
+        dispatched_keys = {_order_key(r["po_number"], r["model"]) for r in dispatched}
+
+        pending_orders = conn.execute(
+            "SELECT id, po_number, model FROM orders WHERE status IN ('pending','merged')"
+        ).fetchall()
+
+        duplicates: list[dict] = []
+        for order in pending_orders:
+            key = _order_key(order["po_number"], order["model"])
+            if key in dispatched_keys:
+                duplicates.append({"id": order["id"], "po_number": str(order["po_number"]).strip(), "model": order["model"]})
+
+        if duplicates:
+            dup_ids = [d["id"] for d in duplicates]
+            placeholders = ",".join("?" * len(dup_ids))
+            conn.execute(f"DELETE FROM decisions WHERE order_id IN ({placeholders})", dup_ids)
+            conn.execute(f"DELETE FROM order_supplements WHERE order_id IN ({placeholders})", dup_ids)
+            conn.execute(f"DELETE FROM orders WHERE id IN ({placeholders})", dup_ids)
+
+    return {"removed": len(duplicates), "duplicates": duplicates}
 
 
 def update_order(order_id: int, **fields):
@@ -1629,26 +1809,58 @@ def get_activity_logs(limit: int = 100) -> list[dict]:
 
 # ── Defective Records ────────────────────────────────────────────────────────
 
+def create_defective_batch(filename: str, note: str = "", main_file_mtime: float = 0) -> int:
+    """建立不良品匯入批次，回傳 batch_id。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO defective_batches(filename, imported_at, note, main_file_mtime) VALUES(?,?,?,?)",
+            (filename, _now(), note, main_file_mtime),
+        )
+        return cur.lastrowid
+
+
 def create_defective_record(data: dict) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO defective_records
-               (order_id, part_number, description, defective_qty,
+               (batch_id, order_id, part_number, description, defective_qty,
+                stock_before, stock_after,
                 action_taken, action_note, status, reported_by, created_at)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                data.get("batch_id"),
                 data.get("order_id"),
                 str(data.get("part_number") or "").strip(),
                 str(data.get("description") or "").strip(),
                 float(data.get("defective_qty") or 0),
+                float(data.get("stock_before") or 0),
+                float(data.get("stock_after") or 0),
                 str(data.get("action_taken") or "").strip(),
                 str(data.get("action_note") or "").strip(),
-                "open",
+                data.get("status", "open"),
                 str(data.get("reported_by") or "").strip(),
                 _now(),
             ),
         )
         return cur.lastrowid
+
+
+def get_defective_batches() -> list[dict]:
+    """取得所有批次，含每批次的項目。"""
+    with get_conn() as conn:
+        batches = conn.execute(
+            "SELECT * FROM defective_batches ORDER BY id DESC"
+        ).fetchall()
+        result = []
+        for b in batches:
+            batch = dict(b)
+            items = conn.execute(
+                "SELECT * FROM defective_records WHERE batch_id=? ORDER BY id",
+                (b["id"],),
+            ).fetchall()
+            batch["items"] = [dict(i) for i in items]
+            result.append(batch)
+    return result
 
 
 def get_defective_records(status: str = "all") -> list[dict]:
@@ -1683,6 +1895,19 @@ def update_defective_record(record_id: int, data: dict) -> bool:
     with get_conn() as conn:
         conn.execute(f"UPDATE defective_records SET {','.join(fields)} WHERE id=?", values)
     return True
+
+
+def delete_defective_record(record_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM defective_records WHERE id=?", (record_id,))
+    return cur.rowcount > 0
+
+
+def delete_defective_batch(batch_id: int) -> bool:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM defective_records WHERE batch_id=?", (batch_id,))
+        cur = conn.execute("DELETE FROM defective_batches WHERE id=?", (batch_id,))
+    return cur.rowcount > 0
 
 
 def confirm_defective_record(record_id: int) -> bool:

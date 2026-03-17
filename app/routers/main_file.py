@@ -3,11 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+import openpyxl
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from .. import database as db
-from ..config import MAIN_FILE_DIR
+from ..config import BACKUP_DIR, MAIN_FILE_DIR
 from ..models import UpdateMoqRequest
 from ..services.main_preview import read_live_main_preview
 from ..services.main_reader import (
@@ -15,6 +17,7 @@ from ..services.main_reader import (
     read_moq,
     read_stock,
 )
+from ..services.merge_to_main import backup_main_file
 
 router = APIRouter()
 
@@ -151,3 +154,47 @@ async def get_main_info():
         "loaded_at": db.get_setting("main_loaded_at"),
         "has_snapshot": bool(snapshot),
     }
+
+
+class EditCellRequest(BaseModel):
+    sheet: str = ""
+    row: int = Field(..., ge=1)
+    col: int = Field(..., ge=1)
+    value: str = ""
+
+
+@router.patch("/main-file/cell")
+async def edit_main_cell(req: EditCellRequest):
+    """修改主檔指定 cell 的值（自動備份）。"""
+    main_path = db.get_setting("main_file_path")
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(404, "找不到主檔")
+
+    backup_main_file(main_path, str(BACKUP_DIR))
+
+    is_xlsm = Path(main_path).suffix.lower() == ".xlsm"
+    wb = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
+
+    if req.sheet:
+        ws = wb[req.sheet] if req.sheet in wb.sheetnames else wb.active
+    else:
+        ws = wb.active
+
+    cell = ws.cell(row=req.row, column=req.col)
+    old_value = cell.value
+
+    # 嘗試轉數字，否則存字串
+    new_value = req.value.strip()
+    try:
+        new_value = float(new_value)
+        if new_value == int(new_value):
+            new_value = int(new_value)
+    except (ValueError, TypeError):
+        pass
+
+    cell.value = new_value if new_value != "" else None
+    wb.save(main_path)
+    wb.close()
+
+    db.log_activity("主檔編輯", f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}")
+    return {"ok": True, "old_value": str(old_value or ""), "new_value": str(new_value)}

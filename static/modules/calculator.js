@@ -70,7 +70,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
       if (shortage_amount <= 0) continue;
 
       const st_stock_qty = Math.max(0, Number(stStock[summary.part_key] ?? 0) || 0);
-      const st_available_qty = Math.min(shortage_amount, st_stock_qty);
+      const st_available_qty = Math.min(calcSuggested(shortage_amount, moq[summary.part_key] ?? 0), st_stock_qty);
       const purchase_needed_qty = Math.max(0, shortage_amount - st_available_qty);
       const item_moq = moq[summary.part_key] ?? 0;
       const purchase_suggested_qty = purchase_needed_qty > 0 ? calcSuggested(purchase_needed_qty, item_moq) : 0;
