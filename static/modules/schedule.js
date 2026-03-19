@@ -13,6 +13,7 @@ let _dispatchedConsumption = {};
 let _calcResults = [];
 let _decisions = {};
 let _draftsByOrderId = {};
+let _orderSupplementsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
@@ -273,6 +274,23 @@ function normalizeSupplementMap(supplements = {}) {
   return normalized;
 }
 
+function normalizeOrderSupplementState(orderSupplements = {}) {
+  const normalized = {};
+  for (const [rawOrderId, supplements] of Object.entries(orderSupplements || {})) {
+    const orderId = normalizeOrderId(rawOrderId);
+    if (!Number.isInteger(orderId)) continue;
+    normalized[orderId] = normalizeSupplementMap(supplements || {});
+  }
+  return normalized;
+}
+
+function getStoredOrderSupplementQty(orderId, partNumber) {
+  const normalizedOrderId = normalizeOrderId(orderId);
+  const key = normalizePartKey(partNumber);
+  if (!Number.isInteger(normalizedOrderId) || !key) return 0;
+  return Number(_orderSupplementsByOrderId?.[normalizedOrderId]?.[key] || 0) || 0;
+}
+
 function isEcPart(partNumber) {
   return normalizePartKey(partNumber).startsWith("EC-");
 }
@@ -421,6 +439,7 @@ async function loadScheduleRows() {
     _dispatchedConsumption = d.dispatched_consumption || {};
     _decisions = normalizeDecisionMap(d.decisions || {});
     _draftsByOrderId = d.merge_drafts || {};
+    _orderSupplementsByOrderId = normalizeOrderSupplementState(d.order_supplements || {});
     _scheduleMeta = {
       filename: String(d.filename || ""),
       loaded_at: String(d.loaded_at || ""),
@@ -438,6 +457,7 @@ async function loadScheduleRows() {
     _dispatchedConsumption = {};
     _decisions = {};
     _draftsByOrderId = {};
+    _orderSupplementsByOrderId = {};
     _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
   }
 }
@@ -462,7 +482,7 @@ function recalculate() {
   // 只計算勾選的訂單
   const checkedOrders = _rows.filter(r => _checkedIds.has(r.id));
   const checkedResults = checkedOrders.length
-    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption, _stStock)
+    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption, _stStock, _orderSupplementsByOrderId)
     : [];
   // 建立以 order id 為 key 的結果 map
   const resultById = new Map();
@@ -748,6 +768,13 @@ function buildShortageItemsForRow(row, items = []) {
     ...item,
     _row_code: item?._row_code || row?.code || row?.model || "",
     _row_model: item?._row_model || row?.model || "",
+    _order_id: normalizeOrderId(item?._order_id ?? row?.id),
+    supplement_qty: Number(item?.supplement_qty || 0) > 0
+      ? Number(item.supplement_qty || 0)
+      : getStoredOrderSupplementQty(item?._order_id ?? row?.id, item?.part_number),
+    default_supplement: Number(item?.default_supplement || 0) > 0
+      ? Number(item.default_supplement || 0)
+      : getStoredOrderSupplementQty(item?._order_id ?? row?.id, item?.part_number),
   }));
 }
 
@@ -1057,7 +1084,7 @@ function bindDraftPreviewEditors(list) {
 
 function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   const partNumber = String(row.part_number || "");
-  const shortageChecked = row.decision === "Shortage";
+  const shortageChecked = shouldAutoShortageCheck(row);
   const supplementQty = roundShortageUiValue(row.supplement_qty || 0);
   const shortageAmount = roundShortageUiValue(row.shortage_amount || 0);
   const badges = [
@@ -1736,6 +1763,18 @@ function shortageToneClass(shortage, isCS = false) {
   return classNames.join(" ");
 }
 
+function shouldAutoShortageCheck(item) {
+  const decision = String(item?.decision || "").trim();
+  if (decision === "Shortage") return true;
+  if (decision && decision !== "None") return false;
+
+  const carryOver = Number(item?.carry_over);
+  if (Number.isFinite(carryOver) && carryOver < 0) return true;
+
+  const currentStock = Number(item?.current_stock);
+  return Number.isFinite(currentStock) && currentStock < 0;
+}
+
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
@@ -1754,7 +1793,7 @@ function modalShortageItem(s, isCS) {
   const neededQty = roundShortageUiValue(s.needed);
   const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
   const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
-  const shortageChecked = s.decision === "Shortage";
+  const shortageChecked = shouldAutoShortageCheck(s);
   s = {
     ...s,
     shortage_amount: shortageAmount,
@@ -2991,8 +3030,65 @@ function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
       }
     });
   });
+  scroll.querySelectorAll(".right-panel-supplement-save").forEach(btn => {
+    btn.addEventListener("click", () => {
+      void saveRightPanelSupplement(btn);
+    });
+  });
+  scroll.querySelectorAll(".right-panel-supplement-input").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      input.closest(".right-panel-supplement-row")?.querySelector(".right-panel-supplement-save")?.click();
+    });
+  });
   bindMoqEditors(scroll);
   bindShortageMoqBadgeEditors(scroll);
+}
+
+async function saveRightPanelSupplement(button) {
+  const row = button?.closest(".shortage-item");
+  const input = row?.querySelector(".right-panel-supplement-input");
+  const orderId = normalizeOrderId(button?.dataset.orderId || input?.dataset.orderId);
+  const part = normalizePartKey(button?.dataset.part || input?.dataset.part);
+  const qty = Number(input?.value || 0);
+
+  if (!Number.isInteger(orderId) || !part) {
+    showToast("找不到要保存的補料項目");
+    return;
+  }
+  if (!Number.isFinite(qty) || qty < 0) {
+    showToast("請輸入正確的補料數量");
+    input?.focus();
+    return;
+  }
+
+  const originalText = button.textContent;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "保存中...";
+  }
+  if (input) input.disabled = true;
+
+  try {
+    await apiPut("/api/schedule/shortage-settings", {
+      order_ids: [orderId],
+      order_supplements: {
+        [String(orderId)]: {
+          [part]: qty,
+        },
+      },
+    });
+    showToast(qty > 0 ? `已保存 ${part} 補料 ${fmt(qty)}` : `已清除 ${part} 補料`);
+    await refresh();
+  } catch (e) {
+    showToast("補料儲存失敗：" + e.message);
+    if (button?.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+    if (input?.isConnected) input.disabled = false;
+  }
 }
 
 function renderMainDeficitSectionHtml(deficits) {
@@ -3022,6 +3118,14 @@ function shortageItemHtml(s, isCS) {
   const neededQty = roundShortageUiValue(s.needed);
   const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
   const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
+  const supplementQty = roundShortageUiValue(
+    Number(s.default_supplement) > 0
+      ? s.default_supplement
+      : Number(s.supplement_qty) > 0
+        ? s.supplement_qty
+        : getStoredOrderSupplementQty(s._order_id, s.part_number),
+  );
+  const orderId = normalizeOrderId(s._order_id);
   s = {
     ...s,
     shortage_amount: shortageAmount,
@@ -3029,12 +3133,31 @@ function shortageItemHtml(s, isCS) {
     needed: neededQty,
     st_available_qty: stAvailableQty,
     purchase_needed_qty: purchaseNeededQty,
+    supplement_qty: supplementQty,
+    _order_id: orderId,
   };
   const dec = _decisions[normalizePartKey(s.part_number)] || "None";
   const codeTag = s._row_code
     ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
     : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
+  const orderIdAttr = Number.isInteger(orderId) ? ` data-order-id="${orderId}"` : "";
+  const supplementEditorHtml = !isCS && Number.isInteger(orderId)
+    ? `<div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <label style="font-size:11px;color:#6b7280;white-space:nowrap">補這筆</label>
+        <input
+          type="number"
+          class="right-panel-supplement-input"
+          data-part="${esc(s.part_number)}"${orderIdAttr}
+          value="${s.supplement_qty}"
+          min="0"
+          step="any"
+          style="flex:1;min-width:0;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
+        >
+        <button class="btn btn-secondary btn-xs right-panel-supplement-save" data-part="${esc(s.part_number)}"${orderIdAttr}>保存補料</button>
+      </div>
+      <div style="font-size:10px;color:#6b7280;margin-top:4px">只補這筆，後面機種會沿用剩餘量繼續扣帳</div>`
+    : "";
 
   return `<div class="${shortageToneClass(s, isCS)}">
     <div class="part">${s.part_number}${codeTag}${csTag}</div>
@@ -3047,6 +3170,7 @@ function shortageItemHtml(s, isCS) {
       ${suggestedQtyHtml(s)}
     </div>
     ${missingMoqEditorHtml(s)}
+    ${supplementEditorHtml}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : `
     <div class="decision-btns">
       <button class="dec-btn ${dec === "CreateRequirement" ? "active-create" : ""}" data-dec="CreateRequirement" data-part="${s.part_number}">需採購</button>

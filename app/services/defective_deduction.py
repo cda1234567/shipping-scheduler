@@ -49,7 +49,7 @@ def parse_defective_excel(path: str) -> list[dict]:
     wb.close()
 
     items: list[dict] = []
-    for row_vals in all_rows[data_start - 1:]:
+    for offset, row_vals in enumerate(all_rows[data_start - 1:], start=data_start):
         if not row_vals or len(row_vals) <= qty_col:
             continue
 
@@ -63,6 +63,7 @@ def parse_defective_excel(path: str) -> list[dict]:
 
         desc = str(row_vals[desc_col] or "").strip() if len(row_vals) > desc_col else ""
         items.append({
+            "source_row": offset,
             "part_number": part,
             "description": desc,
             "defective_qty": qty,
@@ -73,6 +74,7 @@ def parse_defective_excel(path: str) -> list[dict]:
 
 HEADER_FONT = Font(bold=True, size=9)
 HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+REVERSE_HEADER_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
 CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
 
 
@@ -80,9 +82,10 @@ def deduct_defectives_from_main(
     main_path: str,
     items: list[dict],
     backup_dir: str | None = None,
+    entry_header: str = "不良品扣帳",
 ) -> dict:
     """
-    在主檔新增 2 欄扣帳：不良品數量 + 扣帳後庫存。
+    在主檔新增 2 欄扣帳：扣帳數量 + 扣帳後庫存。
 
     回傳 {"backup_path", "deducted_count", "skipped_parts", "results"}。
     """
@@ -103,7 +106,7 @@ def deduct_defectives_from_main(
     # 寫表頭
     ts_label = datetime.now().strftime("%m/%d %H:%M")
     deduct_header = ws.cell(row=1, column=col_deduct)
-    deduct_header.value = f"不良品扣帳"
+    deduct_header.value = str(entry_header or "不良品扣帳").strip() or "不良品扣帳"
     deduct_header.font = HEADER_FONT
     deduct_header.fill = HEADER_FILL
     deduct_header.alignment = CENTER_ALIGN
@@ -159,9 +162,10 @@ def reverse_defectives_from_main(
     main_path: str,
     items: list[dict],
     backup_dir: str | None = None,
+    entry_header: str = "不良品回復",
 ) -> dict:
     """
-    將已扣帳的不良品數量加回主檔（刪除批次時用）。
+    將已扣帳的數量加回主檔（刪除批次時用）。
 
     items: [{part_number, defective_qty}]
     在主檔新增 2 欄：回復數量 + 回復後庫存。
@@ -183,15 +187,15 @@ def reverse_defectives_from_main(
 
     ts_label = datetime.now().strftime("%m/%d %H:%M")
     reverse_header = ws.cell(row=1, column=col_reverse)
-    reverse_header.value = "不良品回復"
+    reverse_header.value = str(entry_header or "不良品回復").strip() or "不良品回復"
     reverse_header.font = HEADER_FONT
-    reverse_header.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    reverse_header.fill = REVERSE_HEADER_FILL
     reverse_header.alignment = CENTER_ALIGN
 
     stock_header = ws.cell(row=1, column=col_stock)
     stock_header.value = ts_label
     stock_header.font = HEADER_FONT
-    stock_header.fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    stock_header.fill = REVERSE_HEADER_FILL
     stock_header.alignment = CENTER_ALIGN
 
     results: list[dict] = []

@@ -9,7 +9,11 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from .. import database as db
 from ..config import BACKUP_DIR
-from ..models import OverrunDeductionRequest, OverrunImportConfirmRequest
+from ..models import (
+    DefectiveImportConfirmRequest,
+    OverrunDeductionRequest,
+    OverrunImportConfirmRequest,
+)
 from ..services.defective_deduction import (
     parse_defective_excel,
     deduct_defectives_from_main,
@@ -25,6 +29,8 @@ from ..services.overrun_deduction import (
 from ..snapshot_sync import refresh_snapshot_from_main
 
 router = APIRouter(prefix="/defectives", tags=["defectives"])
+OVERRUN_DEDUCT_HEADER = "加工多打扣帳"
+OVERRUN_REVERSE_HEADER = "加工多打回復"
 
 
 def _get_main_file_mtime() -> float:
@@ -97,7 +103,7 @@ def _format_overrun_file_batch_note(filename: str, parsed: dict) -> str:
     return "\n".join(lines)
 
 
-def _append_overrun_resolution_summary(note: str, applied: dict) -> str:
+def _append_import_resolution_summary(note: str, applied: dict) -> str:
     lines = [str(note or "").strip()] if str(note or "").strip() else []
     replaced_items = applied.get("replaced_items") or []
     skipped_items = applied.get("skipped_items") or []
@@ -124,11 +130,185 @@ def _append_overrun_resolution_summary(note: str, applied: dict) -> str:
     return "\n".join(lines)
 
 
+def _get_defective_batch(batch_id: int) -> dict | None:
+    return next((batch for batch in db.get_defective_batches() if int(batch.get("id") or 0) == int(batch_id)), None)
+
+
+def _parse_upload_to_items(file: UploadFile, parser, empty_message: str) -> tuple[str, list[dict]]:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in (".xlsx", ".xls", ".xlsm"):
+        raise HTTPException(400, "僅支援 .xlsx / .xls / .xlsm")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(file.file.read())
+        tmp_path = tmp.name
+
+    try:
+        items = parser(tmp_path)
+    except Exception as exc:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise HTTPException(400, f"解析失敗：{exc}")
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    if not items:
+        raise HTTPException(400, empty_message)
+
+    return file.filename or "unknown", items
+
+
+def _preview_defective_items(main_path: str, filename: str, items: list[dict], batch_id: int | None = None) -> dict:
+    preview = build_overrun_import_preview(main_path, {
+        "source_filename": filename,
+        "items": items,
+    })
+    if batch_id:
+        preview["batch_id"] = int(batch_id)
+    return preview
+
+
+def _finalize_defective_import(
+    *,
+    main_path: str,
+    source_filename: str,
+    final_items: list[dict],
+    applied: dict,
+    batch_id: int | None = None,
+) -> dict:
+    target_batch_id = int(batch_id or 0)
+    batch_note = _append_import_resolution_summary("", applied)
+    if target_batch_id:
+        target_batch = _get_defective_batch(target_batch_id)
+        if not target_batch:
+            raise HTTPException(404, "找不到要追加的不良品批次")
+        if _detect_batch_type(target_batch) != "defective":
+            raise HTTPException(400, "加工多打批次不可追加副檔")
+
+    result = deduct_defectives_from_main(
+        main_path,
+        final_items,
+        backup_dir=str(BACKUP_DIR),
+    )
+    refresh_snapshot_from_main(main_path)
+
+    if not target_batch_id:
+        target_batch_id = db.create_defective_batch(
+            source_filename or "unknown",
+            note=batch_note,
+            main_file_mtime=_get_main_file_mtime(),
+        )
+
+    result_map = {r["part_number"]: r for r in (result.get("results") or [])}
+    created_ids: list[int] = []
+    for item in final_items:
+        part = str(item.get("part_number") or "").strip().upper()
+        if part in (result.get("skipped_parts") or []):
+            continue
+        matched = result_map.get(part, {})
+        record_id = db.create_defective_record({
+            "batch_id": target_batch_id,
+            "part_number": part,
+            "description": item.get("description", ""),
+            "defective_qty": item.get("defective_qty", 0),
+            "stock_before": matched.get("stock_before", 0),
+            "stock_after": matched.get("stock_after", 0),
+            "status": "confirmed",
+        })
+        created_ids.append(record_id)
+
+    return {
+        "batch_id": target_batch_id,
+        "deducted_count": result["deducted_count"],
+        "skipped_parts": result["skipped_parts"],
+        "results": result["results"],
+        "created_ids": created_ids,
+        "replaced_count": len(applied.get("replaced_items") or []),
+        "skipped_count": len(applied.get("skipped_items") or []),
+    }
+
+
 @router.get("/batches")
 async def list_batches():
     """取得所有匯入批次（含明細）。"""
     batches = [_decorate_batch(batch) for batch in db.get_defective_batches()]
     return {"batches": batches}
+
+
+@router.post("/import-preview")
+async def preview_defectives(file: UploadFile = File(...)):
+    """匯入副檔格式的不良品 Excel 前先預覽，確認主檔抓不到的料號。"""
+    if not file.filename:
+        raise HTTPException(400, "請選擇檔案")
+
+    filename, items = _parse_upload_to_items(
+        file,
+        parse_defective_excel,
+        "檔案中沒有有效的不良品資料（需要料號 + 數量 > 0）",
+    )
+    main_path = _require_main_path()
+    preview = _preview_defective_items(main_path, filename, items)
+    return {"ok": True, **preview}
+
+
+@router.post("/batches/{batch_id}/add-preview")
+async def preview_add_defectives(batch_id: int, file: UploadFile = File(...)):
+    """追加不良品前先預覽，沿用同一個確認 modal。"""
+    target_batch = _get_defective_batch(batch_id)
+    if not target_batch:
+        raise HTTPException(404, "找不到批次")
+    if _detect_batch_type(target_batch) != "defective":
+        raise HTTPException(400, "加工多打批次不可追加副檔")
+
+    filename, items = _parse_upload_to_items(file, parse_defective_excel, "沒有有效的不良品資料")
+    main_path = _require_main_path()
+    preview = _preview_defective_items(main_path, filename, items, batch_id=batch_id)
+    return {"ok": True, **preview}
+
+
+@router.post("/import-confirm")
+async def confirm_defectives(req: DefectiveImportConfirmRequest):
+    """確認不良品 preview 後，正式扣帳並建立/追加批次。"""
+    if not req.items:
+        raise HTTPException(400, "沒有可扣帳的不良品資料")
+
+    main_path = _require_main_path()
+    applied = apply_overrun_import_confirmations(
+        main_path,
+        [item.dict() for item in req.items],
+    )
+    unresolved_items = applied.get("unresolved_items") or []
+    if unresolved_items:
+        raise HTTPException(400, "仍有抓不到的料號尚未處理，請先選擇不扣或改正料號")
+
+    final_items = applied.get("final_items") or []
+    if not final_items:
+        raise HTTPException(400, "這次全部都選擇不扣，沒有可扣帳的料號")
+
+    result = _finalize_defective_import(
+        main_path=main_path,
+        source_filename=req.source_filename or "unknown",
+        final_items=final_items,
+        applied=applied,
+        batch_id=req.batch_id,
+    )
+
+    if req.batch_id:
+        action_label = "追加不良品"
+        action_detail = f"批次#{result['batch_id']}：扣帳 {result['deducted_count']} 筆"
+    else:
+        action_label = "匯入不良品"
+        action_detail = f"{req.source_filename or 'unknown'}：扣帳 {result['deducted_count']} 筆"
+    if result["replaced_count"]:
+        action_detail += f"，改正 {result['replaced_count']} 筆"
+    if result["skipped_count"]:
+        action_detail += f"，不扣 {result['skipped_count']} 筆"
+
+    db.log_activity(action_label, action_detail)
+
+    return {
+        "ok": True,
+        **result,
+    }
 
 
 @router.post("/import")
@@ -307,6 +487,7 @@ async def create_model_overrun(req: OverrunDeductionRequest):
         main_path,
         plan["items"],
         backup_dir=str(BACKUP_DIR),
+        entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
 
@@ -415,10 +596,11 @@ async def confirm_overrun_detail_import(req: OverrunImportConfirmRequest):
         main_path,
         final_items,
         backup_dir=str(BACKUP_DIR),
+        entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
 
-    batch_note = _append_overrun_resolution_summary(
+    batch_note = _append_import_resolution_summary(
         _format_overrun_file_batch_note(req.source_filename, {
             "title": req.title,
             "mo_info": req.mo_info,
@@ -517,6 +699,7 @@ async def import_overrun_detail(file: UploadFile = File(...)):
         main_path,
         parsed["items"],
         backup_dir=str(BACKUP_DIR),
+        entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
 
@@ -601,8 +784,12 @@ async def delete_batch(batch_id: int):
             # mtime 差距超過 1 秒 → 主檔已被更換
             main_file_changed = True
         else:
+            reverse_header = OVERRUN_REVERSE_HEADER if _detect_batch_type(target_batch) == "overrun" else "不良品回復"
             result = reverse_defectives_from_main(
-                main_path, reverse_items, backup_dir=str(BACKUP_DIR),
+                main_path,
+                reverse_items,
+                backup_dir=str(BACKUP_DIR),
+                entry_header=reverse_header,
             )
             reversed_count = result["reversed_count"]
             refresh_snapshot_from_main(main_path)

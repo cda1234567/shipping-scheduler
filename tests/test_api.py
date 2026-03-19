@@ -41,6 +41,7 @@ class ApiTests(unittest.TestCase):
              }.get(key, default)), \
              patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-1": 12}), \
              patch("app.routers.schedule.db.get_all_decisions", return_value={"PART-1": "CreateRequirement"}), \
+             patch("app.routers.schedule.db.get_order_supplements", return_value={1: {"PART-1": 1000}}), \
              patch("app.routers.schedule.get_schedule_draft_map", return_value={1: {"id": 9, "files": [], "shortages": []}}):
             response = self.client.get("/api/schedule/rows")
 
@@ -51,18 +52,43 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["dispatched_consumption"], {"PART-1": 12})
         self.assertEqual(data["decisions"], {"PART-1": "CreateRequirement"})
         self.assertEqual(data["merge_drafts"], {"1": {"id": 9, "files": [], "shortages": []}})
+        self.assertEqual(data["order_supplements"], {"1": {"PART-1": 1000}})
 
     def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
         with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \
              patch("app.routers.schedule.db.get_setting", side_effect=lambda key, default="": default), \
              patch("app.routers.schedule.db.get_snapshot_taken_at", return_value="2026-03-12T11:05:45.000000"), \
              patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-2": 15}) as mock_consumption, \
-             patch("app.routers.schedule.db.get_all_decisions", return_value={}):
+             patch("app.routers.schedule.db.get_all_decisions", return_value={}), \
+             patch("app.routers.schedule.db.get_order_supplements", return_value={}):
             response = self.client.get("/api/schedule/rows")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["dispatched_consumption"], {"PART-2": 15})
         mock_consumption.assert_called_once_with("2026-03-12T11:05:45.000000")
+
+    def test_update_schedule_shortage_settings_rebuilds_active_drafts_and_persists_supplements(self):
+        with patch("app.routers.schedule.build_order_decision_allocations", return_value={1: {}}), \
+             patch("app.routers.schedule._merge_decision_updates", return_value={"PART-OLD": "IgnoreOnce"}), \
+             patch("app.routers.schedule._merge_supplement_updates", return_value={"PART-1": 1200}) as mock_merge_supplements, \
+             patch("app.routers.schedule.db.replace_order_decisions") as mock_replace_decisions, \
+             patch("app.routers.schedule.db.replace_order_supplements") as mock_replace_supplements, \
+             patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[{"order_id": 1}, {"order_id": 2}]), \
+             patch("app.routers.schedule.rebuild_merge_drafts") as mock_rebuild, \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.put("/api/schedule/shortage-settings", json={
+                "order_ids": [1],
+                "order_supplements": {
+                    "1": {"part-1": 1200},
+                },
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "count": 1})
+        mock_merge_supplements.assert_called_once_with(1, {"PART-1": 1200.0})
+        mock_replace_decisions.assert_called_once_with([1], {1: {"PART-OLD": "IgnoreOnce"}})
+        mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}})
+        mock_rebuild.assert_called_once_with([1, 2])
 
     def test_batch_merge_creates_merge_drafts(self):
         with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
@@ -234,6 +260,117 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
         self.assertEqual(mock_execute.call_args_list[1].args[4], {"PART-1": "CreateRequirement"})
 
+    def test_preview_defective_import_returns_missing_items(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives.parse_defective_excel", return_value=[
+                 {"source_row": 6, "part_number": "PART-X", "description": "", "defective_qty": 15},
+             ]), \
+             patch("app.routers.defectives.build_overrun_import_preview", return_value={
+                 "source_filename": "defective.xlsx",
+                 "item_count": 2,
+                 "deducted_count": 1,
+                 "negative_count": 0,
+                 "total_deduction_qty": 15,
+                 "items": [],
+                 "results": [],
+                 "missing_items": [{"source_row": 6, "part_number": "PART-X", "suggestions": []}],
+                 "missing_count": 1,
+                 "requires_confirmation": True,
+             }) as mock_preview:
+            response = self.client.post(
+                "/api/defectives/import-preview",
+                files={"file": ("defective.xlsx", io.BytesIO(b"detail"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["missing_count"], 1)
+        mock_preview.assert_called_once_with("C:/main.xlsx", {
+            "source_filename": "defective.xlsx",
+            "items": [{"source_row": 6, "part_number": "PART-X", "description": "", "defective_qty": 15}],
+        })
+
+    def test_confirm_defective_import_creates_batch_and_records(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=321.0), \
+             patch("app.routers.defectives.apply_overrun_import_confirmations", return_value={
+                 "final_items": [
+                     {"source_row": 5, "part_number": "PART-1", "description": "Cap", "defective_qty": 12, "source_part_number": "PART-1"},
+                 ],
+                 "replaced_items": [],
+                 "skipped_items": [
+                     {"source_row": 6, "part_number": "PART-X", "defective_qty": 3},
+                 ],
+                 "unresolved_items": [],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 1,
+                 "skipped_parts": [],
+                 "results": [
+                     {"part_number": "PART-1", "stock_before": 50, "stock_after": 38},
+                 ],
+             }) as mock_deduct, \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.create_defective_batch", return_value=66) as mock_batch, \
+             patch("app.routers.defectives.db.create_defective_record", return_value=701) as mock_record, \
+             patch("app.routers.defectives.db.log_activity") as mock_log:
+            response = self.client.post("/api/defectives/import-confirm", json={
+                "source_filename": "defective.xlsx",
+                "items": [
+                    {"source_row": 5, "part_number": "PART-1", "defective_qty": 12, "action": "deduct", "target_part_number": ""},
+                    {"source_row": 6, "part_number": "PART-X", "defective_qty": 3, "action": "skip", "target_part_number": ""},
+                ],
+            })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["batch_id"], 66)
+        self.assertEqual(data["deducted_count"], 1)
+        self.assertEqual(data["skipped_count"], 1)
+        mock_batch.assert_called_once()
+        mock_record.assert_called_once()
+        mock_deduct.assert_called_once()
+        mock_log.assert_called_once()
+
+    def test_confirm_defective_import_can_append_existing_batch(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives.apply_overrun_import_confirmations", return_value={
+                 "final_items": [
+                     {"source_row": 5, "part_number": "PART-1", "description": "Cap", "defective_qty": 12, "source_part_number": "PART-1"},
+                 ],
+                 "replaced_items": [],
+                 "skipped_items": [],
+                 "unresolved_items": [],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 1,
+                 "skipped_parts": [],
+                 "results": [
+                     {"part_number": "PART-1", "stock_before": 50, "stock_after": 38},
+                 ],
+             }), \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+                 "id": 90,
+                 "filename": "old.xlsx",
+                 "items": [],
+             }]), \
+             patch("app.routers.defectives.db.create_defective_batch") as mock_create_batch, \
+             patch("app.routers.defectives.db.create_defective_record", return_value=702) as mock_record, \
+             patch("app.routers.defectives.db.log_activity") as mock_log:
+            response = self.client.post("/api/defectives/import-confirm", json={
+                "batch_id": 90,
+                "source_filename": "append.xlsx",
+                "items": [
+                    {"source_row": 5, "part_number": "PART-1", "defective_qty": 12, "action": "deduct", "target_part_number": ""},
+                ],
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["batch_id"], 90)
+        mock_create_batch.assert_not_called()
+        mock_record.assert_called_once()
+        mock_log.assert_called_once()
+
     def test_overrun_preview_returns_plan_and_stock_preview(self):
         with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
              patch("app.routers.defectives.build_model_overrun_plan", return_value={
@@ -308,6 +445,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(mock_batch.call_args.args[0].startswith("加工多打｜MODEL-A｜+10"))
         self.assertIn("加工廠多打", mock_batch.call_args.kwargs["note"])
         mock_deduct.assert_called_once()
+        self.assertEqual(mock_deduct.call_args.kwargs["entry_header"], "加工多打扣帳")
         mock_log.assert_called_once()
 
     def test_import_overrun_detail_file_creates_overrun_batch(self):
@@ -346,6 +484,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(mock_batch.call_args.args[0].startswith("加工多打明細｜20260202 T356789IU多打扣帳明細.xlsx"))
         self.assertIn("4500059105 多打 S+D", mock_batch.call_args.kwargs["note"])
         mock_deduct.assert_called_once()
+        self.assertEqual(mock_deduct.call_args.kwargs["entry_header"], "加工多打扣帳")
         mock_log.assert_called_once()
 
     def test_preview_overrun_detail_import_returns_missing_items(self):
@@ -425,7 +564,34 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_record.call_count, 2)
         self.assertIn("改正料號", mock_batch.call_args.kwargs["note"])
         mock_deduct.assert_called_once()
+        self.assertEqual(mock_deduct.call_args.kwargs["entry_header"], "加工多打扣帳")
         mock_log.assert_called_once()
+
+    def test_delete_overrun_batch_uses_overrun_reverse_header(self):
+        with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+            "id": 88,
+            "filename": "加工多打｜MODEL-A｜+10 pcs",
+            "main_file_mtime": 123.0,
+            "items": [
+                {"part_number": "PART-1", "defective_qty": 30, "action_taken": "加工多打扣帳"},
+            ],
+        }]), \
+             patch("app.routers.defectives.db.get_setting", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=123.0), \
+             patch("app.routers.defectives.Path.exists", return_value=True), \
+             patch("app.routers.defectives.reverse_defectives_from_main", return_value={
+                 "reversed_count": 1,
+                 "skipped_parts": [],
+                 "results": [],
+             }) as mock_reverse, \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.delete_defective_batch", return_value=True), \
+             patch("app.routers.defectives.db.log_activity"):
+            response = self.client.delete("/api/defectives/batches/88")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reversed_count"], 1)
+        self.assertEqual(mock_reverse.call_args.kwargs["entry_header"], "加工多打回復")
 
     def test_load_active_merge_draft_context_accepts_repaired_main_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -229,3 +229,18 @@ class OverrunImportConfirmRequest(BaseModel):
     title: str = ""
     mo_info: str = ""
     items: list[OverrunImportConfirmItem] = Field(default_factory=list)
+
+
+class DefectiveImportConfirmItem(BaseModel):
+    source_row: int = Field(ge=1)
+    part_number: str
+    defective_qty: float = Field(gt=0)
+    description: str = ""
+    action: str = "deduct"
+    target_part_number: str = ""
+
+
+class DefectiveImportConfirmRequest(BaseModel):
+    batch_id: Optional[int] = None
+    source_filename: str = ""
+    items: list[DefectiveImportConfirmItem] = Field(default_factory=list)

@@ -101,6 +101,16 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn(".shortage-item.is-st-purchase", stylesheet)
         self.assertIn("body.desktop-dark .shortage-item.is-st-purchase", stylesheet)
 
+    def test_schedule_module_auto_checks_shortage_for_negative_carry_over(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn("function shouldAutoShortageCheck(item)", schedule_module)
+        self.assertIn("const carryOver = Number(item?.carry_over);", schedule_module)
+        self.assertIn("const currentStock = Number(item?.current_stock);", schedule_module)
+        self.assertIn("const shortageChecked = shouldAutoShortageCheck(row);", schedule_module)
+        self.assertIn("const shortageChecked = shouldAutoShortageCheck(s);", schedule_module)
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")

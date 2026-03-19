@@ -164,6 +164,31 @@ def _normalize_order_supplements(order_supplements: dict | None = None) -> dict[
     return normalized
 
 
+def _normalize_supplement_updates(supplements: dict[str, float] | None = None) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for part, qty in (supplements or {}).items():
+        key = str(part or "").strip().upper()
+        if not key:
+            continue
+        try:
+            amount = float(qty or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        normalized[key] = amount
+    return normalized
+
+
+def _normalize_order_supplement_updates(order_supplements: dict | None = None) -> dict[int, dict[str, float]]:
+    normalized: dict[int, dict[str, float]] = {}
+    for raw_order_id, supplements in (order_supplements or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+        normalized[order_id] = _normalize_supplement_updates(supplements or {})
+    return normalized
+
+
 def _merge_order_decision_allocations(
     order_ids: list[int],
     decisions: dict[str, str] | None = None,
@@ -215,6 +240,25 @@ def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None
             merged.pop(key, None)
             continue
         merged[key] = value
+    return merged
+
+
+def _merge_supplement_updates(order_id: int, updates: dict[str, float] | None = None) -> dict[str, float]:
+    draft = db.get_active_merge_draft_for_order(order_id) or {}
+    merged = _normalize_supplements(draft.get("supplements"))
+    merged.update(_normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {})))
+    for part, qty in (updates or {}).items():
+        key = str(part or "").strip().upper()
+        if not key:
+            continue
+        try:
+            amount = float(qty or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if amount <= 0:
+            merged.pop(key, None)
+            continue
+        merged[key] = amount
     return merged
 
 
@@ -520,6 +564,7 @@ async def get_schedule_rows():
     """回傳未完成的訂單（pending + merged）。"""
     orders = db.get_orders(["pending", "merged"])
     dispatched_count = len(db.get_orders(["dispatched", "completed"]))
+    order_ids = [int(order["id"]) for order in orders if order.get("id") is not None]
     return {
         "rows": orders,
         "loaded_at": db.get_setting("schedule_loaded_at"),
@@ -528,6 +573,7 @@ async def get_schedule_rows():
         "dispatched_consumption": _get_active_dispatched_consumption(),
         "decisions": db.get_all_decisions(),
         "merge_drafts": get_schedule_draft_map(),
+        "order_supplements": db.get_order_supplements(order_ids) if order_ids else {},
     }
 
 
@@ -948,6 +994,58 @@ def batch_dispatch(req: BatchDispatchRequest):
         "order_ids": [int(item["order_id"]) for item in results],
         "shortages": remaining_shortages,
     }
+
+
+@router.put("/schedule/shortage-settings")
+async def update_schedule_shortage_settings(req: BatchDispatchRequest):
+    normalized_order_ids = []
+    for order_id in req.order_ids:
+        try:
+            normalized_order_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    if not normalized_order_ids:
+        raise HTTPException(400, "請先選擇要更新的訂單")
+
+    decision_updates = build_order_decision_allocations(
+        normalized_order_ids,
+        req.decisions,
+        include_none=True,
+    )
+    scoped_decisions = _normalize_order_decisions(req.order_decisions)
+    decision_allocations = {
+        order_id: _merge_decision_updates(
+            order_id,
+            {
+                **decision_updates.get(order_id, {}),
+                **scoped_decisions.get(order_id, {}),
+            },
+        )
+        for order_id in normalized_order_ids
+    }
+    supplement_updates = _normalize_order_supplement_updates(req.order_supplements)
+    supplement_allocations = {
+        order_id: _merge_supplement_updates(
+            order_id,
+            supplement_updates.get(order_id, {}),
+        )
+        for order_id in normalized_order_ids
+    }
+
+    db.replace_order_decisions(normalized_order_ids, decision_allocations)
+    db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+
+    active_draft_orders = list(dict.fromkeys(
+        int(item["order_id"])
+        for item in db.get_active_merge_drafts()
+        if item.get("order_id") is not None
+    ))
+    if active_draft_orders:
+        rebuild_merge_drafts(active_draft_orders)
+
+    db.log_activity("shortage_settings_update", f"更新右側補料設定 {len(normalized_order_ids)} 筆")
+    return {"ok": True, "count": len(normalized_order_ids)}
 
 
 @router.get("/schedule/drafts")

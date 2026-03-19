@@ -3,7 +3,7 @@ import { apiJson, apiFetch, apiPost, showToast, esc, fmt } from "./api.js";
 let _batches = [];
 let _overrunPreview = null;
 let _overrunPreviewSignature = "";
-let _overrunImportPreview = null;
+let _resolutionContext = null;
 const _collapsed = new Set();
 const _skippedMap = new Map();  // batch_id → [part_number, ...]
 
@@ -13,11 +13,11 @@ export async function initDefectives() {
   document.getElementById("btn-overrun-preview")?.addEventListener("click", () => void handleOverrunPreview());
   document.getElementById("btn-overrun-submit")?.addEventListener("click", () => void handleOverrunSubmit());
 
-  document.getElementById("overrun-resolution-close")?.addEventListener("click", closeOverrunResolutionModal);
-  document.getElementById("overrun-resolution-cancel")?.addEventListener("click", closeOverrunResolutionModal);
-  document.getElementById("overrun-resolution-confirm")?.addEventListener("click", () => void handleOverrunResolutionConfirm());
-  document.getElementById("overrun-resolution-list")?.addEventListener("change", handleOverrunResolutionListChange);
-  document.getElementById("overrun-resolution-list")?.addEventListener("click", handleOverrunResolutionListClick);
+  document.getElementById("overrun-resolution-close")?.addEventListener("click", closeResolutionModal);
+  document.getElementById("overrun-resolution-cancel")?.addEventListener("click", closeResolutionModal);
+  document.getElementById("overrun-resolution-confirm")?.addEventListener("click", () => void handleResolutionConfirm());
+  document.getElementById("overrun-resolution-list")?.addEventListener("change", handleResolutionListChange);
+  document.getElementById("overrun-resolution-list")?.addEventListener("click", handleResolutionListClick);
 
   [
     "overrun-model",
@@ -58,34 +58,41 @@ function handleImport() {
 }
 
 async function doImport(file, batchId) {
-  const formData = new FormData();
-  formData.append("file", file);
-
   const btn = document.getElementById("btn-import-defective");
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "匯入中...";
+    btn.textContent = "預覽中...";
   }
-  showToast(`正在匯入 ${file.name}，解析並扣帳主檔中...`, { duration: 30000 });
+  showToast(`正在讀取 ${file.name}，先整理扣帳明細...`, { duration: 30000 });
 
-  const url = batchId ? `/api/defectives/batches/${batchId}/add` : "/api/defectives/import";
+  const formData = new FormData();
+  formData.append("file", file);
+  const url = batchId ? `/api/defectives/batches/${batchId}/add-preview` : "/api/defectives/import-preview";
 
   try {
     const resp = await apiFetch(url, { method: "POST", body: formData });
-    const result = await resp.json();
-    const skipped = result.skipped_parts || [];
-    const targetBatchId = batchId || result.batch_id;
-
-    if (skipped.length) {
-      _skippedMap.set(targetBatchId, skipped);
+    const preview = await resp.json();
+    _resolutionContext = {
+      kind: "defective",
+      preview,
+      batchId: batchId || Number(preview.batch_id || 0) || null,
+      sourceFilename: preview.source_filename || file.name,
+    };
+    openResolutionModal(_resolutionContext);
+    if (Number(preview.missing_count || 0) > 0) {
+      showToast(`這份不良品有 ${preview.missing_count} 筆料號抓不到，請先確認後再扣帳`, {
+        tone: "error",
+        duration: 4000,
+      });
     } else {
-      _skippedMap.delete(targetBatchId);
+      showToast(`已載入 ${fmt(preview.deducted_count || 0)} 筆不良品，請確認後再扣帳`, {
+        tone: "success",
+        duration: 3000,
+      });
     }
-
-    showToast(`已匯入 ${result.deducted_count} 筆不良品並扣帳`, { tone: "success", duration: 3000 });
-    await refreshDefectives();
   } catch (e) {
-    showToast("匯入失敗：" + e.message);
+    _resolutionContext = null;
+    showToast("不良品預覽失敗：" + e.message);
   } finally {
     if (btn) {
       btn.disabled = false;
@@ -122,29 +129,27 @@ async function doOverrunImport(file) {
   try {
     const resp = await apiFetch("/api/defectives/overrun/import-preview", { method: "POST", body: formData });
     const preview = await resp.json();
-    _overrunImportPreview = preview;
+    _resolutionContext = {
+      kind: "overrun",
+      preview,
+      batchId: null,
+      sourceFilename: preview.source_filename || file.name,
+    };
+    openResolutionModal(_resolutionContext);
 
     if (Number(preview.missing_count || 0) > 0) {
-      openOverrunResolutionModal(preview);
       showToast(`這份明細有 ${preview.missing_count} 筆料號抓不到，請先確認後再扣帳`, {
         tone: "error",
         duration: 4000,
       });
-      return;
+    } else {
+      showToast(`已載入 ${fmt(preview.deducted_count || 0)} 筆多打明細，請確認後再扣帳`, {
+        tone: "success",
+        duration: 3000,
+      });
     }
-
-    const confirmed = confirm(
-      `確定要匯入「${preview.source_filename || file.name}」嗎？\n` +
-      `共 ${fmt(preview.deducted_count || 0)} 筆料號會扣帳。`
-    );
-    if (!confirmed) {
-      _overrunImportPreview = null;
-      return;
-    }
-
-    await submitOverrunImportConfirm(preview, buildOverrunImportConfirmItems(preview));
   } catch (error) {
-    _overrunImportPreview = null;
+    _resolutionContext = null;
     showToast("匯入多打明細失敗：" + error.message);
   } finally {
     if (button) {
@@ -154,7 +159,7 @@ async function doOverrunImport(file) {
   }
 }
 
-function buildOverrunImportConfirmItems(preview, resolutionsByRow = new Map()) {
+function buildImportConfirmItems(preview, resolutionsByRow = new Map()) {
   return (preview?.items || []).map(item => {
     const rowKey = String(item.source_row || "");
     const resolution = resolutionsByRow.get(rowKey);
@@ -179,8 +184,10 @@ function buildOverrunImportConfirmItems(preview, resolutionsByRow = new Map()) {
   });
 }
 
-async function submitOverrunImportConfirm(preview, items) {
-  const button = document.getElementById("btn-overrun-import");
+async function submitImportConfirm(context, items) {
+  const preview = context?.preview || {};
+  const isDefective = context?.kind === "defective";
+  const button = document.getElementById(isDefective ? "btn-import-defective" : "btn-overrun-import");
   const modalConfirm = document.getElementById("overrun-resolution-confirm");
 
   if (button) button.disabled = true;
@@ -190,102 +197,153 @@ async function submitOverrunImportConfirm(preview, items) {
   }
 
   try {
-    const result = await apiPost("/api/defectives/overrun/import-confirm", {
-      source_filename: preview.source_filename || "",
-      title: preview.title || "",
-      mo_info: preview.mo_info || "",
-      items,
-    });
+    const payload = isDefective
+      ? {
+          batch_id: context.batchId || null,
+          source_filename: context.sourceFilename || preview.source_filename || "",
+          items,
+        }
+      : {
+          source_filename: preview.source_filename || "",
+          title: preview.title || "",
+          mo_info: preview.mo_info || "",
+          items,
+        };
+    const url = isDefective ? "/api/defectives/import-confirm" : "/api/defectives/overrun/import-confirm";
+    const result = await apiPost(url, payload);
     const skipped = result.skipped_parts || [];
     if (skipped.length) {
       _skippedMap.set(result.batch_id, skipped);
     } else {
       _skippedMap.delete(result.batch_id);
     }
-    closeOverrunResolutionModal({ preservePreview: false });
-    showToast(
-      `已完成多打明細扣帳 ${result.deducted_count} 筆`
+    closeResolutionModal({ preserveContext: false });
+    const actionText = isDefective
+      ? (context.batchId ? "已追加不良品扣帳" : "已完成不良品扣帳")
+      : "已完成多打明細扣帳";
+    showToast(`${actionText} ${result.deducted_count} 筆`
       + (result.replaced_count ? `，改正 ${result.replaced_count} 筆` : "")
-      + (result.skipped_count ? `，不扣 ${result.skipped_count} 筆` : ""),
-      { tone: "success", duration: 3500 },
-    );
+      + (result.skipped_count ? `，不扣 ${result.skipped_count} 筆` : ""), {
+      tone: "success",
+      duration: 3500,
+    });
     await refreshDefectives();
   } catch (error) {
     showToast("確認扣帳失敗：" + error.message, { tone: "error" });
   } finally {
-    _overrunImportPreview = null;
     if (button) button.disabled = false;
     if (modalConfirm) {
       modalConfirm.disabled = false;
-      modalConfirm.textContent = "確認後扣帳";
+      modalConfirm.textContent = isDefective && context?.batchId ? "確認後追加扣帳" : "確認後扣帳";
     }
   }
 }
 
-function openOverrunResolutionModal(preview) {
+function openResolutionModal(context) {
   const modal = document.getElementById("overrun-resolution-modal");
   if (!modal) return;
-  renderOverrunResolutionModal(preview);
+  renderResolutionModal(context);
   modal.style.display = "flex";
   modal.setAttribute("aria-hidden", "false");
 }
 
-function closeOverrunResolutionModal(options = {}) {
-  const preservePreview = Boolean(options.preservePreview);
+function closeResolutionModal(options = {}) {
+  const preserveContext = Boolean(options.preserveContext);
   const modal = document.getElementById("overrun-resolution-modal");
   if (modal) {
     modal.style.display = "none";
     modal.setAttribute("aria-hidden", "true");
   }
-  if (!preservePreview) {
-    _overrunImportPreview = null;
+  if (!preserveContext) {
+    _resolutionContext = null;
   }
 }
 
-function renderOverrunResolutionModal(preview) {
+function renderResolutionModal(context) {
+  const preview = context?.preview || {};
   const summary = document.getElementById("overrun-resolution-summary");
   const list = document.getElementById("overrun-resolution-list");
-  if (!summary || !list) return;
+  const title = document.getElementById("resolution-modal-title");
+  const subtitle = document.getElementById("resolution-modal-subtitle");
+  const confirm = document.getElementById("overrun-resolution-confirm");
+  if (!summary || !list || !title || !subtitle || !confirm) return;
 
-  const foundCount = Number(preview.item_count || 0) - Number(preview.missing_count || 0);
+  const isDefective = context?.kind === "defective";
+  const missingCount = Number(preview.missing_count || 0);
+  const foundCount = Number(preview.item_count || 0) - missingCount;
   const missingItems = preview.missing_items || [];
+  const targetBatch = isDefective && context?.batchId
+    ? _batches.find(item => Number(item.id || 0) === Number(context.batchId || 0))
+    : null;
+
+  title.textContent = isDefective ? "不良品扣帳確認" : "加工多打料號確認";
+  subtitle.textContent = missingCount > 0
+    ? "抓不到的料號不能直接扣，請選擇不扣，或改成主檔裡的正確料號後再扣。"
+    : "確認後才會真正寫入主檔，請先檢查這次要扣的明細。";
+  confirm.textContent = isDefective && context?.batchId ? "確認後追加扣帳" : "確認後扣帳";
+
   summary.innerHTML = [
+    isDefective && targetBatch ? `追加批次：${esc(targetBatch.filename || `#${context.batchId}`)}` : "",
     `來源檔案：${esc(preview.source_filename || "")}`,
-    preview.title ? `明細標題：${esc(preview.title)}` : "",
-    preview.mo_info ? `M/O：${esc(preview.mo_info)}` : "",
-    `已抓到 ${fmt(foundCount)} 筆，可直接扣帳 ${fmt(preview.deducted_count || 0)} 筆；抓不到 ${fmt(preview.missing_count || 0)} 筆需要你確認。`,
+    !isDefective && preview.title ? `明細標題：${esc(preview.title)}` : "",
+    !isDefective && preview.mo_info ? `M/O：${esc(preview.mo_info)}` : "",
+    `已抓到 ${fmt(foundCount)} 筆，可直接扣帳 ${fmt(preview.deducted_count || 0)} 筆；抓不到 ${fmt(missingCount)} 筆需要你確認。`,
   ].filter(Boolean).join("<br>");
 
-  list.innerHTML = missingItems.map(item => {
-    const suggestions = item.suggestions || [];
-    return `<div class="defective-resolution-item" data-source-row="${item.source_row}">
-      <div class="defective-resolution-top">
-        <span class="defective-resolution-row-label">第 ${fmt(item.source_row || 0)} 列</span>
-        <span class="defective-resolution-part">${esc(item.part_number || "")}</span>
-        <span class="defective-resolution-qty">${fmt(item.defective_qty || 0)} pcs</span>
-      </div>
-      <div class="defective-resolution-actions">
-        <select class="js-resolution-action">
-          <option value="skip" selected>不扣</option>
-          <option value="replace">改正料號後扣</option>
-        </select>
-        <input class="js-resolution-target" type="text" placeholder="輸入正確料號" disabled>
-      </div>
-      ${suggestions.length ? `
-        <div class="defective-resolution-suggestions">
-          ${suggestions.map(suggestion =>
-            `<button class="defective-resolution-suggestion" type="button" data-part="${esc(suggestion.part_number || "")}">
-              ${esc(suggestion.part_number || "")} (${fmt(suggestion.stock_qty || 0)})
-            </button>`
-          ).join("")}
+  if (missingItems.length) {
+    list.innerHTML = missingItems.map(item => {
+      const suggestions = item.suggestions || [];
+      return `<div class="defective-resolution-item" data-source-row="${item.source_row}">
+        <div class="defective-resolution-top">
+          <span class="defective-resolution-row-label">第 ${fmt(item.source_row || 0)} 列</span>
+          <span class="defective-resolution-part">${esc(item.part_number || "")}</span>
+          <span class="defective-resolution-qty">${fmt(item.defective_qty || 0)} pcs</span>
         </div>
-      ` : ""}
-      <div class="defective-resolution-help">找不到原料號時，不能直接扣原料號；要嘛不扣，要嘛改成主檔裡存在的正確料號。</div>
-    </div>`;
-  }).join("");
+        <div class="defective-resolution-actions">
+          <select class="js-resolution-action">
+            <option value="skip" selected>不扣</option>
+            <option value="replace">改正料號後扣</option>
+          </select>
+          <input class="js-resolution-target" type="text" placeholder="輸入正確料號" disabled>
+        </div>
+        ${suggestions.length ? `
+          <div class="defective-resolution-suggestions">
+            ${suggestions.map(suggestion =>
+              `<button class="defective-resolution-suggestion" type="button" data-part="${esc(suggestion.part_number || "")}">
+                ${esc(suggestion.part_number || "")} (${fmt(suggestion.stock_qty || 0)})
+              </button>`
+            ).join("")}
+          </div>
+        ` : ""}
+        <div class="defective-resolution-help">找不到原料號時，不能直接扣原料號；要嘛不扣，要嘛改成主檔裡存在的正確料號。</div>
+      </div>`;
+    }).join("");
+    return;
+  }
+
+  const rows = preview.results || [];
+  if (!rows.length) {
+    list.innerHTML = '<div class="no-shortage-msg">這次沒有任何可扣帳的料號。</div>';
+    return;
+  }
+
+  list.innerHTML = `<div class="defective-overrun-table-wrap"><table class="analytics-table defective-batch-table"><thead><tr>
+    <th>料號</th><th>說明</th><th>扣帳數量</th><th>扣帳前庫存</th><th>扣帳後庫存</th>
+  </tr></thead><tbody>${
+    rows.map(row => {
+      const stockClass = row.stock_after < 0 ? ' class="stock-negative"' : "";
+      return `<tr>
+        <td>${esc(row.part_number || "")}</td>
+        <td>${esc(row.description || "")}</td>
+        <td>${fmt(row.defective_qty || 0)}</td>
+        <td>${fmt(row.stock_before || 0)}</td>
+        <td${stockClass}>${fmt(row.stock_after || 0)}</td>
+      </tr>`;
+    }).join("")
+  }</tbody></table></div>`;
 }
 
-function handleOverrunResolutionListChange(event) {
+function handleResolutionListChange(event) {
   const row = event.target.closest(".defective-resolution-item");
   if (!row) return;
 
@@ -300,7 +358,7 @@ function handleOverrunResolutionListChange(event) {
   }
 }
 
-function handleOverrunResolutionListClick(event) {
+function handleResolutionListClick(event) {
   const button = event.target.closest(".defective-resolution-suggestion");
   if (!button) return;
 
@@ -316,7 +374,7 @@ function handleOverrunResolutionListClick(event) {
   targetInput.value = button.dataset.part || "";
 }
 
-function collectOverrunResolutionChoices() {
+function collectResolutionChoices() {
   const resolutions = new Map();
   document.querySelectorAll(".defective-resolution-item").forEach(row => {
     const sourceRow = String(row.dataset.sourceRow || "");
@@ -330,13 +388,13 @@ function collectOverrunResolutionChoices() {
   return resolutions;
 }
 
-async function handleOverrunResolutionConfirm() {
-  if (!_overrunImportPreview) {
-    closeOverrunResolutionModal();
+async function handleResolutionConfirm() {
+  if (!_resolutionContext) {
+    closeResolutionModal();
     return;
   }
 
-  const resolutions = collectOverrunResolutionChoices();
+  const resolutions = collectResolutionChoices();
   for (const [rowKey, resolution] of resolutions.entries()) {
     if (resolution.action === "replace" && !resolution.target_part_number) {
       showToast(`第 ${rowKey} 列請輸入正確料號，或改成不扣`);
@@ -344,8 +402,8 @@ async function handleOverrunResolutionConfirm() {
     }
   }
 
-  const items = buildOverrunImportConfirmItems(_overrunImportPreview, resolutions);
-  await submitOverrunImportConfirm(_overrunImportPreview, items);
+  const items = buildImportConfirmItems(_resolutionContext.preview, resolutions);
+  await submitImportConfirm(_resolutionContext, items);
 }
 
 // ── 加工多打 ────────────────────────────────────────────────────────────────

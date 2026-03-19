@@ -3,10 +3,12 @@
  *
  * 1. 從快照庫存開始
  * 2. 扣掉已發料消耗（dispatched_consumption）
- * 3. 對未發料訂單跑 running balance
+ * 3. 套用各訂單已保存的補料值
+ * 4. 對未發料訂單跑 running balance
  */
-export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}) {
+export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}, orderSupplementsByOrder = {}) {
   const running = { ...stock };
+  const normalizedOrderSupplements = normalizeOrderSupplements(orderSupplementsByOrder);
 
   for (const [part, consumed] of Object.entries(dispatchedConsumption)) {
     const key = part.toUpperCase();
@@ -21,6 +23,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
   const results = [];
 
   for (const order of orders) {
+    const orderId = Number(order?.id);
     const key = (order.model || "").toUpperCase();
     const bomEntry = bom[key] ?? null;
 
@@ -64,6 +67,19 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
       summary.ending_stock = j;
     }
 
+    const supplements = normalizedOrderSupplements[orderId] || {};
+    for (const [part, supplementQty] of Object.entries(supplements)) {
+      if (!Number.isFinite(supplementQty) || supplementQty <= 0) continue;
+
+      running[part] = (running[part] ?? 0) + supplementQty;
+
+      const summary = partSummaries[part];
+      if (!summary) continue;
+
+      summary.supplement_qty = (summary.supplement_qty || 0) + supplementQty;
+      summary.ending_stock = (summary.ending_stock || 0) + supplementQty;
+    }
+
     for (const summary of Object.values(partSummaries)) {
       const requiredMin = getRequiredMinStock(summary.part_number);
       const shortage_amount = Math.max(0, requiredMin - summary.ending_stock);
@@ -81,6 +97,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
         shortage_amount,
         current_stock: summary.current_stock,
         needed: summary.needed,
+        supplement_qty: summary.supplement_qty || 0,
         moq: item_moq,
         suggested_qty,
         purchase_suggested_qty,
@@ -108,6 +125,25 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
 function calcSuggested(shortage, moq) {
   if (moq > 0) return Math.ceil(shortage / moq) * moq;
   return shortage;
+}
+
+function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
+  const normalized = {};
+  for (const [rawOrderId, supplements] of Object.entries(orderSupplementsByOrder || {})) {
+    const orderId = Number.parseInt(rawOrderId, 10);
+    if (!Number.isInteger(orderId)) continue;
+
+    const orderSupplements = {};
+    for (const [rawPart, rawQty] of Object.entries(supplements || {})) {
+      const part = String(rawPart || "").trim().toUpperCase();
+      const qty = Number(rawQty || 0);
+      if (!part || !Number.isFinite(qty) || qty <= 0) continue;
+      orderSupplements[part] = qty;
+    }
+
+    normalized[orderId] = orderSupplements;
+  }
+  return normalized;
 }
 
 function getRequiredMinStock(partNumber) {

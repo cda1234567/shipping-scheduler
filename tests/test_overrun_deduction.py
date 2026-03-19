@@ -10,6 +10,7 @@ from unittest.mock import patch
 import openpyxl
 
 import app.database as db
+from app.services.defective_deduction import deduct_defectives_from_main, reverse_defectives_from_main
 from app.services.overrun_deduction import (
     apply_overrun_import_confirmations,
     build_overrun_import_preview,
@@ -184,3 +185,38 @@ class OverrunDeductionTests(InMemoryDbTestCase):
         self.assertEqual(len(applied["final_items"]), 2)
         self.assertEqual(len(applied["replaced_items"]), 1)
         self.assertEqual(len(applied["skipped_items"]), 1)
+
+    def test_overrun_headers_are_written_to_main_and_reversal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=1).value = "Part"
+            ws.cell(row=1, column=4).value = "Stock"
+            ws.cell(row=2, column=1).value = "PART-A"
+            ws.cell(row=2, column=4).value = 100
+            wb.save(main_path)
+            wb.close()
+
+            deduct_defectives_from_main(
+                str(main_path),
+                [{"part_number": "PART-A", "description": "IC-A", "defective_qty": 25}],
+                entry_header="加工多打扣帳",
+            )
+            reverse_defectives_from_main(
+                str(main_path),
+                [{"part_number": "PART-A", "defective_qty": 25}],
+                entry_header="加工多打回復",
+            )
+
+            result_wb = openpyxl.load_workbook(main_path, data_only=False)
+            try:
+                result_ws = result_wb.active
+                self.assertEqual(result_ws.cell(row=1, column=5).value, "加工多打扣帳")
+                self.assertEqual(result_ws.cell(row=1, column=7).value, "加工多打回復")
+                self.assertEqual(result_ws.cell(row=2, column=5).value, 25)
+                self.assertEqual(result_ws.cell(row=2, column=6).value, 75)
+                self.assertEqual(result_ws.cell(row=2, column=7).value, 25)
+                self.assertEqual(result_ws.cell(row=2, column=8).value, 100)
+            finally:
+                result_wb.close()
