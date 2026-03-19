@@ -57,13 +57,13 @@ class DesktopLauncherTests(unittest.TestCase):
 
     def test_build_autostart_command_for_frozen_mode_uses_current_executable(self):
         target, arguments, working_directory = build_autostart_command(
-            current_executable="C:/OpenText/OpenText.exe",
+            current_executable="C:/DispatchScheduler/DispatchSchedulerDesktop.exe",
             frozen=True,
         )
 
-        self.assertEqual(target, str(Path("C:/OpenText/OpenText.exe").resolve()))
+        self.assertEqual(target, str(Path("C:/DispatchScheduler/DispatchSchedulerDesktop.exe").resolve()))
         self.assertEqual(arguments, "--autostart --minimized")
-        self.assertEqual(working_directory, str(Path("C:/OpenText").resolve()))
+        self.assertEqual(working_directory, str(Path("C:/DispatchScheduler").resolve()))
 
     def test_get_startup_shortcut_path_uses_appdata(self):
         shortcut_path = get_startup_shortcut_path(
@@ -77,8 +77,8 @@ class DesktopLauncherTests(unittest.TestCase):
         )
 
     def test_get_desktop_app_icon_path_points_to_static_asset(self):
-        icon_path = get_desktop_app_icon_path(r"C:\OpenText")
-        self.assertEqual(icon_path, Path(r"C:\OpenText\static\assets\opentext_app_icon.ico"))
+        icon_path = get_desktop_app_icon_path(r"C:\DispatchScheduler")
+        self.assertEqual(icon_path, Path(r"C:\DispatchScheduler\static\assets\dispatch_app_icon.ico"))
 
     def test_parse_bool_setting(self):
         self.assertTrue(parse_bool_setting("1"))
@@ -166,7 +166,7 @@ class DesktopLauncherTests(unittest.TestCase):
             script_path = Path(temp_dir) / "desktop_app.py"
             python_exe = Path(temp_dir) / "python.exe"
             pythonw_exe = Path(temp_dir) / "pythonw.exe"
-            icon_path = Path(temp_dir) / "static" / "assets" / "opentext_app_icon.ico"
+            icon_path = Path(temp_dir) / "static" / "assets" / "dispatch_app_icon.ico"
             script_path.write_text("", encoding="utf-8")
             python_exe.write_text("", encoding="utf-8")
             pythonw_exe.write_text("", encoding="utf-8")

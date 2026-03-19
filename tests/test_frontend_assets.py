@@ -319,13 +319,13 @@ console.log(JSON.stringify(results));
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
         desktop_app = (root / "desktop_app.py").read_text(encoding="utf-8")
-        icon_png = root / "static" / "assets" / "opentext_app_icon.png"
-        icon_ico = root / "static" / "assets" / "opentext_app_icon.ico"
+        icon_png = root / "static" / "assets" / "dispatch_app_icon.png"
+        icon_ico = root / "static" / "assets" / "dispatch_app_icon.ico"
 
-        self.assertIn('/static/assets/opentext_app_icon.png', index_html)
-        self.assertIn('/static/assets/opentext_app_icon.ico', index_html)
+        self.assertIn('/static/assets/dispatch_app_icon.png', index_html)
+        self.assertIn('/static/assets/dispatch_app_icon.ico', index_html)
         self.assertIn("from app.runtime_paths import get_app_base_dir, get_resource_base_dir", desktop_app)
-        self.assertIn('APP_ICON_PATH = RESOURCE_DIR / "static" / "assets" / "opentext_app_icon.ico"', desktop_app)
+        self.assertIn('APP_ICON_PATH = RESOURCE_DIR / "static" / "assets" / "dispatch_app_icon.ico"', desktop_app)
         self.assertIn("get_desktop_app_icon_path", desktop_app)
         self.assertIn("icon=str(APP_ICON_PATH) if APP_ICON_PATH.exists() else None", desktop_app)
         self.assertIn("def apply_windows_window_icon(window: webview.Window):", desktop_app)

@@ -28,7 +28,7 @@ class RuntimePathTests(unittest.TestCase):
             (bundle_dir / "config.yaml").write_text("bundled: true", encoding="utf-8")
 
             with patch.object(sys, "frozen", True, create=True), \
-                 patch.object(sys, "executable", str(app_dir / "OpenTextDesktop.exe"), create=True), \
+                 patch.object(sys, "executable", str(app_dir / "DispatchSchedulerDesktop.exe"), create=True), \
                  patch.object(sys, "_MEIPASS", str(bundle_dir), create=True):
                 self.assertEqual(get_config_file_path().resolve(), (app_dir / "config.yaml").resolve())
 
@@ -41,7 +41,7 @@ class RuntimePathTests(unittest.TestCase):
             (bundle_dir / "config.yaml").write_text("bundled: true", encoding="utf-8")
 
             with patch.object(sys, "frozen", True, create=True), \
-                 patch.object(sys, "executable", str(app_dir / "OpenTextDesktop.exe"), create=True), \
+                 patch.object(sys, "executable", str(app_dir / "DispatchSchedulerDesktop.exe"), create=True), \
                  patch.object(sys, "_MEIPASS", str(bundle_dir), create=True):
                 self.assertEqual(get_config_file_path().resolve(), (bundle_dir / "config.yaml").resolve())
 

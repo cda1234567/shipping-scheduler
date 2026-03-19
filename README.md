@@ -1,4 +1,4 @@
-# OpenText 出貨排程系統
+# 出貨排程系統
 
 PCB/電子製造業的出貨排程管理系統，整合 BOM 領料、庫存計算、缺料預警與發料管理功能。
 
@@ -66,8 +66,8 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_desktop_exe.ps1
 
 打包完成後會輸出：
 
-- `dist/OpenTextDesktop/`：可直接執行的桌面版資料夾
-- `dist/OpenTextDesktop-win64.zip`：方便發給其他 Windows 電腦的壓縮包
+- `dist/DispatchSchedulerDesktop/`：可直接執行的桌面版資料夾
+- `dist/DispatchSchedulerDesktop-win64.zip`：方便發給其他 Windows 電腦的壓縮包
 
 桌面版會把 `data/` 建在 `.exe` 所在資料夾旁邊，適合做可攜式部署。
 
@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\tools\build_desktop_exe.ps1
 也可以用命令列覆蓋：
 
 ```powershell
-OpenTextDesktop.exe --server-url http://192.168.1.10:8765/
+DispatchSchedulerDesktop.exe --server-url http://192.168.1.10:8765/
 ```
 
 ### Docker / Server 版
@@ -229,7 +229,7 @@ docker compose -f docker-compose.server.yml up -d
 ## 專案結構
 
 ```
-opentext大改版/
+shipping-scheduler/
 ├── main.py                  # FastAPI 應用啟動
 ├── config.yaml              # Excel 欄位設定
 ├── requirements.txt         # Python 套件

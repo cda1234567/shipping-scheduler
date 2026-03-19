@@ -39,13 +39,13 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="OpenTextDesktop",
+    name="DispatchSchedulerDesktop",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     console=False,
-    icon=str(project_root / "static" / "assets" / "opentext_app_icon.ico"),
+    icon=str(project_root / "static" / "assets" / "dispatch_app_icon.ico"),
 )
 
 coll = COLLECT(
@@ -55,5 +55,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name="OpenTextDesktop",
+    name="DispatchSchedulerDesktop",
 )

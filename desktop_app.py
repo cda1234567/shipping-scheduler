@@ -35,8 +35,8 @@ from app.services.desktop_launcher import (
 
 BASE_DIR = get_app_base_dir()
 RESOURCE_DIR = get_resource_base_dir()
-APP_ICON_PATH = RESOURCE_DIR / "static" / "assets" / "opentext_app_icon.ico"
-APP_USER_MODEL_ID = "OpenText.ShippingScheduler.Desktop"
+APP_ICON_PATH = RESOURCE_DIR / "static" / "assets" / "dispatch_app_icon.ico"
+APP_USER_MODEL_ID = "DispatchScheduler.Desktop"
 APP_HOST = "127.0.0.1"
 APP_PORT = 8765
 LOCAL_APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
@@ -394,7 +394,7 @@ class DesktopBridge:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="OpenText Shipping Scheduler desktop app")
+    parser = argparse.ArgumentParser(description="Dispatch Scheduler desktop app")
     parser.add_argument("--autostart", action="store_true", help="started from the Windows startup shortcut")
     parser.add_argument("--minimized", action="store_true", help="start minimized to the taskbar")
     parser.add_argument("--server-url", help="connect desktop shell to a remote Docker/server URL instead of starting local Python")
@@ -408,14 +408,14 @@ def main():
     remote_server_url = resolve_remote_server_url(
         BASE_DIR,
         cli_url=args.server_url,
-        env_url=os.environ.get("OPENTEXT_REMOTE_URL"),
+        env_url=os.environ.get("DISPATCH_REMOTE_URL"),
     )
     server = AppServer(remote_server_url or LOCAL_APP_URL, managed=not bool(remote_server_url))
     server.ensure_started()
 
     bridge = DesktopBridge(server, args)
     window = webview.create_window(
-        "OpenText 出貨排程系統",
+        "出貨排程系統",
         build_app_url(server.app_url),
         js_api=bridge,
         width=1480,

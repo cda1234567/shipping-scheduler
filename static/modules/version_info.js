@@ -31,7 +31,7 @@ function renderVersionInfo(meta) {
   if (!versionButton || !versionLabel || !modal || !title || !subhead || !content) return;
 
   const version = String(meta?.version || "").trim();
-  const appName = String(meta?.app_name || "").trim() || "OpenText 出貨排程系統";
+  const appName = String(meta?.app_name || "").trim() || "出貨排程系統";
   const releaseDate = formatReleaseDate(meta?.released_at);
   const headline = String(meta?.headline || "").trim();
   const sections = Array.isArray(meta?.sections) ? meta.sections : [];

@@ -6,7 +6,7 @@
 
 ## 專案概述
 
-**OpenText 出貨排程系統** — 用於 PCB/電子製造業的出貨排程、BOM 領料、庫存計算、缺料預警與發料管理。
+**出貨排程系統** — 用於 PCB/電子製造業的出貨排程、BOM 領料、庫存計算、缺料預警與發料管理。
 
 - **後端**: FastAPI + SQLite（單一 `system.db`）
 - **前端**: 純 vanilla JS（ES modules）+ HTML/CSS，無框架
@@ -19,7 +19,7 @@
 ## 目錄結構
 
 ```
-opentext大改版/
+shipping-scheduler/
 ├── main.py                  # FastAPI app 啟動點
 ├── config.yaml              # Excel 欄位對應設定
 ├── requirements.txt         # Python 相依套件

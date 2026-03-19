@@ -3,8 +3,8 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $root "dist"
-$bundleDir = Join-Path $distDir "OpenTextDesktop"
-$zipPath = Join-Path $distDir "OpenTextDesktop-win64.zip"
+$bundleDir = Join-Path $distDir "DispatchSchedulerDesktop"
+$zipPath = Join-Path $distDir "DispatchSchedulerDesktop-win64.zip"
 $desktopConfigExample = Join-Path $root "desktop_client.json.example"
 
 Push-Location $root

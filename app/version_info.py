@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-APP_NAME = "OpenText 出貨排程系統"
+APP_NAME = "出貨排程系統"
 APP_VERSION = "v2026.03.16.2"
 APP_RELEASED_AT = "2026-03-16"
 APP_HEADLINE = "這版聚焦在發料流程、補料可視性、主檔寫入保護與系統維護。"

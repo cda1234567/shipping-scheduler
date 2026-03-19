@@ -292,7 +292,7 @@ class ManagedPathMigrationTests(InMemoryDbTestCase):
             candidate.write_bytes(b"main")
 
             with patch.dict(db._MANAGED_PATH_FALLBACKS, {"main_file_path": managed_dir}, clear=False):
-                db.set_setting("main_file_path", r"Z:\Andy\Job\code\-\opentext大改版\data\main_file\main.xlsx")
+                db.set_setting("main_file_path", r"Z:\Andy\Job\code\-\shipping-scheduler\data\main_file\main.xlsx")
 
                 repaired = db.get_setting("main_file_path")
 
@@ -310,7 +310,7 @@ class ManagedPathMigrationTests(InMemoryDbTestCase):
 
             with patch.dict(db._MANAGED_PATH_FALLBACKS, {"main_file_path": managed_dir}, clear=False):
                 repaired = db.resolve_managed_path(
-                    r"Z:\Andy\Job\code\-\opentext大改版\data\main_file\main.xlsx"
+                    r"Z:\Andy\Job\code\-\shipping-scheduler\data\main_file\main.xlsx"
                 )
 
         self.assertEqual(repaired, str(candidate))
@@ -325,7 +325,7 @@ class ManagedPathMigrationTests(InMemoryDbTestCase):
             db.save_bom_file({
                 "id": "bom-1",
                 "filename": "bom-1.xlsx",
-                "filepath": r"Z:\Andy\Job\code\-\opentext大改版\data\bom\bom-1.xlsx",
+                "filepath": r"Z:\Andy\Job\code\-\shipping-scheduler\data\bom\bom-1.xlsx",
                 "source_filename": "bom-1.xls",
                 "source_format": ".xls",
                 "is_converted": True,

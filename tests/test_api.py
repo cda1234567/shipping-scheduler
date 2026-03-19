@@ -2252,7 +2252,7 @@ class ApiTests(unittest.TestCase):
 
     def test_get_system_app_meta_returns_version_payload(self):
         meta = {
-            "app_name": "OpenText 出貨排程系統",
+            "app_name": "出貨排程系統",
             "version": "v2026.03.16.1",
             "released_at": "2026-03-16",
             "headline": "這版聚焦在發料流程與版本可視性。",

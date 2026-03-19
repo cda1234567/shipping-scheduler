@@ -36,7 +36,7 @@ async function checkInlineModules(rootDir) {
     return { checked: 0, failures: [] };
   }
 
-  const tempDir = await mkdtemp(join(tmpdir(), "opentext-js-check-"));
+  const tempDir = await mkdtemp(join(tmpdir(), "dispatch-js-check-"));
   const failures = [];
 
   try {

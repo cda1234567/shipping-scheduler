@@ -58,7 +58,7 @@ async def lifespan(_: FastAPI):
         database_backup_scheduler.stop()
 
 
-app = FastAPI(title="OpenText 出貨排程系統", version=APP_VERSION, lifespan=lifespan)
+app = FastAPI(title="出貨排程系統", version=APP_VERSION, lifespan=lifespan)
 
 app.include_router(main_file.router, prefix="/api")
 app.include_router(schedule.router, prefix="/api")

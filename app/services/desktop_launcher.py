@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-SHORTCUT_NAME = "OpenText Shipping Scheduler.lnk"
+SHORTCUT_NAME = "Dispatch Scheduler.lnk"
 DOWNLOAD_DIR_SETTING = "desktop_download_dir"
 DARK_MODE_SETTING = "desktop_dark_mode"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -18,7 +18,7 @@ def _ps_quote(value: str) -> str:
 
 def get_desktop_app_icon_path(base_dir: str | Path | None = None) -> Path:
     root = Path(base_dir).resolve() if base_dir else Path(__file__).resolve().parents[2]
-    return root / "static" / "assets" / "opentext_app_icon.ico"
+    return root / "static" / "assets" / "dispatch_app_icon.ico"
 
 
 def parse_bool_setting(value: str | bool | None) -> bool:

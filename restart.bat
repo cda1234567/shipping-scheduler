@@ -1,5 +1,5 @@
 @echo off
-echo Restarting OpenText server...
+echo Restarting dispatch scheduler server...
 for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8765 "') do (
     taskkill /F /PID %%a >nul 2>&1
 )
