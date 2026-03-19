@@ -6,6 +6,8 @@
  * 3. 套用各訂單已保存的補料值
  * 4. 對未發料訂單跑 running balance
  */
+const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-M24", "IC-XC2C32"];
+
 export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}, orderSupplementsByOrder = {}) {
   const running = { ...stock };
   const normalizedOrderSupplements = normalizeOrderSupplements(orderSupplementsByOrder);
@@ -51,6 +53,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
           description: comp.description || "",
           current_stock: running[part] ?? 0,
           needed: 0,
+          prev_qty_cs: 0,
           ending_stock: running[part] ?? 0,
         };
       } else if (!partSummaries[part].description && comp.description) {
@@ -64,6 +67,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
       const j = g + h - f;
       running[part] = j;
       summary.needed += f;
+      summary.prev_qty_cs += h;
       summary.ending_stock = j;
     }
 
@@ -81,16 +85,28 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
     }
 
     for (const summary of Object.values(partSummaries)) {
-      const requiredMin = getRequiredMinStock(summary.part_number);
-      const shortage_amount = Math.max(0, requiredMin - summary.ending_stock);
+      const shortage_amount = calculateCurrentOrderShortageAmount(
+        summary.part_number,
+        Number(summary.current_stock || 0) + Number(summary.prev_qty_cs || 0),
+        summary.needed,
+      );
       if (shortage_amount <= 0) continue;
 
+      const isOrderScoped = isOrderScopedShortagePart(summary.part_number);
       const st_stock_qty = Math.max(0, Number(stStock[summary.part_key] ?? 0) || 0);
-      const st_available_qty = Math.min(calcSuggested(shortage_amount, moq[summary.part_key] ?? 0), st_stock_qty);
-      const purchase_needed_qty = Math.max(0, shortage_amount - st_available_qty);
       const item_moq = moq[summary.part_key] ?? 0;
-      const purchase_suggested_qty = purchase_needed_qty > 0 ? calcSuggested(purchase_needed_qty, item_moq) : 0;
-      const suggested_qty = calcSuggested(shortage_amount, item_moq);
+      const st_available_qty = isOrderScoped
+        ? Math.min(shortage_amount, st_stock_qty)
+        : Math.min(calcSuggested(shortage_amount, item_moq), st_stock_qty);
+      const purchase_needed_qty = Math.max(0, shortage_amount - st_available_qty);
+      const purchase_suggested_qty = isOrderScoped
+        ? purchase_needed_qty
+        : purchase_needed_qty > 0
+          ? calcSuggested(purchase_needed_qty, item_moq)
+          : 0;
+      const suggested_qty = isOrderScoped
+        ? shortage_amount
+        : calcSuggested(shortage_amount, item_moq);
       const item = {
         part_number: summary.part_number,
         description: summary.description,
@@ -127,6 +143,11 @@ function calcSuggested(shortage, moq) {
   return shortage;
 }
 
+function isOrderScopedShortagePart(partNumber) {
+  const key = String(partNumber || "").trim().toUpperCase();
+  return ORDER_SCOPED_PART_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
 function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
   const normalized = {};
   for (const [rawOrderId, supplements] of Object.entries(orderSupplementsByOrder || {})) {
@@ -148,4 +169,17 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
 
 function getRequiredMinStock(partNumber) {
   return String(partNumber || "").trim().toUpperCase().startsWith("EC-") ? 100 : 0;
+}
+
+function calculateShortageAmount(partNumber, endingStock) {
+  const requiredMin = getRequiredMinStock(partNumber);
+  return Math.max(0, requiredMin - Number(endingStock || 0));
+}
+
+function calculateCurrentOrderShortageAmount(partNumber, availableBefore, neededQty) {
+  if (isOrderScopedShortagePart(partNumber)) {
+    return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
+  }
+  const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
+  return calculateShortageAmount(partNumber, endingStock);
 }

@@ -189,6 +189,56 @@ def _merge_supplement_updates(order_id: int, updates: dict[str, float] | None = 
     return merged
 
 
+def _apply_request_overrides_to_contexts(
+    contexts: list[DispatchContext],
+    order_ids: list[int],
+    req: BatchDispatchRequest,
+) -> tuple[list[DispatchContext], dict[int, dict[str, float]]]:
+    normalized_contexts = [DispatchContext.from_value(context) for context in contexts]
+    if not normalized_contexts:
+        return [], {}
+
+    scoped_decisions = _normalize_order_decisions(req.order_decisions)
+    scoped_supplements = _normalize_order_supplements(req.order_supplements)
+    if not scoped_decisions and not scoped_supplements:
+        return normalized_contexts, build_context_supplement_allocations(normalized_contexts)
+
+    updated_contexts: list[DispatchContext] = []
+    for context in normalized_contexts:
+        decisions = dict(context.decisions or {})
+        supplements = dict(context.supplements or {})
+        order_id = context.order_id
+        order_decision_updates = scoped_decisions.get(order_id, {})
+        order_supplement_updates = scoped_supplements.get(order_id, {})
+
+        for part, decision in order_decision_updates.items():
+            if decision == "None":
+                decisions.pop(part, None)
+            else:
+                decisions[part] = decision
+
+        visible_parts = set(order_decision_updates) | set(order_supplement_updates)
+        if visible_parts:
+            for part in visible_parts:
+                qty = float(order_supplement_updates.get(part, 0) or 0)
+                decision = order_decision_updates.get(part, decisions.get(part, "None"))
+                if qty > 0 and decision != "Shortage":
+                    supplements[part] = qty
+                else:
+                    supplements.pop(part, None)
+
+        updated_contexts.append(DispatchContext(
+            draft=context.draft,
+            order=context.order,
+            groups=context.groups,
+            all_components=context.all_components,
+            decisions=decisions,
+            supplements=supplements,
+        ))
+
+    return updated_contexts, build_context_supplement_allocations(updated_contexts)
+
+
 def _execute_dispatch(
     order: dict,
     groups: list[dict],
@@ -338,7 +388,7 @@ def _resolve_batch_dispatch_plan(req: BatchDispatchRequest, normalized_order_ids
             DispatchContext.from_value(_load_active_merge_draft_context(draft_id_map[order_id], main_path))
             for order_id in normalized_order_ids
         ]
-        supplement_allocations = build_context_supplement_allocations(contexts)
+        contexts, supplement_allocations = _apply_request_overrides_to_contexts(contexts, normalized_order_ids, req)
         use_drafts = True
     else:
         decisions = _normalize_decisions(req.decisions)
@@ -626,7 +676,6 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     """
     main_path = _require_existing_main_path()
     plan = _resolve_single_order_dispatch_plan(order_id, req, main_path)
-    _ensure_main_write_allowed(plan.remaining_shortages)
     result = commit_dispatch_plan(
         plan,
         merge_executor=merge_row_to_main,
@@ -660,7 +709,6 @@ def batch_dispatch(req: BatchDispatchRequest):
 
     main_path = _require_existing_main_path()
     plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
-    _ensure_main_write_allowed(plan.remaining_shortages)
 
     result = commit_dispatch_plan(
         plan,
@@ -847,7 +895,6 @@ async def delete_schedule_draft(draft_id: int):
 def commit_schedule_draft(draft_id: int):
     main_path = _require_existing_main_path()
     plan = _resolve_draft_commit_plan(draft_id, main_path)
-    _ensure_main_write_allowed(plan.remaining_shortages)
     result = commit_dispatch_plan(
         plan,
         merge_executor=merge_row_to_main,

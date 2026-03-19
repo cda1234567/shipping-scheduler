@@ -914,7 +914,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_replace.call_args_list[0].args, ([1], {1: {"PART-1": 3000}}))
         self.assertEqual(mock_replace.call_args_list[1].args, ([1], {1: {"PART-1": 3000}}))
 
-    def test_batch_dispatch_blocks_main_write_when_preview_has_non_ec_shortage(self):
+    def test_batch_dispatch_allows_main_write_when_preview_has_non_ec_shortage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
             main_path.write_bytes(b"main")
@@ -930,16 +930,73 @@ class ApiTests(unittest.TestCase):
                      "merged_parts": 0,
                      "shortages": [{"part_number": "PART-1", "shortage_amount": 5, "resulting_stock": -5}],
                  }), \
-                 patch("app.routers.schedule._execute_dispatch") as mock_execute:
+                 patch("app.routers.schedule._execute_dispatch", return_value={
+                     "order_id": 1,
+                     "merged_parts": 0,
+                     "backup_path": "C:/b1.xlsx",
+                     "session": {"id": 11},
+                 }) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.schedule.refresh_snapshot_from_main"), \
+                 patch("app.routers.schedule.db.log_activity"):
                 response = self.client.post("/api/schedule/batch-dispatch", json={
                     "order_ids": [1],
                     "decisions": {},
                     "supplements": {},
                 })
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("PART-1", response.json()["detail"])
-        mock_execute.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["shortages"], [{"part_number": "PART-1", "shortage_amount": 5, "resulting_stock": -5}])
+        mock_execute.assert_called_once()
+        mock_replace.assert_called_once_with([1], {1: {}})
+
+    def test_batch_dispatch_active_draft_uses_modal_request_overrides(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            context = {
+                "draft": {"id": 11, "order_id": 1, "shortages": []},
+                "order": {"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"},
+                "groups": [{"components": []}],
+                "all_components": [{"part_number": "PART-1", "needed_qty": 5}],
+                "decisions": {"PART-1": "CreateRequirement"},
+                "supplements": {"PART-1": 1000},
+            }
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11}), \
+                 patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}]), \
+                 patch("app.routers.schedule._load_active_merge_draft_context", return_value=context), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={}), \
+                 patch("app.routers.schedule.preview_order_batches", return_value={
+                     "merged_parts": 1,
+                     "shortages": [],
+                 }), \
+                 patch("app.routers.schedule._execute_dispatch", return_value={
+                     "order_id": 1,
+                     "merged_parts": 1,
+                     "backup_path": "C:/b1.xlsx",
+                     "session": {"id": 11},
+                 }) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.schedule.refresh_snapshot_from_main"), \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/batch-dispatch", json={
+                    "order_ids": [1],
+                    "order_decisions": {
+                        "1": {"part-1": "CreateRequirement"},
+                    },
+                    "order_supplements": {
+                        "1": {"part-1": 3000},
+                    },
+                })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_execute.call_args.args[4], {"PART-1": "CreateRequirement"})
+        self.assertEqual(mock_execute.call_args.args[5], {"PART-1": 3000.0})
+        mock_replace.assert_called_once_with([1], {1: {"PART-1": 3000.0}})
 
     def test_batch_dispatch_rolls_back_processed_orders_when_later_order_fails(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1032,7 +1089,7 @@ class ApiTests(unittest.TestCase):
         mock_replace.assert_called_once_with([1], {1: {"PART-1": 3000}})
         mock_mark.assert_called_once_with(5)
 
-    def test_commit_schedule_draft_blocks_non_ec_shortage_but_allows_ec_safety_stock(self):
+    def test_commit_schedule_draft_allows_non_ec_and_ec_shortages(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
             main_path.write_bytes(b"main")
@@ -1061,21 +1118,25 @@ class ApiTests(unittest.TestCase):
                      {"merged_parts": 0, "shortages": [{"part_number": "PART-1", "shortage_amount": 8, "resulting_stock": -8}]},
                      {"merged_parts": 0, "shortages": [{"part_number": "EC-001", "shortage_amount": 20, "resulting_stock": 80}]},
                  ]), \
-                 patch("app.routers.schedule._execute_dispatch", return_value={"order_id": 2, "merged_parts": 1}) as mock_execute, \
+                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                     {"order_id": 1, "merged_parts": 1},
+                     {"order_id": 2, "merged_parts": 1},
+                 ]) as mock_execute, \
                  patch("app.routers.schedule.db.replace_order_supplements"), \
                  patch("app.routers.schedule.db.mark_merge_draft_committed"), \
                  patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.schedule.refresh_snapshot_from_main"), \
                  patch("app.routers.schedule.db.log_activity"):
                 blocked = self.client.post("/api/schedule/drafts/5/commit")
                 allowed = self.client.post("/api/schedule/drafts/6/commit")
 
-        self.assertEqual(blocked.status_code, 400)
-        self.assertIn("PART-1", blocked.json()["detail"])
+        self.assertEqual(blocked.status_code, 200)
+        self.assertEqual(blocked.json()["order_id"], 1)
         self.assertEqual(allowed.status_code, 200)
         self.assertEqual(allowed.json()["order_id"], 2)
-        mock_execute.assert_called_once()
+        self.assertEqual(mock_execute.call_count, 2)
 
-    def test_commit_schedule_draft_blocks_ec_negative_stock(self):
+    def test_commit_schedule_draft_allows_ec_negative_stock(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
             main_path.write_bytes(b"main")
@@ -1096,12 +1157,17 @@ class ApiTests(unittest.TestCase):
                      "merged_parts": 0,
                      "shortages": [{"part_number": "EC-001", "shortage_amount": 101, "resulting_stock": -1}],
                  }), \
-                 patch("app.routers.schedule._execute_dispatch") as mock_execute:
+                 patch("app.routers.schedule._execute_dispatch", return_value={"order_id": 3, "merged_parts": 1}) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements"), \
+                 patch("app.routers.schedule.db.mark_merge_draft_committed"), \
+                 patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.schedule.refresh_snapshot_from_main"), \
+                 patch("app.routers.schedule.db.log_activity"):
                 response = self.client.post("/api/schedule/drafts/7/commit")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("EC-001", response.json()["detail"])
-        mock_execute.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["order_id"], 3)
+        mock_execute.assert_called_once()
 
     def test_active_draft_preview_and_commit_use_same_saved_context(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -99,9 +99,11 @@ function renderDesktopState() {
     return;
   }
 
-  statusEl.textContent = _desktopState.server_started_here
-    ? "桌面版已啟動本機服務"
-    : "桌面版已連到既有服務";
+  statusEl.textContent = _desktopState.remote_server
+    ? "桌面版已連到遠端服務"
+    : _desktopState.server_started_here
+      ? "桌面版已啟動本機服務"
+      : "桌面版已連到既有本機服務";
   urlEl.textContent = _desktopState.app_url || "";
   folderEl.textContent = _desktopState.download_directory_set
     ? (_desktopState.download_directory || "尚未指定下載資料夾")

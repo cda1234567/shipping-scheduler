@@ -1,0 +1,27 @@
+services:
+  opentext-scheduler:
+    image: ${OPENTEXT_IMAGE:-ghcr.io/cda1234567/opentext-scheduler:latest}
+    container_name: opentext-scheduler
+    restart: unless-stopped
+    ports:
+      - "${OPENTEXT_PORT:-8765}:8765"
+    volumes:
+      - ./data:/app/data
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=opentext"
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: opentext-watchtower
+    restart: unless-stopped
+    command:
+      - "--label-enable"
+      - "--cleanup"
+      - "--rolling-restart"
+      - "--scope"
+      - "opentext"
+      - "--interval"
+      - "${WATCHTOWER_POLL_INTERVAL:-300}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

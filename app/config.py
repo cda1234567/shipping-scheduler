@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+from .runtime_paths import get_app_base_dir, get_config_file_path, get_resource_base_dir
 
-BASE_DIR      = Path(__file__).parent.parent
+BASE_DIR      = get_app_base_dir()
+RESOURCE_DIR  = get_resource_base_dir()
 DATA_DIR      = BASE_DIR / "data"
 MAIN_FILE_DIR = DATA_DIR / "main_file"
 SCHEDULE_DIR  = DATA_DIR / "schedule"
@@ -16,8 +18,8 @@ MERGE_DRAFT_DIR = DATA_DIR / "merge_drafts"
 METADATA_FILE = DATA_DIR / "metadata.json"
 BACKUP_DIR    = DATA_DIR / "backups"
 ST_INVENTORY_DIR = DATA_DIR / "st_inventory"
-STATIC_DIR    = BASE_DIR / "static"
-CONFIG_FILE   = BASE_DIR / "config.yaml"
+STATIC_DIR    = RESOURCE_DIR / "static"
+CONFIG_FILE   = get_config_file_path()
 
 for _d in [MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR, BACKUP_DIR, ST_INVENTORY_DIR]:
     _d.mkdir(parents=True, exist_ok=True)

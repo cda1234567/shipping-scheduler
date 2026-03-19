@@ -829,6 +829,41 @@ function buildRightPanelShortageData() {
   return { shortages, csShortages };
 }
 
+function buildRawModalShortageGroups(targets) {
+  const targetIds = new Set(
+    (targets || [])
+      .map(target => normalizeOrderId(target?.id))
+      .filter(Number.isInteger)
+  );
+  const targetRows = _rows.filter(row => targetIds.has(row.id));
+  const rawResults = targetRows.length
+    ? calculate(targetRows, _bomData, _stock, _moq, _dispatchedConsumption, _stStock, {})
+    : [];
+
+  const shortagesByModel = {};
+  const csShortagesByModel = {};
+  rawResults.forEach((result, index) => {
+    if (!result) return;
+    const row = targetRows[index];
+    if (!row) return;
+
+    const model = row.model || "未分類機種";
+    const code = row.code || model;
+    const orderId = row.id;
+
+    (result.shortages || []).forEach(item => {
+      if (!shortagesByModel[model]) shortagesByModel[model] = [];
+      shortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
+    });
+    (result.customer_material_shortages || []).forEach(item => {
+      if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
+      csShortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
+    });
+  });
+
+  return { shortagesByModel, csShortagesByModel };
+}
+
 /** 從主檔庫存中找出已經確定缺料的料號（庫存 < 安全水位）。 */
 function buildMainFileDeficitItems() {
   if (!_liveStock || !Object.keys(_liveStock).length) return [];
@@ -1237,15 +1272,31 @@ async function showDraftModal(draftId, { readOnly = false, fileId = null } = {})
       <button id="modal-download-bom" class="btn btn-primary btn-sm">${downloadLabel}</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">關閉</button>`
     : `
+      <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
+        <div class="modal-progress-head">
+          <div id="modal-download-status" class="modal-progress-label">正在儲存副檔...</div>
+          <div id="modal-download-percent" class="modal-progress-percent">0%</div>
+        </div>
+        <div id="modal-download-detail" class="modal-progress-detail">會把目前編輯的缺料與補料內容寫回副檔。</div>
+        <div class="modal-progress-bar">
+          <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
+        </div>
+      </div>
       <button id="modal-save-draft" class="btn btn-success btn-sm">儲存副檔</button>
       <button id="modal-download-bom" class="btn btn-primary btn-sm">${downloadLabel}</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
 
   document.getElementById("modal-save-draft")?.addEventListener("click", async () => {
     try {
-      await saveCurrentDraftFromModal();
+      setModalDownloadProgress(true, "正在儲存副檔...", "會把目前編輯的缺料與補料內容寫回副檔。", 14);
+      startModalProgressAnimation(92, 180);
+      await saveCurrentDraftFromModal({ silent: true });
+      setModalDownloadProgress(true, "副檔已更新", "這份副檔的補料調整已經保存。", 100, { tone: "success" });
+      await new Promise(resolve => setTimeout(resolve, 180));
       closeShortageModal();
+      showToast("副檔已更新");
     } catch (error) {
+      setModalDownloadProgress(false, "", "", 0);
       showToast("副檔儲存失敗: " + error.message);
     }
   });
@@ -1272,7 +1323,6 @@ async function showShortageModal(targets) {
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
-  const targetIds = new Set(targets.map(t => t.id));
 
   // 查詢對應的 BOM 檔案
   const models = [...new Set(targets.map(t => t.model).filter(Boolean))];
@@ -1285,22 +1335,10 @@ async function showShortageModal(targets) {
   }
 
   // 收集勾選訂單的缺料，按機種分組
-  const shortagesByModel = {};
-  const csShortagesByModel = {};
-  _calcResults.forEach((r, i) => {
-    if (!r) return;
-    if (!targetIds.has(_rows[i]?.id)) return;
-    const model = _rows[i]?.model || "未知機種";
-    const code = _rows[i]?.code || model;
-    (r.shortages || []).forEach(s => {
-      if (!shortagesByModel[model]) shortagesByModel[model] = [];
-      shortagesByModel[model].push({ ...s, _row_code: code, _row_model: model, _order_id: r.id });
-    });
-  (r.customer_material_shortages || []).forEach(s => {
-      if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
-      csShortagesByModel[model].push({ ...s, _row_code: code, _row_model: model, _order_id: r.id });
-    });
-  });
+  const {
+    shortagesByModel,
+    csShortagesByModel,
+  } = buildRawModalShortageGroups(targets);
 
   // 組內按料號排序
   _modalCarryOversByModel = buildModalCarryOversByModel(targets);
@@ -1519,25 +1557,10 @@ async function showBatchMergeDraftModal(targets) {
     console.error("[showBatchMergeDraftModal] DOM elements missing:", { modal: !!modal, list: !!list, footer: !!footer });
     throw new Error("補料 modal DOM 元素遺失");
   }
-  const targetIds = new Set(targets.map(target => target.id));
-
-  const shortagesByModel = {};
-  const csShortagesByModel = {};
-  _calcResults.forEach((result, index) => {
-    if (!result) return;
-    if (!targetIds.has(_rows[index]?.id)) return;
-    const model = _rows[index]?.model || "未分類機種";
-    const code = _rows[index]?.code || model;
-    const orderId = _rows[index]?.id;
-    (result.shortages || []).forEach(item => {
-      if (!shortagesByModel[model]) shortagesByModel[model] = [];
-      shortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
-    });
-    (result.customer_material_shortages || []).forEach(item => {
-      if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
-      csShortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
-    });
-  });
+  const {
+    shortagesByModel,
+    csShortagesByModel,
+  } = buildRawModalShortageGroups(targets);
 
   for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
   for (const items of Object.values(csShortagesByModel)) items.sort(compareShortageItems);
@@ -1767,6 +1790,7 @@ function shouldAutoShortageCheck(item) {
   const decision = String(item?.decision || "").trim();
   if (decision === "Shortage") return true;
   if (decision && decision !== "None") return false;
+  if (isOrderScopedPart(item?.part_number)) return false;
 
   const carryOver = Number(item?.carry_over);
   if (Number.isFinite(carryOver) && carryOver < 0) return true;
@@ -1779,21 +1803,24 @@ function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const orderIdAttr = Number.isInteger(normalizeOrderId(s._order_id)) ? ` data-order-id="${normalizeOrderId(s._order_id)}"` : "";
-  const defaultQty = roundShortageUiValue(
-    Number(s.default_supplement) > 0
-      ? s.default_supplement
-      : Number(s.supplement_qty) > 0
-        ? s.supplement_qty
-        : Number(s.suggested_qty) > 0
-          ? s.suggested_qty
-          : s.shortage_amount ?? 0
-  );
+  const shortageChecked = shouldAutoShortageCheck(s);
+  const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;
+  const defaultQty = shortageChecked && !hasStoredSupplement
+    ? 0
+    : roundShortageUiValue(
+      Number(s.default_supplement) > 0
+        ? s.default_supplement
+        : Number(s.supplement_qty) > 0
+          ? s.supplement_qty
+          : Number(s.suggested_qty) > 0
+            ? s.suggested_qty
+            : s.shortage_amount ?? 0
+    );
   const shortageAmount = roundShortageUiValue(s.shortage_amount);
   const currentStock = roundShortageUiValue(s.current_stock);
   const neededQty = roundShortageUiValue(s.needed);
   const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
   const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
-  const shortageChecked = shouldAutoShortageCheck(s);
   s = {
     ...s,
     shortage_amount: shortageAmount,
@@ -2315,6 +2342,7 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   const progress = document.getElementById("modal-download-progress");
   const status = document.getElementById("modal-download-status");
   const detail = document.getElementById("modal-download-detail");
+  const saveBtn = document.getElementById("modal-save-draft");
   const downloadBtn = document.getElementById("modal-download-bom");
   const writeBtn = document.getElementById("modal-write-main");
   const cancelBtn = document.getElementById("modal-cancel");
@@ -2335,10 +2363,17 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   }
   if (percent != null) setModalProgressPercent(percent);
 
+  if (saveBtn) {
+    if (!saveBtn.dataset.idleText) saveBtn.dataset.idleText = saveBtn.textContent || "儲存";
+    if (!saveBtn.dataset.busyText) saveBtn.dataset.busyText = "儲存中...";
+    saveBtn.disabled = Boolean(config.lockUi);
+    saveBtn.textContent = active ? saveBtn.dataset.busyText : saveBtn.dataset.idleText;
+  }
   if (downloadBtn) {
+    if (!downloadBtn.dataset.idleText) downloadBtn.dataset.idleText = downloadBtn.textContent || "下載";
+    if (!downloadBtn.dataset.busyText) downloadBtn.dataset.busyText = "下載中...";
     downloadBtn.disabled = Boolean(config.lockUi);
-    downloadBtn.textContent = active ? "下載中..." : "下載 BOM";
-    downloadBtn.textContent = active ? "下載中..." : "確認補料並下載 BOM";
+    downloadBtn.textContent = active ? downloadBtn.dataset.busyText : downloadBtn.dataset.idleText;
   }
   if (writeBtn) {
     writeBtn.disabled = Boolean(config.lockUi);
@@ -3051,14 +3086,15 @@ async function saveRightPanelSupplement(button) {
   const input = row?.querySelector(".right-panel-supplement-input");
   const orderId = normalizeOrderId(button?.dataset.orderId || input?.dataset.orderId);
   const part = normalizePartKey(button?.dataset.part || input?.dataset.part);
+  const isMainSupplement = String(button?.dataset.mainSupplement || input?.dataset.mainSupplement || "").trim() === "true";
   const qty = Number(input?.value || 0);
 
-  if (!Number.isInteger(orderId) || !part) {
+  if ((!Number.isInteger(orderId) && !isMainSupplement) || !part) {
     showToast("找不到要保存的補料項目");
     return;
   }
-  if (!Number.isFinite(qty) || qty < 0) {
-    showToast("請輸入正確的補料數量");
+  if (!Number.isFinite(qty) || qty < 0 || (isMainSupplement && qty <= 0)) {
+    showToast(isMainSupplement ? "補料數量必須大於 0" : "請輸入正確的補料數量");
     input?.focus();
     return;
   }
@@ -3071,6 +3107,22 @@ async function saveRightPanelSupplement(button) {
   if (input) input.disabled = true;
 
   try {
+    if (isMainSupplement) {
+      const result = await apiPost("/api/schedule/supplement-part", {
+        part_number: part,
+        supplement_qty: qty,
+      });
+      _postDispatchShortages = _postDispatchShortages.filter(item => normalizePartKey(item?.part_number) !== part);
+      _savePostDispatchShortages();
+      showToast(
+        `${result.part_number} 已補料 ${fmt(qty)}，庫存 ${fmt(result.stock_before)} → ${fmt(result.stock_after)}`,
+        { tone: "success", duration: 4000 },
+      );
+      await refresh();
+      if (_onRefreshMain) await _onRefreshMain();
+      return;
+    }
+
     await apiPut("/api/schedule/shortage-settings", {
       order_ids: [orderId],
       order_supplements: {
@@ -3098,6 +3150,7 @@ function renderMainDeficitSectionHtml(deficits) {
     const deficitAmt = fmt(roundShortageUiValue(item.shortage_amount));
     const stockAmt = fmt(roundShortageUiValue(item.current_stock));
     const moqVal = Number(item.moq || 0);
+    const suggestedQty = roundShortageUiValue(item.suggested_qty || item.shortage_amount || 0);
     html += `<div class="shortage-item" style="opacity:0.85">
       <div class="part">${esc(item.part_number)}</div>
       <div class="desc">${esc(item.description || "—")}</div>
@@ -3106,6 +3159,25 @@ function renderMainDeficitSectionHtml(deficits) {
         <span style="color:#6b7280">結存 ${stockAmt}</span>
         ${moqVal > 0 ? `<span>MOQ ${fmt(moqVal)}</span>` : ""}
       </div>
+      <div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <label style="font-size:11px;color:#6b7280;white-space:nowrap">補主檔</label>
+        <input
+          type="number"
+          class="right-panel-supplement-input"
+          data-part="${esc(item.part_number)}"
+          data-main-supplement="true"
+          value="${suggestedQty}"
+          min="0"
+          step="any"
+          style="flex:1;min-width:0;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
+        >
+        <button
+          class="btn btn-secondary btn-xs right-panel-supplement-save"
+          data-part="${esc(item.part_number)}"
+          data-main-supplement="true"
+        >補主檔</button>
+      </div>
+      <div style="font-size:10px;color:#6b7280;margin-top:4px">直接補到主檔，後續同料號欄位會一起同步加回</div>
     </div>`;
   }
   html += "</div>";
@@ -3233,7 +3305,7 @@ function renderPostDispatchPanel() {
     grouped[model].push(s);
   }
 
-  let html = '<div style="padding:6px 10px;font-size:12px;font-weight:600;color:#dc2626;border-bottom:1px solid #fee2e2;margin-bottom:4px">寫入主檔後仍缺料（點擊可補料）</div>';
+  let html = '<div style="padding:6px 10px;font-size:12px;font-weight:600;color:#dc2626;border-bottom:1px solid #fee2e2;margin-bottom:4px">寫入主檔後仍缺料（可直接在右側補主檔）</div>';
   for (const [model, items] of Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"))) {
     html += `<div style="font-size:11px;font-weight:600;color:#6b7280;margin:8px 10px 4px">${esc(model)}</div>`;
     for (const s of items) {
@@ -3241,7 +3313,7 @@ function renderPostDispatchPanel() {
       const resultingStock = roundShortageUiValue(s.resulting_stock ?? s.current_stock);
       const moqVal = roundShortageUiValue(s.moq || 0);
       const suggestedQty = roundShortageUiValue(s.suggested_qty || shortageAmt);
-      html += `<div class="shortage-item is-st-purchase" style="cursor:pointer" data-part="${esc(s.part_number)}" data-shortage="${shortageAmt}" data-moq="${moqVal}" data-suggested="${suggestedQty}" data-stock="${resultingStock}" data-desc="${esc(s.description || "")}">
+      html += `<div class="shortage-item is-st-purchase" data-part="${esc(s.part_number)}" data-shortage="${shortageAmt}" data-moq="${moqVal}" data-suggested="${suggestedQty}" data-stock="${resultingStock}" data-desc="${esc(s.description || "")}">
         <div class="part">${esc(s.part_number)}</div>
         <div class="desc">${esc(s.description || "—")}</div>
         <div class="amounts">
@@ -3249,106 +3321,38 @@ function renderPostDispatchPanel() {
           <span style="color:#6b7280">結存 ${fmt(resultingStock)}</span>
           ${moqVal > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moqVal)}</span>` : ""}
         </div>
-        <button class="btn btn-primary btn-xs post-supplement-btn" style="margin-top:4px">補料</button>
+        <div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
+          <label style="font-size:11px;color:#6b7280;white-space:nowrap">補主檔</label>
+          <input
+            type="number"
+            class="right-panel-supplement-input"
+            data-part="${esc(s.part_number)}"
+            data-main-supplement="true"
+            value="${suggestedQty}"
+            min="0"
+            step="any"
+            style="flex:1;min-width:0;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
+          >
+          <button class="btn btn-primary btn-xs right-panel-supplement-save" data-part="${esc(s.part_number)}" data-main-supplement="true">補主檔</button>
+        </div>
+        <div style="font-size:10px;color:#6b7280;margin-top:4px">直接補到主檔，後續同料號欄位會一起同步加回</div>
       </div>`;
     }
   }
   scroll.innerHTML = html;
 
-  scroll.querySelectorAll(".post-supplement-btn").forEach(btn => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const item = btn.closest(".shortage-item");
-      openSupplementModal({
-        part_number: item.dataset.part,
-        shortage_amount: Number(item.dataset.shortage),
-        moq: Number(item.dataset.moq),
-        suggested_qty: Number(item.dataset.suggested),
-        resulting_stock: Number(item.dataset.stock),
-        description: item.dataset.desc,
-      });
+  scroll.querySelectorAll(".right-panel-supplement-save").forEach(btn => {
+    btn.addEventListener("click", () => {
+      void saveRightPanelSupplement(btn);
     });
   });
-
-  // 也允許點整個 card 打開 modal
-  scroll.querySelectorAll(".shortage-item[data-part]").forEach(card => {
-    card.addEventListener("click", () => {
-      const btn = card.querySelector(".post-supplement-btn");
-      if (btn) btn.click();
+  scroll.querySelectorAll(".right-panel-supplement-input").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      input.closest(".right-panel-supplement-row")?.querySelector(".right-panel-supplement-save")?.click();
     });
   });
-}
-
-function openSupplementModal(item) {
-  // 移除舊 modal（如果有）
-  document.getElementById("supplement-modal")?.remove();
-
-  const suggestedQty = item.suggested_qty || item.shortage_amount;
-  const modal = document.createElement("div");
-  modal.id = "supplement-modal";
-  modal.className = "modal-overlay";
-  modal.style.display = "flex";
-  modal.innerHTML = `
-    <div class="modal-box" style="max-width:420px">
-      <div class="modal-header">
-        <h3>補料 — ${esc(item.part_number)}</h3>
-        <button class="modal-close-btn" id="supplement-modal-close">✕</button>
-      </div>
-      <div style="padding:16px">
-        <div style="font-size:13px;color:#6b7280;margin-bottom:12px">${esc(item.description || "")}</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px">
-          <div style="font-size:12px"><span style="color:#6b7280">缺料量</span><br><strong class="red">${fmt(item.shortage_amount)}</strong></div>
-          <div style="font-size:12px"><span style="color:#6b7280">目前結存</span><br><strong>${fmt(item.resulting_stock)}</strong></div>
-          ${item.moq > 0 ? `<div style="font-size:12px"><span style="color:#6b7280">MOQ</span><br><strong>${fmt(item.moq)}</strong></div>` : ""}
-          <div style="font-size:12px"><span style="color:#6b7280">建議補料</span><br><strong style="color:#16a34a">${fmt(suggestedQty)}</strong></div>
-        </div>
-        <label style="font-size:13px;font-weight:600;display:block;margin-bottom:4px">補料數量</label>
-        <input type="number" id="supplement-qty-input" value="${suggestedQty}" min="0" step="any" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:6px;font-size:14px">
-      </div>
-      <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;padding:12px 16px">
-        <button id="supplement-confirm" class="btn btn-success btn-sm">確認補料寫入主檔</button>
-        <button id="supplement-cancel" class="btn btn-secondary btn-sm">取消</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-
-  const close = () => modal.remove();
-  document.getElementById("supplement-modal-close").onclick = close;
-  document.getElementById("supplement-cancel").onclick = close;
-  modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
-
-  document.getElementById("supplement-qty-input").focus();
-  document.getElementById("supplement-qty-input").select();
-
-  document.getElementById("supplement-confirm").onclick = async () => {
-    const qty = Number(document.getElementById("supplement-qty-input").value);
-    if (!qty || qty <= 0) {
-      showToast("補料數量必須大於 0");
-      return;
-    }
-    const confirmBtn = document.getElementById("supplement-confirm");
-    confirmBtn.disabled = true;
-    confirmBtn.textContent = "寫入中...";
-    try {
-      const result = await apiPost("/api/schedule/supplement-part", {
-        part_number: item.part_number,
-        supplement_qty: qty,
-      });
-      showToast(`${result.part_number} 已補料 ${fmt(qty)}，庫存 ${fmt(result.stock_before)} → ${fmt(result.stock_after)}`, { tone: "success", duration: 4000 });
-      // 從缺料列表中移除已補料的
-      _postDispatchShortages = _postDispatchShortages.filter(
-        s => s.part_number !== item.part_number
-      );
-      _savePostDispatchShortages();
-      close();
-      renderPostDispatchPanel();
-      if (_onRefreshMain) await _onRefreshMain();
-    } catch (e) {
-      showToast("補料失敗：" + e.message, { tone: "error" });
-      confirmBtn.disabled = false;
-      confirmBtn.textContent = "確認補料寫入主檔";
-    }
-  };
 }
 
 // ── Toolbar actions ───────────────────────────────────────────────────────────

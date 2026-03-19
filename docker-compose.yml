@@ -1,0 +1,11 @@
+services:
+  opentext-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: opentext-scheduler
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./data:/app/data

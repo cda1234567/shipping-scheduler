@@ -17,6 +17,8 @@ import uvicorn
 import webview
 
 from app import database as db
+from app.runtime_paths import get_app_base_dir, get_resource_base_dir
+from app.services.desktop_connection import resolve_remote_server_url
 from app.services.desktop_launcher import (
     DARK_MODE_SETTING,
     DOWNLOAD_DIR_SETTING,
@@ -31,17 +33,18 @@ from app.services.desktop_launcher import (
     set_autostart_enabled,
 )
 
-BASE_DIR = Path(__file__).resolve().parent
-APP_ICON_PATH = BASE_DIR / "static" / "assets" / "opentext_app_icon.ico"
+BASE_DIR = get_app_base_dir()
+RESOURCE_DIR = get_resource_base_dir()
+APP_ICON_PATH = RESOURCE_DIR / "static" / "assets" / "opentext_app_icon.ico"
 APP_USER_MODEL_ID = "OpenText.ShippingScheduler.Desktop"
 APP_HOST = "127.0.0.1"
 APP_PORT = 8765
-APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
+LOCAL_APP_URL = f"http://{APP_HOST}:{APP_PORT}/"
 
 
-def build_app_url() -> str:
+def build_app_url(base_url: str) -> str:
     # Force a fresh page load on every desktop launch to avoid stale WebView caches.
-    return f"{APP_URL}?_desktop_shell=1&_desktop={int(time.time() * 1000)}"
+    return f"{base_url}?_desktop_shell=1&_desktop={int(time.time() * 1000)}"
 
 
 def hide_console_window():
@@ -130,12 +133,20 @@ def _kill_stale_server(port: int):
         pass
 
 
-class LocalServer:
-    def __init__(self, app_url: str):
-        self.app_url = app_url
+class AppServer:
+    def __init__(self, app_url: str, *, managed: bool):
+        self.app_url = app_url.rstrip("/") + "/"
+        self.managed = bool(managed)
         self.server: uvicorn.Server | None = None
         self.thread: threading.Thread | None = None
         self.started_here = False
+
+    @property
+    def is_remote(self) -> bool:
+        return not self.managed
+
+    def request_url(self, path: str = "") -> str:
+        return urllib.parse.urljoin(self.app_url, str(path or "").lstrip("/"))
 
     @staticmethod
     def _url_ready(url: str) -> bool:
@@ -145,11 +156,10 @@ class LocalServer:
         except Exception:
             return False
 
-    @staticmethod
-    def _health_ok() -> bool:
+    def _health_ok(self) -> bool:
         """確認 server 真的健康（不只是 port 有回應）。"""
         try:
-            health_url = f"http://{APP_HOST}:{APP_PORT}/api/health"
+            health_url = self.request_url("/api/health")
             with urllib.request.urlopen(health_url, timeout=3.0) as response:
                 if response.status == 200:
                     data = json.loads(response.read())
@@ -161,6 +171,9 @@ class LocalServer:
     def ensure_started(self):
         if self._health_ok():
             return
+
+        if not self.managed:
+            raise RuntimeError(f"找不到遠端服務：{self.app_url}")
 
         # port 有佔用但不健康 → 殺掉舊程序
         if self._url_ready(self.app_url):
@@ -200,6 +213,8 @@ class LocalServer:
             self.thread.join(timeout=5)
 
     def restart(self):
+        if not self.managed:
+            return
         if self.started_here:
             self.stop()
             self.server = None
@@ -209,7 +224,7 @@ class LocalServer:
 
 
 class DesktopBridge:
-    def __init__(self, server: LocalServer, args: argparse.Namespace):
+    def __init__(self, server: AppServer, args: argparse.Namespace):
         self.server = server
         self.args = args
         self.window: webview.Window | None = None
@@ -231,8 +246,9 @@ class DesktopBridge:
             "desktop_mode": True,
             "autostart_enabled": is_autostart_enabled(),
             "autostart_managed": os.name == "nt",
-            "app_url": APP_URL,
+            "app_url": self.server.app_url,
             "server_started_here": self.server.started_here,
+            "remote_server": self.server.is_remote,
             "download_directory": str(directory),
             "download_directory_set": bool(stored_value),
             "dark_mode_enabled": self._get_dark_mode(),
@@ -297,10 +313,6 @@ class DesktopBridge:
         return directory
 
     @staticmethod
-    def _request_url(path: str) -> str:
-        return urllib.parse.urljoin(APP_URL, str(path or "").lstrip("/"))
-
-    @staticmethod
     def _read_http_error(error: urllib.error.HTTPError) -> str:
         try:
             payload = json.loads(error.read().decode("utf-8", errors="replace"))
@@ -327,7 +339,7 @@ class DesktopBridge:
             headers["Content-Type"] = "application/json"
 
         request = urllib.request.Request(
-            self._request_url(path),
+            self.server.request_url(path),
             data=data,
             headers=headers,
             method=method,
@@ -361,7 +373,7 @@ class DesktopBridge:
         return {"ok": True}
 
     def open_in_browser(self):
-        webbrowser.open(APP_URL)
+        webbrowser.open(self.server.app_url)
         return {"ok": True}
 
     def reload_app(self):
@@ -369,7 +381,7 @@ class DesktopBridge:
             self.server.restart()
         if self.window:
             refresh_url = (
-                f"{APP_URL}?_desktop_shell=1&_reload={int(time.time() * 1000)}"
+                f"{self.server.app_url}?_desktop_shell=1&_reload={int(time.time() * 1000)}"
             )
             self.window.load_url(refresh_url)
         return {"ok": True}
@@ -385,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="OpenText Shipping Scheduler desktop app")
     parser.add_argument("--autostart", action="store_true", help="started from the Windows startup shortcut")
     parser.add_argument("--minimized", action="store_true", help="start minimized to the taskbar")
+    parser.add_argument("--server-url", help="connect desktop shell to a remote Docker/server URL instead of starting local Python")
     return parser
 
 
@@ -392,13 +405,18 @@ def main():
     os.chdir(BASE_DIR)
     apply_windows_app_identity()
     args = build_parser().parse_args()
-    server = LocalServer(APP_URL)
+    remote_server_url = resolve_remote_server_url(
+        BASE_DIR,
+        cli_url=args.server_url,
+        env_url=os.environ.get("OPENTEXT_REMOTE_URL"),
+    )
+    server = AppServer(remote_server_url or LOCAL_APP_URL, managed=not bool(remote_server_url))
     server.ensure_started()
 
     bridge = DesktopBridge(server, args)
     window = webview.create_window(
         "OpenText 出貨排程系統",
-        build_app_url(),
+        build_app_url(server.app_url),
         js_api=bridge,
         width=1480,
         height=920,

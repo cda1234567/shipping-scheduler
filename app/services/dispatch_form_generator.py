@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from copy import copy
 from datetime import datetime
-from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import PatternFill
+from ..runtime_paths import get_resource_base_dir
 
-TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "dispatch_form_template.xlsx"
+TEMPLATE_PATH = get_resource_base_dir() / "templates" / "dispatch_form_template.xlsx"
 ITEM_STYLE_ROW = 3
 HEADER_ROWS = (1, 2)
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
