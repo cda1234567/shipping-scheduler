@@ -15,8 +15,6 @@ from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
-from pydantic import BaseModel
-
 from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
@@ -24,10 +22,24 @@ from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
 from ..services.order_decisions import build_order_decision_allocations
 from ..services.order_supplements import build_order_supplement_allocations
-from ..services.shortage_rules import (
-    filter_main_write_blocking_shortages,
-    get_shortage_resulting_stock,
-    is_ec_part,
+from ..services.dispatch_pipeline import (
+    DispatchContext,
+    build_context_supplement_allocations,
+    build_dispatch_plan,
+    commit_dispatch_plan,
+    current_main_signature as _current_main_signature,
+    ensure_main_write_allowed as _ensure_main_write_allowed,
+    execute_dispatch_context,
+    get_effective_moq as _get_effective_moq,
+    normalize_decisions as _normalize_decisions,
+    normalize_order_decisions as _normalize_order_decisions,
+    normalize_order_ids as _normalize_order_ids,
+    normalize_order_supplements as _normalize_order_supplements,
+    normalize_order_supplement_updates as _normalize_order_supplement_updates,
+    normalize_supplements as _normalize_supplements,
+    normalize_supplements_preserve_keys as _normalize_supplements_preserve_keys,
+    prepare_dispatch_context as _prepare_dispatch_context,
+    require_existing_main_path as _require_existing_main_path,
 )
 from ..services.merge_drafts import (
     rebuild_merge_drafts,
@@ -104,91 +116,6 @@ def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
     return order, session, affected_orders
 
 
-def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, str]:
-    normalized: dict[str, str] = {}
-    for part, decision in (decisions or {}).items():
-        key = str(part or "").strip().upper()
-        if not key or not decision:
-            continue
-        normalized[key] = str(decision)
-    return normalized
-
-
-def _normalize_supplements(supplements: dict[str, float] | None = None) -> dict[str, float]:
-    normalized: dict[str, float] = {}
-    for part, qty in (supplements or {}).items():
-        key = str(part or "").strip().upper()
-        try:
-            amount = float(qty or 0)
-        except (TypeError, ValueError):
-            amount = 0.0
-        if not key or amount <= 0:
-            continue
-        normalized[key] = amount
-    return normalized
-
-
-def _normalize_supplements_preserve_keys(supplements: dict[str, float] | None = None) -> dict[str, float]:
-    normalized: dict[str, float] = {}
-    for part, qty in (supplements or {}).items():
-        key = str(part or "").strip()
-        try:
-            amount = float(qty or 0)
-        except (TypeError, ValueError):
-            amount = 0.0
-        if not key or amount <= 0:
-            continue
-        normalized[key] = amount
-    return normalized
-
-
-def _normalize_order_decisions(order_decisions: dict | None = None) -> dict[int, dict[str, str]]:
-    normalized: dict[int, dict[str, str]] = {}
-    for raw_order_id, decisions in (order_decisions or {}).items():
-        try:
-            order_id = int(raw_order_id)
-        except (TypeError, ValueError):
-            continue
-        normalized[order_id] = _normalize_decisions(decisions or {})
-    return normalized
-
-
-def _normalize_order_supplements(order_supplements: dict | None = None) -> dict[int, dict[str, float]]:
-    normalized: dict[int, dict[str, float]] = {}
-    for raw_order_id, supplements in (order_supplements or {}).items():
-        try:
-            order_id = int(raw_order_id)
-        except (TypeError, ValueError):
-            continue
-        normalized[order_id] = _normalize_supplements(supplements or {})
-    return normalized
-
-
-def _normalize_supplement_updates(supplements: dict[str, float] | None = None) -> dict[str, float]:
-    normalized: dict[str, float] = {}
-    for part, qty in (supplements or {}).items():
-        key = str(part or "").strip().upper()
-        if not key:
-            continue
-        try:
-            amount = float(qty or 0)
-        except (TypeError, ValueError):
-            amount = 0.0
-        normalized[key] = amount
-    return normalized
-
-
-def _normalize_order_supplement_updates(order_supplements: dict | None = None) -> dict[int, dict[str, float]]:
-    normalized: dict[int, dict[str, float]] = {}
-    for raw_order_id, supplements in (order_supplements or {}).items():
-        try:
-            order_id = int(raw_order_id)
-        except (TypeError, ValueError):
-            continue
-        normalized[order_id] = _normalize_supplement_updates(supplements or {})
-    return normalized
-
-
 def _merge_order_decision_allocations(
     order_ids: list[int],
     decisions: dict[str, str] | None = None,
@@ -262,94 +189,50 @@ def _merge_supplement_updates(order_id: int, updates: dict[str, float] | None = 
     return merged
 
 
-def _format_blocking_shortage_line(shortage: dict) -> str:
-    part = str(shortage.get("part_number") or "").strip() or "未命名料號"
-    try:
-        shortage_amount = float(shortage.get("shortage_amount") or 0)
-    except (TypeError, ValueError):
-        shortage_amount = 0.0
-
-    if is_ec_part(part):
-        resulting_stock = get_shortage_resulting_stock(shortage)
-        if resulting_stock is not None:
-            return f"{part}: 寫入後結存 {resulting_stock:g}，EC 料不可為負數"
-        return f"{part}: EC 料結存無法判定，暫時不能寫入主檔"
-
-    if shortage_amount > 0:
-        return f"{part}: 仍缺 {shortage_amount:g}"
-    return f"{part}: 仍有缺料"
-
-
-def _build_main_write_block_message(shortages: list[dict]) -> str:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for item in shortages:
-        part = str(item.get("part_number") or "").strip()
-        if part and part in seen:
-            continue
-        if part:
-            seen.add(part)
-        lines.append(f"- {_format_blocking_shortage_line(item)}")
-        if len(lines) >= 6:
-            break
-
-    hidden_count = max(0, len(filter_main_write_blocking_shortages(shortages)) - len(lines))
-    message = "以下料號仍不能寫入主檔，請先補料或調整決策："
-    if lines:
-        message += "\n" + "\n".join(lines)
-    if hidden_count:
-        message += f"\n- 另有 {hidden_count} 項未展開"
-    return message
+def _execute_dispatch(
+    order: dict,
+    groups: list[dict],
+    all_components: list[dict],
+    main_path: str,
+    decisions: dict[str, str],
+    supplements: dict[str, float] | None = None,
+) -> dict:
+    return execute_dispatch_context(
+        DispatchContext(
+            order=order,
+            groups=groups,
+            all_components=all_components,
+            decisions=decisions,
+            supplements=supplements or {},
+        ),
+        main_path,
+        merge_executor=merge_row_to_main,
+        backup_dir=str(BACKUP_DIR),
+    )
 
 
-def _ensure_main_write_allowed(shortages: list[dict]):
-    blocking_shortages = filter_main_write_blocking_shortages(shortages)
-    if blocking_shortages:
-        raise HTTPException(400, _build_main_write_block_message(blocking_shortages))
+def _load_active_merge_draft_context(draft_id: int, main_path: str):
+    draft = db.get_merge_draft(draft_id)
+    if not draft or draft.get("status") != "active":
+        raise HTTPException(404, "找不到可提交的副檔草稿")
 
+    resolved_main_path = db.resolve_managed_path(str(main_path or "").strip(), "main_file_path")
+    draft_main_path = db.resolve_managed_path(str(draft.get("main_file_path") or "").strip(), "main_file_path")
+    if draft_main_path and Path(draft_main_path) != Path(resolved_main_path):
+        raise HTTPException(400, "主檔路徑已變更，請重新整理副檔後再提交")
 
-def _prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[dict], list[dict]]:
-    order = db.get_order(order_id)
-    if not order:
-        raise HTTPException(404, "找不到此訂單")
-    if order["status"] not in ("pending", "merged"):
-        raise HTTPException(400, f"訂單狀態為 {order['status']}，無法發料")
-    if not main_path or not Path(main_path).exists():
-        raise HTTPException(400, "請先上傳主檔")
+    if str(draft.get("main_file_mtime_ns") or "") != _current_main_signature(resolved_main_path):
+        raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
 
-    model_key = (order.get("model") or "").upper()
-    bom_files = db.get_bom_files_by_models([model_key])
-    if not bom_files:
-        raise HTTPException(400, f"機種 {order.get('model')} 沒有對應的 BOM")
-
-    label = order.get("code") or order.get("model") or str(order_id)
-    po_number = str(order.get("po_number", ""))
-
-    groups = []
-    all_components = []
-    for bf in bom_files:
-        comps = db.get_bom_components(bf["id"])
-        groups.append({
-            "batch_code": label,
-            "po_number": po_number,
-            "bom_model": bf["model"],
-            "components": comps,
-        })
-        all_components.extend(comps)
-
-    if not all_components:
-        raise HTTPException(400, f"機種 {order.get('model')} 沒有 BOM 零件資料")
-
-    return order, groups, all_components
-
-
-def _get_effective_moq(main_path: str) -> dict[str, float]:
-    live_moq = read_moq(main_path) if main_path and Path(main_path).exists() else {}
-    snapshot = db.get_snapshot()
-    if snapshot:
-        snapshot_moq = {part: float((row or {}).get("moq") or 0) for part, row in snapshot.items()}
-        live_moq.update(snapshot_moq)
-    return live_moq
+    order, groups, all_components = _prepare_dispatch_context(int(draft["order_id"]), resolved_main_path)
+    return DispatchContext(
+        draft=draft,
+        order=order,
+        groups=groups,
+        all_components=all_components,
+        decisions=_normalize_decisions(draft.get("decisions")),
+        supplements=_normalize_supplements(draft.get("supplements")),
+    )
 
 
 def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
@@ -417,94 +300,96 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     }
 
 
-def _execute_dispatch(
-    order: dict,
-    groups: list[dict],
-    all_components: list[dict],
-    main_path: str,
-    decisions: dict[str, str],
-    supplements: dict[str, float] | None = None,
-) -> dict:
-    result = merge_row_to_main(
-        main_path=main_path,
+def _resolve_single_order_dispatch_plan(order_id: int, req: DecisionRequest, main_path: str):
+    order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+    decisions = _normalize_decisions(req.decisions)
+    supplements = _normalize_supplements(req.supplements)
+    context = DispatchContext(
+        order=order,
         groups=groups,
+        all_components=all_components,
         decisions=decisions,
-        supplements=supplements or {},
-        backup_dir=str(BACKUP_DIR),
+        supplements=supplements,
+    )
+    supplement_allocations = (
+        build_order_supplement_allocations([order_id], supplements)
+        if supplements
+        else None
+    )
+    return build_dispatch_plan(
+        main_path,
+        [context],
+        preview_builder=preview_order_batches,
+        moq_map=_get_effective_moq(main_path),
+        st_inventory_stock=_get_st_inventory_stock(),
+        supplement_allocations=supplement_allocations,
     )
 
-    session = None
-    try:
-        session = db.save_dispatch_session(
-            order_id=int(order["id"]),
-            previous_status=order["status"],
-            backup_path=result.get("backup_path") or "",
-            main_file_path=main_path,
+
+def _resolve_batch_dispatch_plan(req: BatchDispatchRequest, normalized_order_ids: list[int], main_path: str):
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
+    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
+    if missing_orders and draft_id_map:
+        raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
+
+    if draft_id_map:
+        rebuild_merge_drafts(normalized_order_ids)
+        contexts = [
+            DispatchContext.from_value(_load_active_merge_draft_context(draft_id_map[order_id], main_path))
+            for order_id in normalized_order_ids
+        ]
+        supplement_allocations = build_context_supplement_allocations(contexts)
+        use_drafts = True
+    else:
+        decisions = _normalize_decisions(req.decisions)
+        supplements = _normalize_supplements(req.supplements)
+        order_decisions = _normalize_order_decisions(req.order_decisions)
+        order_supplements = _normalize_order_supplements(req.order_supplements)
+        decision_allocations = _merge_order_decision_allocations(
+            normalized_order_ids,
+            decisions,
+            order_decisions,
+            include_none=True,
         )
+        supplement_allocations = _merge_order_supplement_allocations(
+            normalized_order_ids,
+            supplements,
+            order_supplements,
+        )
+        contexts = []
+        for order_id in normalized_order_ids:
+            order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+            contexts.append(DispatchContext(
+                order=order,
+                groups=groups,
+                all_components=all_components,
+                decisions=decision_allocations.get(int(order["id"]), {}),
+                supplements=supplement_allocations.get(int(order["id"]), {}),
+            ))
+        use_drafts = False
 
-        dispatch_records = []
-        for comp in all_components:
-            if comp.get("is_dash") or comp.get("needed_qty", 0) <= 0:
-                continue
-            part_number = str(comp.get("part_number") or "")
-            dispatch_records.append({
-                "part_number": part_number,
-                "needed_qty": comp["needed_qty"],
-                "prev_qty_cs": comp.get("prev_qty_cs", 0),
-                "decision": decisions.get(part_number.strip().upper(), "None"),
-            })
-        db.save_dispatch_records(int(order["id"]), dispatch_records)
-        db.update_order(int(order["id"]), status="dispatched")
-    except Exception:
-        backup_path = Path(str(result.get("backup_path") or "")).expanduser()
-        if backup_path.exists():
-            shutil.copy2(backup_path, main_path)
-        if session:
-            db.delete_dispatch_records_for_orders([int(order["id"])])
-            db.mark_dispatch_sessions_rolled_back([int(session["id"])])
-            db.update_order(int(order["id"]), status=order["status"], folder=order.get("folder", ""))
-        raise
-
-    db.log_activity(
-        "order_dispatched",
-        f"訂單 {order['po_number']} ({order['model']}) 已發料，{result['merged_parts']} 筆 merge",
+    return build_dispatch_plan(
+        main_path,
+        contexts,
+        preview_builder=preview_order_batches,
+        moq_map=_get_effective_moq(main_path),
+        st_inventory_stock=_get_st_inventory_stock(),
+        use_drafts=use_drafts,
+        supplement_allocations=supplement_allocations,
     )
-    return {
-        "ok": True,
-        "order_id": int(order["id"]),
-        "merged_parts": result["merged_parts"],
-        "backup_path": result["backup_path"],
-        "session": session,
-    }
 
 
-def _current_main_signature(main_path: str) -> str:
-    return str(Path(main_path).stat().st_mtime_ns)
-
-
-def _load_active_merge_draft_context(draft_id: int, main_path: str) -> dict:
-    draft = db.get_merge_draft(draft_id)
-    if not draft or draft.get("status") != "active":
-        raise HTTPException(404, "找不到可提交的副檔草稿")
-
-    resolved_main_path = db.resolve_managed_path(str(main_path or "").strip(), "main_file_path")
-    draft_main_path = db.resolve_managed_path(str(draft.get("main_file_path") or "").strip(), "main_file_path")
-    if draft_main_path and Path(draft_main_path) != Path(resolved_main_path):
-        raise HTTPException(400, "主檔路徑已變更，請重新整理副檔後再提交")
-
-    current_signature = _current_main_signature(resolved_main_path)
-    if str(draft.get("main_file_mtime_ns") or "") != current_signature:
-        raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
-
-    order, groups, all_components = _prepare_dispatch_context(int(draft["order_id"]), resolved_main_path)
-    return {
-        "draft": draft,
-        "order": order,
-        "groups": groups,
-        "all_components": all_components,
-        "decisions": _normalize_decisions(draft.get("decisions")),
-        "supplements": _normalize_supplements(draft.get("supplements")),
-    }
+def _resolve_draft_commit_plan(draft_id: int, main_path: str):
+    context = DispatchContext.from_value(_load_active_merge_draft_context(draft_id, main_path))
+    return build_dispatch_plan(
+        main_path,
+        [context],
+        preview_builder=preview_order_batches,
+        moq_map=_get_effective_moq(main_path),
+        st_inventory_stock=_get_st_inventory_stock(),
+        use_drafts=True,
+        supplement_allocations=build_context_supplement_allocations([context]),
+    )
 
 
 # ── Upload schedule ───────────────────────────────────────────────────────────
@@ -739,118 +624,29 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     """
     標記訂單為已發料，每份 BOM 分別 merge 到主檔。
     """
-    main_path = db.get_setting("main_file_path")
-    order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
-    decisions = _normalize_decisions(req.decisions)
-    supplements = _normalize_supplements(req.supplements)
-    preview = preview_order_batches(
-        main_path,
-        [{
-            "order_id": int(order["id"]),
-            "model": order.get("model", ""),
-            "groups": groups,
-            "supplements": supplements,
-        }],
-        decisions,
-        moq_map=_get_effective_moq(main_path),
-        st_inventory_stock=_get_st_inventory_stock(),
+    main_path = _require_existing_main_path()
+    plan = _resolve_single_order_dispatch_plan(order_id, req, main_path)
+    _ensure_main_write_allowed(plan.remaining_shortages)
+    result = commit_dispatch_plan(
+        plan,
+        merge_executor=merge_row_to_main,
+        backup_dir=str(BACKUP_DIR),
+        rollback_executor=_rollback_dispatch_sessions,
+        execute_dispatcher=_execute_dispatch,
+        snapshot_refresher=refresh_snapshot_from_main,
     )
-    _ensure_main_write_allowed(preview["shortages"])
-    result = _execute_dispatch(order, groups, all_components, main_path, decisions, supplements)
-    refresh_snapshot_from_main(main_path)
-    if supplements:
-        allocations = build_order_supplement_allocations([order_id], supplements)
-        db.replace_order_supplements([order_id], allocations)
-    return result
+    return result.results[0]
 
 
 @router.post("/schedule/main-write-preview")
 async def preview_main_write(req: BatchDispatchRequest):
-    normalized_order_ids = []
-    for order_id in req.order_ids:
-        try:
-            normalized_order_ids.append(int(order_id))
-        except (TypeError, ValueError):
-            continue
-    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
-        raise HTTPException(400, "隢?靘?閮")
+        raise HTTPException(400, "請先選擇要預覽寫入主檔的訂單")
 
-    main_path = db.get_setting("main_file_path")
-    if not main_path or not Path(main_path).exists():
-        raise HTTPException(400, "隢?銝銝餅?")
-
-    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
-    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
-    if missing_orders and draft_id_map:
-        raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
-
-    if draft_id_map:
-        rebuild_merge_drafts(normalized_order_ids)
-        contexts = [_load_active_merge_draft_context(draft_id_map[order_id], main_path) for order_id in normalized_order_ids]
-        shortages: list[dict] = []
-        merged_parts = 0
-        for context in contexts:
-            merged_parts += len(context.get("all_components") or [])
-            order = context.get("order") or {}
-            for shortage in (context.get("draft", {}) or {}).get("shortages", []):
-                item = dict(shortage)
-                item.setdefault("model", order.get("model", ""))
-                item.setdefault("batch_code", order.get("code", ""))
-                shortages.append(item)
-        return {
-            "ok": True,
-            "count": len(contexts),
-            "merged_parts": merged_parts,
-            "shortages": shortages,
-        }
-
-    decisions = _normalize_decisions(req.decisions)
-    supplements = _normalize_supplements(req.supplements)
-    order_decisions = _normalize_order_decisions(req.order_decisions)
-    order_supplements = _normalize_order_supplements(req.order_supplements)
-    use_scoped_decisions = bool(order_decisions)
-    decision_allocations = (
-        _merge_order_decision_allocations(
-            normalized_order_ids,
-            decisions,
-            order_decisions,
-            include_none=True,
-        )
-        if use_scoped_decisions
-        else {order_id: decisions for order_id in normalized_order_ids}
-    )
-    supplement_allocations = _merge_order_supplement_allocations(
-        normalized_order_ids,
-        supplements,
-        order_supplements,
-    )
-
-    batches = []
-    for order_id in normalized_order_ids:
-        order, groups, _ = _prepare_dispatch_context(order_id, main_path)
-        batches.append({
-            "order_id": int(order["id"]),
-            "model": order.get("model", ""),
-            "groups": groups,
-            "supplements": supplement_allocations.get(int(order["id"]), {}),
-        })
-        if use_scoped_decisions:
-            batches[-1]["decisions"] = decision_allocations.get(int(order["id"]), {})
-
-    preview = preview_order_batches(
-        main_path,
-        batches,
-        decisions,
-        moq_map=_get_effective_moq(main_path),
-        st_inventory_stock=_get_st_inventory_stock(),
-    )
-    return {
-        "ok": True,
-        "count": len(batches),
-        "merged_parts": preview["merged_parts"],
-        "shortages": preview["shortages"],
-    }
+    main_path = _require_existing_main_path()
+    plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
+    return plan.to_preview_response()
 
 
 @router.post("/schedule/batch-dispatch")
@@ -858,153 +654,35 @@ def batch_dispatch(req: BatchDispatchRequest):
     if not req.order_ids:
         raise HTTPException(400, "請選擇要發料的訂單")
 
-    normalized_order_ids = []
-    for order_id in req.order_ids:
-        try:
-            normalized_order_ids.append(int(order_id))
-        except (TypeError, ValueError):
-            continue
-    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請選擇要發料的訂單")
 
-    main_path = db.get_setting("main_file_path")
-    if not main_path or not Path(main_path).exists():
-        raise HTTPException(400, "請先上傳主檔")
+    main_path = _require_existing_main_path()
+    plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
+    _ensure_main_write_allowed(plan.remaining_shortages)
 
-    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
-    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
-    if missing_orders and draft_id_map:
-        raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
-    remaining_shortages: list[dict] = []
-    if draft_id_map:
-        rebuild_merge_drafts(normalized_order_ids)
-        contexts = [_load_active_merge_draft_context(draft_id_map[order_id], main_path) for order_id in normalized_order_ids]
-        remaining_shortages = [
-            shortage
-            for context in contexts
-            for shortage in (context.get("draft", {}) or {}).get("shortages", [])
-            if float(shortage.get("shortage_amount") or 0) > 0
-        ]
-        use_drafts = True
-    else:
-        decisions = _normalize_decisions(req.decisions)
-        supplements = _normalize_supplements(req.supplements)
-        order_decisions = _normalize_order_decisions(req.order_decisions)
-        order_supplements = _normalize_order_supplements(req.order_supplements)
-        use_scoped_decisions = bool(order_decisions)
-        decision_allocations = (
-            _merge_order_decision_allocations(
-                normalized_order_ids,
-                decisions,
-                order_decisions,
-                include_none=True,
-            )
-            if use_scoped_decisions
-            else {order_id: decisions for order_id in normalized_order_ids}
-        )
-        supplement_allocations = _merge_order_supplement_allocations(
-            normalized_order_ids,
-            supplements,
-            order_supplements,
-        )
-        raw_contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
-        contexts = [
-            {
-                "draft": None,
-                "order": order,
-                "groups": groups,
-                "all_components": all_components,
-                "decisions": decision_allocations.get(int(order["id"]), decisions),
-                "supplements": supplement_allocations.get(int(order["id"]), {}),
-            }
-            for order, groups, all_components in raw_contexts
-        ]
-        preview = preview_order_batches(
-            main_path,
-            [
-                {
-                    "order_id": int(context["order"]["id"]),
-                    "model": context["order"].get("model", ""),
-                    "groups": context["groups"],
-                    "supplements": context["supplements"],
-                }
-                for context in contexts
-            ],
-            decisions,
-            moq_map=_get_effective_moq(main_path),
-            st_inventory_stock=_get_st_inventory_stock(),
-        )
-        remaining_shortages = [
-            s for s in preview["shortages"]
-            if float(s.get("shortage_amount") or 0) > 0
-        ]
-        use_drafts = False
-    _ensure_main_write_allowed(remaining_shortages)
-
-    results: list[dict] = []
-    processed_sessions: list[dict] = []
-    committed_draft_ids: list[int] = []
-    try:
-        for context in contexts:
-            result = _execute_dispatch(
-                context["order"],
-                context["groups"],
-                context["all_components"],
-                main_path,
-                context["decisions"],
-                context["supplements"],
-            )
-            results.append(result)
-            if result.get("session"):
-                processed_sessions.append(result["session"])
-            if context.get("draft"):
-                committed_draft_ids.append(int(context["draft"]["id"]))
-    except Exception:
-        if processed_sessions:
-            _rollback_dispatch_sessions(processed_sessions)
-            db.log_activity("batch_dispatch_rollback", f"批次發料失敗，已回復 {len(processed_sessions)} 筆")
-        raise
-
-    if use_drafts:
-        for context in contexts:
-            db.replace_order_supplements(
-                [int(context["order"]["id"])],
-                {int(context["order"]["id"]): context["supplements"]},
-            )
-    else:
-        db.replace_order_supplements(
-            normalized_order_ids,
-            {int(context["order"]["id"]): context["supplements"] for context in contexts},
-        )
-    if use_drafts:
-        for draft_id in committed_draft_ids:
-            db.mark_merge_draft_committed(draft_id)
-        remaining_active_orders = [item["order_id"] for item in db.get_active_merge_drafts()]
-        if remaining_active_orders:
-            rebuild_merge_drafts(remaining_active_orders)
-
-    total_merged_parts = sum(int(item.get("merged_parts") or 0) for item in results)
-    refresh_snapshot_from_main(main_path)
-    db.log_activity("batch_dispatch", f"批次發料 {len(results)} 筆訂單，合計 {total_merged_parts} 筆 merge")
+    result = commit_dispatch_plan(
+        plan,
+        merge_executor=merge_row_to_main,
+        backup_dir=str(BACKUP_DIR),
+        rollback_executor=_rollback_dispatch_sessions,
+        execute_dispatcher=_execute_dispatch,
+        snapshot_refresher=refresh_snapshot_from_main,
+    )
+    db.log_activity("batch_dispatch", f"批次發料 {result.count} 筆訂單，合計 {result.merged_parts} 筆 merge")
     return {
         "ok": True,
-        "count": len(results),
-        "merged_parts": total_merged_parts,
-        "order_ids": [int(item["order_id"]) for item in results],
-        "shortages": remaining_shortages,
+        "count": result.count,
+        "merged_parts": result.merged_parts,
+        "order_ids": result.order_ids,
+        "shortages": result.shortages,
     }
 
 
 @router.put("/schedule/shortage-settings")
 async def update_schedule_shortage_settings(req: BatchDispatchRequest):
-    normalized_order_ids = []
-    for order_id in req.order_ids:
-        try:
-            normalized_order_ids.append(int(order_id))
-        except (TypeError, ValueError):
-            continue
-    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請先選擇要更新的訂單")
 
@@ -1055,13 +733,7 @@ async def get_schedule_drafts():
 
 @router.put("/schedule/drafts")
 async def update_selected_schedule_drafts(req: BatchDispatchRequest):
-    normalized_order_ids = []
-    for order_id in req.order_ids:
-        try:
-            normalized_order_ids.append(int(order_id))
-        except (TypeError, ValueError):
-            continue
-    normalized_order_ids = list(dict.fromkeys(normalized_order_ids))
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請先選擇要更新副檔的訂單")
 
@@ -1173,54 +845,27 @@ async def delete_schedule_draft(draft_id: int):
 
 @router.post("/schedule/drafts/{draft_id}/commit")
 def commit_schedule_draft(draft_id: int):
-    main_path = str(db.get_setting("main_file_path") or "").strip()
-    if not main_path or not Path(main_path).exists():
-        raise HTTPException(400, "請先載入主檔")
-
-    context = _load_active_merge_draft_context(draft_id, main_path)
-    preview = preview_order_batches(
-        main_path,
-        [{
-            "order_id": int(context["order"]["id"]),
-            "model": context["order"].get("model", ""),
-            "groups": context["groups"],
-            "supplements": context["supplements"],
-        }],
-        context["decisions"],
-        moq_map=_get_effective_moq(main_path),
+    main_path = _require_existing_main_path()
+    plan = _resolve_draft_commit_plan(draft_id, main_path)
+    _ensure_main_write_allowed(plan.remaining_shortages)
+    result = commit_dispatch_plan(
+        plan,
+        merge_executor=merge_row_to_main,
+        backup_dir=str(BACKUP_DIR),
+        rollback_executor=_rollback_dispatch_sessions,
+        execute_dispatcher=_execute_dispatch,
+        snapshot_refresher=refresh_snapshot_from_main,
     )
-    _ensure_main_write_allowed(preview["shortages"])
-    commit_shortages = [
-        s for s in preview["shortages"]
-        if float(s.get("shortage_amount") or 0) > 0
-    ]
-    result = _execute_dispatch(
-        context["order"],
-        context["groups"],
-        context["all_components"],
-        main_path,
-        context["decisions"],
-        context["supplements"],
-    )
-    db.replace_order_supplements(
-        [int(context["order"]["id"])],
-        {int(context["order"]["id"]): context["supplements"]},
-    )
-    db.mark_merge_draft_committed(draft_id)
-    refresh_snapshot_from_main(main_path)
-    remaining_active_orders = [item["order_id"] for item in db.get_active_merge_drafts()]
-    if remaining_active_orders:
-        rebuild_merge_drafts(remaining_active_orders)
     db.log_activity(
         "merge_draft_commit",
-        f"提交副檔草稿 {draft_id} / {context['order'].get('po_number', '')} {context['order'].get('model', '')}",
+        f"提交副檔草稿 {draft_id} / {plan.contexts[0].order.get('po_number', '')} {plan.contexts[0].order.get('model', '')}",
     )
     return {
         "ok": True,
         "draft_id": draft_id,
-        "order_id": int(context["order"]["id"]),
-        "merged_parts": int(result.get("merged_parts") or 0),
-        "shortages": commit_shortages,
+        "order_id": plan.contexts[0].order_id,
+        "merged_parts": result.merged_parts,
+        "shortages": result.shortages,
     }
 
 
