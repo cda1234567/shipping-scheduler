@@ -158,7 +158,35 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(shortage["purchase_needed_qty"], 2.0)
         self.assertEqual(shortage["purchase_suggested_qty"], 5.0)
         self.assertEqual(shortage["suggested_qty"], 11.0)
-        self.assertEqual(plan["file_plans"][0]["purchase_parts"], ["PART-ST"])
+        self.assertEqual(plan["file_plans"][0]["purchase_parts"], [])
+
+    def test_plan_order_draft_marks_manual_supplement_orange_when_qty_exceeds_st_stock(self):
+        order = {"id": 24, "code": "3-3", "model": "MODEL-MANUAL"}
+        draft = {"decisions": {}, "supplements": {"PART-MANUAL": 20000}}
+        bom_files = [{"id": "bom-manual", "model": "MODEL-MANUAL", "group_model": "MODEL-MANUAL"}]
+        running_stock = {"PART-MANUAL": 50000.0}
+        moq_map = {"PART-MANUAL": 0.0}
+        components = [{
+            "part_number": "PART-MANUAL",
+            "description": "Manual part",
+            "needed_qty": 10000,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with patch("app.services.merge_drafts.db.get_bom_components", return_value=components):
+            plan = merge_drafts._plan_order_draft(
+                order,
+                draft,
+                bom_files,
+                running_stock,
+                moq_map,
+                {"PART-MANUAL": 10000.0},
+            )
+
+        self.assertEqual(plan["file_plans"][0]["supplements"], {"PART-MANUAL": 20000.0})
+        self.assertEqual(plan["file_plans"][0]["purchase_parts"], ["PART-MANUAL"])
+        self.assertEqual(plan["shortages"], [])
 
     def test_write_dispatch_values_to_ws_marks_purchase_parts_in_orange(self):
         workbook = Workbook()

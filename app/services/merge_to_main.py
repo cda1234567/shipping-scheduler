@@ -17,7 +17,13 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
 from ..models import calc_suggested_qty
-from .shortage_rules import calculate_shortage_amount, summarize_st_supply
+from .shortage_rules import (
+    calculate_current_order_shortage_amount,
+    calculate_shortage_amount,
+    is_order_scoped_shortage_part,
+    summarize_requested_supply,
+    summarize_st_supply,
+)
 
 PART_COL = 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
@@ -118,6 +124,7 @@ def _build_preview_for_batches(
 
     for batch in batches:
         remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
+        batch_decisions = _normalize_decisions(batch.get("decisions") or decisions)
         planned_groups: list[dict] = []
 
         for group in batch.get("groups", []):
@@ -147,26 +154,22 @@ def _build_preview_for_batches(
                     current_stock = _read_latest_stock(ws, row_idx, max_col)
 
                 prev_qty_cs = float(comp.get("prev_qty_cs") or 0)
-                decision = _resolve_decision(part_number, decisions)
+                decision = _resolve_decision(part_number, batch_decisions)
 
                 available_before = current_stock + prev_qty_cs
                 supplement_qty = 0.0
                 ending_without_supplement = available_before - needed_qty
-                shortage_before = calculate_shortage_amount(part_upper, ending_without_supplement)
+                shortage_before = calculate_current_order_shortage_amount(part_upper, available_before, needed_qty)
                 if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part_upper, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part_upper, 0))
                     remaining_supplements[part_upper] = 0.0
 
                 effective_h = prev_qty_cs + supplement_qty
                 available_after_supply = current_stock + effective_h
-                if decision == "Shortage":
-                    ending_stock = available_after_supply
-                    shortage_after = shortage_before
-                    f_value = "缺料"
-                else:
-                    ending_stock = available_after_supply - needed_qty
-                    shortage_after = calculate_shortage_amount(part_upper, ending_stock)
-                    f_value = _round_away(needed_qty)
+                # 永遠扣帳（即使缺料也照扣，讓庫存反映真實狀態）
+                ending_stock = available_after_supply - needed_qty
+                shortage_after = calculate_current_order_shortage_amount(part_upper, available_after_supply, needed_qty)
+                f_value = _round_away(needed_qty)
 
                 running_stock[part_upper] = ending_stock
                 total_merged += 1
@@ -192,15 +195,21 @@ def _build_preview_for_batches(
 
                 if shortage_after > 0:
                     item_moq = float(effective_moq.get(part_upper, 0) or 0)
-                    st_context = summarize_st_supply(shortage_after, (st_inventory_stock or {}).get(part_upper, 0.0), item_moq)
-                    st_available_qty = float(st_context["st_available_qty"] or 0.0)
-                    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
-                    purchase_suggested_qty = (
-                        calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
-                    )
-                    suggested_qty = st_available_qty + (
-                        purchase_suggested_qty
-                    )
+                    st_stock_qty = (st_inventory_stock or {}).get(part_upper, 0.0)
+                    if is_order_scoped_shortage_part(part_upper):
+                        st_context = summarize_requested_supply(shortage_after, st_stock_qty)
+                        st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                        purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                        purchase_suggested_qty = purchase_needed_qty
+                        suggested_qty = shortage_after
+                    else:
+                        st_context = summarize_st_supply(shortage_after, st_stock_qty, item_moq)
+                        st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                        purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                        purchase_suggested_qty = (
+                            calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
+                        )
+                        suggested_qty = st_available_qty + purchase_suggested_qty
                     shortage = {
                         "order_id": batch.get("order_id"),
                         "batch_code": group.get("batch_code", ""),
@@ -291,12 +300,13 @@ def _write_group_rows(ws, group_plan: dict):
 
         h_cell.value = row["effective_h"]
 
-        if row["decision"] == "Shortage":
-            f_cell.value = "缺料"
-            f_cell.fill = PatternFill(fill_type=None)
+        f_cell.value = row["f_value"]
+        if row["decision"] == "CreateRequirement":
+            f_cell.fill = ORANGE_FILL
+        elif row["decision"] == "Shortage":
+            f_cell.fill = RED_FILL
         else:
-            f_cell.value = row["f_value"]
-            f_cell.fill = ORANGE_FILL if row["decision"] == "CreateRequirement" else PatternFill(fill_type=None)
+            f_cell.fill = PatternFill(fill_type=None)
 
         j_cell.value = row["j_value"]
         if row["j_value"] < 0:

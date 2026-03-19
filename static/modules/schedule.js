@@ -6,6 +6,7 @@ import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 let _rows = [];
 let _bomData = {};
 let _stock = {};
+let _liveStock = {};
 let _moq = {};
 let _stStock = {};
 let _dispatchedConsumption = {};
@@ -28,6 +29,7 @@ let _modalDraftBaseDecisions = {};
 let _modalDraftBaseSupplements = {};
 let _modalDraftVisibleParts = [];
 let _globalBusyDepth = 0;
+const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-M24", "IC-XC2C32"];
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -65,12 +67,35 @@ export function getCheckedOrderIds() {
     .map(row => row.id);
 }
 
+export function clearCheckedOrderIds(orderIds) {
+  for (const id of orderIds) _checkedIds.delete(id);
+  updateStatusOnly();
+  renderSchedule();
+}
+
 export function getScheduleMeta() {
   return { ..._scheduleMeta };
 }
 
 function normalizePartKey(partNumber) {
   return String(partNumber || "").trim().toUpperCase();
+}
+
+function isOrderScopedPart(partNumber) {
+  const key = normalizePartKey(partNumber);
+  return ORDER_SCOPED_PART_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+function normalizeOrderId(value) {
+  const id = Number.parseInt(value, 10);
+  return Number.isInteger(id) ? id : null;
+}
+
+function buildOrderPartKey(orderId, partNumber) {
+  const normalizedOrderId = normalizeOrderId(orderId);
+  const key = normalizePartKey(partNumber);
+  if (!Number.isInteger(normalizedOrderId) || !key) return "";
+  return `${normalizedOrderId}::${key}`;
 }
 
 function completedFolderStateKey(folderName) {
@@ -214,10 +239,14 @@ function setGlobalBusyState(active, { title = "系統正在處理中", detail = 
 }
 
 async function withGlobalBusy(task, options = {}) {
+  const timeoutMs = options.timeout || 60000;
   hideToast();
   setGlobalBusyState(true, options);
   try {
-    return await task();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("操作逾時，請重新整理頁面後再試")), timeoutMs),
+    );
+    return await Promise.race([task(), timeoutPromise]);
   } finally {
     setGlobalBusyState(false);
   }
@@ -322,18 +351,50 @@ function getAffectedOrderIdsForPart(partNumber) {
   return [...ids];
 }
 
-async function persistDecisionsForOrders(decisions, orderIds) {
-  const normalizedDecisions = {};
-  for (const [part, decision] of Object.entries(decisions || {})) {
-    const key = normalizePartKey(part);
-    if (!key || !decision) continue;
-    normalizedDecisions[key] = decision;
-  }
+async function persistDecisionsForOrders(decisions, orderIds, orderDecisions = {}) {
   const targetIds = [...new Set((orderIds || []).filter(id => Number.isInteger(id)))];
-  if (!targetIds.length || !Object.keys(normalizedDecisions).length) return;
-  await Promise.all(targetIds.map(orderId =>
-    apiPost(`/api/schedule/orders/${orderId}/decisions`, { decisions: normalizedDecisions })
-  ));
+  if (!targetIds.length) return;
+
+  const targetIdSet = new Set(targetIds);
+  const decisionsByOrder = new Map();
+
+  for (const [part, rawDecision] of Object.entries(decisions || {})) {
+    const key = normalizePartKey(part);
+    if (!key) continue;
+
+    let relevantIds = getAffectedOrderIdsForPart(key).filter(id => targetIdSet.has(id));
+    if (!relevantIds.length && targetIds.length === 1) {
+      relevantIds = [...targetIds];
+    }
+    if (!relevantIds.length) continue;
+
+    const decision = rawDecision && rawDecision !== "None" ? rawDecision : "None";
+    relevantIds.forEach(orderId => {
+      if (!decisionsByOrder.has(orderId)) decisionsByOrder.set(orderId, {});
+      decisionsByOrder.get(orderId)[key] = decision;
+    });
+  }
+
+  for (const [rawOrderId, rawDecisions] of Object.entries(orderDecisions || {})) {
+    const orderId = normalizeOrderId(rawOrderId);
+    if (!targetIdSet.has(orderId)) continue;
+    const normalized = {};
+    for (const [part, decision] of Object.entries(rawDecisions || {})) {
+      const key = normalizePartKey(part);
+      if (!key) continue;
+      normalized[key] = decision && decision !== "None" ? decision : "None";
+    }
+    if (!Object.keys(normalized).length) continue;
+    if (!decisionsByOrder.has(orderId)) decisionsByOrder.set(orderId, {});
+    Object.assign(decisionsByOrder.get(orderId), normalized);
+  }
+
+  if (!decisionsByOrder.size) return;
+  await Promise.all(
+    [...decisionsByOrder.entries()].map(([orderId, payload]) =>
+      apiPost(`/api/schedule/orders/${orderId}/decisions`, { decisions: payload })
+    )
+  );
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -341,8 +402,9 @@ async function loadMainData() {
   try {
     const d = await apiJson("/api/main-file/data");
     _stock = d.stock || {};
+    _liveStock = d.live_stock || {};
     _moq = d.moq || {};
-  } catch (_) { _stock = {}; _moq = {}; }
+  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; }
 }
 
 async function loadStInventoryData() {
@@ -416,7 +478,7 @@ function renderScheduleLegacyBase() {
 
   if (!_rows.length) {
     container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
-    renderShortagePanel([], []);
+    renderShortagePanel([], [], buildMainFileDeficitItems());
     return;
   }
 
@@ -438,7 +500,7 @@ function renderScheduleLegacyBase() {
     (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
     (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
   });
-  renderShortagePanel(allShortages, allCSShortages);
+  renderShortagePanel(allShortages, allCSShortages, buildMainFileDeficitItems());
 }
 
 function formatDraftTime(value) {
@@ -623,7 +685,8 @@ function buildRowCard(r, resultMap) {
       void showDraftModal(draft.id, { readOnly: false, fileId: selectedFileId });
     });
     div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
-      void downloadDraft(draft.id);
+      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
+      void downloadDraft(draft.id, selectedFileId);
     });
     div.querySelector(".btn-draft-delete")?.addEventListener("click", () => {
       void handleDeleteDraft(draft.id, r.model);
@@ -737,6 +800,42 @@ function buildRightPanelShortageData() {
   });
 
   return { shortages, csShortages };
+}
+
+/** 從主檔庫存中找出已經確定缺料的料號（庫存 < 安全水位）。 */
+function buildMainFileDeficitItems() {
+  if (!_liveStock || !Object.keys(_liveStock).length) return [];
+
+  // 建立 BOM 料號描述對照表
+  const descLookup = {};
+  for (const entry of Object.values(_bomData || {})) {
+    for (const comp of (entry?.components || [])) {
+      if (!comp?.part_number) continue;
+      const key = normalizePartKey(comp.part_number);
+      if (key && comp.description && !descLookup[key]) {
+        descLookup[key] = comp.description;
+      }
+    }
+  }
+
+  const deficits = [];
+  for (const [part, stockQty] of Object.entries(_liveStock)) {
+    const key = normalizePartKey(part);
+    if (!key) continue;
+    const currentStock = Number(stockQty || 0);
+    if (currentStock >= 0) continue;
+
+    deficits.push({
+      part_number: part,
+      description: descLookup[key] || "",
+      current_stock: currentStock,
+      shortage_amount: Math.abs(currentStock),
+      moq: _moq?.[key] || 0,
+    });
+  }
+
+  deficits.sort((a, b) => b.shortage_amount - a.shortage_amount);
+  return deficits;
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -1168,11 +1267,11 @@ async function showShortageModal(targets) {
     const code = _rows[i]?.code || model;
     (r.shortages || []).forEach(s => {
       if (!shortagesByModel[model]) shortagesByModel[model] = [];
-      shortagesByModel[model].push({ ...s, _row_code: code, _row_model: model });
+      shortagesByModel[model].push({ ...s, _row_code: code, _row_model: model, _order_id: r.id });
     });
-    (r.customer_material_shortages || []).forEach(s => {
+  (r.customer_material_shortages || []).forEach(s => {
       if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
-      csShortagesByModel[model].push({ ...s, _row_code: code, _row_model: model });
+      csShortagesByModel[model].push({ ...s, _row_code: code, _row_model: model, _order_id: r.id });
     });
   });
 
@@ -1184,9 +1283,64 @@ async function showShortageModal(targets) {
   for (const items of Object.values(csShortagesByModel))
     items.sort(compareShortageItems);
 
-  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])]
-    .sort((a, b) => compareText(a, b, "zh-Hant"));
-  const hasAny = allModels.length > 0;
+  const targetModelOrder = [];
+  const seenModels = new Set();
+  for (const t of targets) {
+    const m = t.model || "未分類機種";
+    if (!seenModels.has(m)) { seenModels.add(m); targetModelOrder.push(m); }
+  }
+  const allModels = targetModelOrder.filter(m => shortagesByModel[m] || csShortagesByModel[m]);
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
+  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, { preserveOrderScopedParts: true });
+
+  // 從已存的副檔草稿還原上次的 decisions / supplements
+  const storedDecisions = {};
+  const storedSupplements = {};
+  const storedOrderScopedDecisions = {};
+  const storedOrderScopedSupplements = {};
+  for (const t of targets) {
+    const draft = _draftsByOrderId[t.id];
+    if (!draft) continue;
+    for (const [part, decision] of Object.entries(draft.decisions || {})) {
+      const pk = normalizePartKey(part);
+      if (!pk || !decision) continue;
+      if (isOrderScopedPart(pk)) {
+        storedOrderScopedDecisions[buildOrderPartKey(t.id, pk)] = decision;
+      } else {
+        storedDecisions[pk] = decision;
+      }
+    }
+    for (const [part, qty] of Object.entries(draft.supplements || {})) {
+      const pk = normalizePartKey(part);
+      const val = Number(qty) || 0;
+      if (!pk || val <= 0) continue;
+      if (isOrderScopedPart(pk)) {
+        storedOrderScopedSupplements[buildOrderPartKey(t.id, pk)] = val;
+      } else {
+        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
+      }
+    }
+  }
+  _applyStoredToShortages(
+    shortagesByModel,
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  );
+  _applyStoredToShortages(
+    csShortagesByModel,
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  );
+
+  // 合併後有些機種的項目可能全被移走，過濾掉空機種
+  const visibleModels = allModels.filter(m =>
+    (shortagesByModel[m] || []).length > 0 || (csShortagesByModel[m] || []).length > 0
+  );
+  const hasAny = visibleModels.length > 0;
 
   let html = "";
 
@@ -1194,7 +1348,7 @@ async function showShortageModal(targets) {
     html += `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       全部 OK，無缺料！可直接扣帳。</div>`;
   } else {
-    for (const model of allModels) {
+    for (const model of visibleModels) {
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       const csItems = csShortagesByModel[model] || [];
       const items = shortagesByModel[model] || [];
@@ -1252,7 +1406,9 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
 
   const supplements = _collectModalSupplements();
   const decisions = _collectModalDecisions();
-  await persistDecisionsForOrders(decisions, targetOrderIds);
+  const orderSupplements = _collectModalOrderSupplements();
+  const orderDecisions = _collectModalOrderDecisions();
+  await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
   Object.entries(decisions).forEach(([part, decision]) => {
     setLocalDecision(part, decision);
   });
@@ -1261,6 +1417,8 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
     order_ids: targetOrderIds,
     decisions,
     supplements,
+    order_decisions: orderDecisions,
+    order_supplements: orderSupplements,
   });
   await refresh();
   if (!silent) showToast("補料已寫入副檔");
@@ -1330,6 +1488,10 @@ async function showBatchMergeDraftModal(targets) {
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
+  if (!modal || !list || !footer) {
+    console.error("[showBatchMergeDraftModal] DOM elements missing:", { modal: !!modal, list: !!list, footer: !!footer });
+    throw new Error("補料 modal DOM 元素遺失");
+  }
   const targetIds = new Set(targets.map(target => target.id));
 
   const shortagesByModel = {};
@@ -1339,29 +1501,88 @@ async function showBatchMergeDraftModal(targets) {
     if (!targetIds.has(_rows[index]?.id)) return;
     const model = _rows[index]?.model || "未分類機種";
     const code = _rows[index]?.code || model;
+    const orderId = _rows[index]?.id;
     (result.shortages || []).forEach(item => {
       if (!shortagesByModel[model]) shortagesByModel[model] = [];
-      shortagesByModel[model].push({ ...item, _row_code: code, _row_model: model });
+      shortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
     });
     (result.customer_material_shortages || []).forEach(item => {
       if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
-      csShortagesByModel[model].push({ ...item, _row_code: code, _row_model: model });
+      csShortagesByModel[model].push({ ...item, _row_code: code, _row_model: model, _order_id: orderId });
     });
   });
 
   for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
   for (const items of Object.values(csShortagesByModel)) items.sort(compareShortageItems);
 
-  const allModels = [...new Set([...Object.keys(csShortagesByModel), ...Object.keys(shortagesByModel)])]
-    .sort((a, b) => compareText(a, b, "zh-Hant"));
+  // 依照 targets（使用者排程順序）決定機種顯示順序，不做額外排序
+  const targetModelOrder = [];
+  const seenModels = new Set();
+  for (const t of targets) {
+    const m = t.model || "未分類機種";
+    if (!seenModels.has(m)) { seenModels.add(m); targetModelOrder.push(m); }
+  }
+  const allModels = targetModelOrder.filter(m => shortagesByModel[m] || csShortagesByModel[m]);
+
+  // 合併跨機種同料號缺料：running balance 是累積的，後面機種的 shortage 包含前面的，
+  // 所以同一料號只在「第一個出現的機種」顯示，補料量取最終累積缺量。
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
+  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, { preserveOrderScopedParts: true });
+  // 合併後有些機種的項目可能全被移走，過濾掉空機種
+  const visibleModels = allModels.filter(m =>
+    (shortagesByModel[m] || []).length > 0 || (csShortagesByModel[m] || []).length > 0
+  );
+
+  // 從已存的副檔草稿載入上次的 decisions / supplements，下次開 modal 直接還原
+  const storedDecisions = {};
+  const storedSupplements = {};
+  const storedOrderScopedDecisions = {};
+  const storedOrderScopedSupplements = {};
+  for (const t of targets) {
+    const draft = _draftsByOrderId[t.id];
+    if (!draft) continue;
+    for (const [part, decision] of Object.entries(draft.decisions || {})) {
+      const pk = normalizePartKey(part);
+      if (!pk || !decision) continue;
+      if (isOrderScopedPart(pk)) {
+        storedOrderScopedDecisions[buildOrderPartKey(t.id, pk)] = decision;
+      } else {
+        storedDecisions[pk] = decision;
+      }
+    }
+    for (const [part, qty] of Object.entries(draft.supplements || {})) {
+      const pk = normalizePartKey(part);
+      const val = Number(qty) || 0;
+      if (!pk || val <= 0) continue;
+      if (isOrderScopedPart(pk)) {
+        storedOrderScopedSupplements[buildOrderPartKey(t.id, pk)] = val;
+      } else {
+        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
+      }
+    }
+  }
+  _applyStoredToShortages(
+    shortagesByModel,
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  );
+  _applyStoredToShortages(
+    csShortagesByModel,
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  );
 
   let html = "";
-  if (!allModels.length) {
+  if (!visibleModels.length) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       目前沒有缺料，確認後仍會建立可預覽、可編輯的副檔。
     </div>`;
   } else {
-    for (const model of allModels) {
+    for (const model of visibleModels) {
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       const csItems = csShortagesByModel[model] || [];
       const items = shortagesByModel[model] || [];
@@ -1445,20 +1666,29 @@ async function showWriteToMainModal(targets) {
       ...item,
       _row_code: item.batch_code || item.model || model,
       _row_model: model,
+      _order_id: item.order_id,
     });
   });
   for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
 
-  const allModels = Object.keys(shortagesByModel).sort((a, b) => compareText(a, b, "zh-Hant"));
+  const targetModelOrder = [];
+  const seenModels = new Set();
+  for (const t of targets) {
+    const m = t.model || "未指定機種";
+    if (!seenModels.has(m)) { seenModels.add(m); targetModelOrder.push(m); }
+  }
+  const allModels = targetModelOrder.filter(m => shortagesByModel[m]);
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
+  const visibleModels = allModels.filter(m => (shortagesByModel[m] || []).length > 0);
   const totalShortageCount = _modalPreviewShortages.length;
   let html = "";
-  if (!allModels.length) {
+  if (!visibleModels.length) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。</div>`;
   } else {
     html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
       ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
-    for (const model of allModels) {
+    for (const model of visibleModels) {
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
       html += (shortagesByModel[model] || []).map(item => modalShortageItem(item, false)).join("");
@@ -1509,6 +1739,7 @@ function shortageToneClass(shortage, isCS = false) {
 function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
+  const orderIdAttr = Number.isInteger(normalizeOrderId(s._order_id)) ? ` data-order-id="${normalizeOrderId(s._order_id)}"` : "";
   const defaultQty = roundShortageUiValue(
     Number(s.default_supplement) > 0
       ? s.default_supplement
@@ -1533,7 +1764,7 @@ function modalShortageItem(s, isCS) {
     purchase_needed_qty: purchaseNeededQty,
   };
 
-  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px">
+  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
     <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
@@ -1548,10 +1779,10 @@ function modalShortageItem(s, isCS) {
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
       <label style="font-size:12px;color:#374151;white-space:nowrap">補料:</label>
-      <input type="number" class="supplement-input" data-part="${s.part_number}" value="${defaultQty}" min="0" ${shortageChecked ? "disabled" : ""}
+      <input type="number" class="supplement-input" data-part="${s.part_number}"${orderIdAttr} value="${defaultQty}" min="0" ${shortageChecked ? "disabled" : ""}
              style="width:80px;padding:2px 6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-align:right">
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:#dc2626;cursor:pointer;white-space:nowrap">
-        <input type="checkbox" class="shortage-mark" data-part="${s.part_number}"> 缺料
+        <input type="checkbox" class="shortage-mark" data-part="${s.part_number}"${orderIdAttr} ${shortageChecked ? "checked" : ""}> 缺料
       </label>
     </div>`}
   </div>`;
@@ -1700,9 +1931,10 @@ async function handleCommitDraft(draftId, model) {
   }
 }
 
-async function downloadDraft(draftId) {
+async function downloadDraft(draftId, fileId = null) {
   try {
-    const result = await desktopDownload({ path: `/api/schedule/drafts/${draftId}/download` });
+    const query = fileId ? `?file_id=${encodeURIComponent(fileId)}` : "";
+    const result = await desktopDownload({ path: `/api/schedule/drafts/${draftId}/download${query}` });
     showDownloadToast(result, "副檔");
   } catch (error) {
     showToast("副檔下載失敗: " + error.message);
@@ -1916,16 +2148,24 @@ function bindMoqEditors(root) {
   });
 }
 
+function _getModalRowMeta(element) {
+  const container = element?.closest(".shortage-item");
+  const orderId = normalizeOrderId(
+    element?.dataset.orderId
+    || container?.dataset.orderId
+  );
+  const part = normalizePartKey(element?.dataset.part || container?.querySelector(".supplement-input")?.dataset.part);
+  return { container, orderId, part };
+}
+
 function _collectModalDecisions() {
   const list = document.getElementById("modal-shortage-list");
   if (!list) return {};
   const decisions = {};
-  const handled = new Set();
 
   list.querySelectorAll(".supplement-input").forEach(input => {
-    const part = normalizePartKey(input.dataset.part);
-    if (!part || handled.has(part)) return;
-    handled.add(part);
+    const { part } = _getModalRowMeta(input);
+    if (!part || isOrderScopedPart(part)) return;
 
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
@@ -1947,19 +2187,60 @@ function _collectModalSupplements() {
   const supplements = {};
   const list = document.getElementById("modal-shortage-list");
   if (!list) return supplements;
-  const handled = new Set();
 
   list.querySelectorAll(".supplement-input").forEach(input => {
-    const part = normalizePartKey(input.dataset.part);
-    if (!part || handled.has(part)) return;
-    handled.add(part);
+    const { part } = _getModalRowMeta(input);
+    if (!part) return;
 
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
       || Array.from(list.querySelectorAll(".shortage-mark")).some(checkbox => normalizePartKey(checkbox.dataset.part) === part && checkbox.checked);
-    if (!isShortage && qty > 0) supplements[part] = qty;
+    if (!isShortage && qty > 0) supplements[part] = (supplements[part] || 0) + qty;
   });
   return supplements;
+}
+
+function _collectModalOrderDecisions() {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return {};
+  const decisionsByOrder = {};
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    const { orderId, part } = _getModalRowMeta(input);
+    if (!Number.isInteger(orderId) || !part) return;
+    const qty = parseFloat(input.value) || 0;
+    const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked;
+    const decision = isShortage
+      ? "Shortage"
+      : qty > 0
+        ? "CreateRequirement"
+        : "None";
+    if (!decisionsByOrder[orderId]) decisionsByOrder[orderId] = {};
+    decisionsByOrder[orderId][part] = decision;
+  });
+
+  return decisionsByOrder;
+}
+
+function _collectModalOrderSupplements() {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return {};
+  const supplementsByOrder = {};
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    const { orderId, part } = _getModalRowMeta(input);
+    if (!Number.isInteger(orderId) || !part) return;
+    const qty = parseFloat(input.value) || 0;
+    const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked;
+    if (!supplementsByOrder[orderId]) supplementsByOrder[orderId] = {};
+    if (!isShortage && qty > 0) {
+      supplementsByOrder[orderId][part] = qty;
+    } else {
+      delete supplementsByOrder[orderId][part];
+    }
+  });
+
+  return supplementsByOrder;
 }
 
 function stopModalProgressAnimation() {
@@ -2042,11 +2323,13 @@ async function handleModalWriteMain() {
 
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
+  const orderSupplements = _collectModalOrderSupplements();
+  const orderDecisions = _collectModalOrderDecisions();
 
   try {
     setModalDownloadProgress(true, "正在保存缺料決策...", "先保存這次要寫入主檔的缺料與補料內容。", 10);
     startModalProgressAnimation(35, 140);
-    await persistDecisionsForOrders(modalDecisions, targetOrderIds);
+    await persistDecisionsForOrders(modalDecisions, targetOrderIds, orderDecisions);
     Object.entries(modalDecisions).forEach(([part, decision]) => {
       setLocalDecision(part, decision);
     });
@@ -2057,6 +2340,8 @@ async function handleModalWriteMain() {
       order_ids: targetOrderIds,
       decisions: modalDecisions,
       supplements,
+      order_decisions: orderDecisions,
+      order_supplements: orderSupplements,
     });
 
     _modalTargets.forEach(item => _checkedIds.delete(item.id));
@@ -2090,13 +2375,15 @@ async function handleModalDownloadBom() {
 
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
+  const orderSupplements = _collectModalOrderSupplements();
+  const orderDecisions = _collectModalOrderDecisions();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   const headerOverrides = buildModalHeaderOverrides();
 
   try {
     setModalDownloadProgress(true, "正在保存補料決策...", "會把這次 merge 的補料內容記進系統。", 12);
     startModalProgressAnimation(32, 140);
-    await persistDecisionsForOrders(modalDecisions, targetOrderIds);
+    await persistDecisionsForOrders(modalDecisions, targetOrderIds, orderDecisions);
     Object.entries(modalDecisions).forEach(([part, decision]) => {
       setLocalDecision(part, decision);
     });
@@ -2111,6 +2398,7 @@ async function handleModalDownloadBom() {
         bom_ids: bomIds,
         order_ids: targetOrderIds,
         supplements,
+        order_supplements: orderSupplements,
         header_overrides: headerOverrides,
       },
     });
@@ -2439,7 +2727,8 @@ function buildRowCardLegacyBase(r, resultMap) {
       void showDraftModal(draft.id, { readOnly: false });
     });
     div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
-      void downloadDraft(draft.id);
+      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
+      void downloadDraft(draft.id, selectedFileId);
     });
     div.querySelector(".btn-draft-delete")?.addEventListener("click", () => {
       void handleDeleteDraft(draft.id, r.model);
@@ -2543,7 +2832,81 @@ function updateStatusOnly() {
   });
 
   const { shortages, csShortages } = buildRightPanelShortageData();
-  renderShortagePanel(shortages, csShortages);
+  renderShortagePanel(shortages, csShortages, buildMainFileDeficitItems());
+}
+
+// ── 合併跨機種同料號缺料 ─────────────────────────────────────────────────────
+/**
+ * Running balance 是累積的，後面機種對同一料號的 shortage_amount 已包含前面的，
+ * 因此同一料號只保留在「第一個出現的機種」，補料量取最大值（= 最終累積缺量）。
+ */
+function _consolidateShortagesAcrossModels(byModel, orderedModels, { preserveOrderScopedParts = false } = {}) {
+  const bestByPart = {}; // PART_UPPER → { item (reference in first model's array) }
+  for (const model of orderedModels) {
+    const items = byModel[model] || [];
+    for (const item of items) {
+      const pk = (item.part_number || "").toUpperCase();
+      if (preserveOrderScopedParts && isOrderScopedPart(pk)) continue;
+      if (!bestByPart[pk]) {
+        bestByPart[pk] = { item };
+      } else {
+        const first = bestByPart[pk].item;
+        // 累積需求量
+        first.needed = (first.needed || 0) + (item.needed || 0);
+        // 取最大缺量（= 最後一個機種的累積缺量）
+        if (item.shortage_amount > first.shortage_amount) {
+          first.shortage_amount = item.shortage_amount;
+          const moq = first.moq || 0;
+          first.suggested_qty = moq > 0
+            ? Math.ceil(first.shortage_amount / moq) * moq
+            : first.shortage_amount;
+          const stAvail = Math.min(first.suggested_qty, first.st_stock_qty || 0);
+          first.st_available_qty = stAvail;
+          first.purchase_needed_qty = Math.max(0, first.shortage_amount - stAvail);
+          first.purchase_suggested_qty = first.purchase_needed_qty > 0
+            ? (moq > 0 ? Math.ceil(first.purchase_needed_qty / moq) * moq : first.purchase_needed_qty)
+            : 0;
+          first.needs_purchase = first.purchase_needed_qty > 0;
+        }
+        item._consolidated = true;
+      }
+    }
+  }
+  // 移除已合併到前面機種的項目
+  for (const model of orderedModels) {
+    if (!byModel[model]) continue;
+    byModel[model] = byModel[model].filter(item => !item._consolidated);
+  }
+}
+
+/**
+ * 從已存的副檔草稿還原 decisions / supplements 到缺料項目。
+ * 讓 modal 重新開啟時自動帶入上次使用者的輸入，不需重填。
+ */
+function _applyStoredToShortages(
+  byModel,
+  storedDecisions,
+  storedSupplements,
+  storedOrderScopedDecisions = {},
+  storedOrderScopedSupplements = {},
+) {
+  for (const items of Object.values(byModel)) {
+    for (const item of items) {
+      const pk = normalizePartKey(item.part_number);
+      if (!pk) continue;
+      const orderPartKey = buildOrderPartKey(item._order_id, pk);
+      if (orderPartKey && storedOrderScopedDecisions[orderPartKey]) {
+        item.decision = storedOrderScopedDecisions[orderPartKey];
+      } else if (storedDecisions[pk]) {
+        item.decision = storedDecisions[pk];
+      }
+      if (orderPartKey && Number(storedOrderScopedSupplements[orderPartKey]) > 0) {
+        item.default_supplement = storedOrderScopedSupplements[orderPartKey];
+      } else if (storedSupplements[pk] > 0) {
+        item.default_supplement = storedSupplements[pk];
+      }
+    }
+  }
 }
 
 // ── Shortage panel ────────────────────────────────────────────────────────────
@@ -2574,10 +2937,11 @@ function renderShortageGroupHtml(items, isCS) {
   return html;
 }
 
-function renderShortagePanel(shortages, csShortages = []) {
+function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
   const scroll = document.getElementById("right-scroll");
   const badge = document.getElementById("shortage-count");
-  const totalCount = shortages.length + csShortages.length;
+  const orderShortageCount = shortages.length + csShortages.length;
+  const totalCount = orderShortageCount + mainDeficits.length;
 
   if (!totalCount) {
     scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
@@ -2603,6 +2967,11 @@ function renderShortagePanel(shortages, csShortages = []) {
     html += renderShortageGroupHtml(shortages, false);
   }
 
+  // 主檔已缺料（不需勾選訂單也會顯示）
+  if (mainDeficits.length) {
+    html += renderMainDeficitSectionHtml(mainDeficits);
+  }
+
   scroll.innerHTML = html;
 
   scroll.querySelectorAll(".dec-btn").forEach(btn => {
@@ -2612,18 +2981,39 @@ function renderShortagePanel(shortages, csShortages = []) {
       const prev = _decisions[part] || "None";
       const next = prev === dec ? "None" : dec;
       setLocalDecision(part, next);
-      renderShortagePanel(shortages, csShortages);
+      renderShortagePanel(shortages, csShortages, mainDeficits);
       try {
         await persistDecisionsForOrders({ [part]: next }, getAffectedOrderIdsForPart(part));
       } catch (e) {
         setLocalDecision(part, prev);
-        renderShortagePanel(shortages, csShortages);
+        renderShortagePanel(shortages, csShortages, mainDeficits);
         showToast("決策儲存失敗：" + e.message);
       }
     });
   });
   bindMoqEditors(scroll);
   bindShortageMoqBadgeEditors(scroll);
+}
+
+function renderMainDeficitSectionHtml(deficits) {
+  let html = `<div style="margin-top:12px;border-top:1px solid var(--border, #e5e7eb);padding-top:10px">
+    <h4 style="font-size:12px;color:#f59e0b;margin:0 0 6px;font-weight:600">主檔已缺料 (${deficits.length})</h4>`;
+  for (const item of deficits) {
+    const deficitAmt = fmt(roundShortageUiValue(item.shortage_amount));
+    const stockAmt = fmt(roundShortageUiValue(item.current_stock));
+    const moqVal = Number(item.moq || 0);
+    html += `<div class="shortage-item" style="opacity:0.85">
+      <div class="part">${esc(item.part_number)}</div>
+      <div class="desc">${esc(item.description || "—")}</div>
+      <div class="amounts">
+        <span class="red">缺 ${deficitAmt}</span>
+        <span style="color:#6b7280">結存 ${stockAmt}</span>
+        ${moqVal > 0 ? `<span>MOQ ${fmt(moqVal)}</span>` : ""}
+      </div>
+    </div>`;
+  }
+  html += "</div>";
+  return html;
 }
 
 function shortageItemHtml(s, isCS) {
@@ -2890,21 +3280,29 @@ async function handleBatchMerge() {
       button.textContent = "建立中...";
     }
     const targetIds = targets.map(row => row.id);
+
+    // 只把 API call 放在 withGlobalBusy，refresh 在 overlay 關閉後執行
     const result = await withGlobalBusy(
-      async () => {
-        const response = await apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
-        await refresh();
-        return response;
-      },
+      () => apiPost("/api/schedule/batch-merge", { order_ids: targetIds }),
       {
         title: "正在批次建立副檔",
         detail: `共 ${targets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
       },
     );
+
+    // overlay 已關閉，背景刷新資料
+    await refresh();
+
     const refreshedTargets = _rows.filter(row => targetIds.includes(row.id));
     showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
-    await showBatchMergeDraftModal(refreshedTargets);
+    try {
+      await showBatchMergeDraftModal(refreshedTargets);
+    } catch (modalError) {
+      console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
+      showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
+    }
   } catch (error) {
+    console.error("[handleBatchMerge] batch merge failed:", error);
     showToast("批次 merge 失敗: " + error.message, { sticky: true, tone: "error" });
   } finally {
     if (button) {
@@ -3092,7 +3490,8 @@ function buildRowCardLegacyOriginal(r, resultMap) {
       void showDraftModal(draft.id, { readOnly: false });
     });
     div.querySelector(".btn-draft-download")?.addEventListener("click", () => {
-      void downloadDraft(draft.id);
+      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
+      void downloadDraft(draft.id, selectedFileId);
     });
     div.querySelector(".btn-draft-delete")?.addEventListener("click", () => {
       void handleDeleteDraft(draft.id, r.model);
@@ -3109,7 +3508,7 @@ function renderSchedule() {
 
   if (!_rows.length) {
     container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
-    renderShortagePanel([], []);
+    renderShortagePanel([], [], buildMainFileDeficitItems());
     return;
   }
 
@@ -3124,7 +3523,8 @@ function renderSchedule() {
     initSortable(container);
 
     const { shortages, csShortages } = buildRightPanelShortageData();
-    renderShortagePanel(shortages, csShortages);
+    const mainDeficits = buildMainFileDeficitItems();
+    renderShortagePanel(shortages, csShortages, mainDeficits);
   } catch (error) {
     console.error("renderSchedule failed", error);
     container.innerHTML = `<div class="empty-state">畫面載入失敗：${esc(error?.message || "未知錯誤")}</div>`;

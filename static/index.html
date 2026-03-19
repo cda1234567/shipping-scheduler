@@ -306,11 +306,71 @@
     <!-- ── Tab: 不良品 ── -->
     <div id="tab-defectives-tab" class="tab-content">
       <div class="defectives-shell">
-        <div class="defectives-toolbar">
-          <h4 style="margin:0;font-size:16px;font-weight:600">不良品扣帳</h4>
-          <span class="spacer"></span>
-          <input type="file" id="defective-import-input" accept=".xlsx,.xls,.xlsm" style="display:none">
-          <button class="btn btn-primary btn-sm" id="btn-import-defective">匯入副檔扣帳</button>
+        <div class="defectives-grid">
+          <section class="defectives-card">
+            <div class="defectives-card-head">
+              <div>
+                <h4 class="defectives-card-title">不良品扣帳</h4>
+                <div class="defectives-card-subtitle">沿用副檔格式匯入，適合一批一批扣帳。</div>
+              </div>
+              <span class="spacer"></span>
+              <input type="file" id="defective-import-input" accept=".xlsx,.xls,.xlsm" style="display:none">
+              <button class="btn btn-primary btn-sm" id="btn-import-defective">匯入副檔扣帳</button>
+            </div>
+            <div class="defectives-card-note">
+              檔案會直接扣主檔，並保留批次紀錄；之後刪除批次時，會自動把該批扣回主檔。
+            </div>
+          </section>
+
+          <section class="defectives-card defectives-card-overrun">
+            <div class="defectives-card-head">
+              <div>
+                <h4 class="defectives-card-title">加工多打扣帳</h4>
+                <div class="defectives-card-subtitle">有加工廠明細 Excel 就直接匯入；沒有時再用機種 + pcs 手動展開。</div>
+              </div>
+              <span class="spacer"></span>
+              <input type="file" id="overrun-import-input" accept=".xlsx,.xls,.xlsm" style="display:none">
+              <button class="btn btn-secondary btn-sm" id="btn-overrun-import">匯入多打明細</button>
+              <button class="btn btn-secondary btn-sm" id="btn-overrun-preview">預覽扣帳</button>
+              <button class="btn btn-danger btn-sm" id="btn-overrun-submit" disabled>確認扣帳</button>
+            </div>
+
+            <div class="defectives-overrun-form">
+              <label class="form-field">
+                <span>機種</span>
+                <input type="text" id="overrun-model" list="defective-overrun-models" placeholder="例如：T356789IU">
+                <datalist id="defective-overrun-models"></datalist>
+              </label>
+
+              <label class="form-field">
+                <span>多打 pcs</span>
+                <input type="number" id="overrun-extra-pcs" min="0.01" step="0.01" placeholder="例如：50">
+              </label>
+
+              <label class="form-field">
+                <span>原因</span>
+                <input type="text" id="overrun-reason" placeholder="例如：加工廠多打">
+              </label>
+
+              <label class="form-field">
+                <span>登錄人</span>
+                <input type="text" id="overrun-reported-by" placeholder="例如：Andy">
+              </label>
+
+              <label class="form-field defectives-overrun-note-field">
+                <span>備註</span>
+                <textarea id="overrun-note" rows="3" placeholder="可補充加工廠、批號、臨時狀況等"></textarea>
+              </label>
+            </div>
+
+            <div id="defective-overrun-preview" class="defective-overrun-preview">
+              <div class="no-shortage-msg">輸入機種與多打 pcs 後，按「預覽扣帳」即可先確認會扣哪些料號。</div>
+            </div>
+          </section>
+        </div>
+
+        <div class="defectives-list-head">
+          <h4 style="margin:0;font-size:16px;font-weight:600">扣帳批次紀錄</h4>
         </div>
         <div id="defective-list"></div>
       </div>
@@ -391,7 +451,7 @@
 
 <script type="module">
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
-import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions } from "/static/modules/schedule.js";
+import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview } from "/static/modules/main_preview.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
@@ -575,6 +635,7 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
       method: "POST",
       body: { order_ids: orderIds, decisions },
     });
+    clearCheckedOrderIds(orderIds);
     statusEl.textContent = "已下載";
     showDownloadToast(result, "發料單");
     setTimeout(() => statusEl.textContent = "", 3000);
@@ -726,6 +787,27 @@ init().catch(error => {
     <div id="modal-footer" class="modal-footer">
       <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 加工多打缺漏料號 Modal -->
+<div id="overrun-resolution-modal" class="modal-overlay" style="display:none" aria-hidden="true">
+  <div class="modal-box modal-box-wide">
+    <div class="modal-header">
+      <div>
+        <h3 style="margin:0;font-size:16px">加工多打料號確認</h3>
+        <div class="modal-subtitle">抓不到的料號不能直接扣，請選擇不扣，或改成主檔裡的正確料號後再扣。</div>
+      </div>
+      <button id="overrun-resolution-close" class="modal-close-btn" type="button" aria-label="關閉">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="overrun-resolution-summary" class="defective-resolution-summary"></div>
+      <div id="overrun-resolution-list" class="defective-resolution-list"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="overrun-resolution-cancel" class="btn btn-secondary btn-sm" type="button">取消</button>
+      <button id="overrun-resolution-confirm" class="btn btn-danger btn-sm" type="button">確認後扣帳</button>
     </div>
   </div>
 </div>

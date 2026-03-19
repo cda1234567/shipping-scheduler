@@ -1387,19 +1387,33 @@ def get_all_dispatched_consumption(after_snapshot_at: str = "") -> dict[str, flo
 # ── Decisions ─────────────────────────────────────────────────────────────────
 
 def save_decision(order_id: int, part_number: str, decision: str):
-    now = _now()
     part = str(part_number).strip().upper()
+    if not part:
+        return
+
+    normalized_decision = str(decision or "").strip() or "None"
     with get_conn() as conn:
+        if normalized_decision == "None":
+            conn.execute(
+                "DELETE FROM decisions WHERE order_id=? AND part_number=?",
+                (order_id, part),
+            )
+            return
+
+        now = _now()
         conn.execute(
             "INSERT INTO decisions(order_id, part_number, decision, decided_at) VALUES(?,?,?,?) "
             "ON CONFLICT(order_id, part_number) DO UPDATE SET decision=excluded.decision, decided_at=excluded.decided_at",
-            (order_id, part, decision, now),
+            (order_id, part, normalized_decision, now),
         )
 
 
 def get_decisions_for_order(order_id: int) -> dict[str, str]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT part_number, decision FROM decisions WHERE order_id=?", (order_id,)).fetchall()
+        rows = conn.execute(
+            "SELECT part_number, decision FROM decisions WHERE order_id=? AND decision != 'None'",
+            (order_id,),
+        ).fetchall()
     return {str(r["part_number"]).strip().upper(): r["decision"] for r in rows}
 
 
@@ -1409,13 +1423,44 @@ def get_all_decisions() -> dict[str, str]:
         rows = conn.execute(
             "SELECT d.part_number, d.decision FROM decisions d "
             "JOIN orders o ON o.id = d.order_id "
-            "WHERE o.status IN ('pending','merged') "
+            "WHERE o.status IN ('pending','merged') AND d.decision != 'None' "
             "ORDER BY d.part_number, d.decided_at, d.id"
         ).fetchall()
     decisions: dict[str, str] = {}
     for r in rows:
         decisions[str(r["part_number"]).strip().upper()] = r["decision"]
     return decisions
+
+
+def replace_order_decisions(order_ids: list[int], allocations: dict[int, dict[str, str]] | None = None):
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return
+
+    now = _now()
+    with get_conn() as conn:
+        placeholders = ",".join("?" * len(normalized_ids))
+        conn.execute(
+            f"DELETE FROM decisions WHERE order_id IN ({placeholders})",
+            normalized_ids,
+        )
+
+        for order_id in normalized_ids:
+            for part_number, decision in (allocations or {}).get(order_id, {}).items():
+                part = str(part_number or "").strip().upper()
+                normalized_decision = str(decision or "").strip()
+                if not part or not normalized_decision or normalized_decision == "None":
+                    continue
+                conn.execute(
+                    "INSERT INTO decisions(order_id, part_number, decision, decided_at) VALUES(?,?,?,?)",
+                    (order_id, part, normalized_decision, now),
+                )
 
 
 def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[str, float]] | None = None):

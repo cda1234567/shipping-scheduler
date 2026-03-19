@@ -112,6 +112,43 @@ class ApiTests(unittest.TestCase):
             },
         )
 
+    def test_update_selected_schedule_drafts_prefers_order_scoped_supplements(self):
+        with patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
+             patch("app.routers.schedule.build_order_supplement_allocations", return_value={
+                 1: {"IC-STM32F": 150},
+                 2: {},
+             }), \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]) as mock_rebuild, \
+             patch("app.routers.schedule.get_schedule_draft_map", return_value={
+                 1: {"id": 11, "order_id": 1},
+                 2: {"id": 12, "order_id": 2},
+             }), \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.put("/api/schedule/drafts", json={
+                "order_ids": [1, 2],
+                "decisions": {},
+                "supplements": {"IC-STM32F": 150},
+                "order_supplements": {
+                    "1": {"IC-STM32F": 100},
+                    "2": {"IC-STM32F": 50},
+                },
+            })
+
+        self.assertEqual(response.status_code, 200)
+        mock_rebuild.assert_called_once_with(
+            [1, 2],
+            {
+                1: {
+                    "decisions": {},
+                    "supplements": {"IC-STM32F": 100.0},
+                },
+                2: {
+                    "decisions": {},
+                    "supplements": {"IC-STM32F": 50.0},
+                },
+            },
+        )
+
     def test_download_selected_schedule_drafts_proxies_to_bundle_service(self):
         with patch(
             "app.routers.schedule.download_selected_merge_drafts",
@@ -196,6 +233,199 @@ class ApiTests(unittest.TestCase):
         mock_prepare.assert_has_calls([call(1, str(main_path)), call(2, str(main_path))])
         self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
         self.assertEqual(mock_execute.call_args_list[1].args[4], {"PART-1": "CreateRequirement"})
+
+    def test_overrun_preview_returns_plan_and_stock_preview(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives.build_model_overrun_plan", return_value={
+                 "model": "MODEL-A",
+                 "requested_model": "model-a",
+                 "extra_pcs": 25,
+                 "matched_models": ["MODEL-A"],
+                 "matched_boms": [{"id": "bom-1", "filename": "model-a.xlsx", "model": "MODEL-A", "group_model": "MODEL-A"}],
+                 "items": [{"part_number": "PART-1", "description": "IC", "defective_qty": 50}],
+             }) as mock_plan, \
+             patch("app.routers.defectives.preview_deductions_against_main", return_value={
+                 "deducted_count": 1,
+                 "skipped_parts": [],
+                 "results": [{"part_number": "PART-1", "stock_before": 120, "stock_after": 70}],
+                 "negative_count": 0,
+                 "total_deduction_qty": 50,
+             }) as mock_preview:
+            response = self.client.post("/api/defectives/overrun/preview", json={
+                "model": "model-a",
+                "extra_pcs": 25,
+                "reason": "加工廠多打",
+                "note": "",
+                "reported_by": "Andy",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["model"], "MODEL-A")
+        self.assertEqual(data["deducted_count"], 1)
+        mock_plan.assert_called_once_with("model-a", 25.0)
+        mock_preview.assert_called_once()
+
+    def test_create_model_overrun_creates_batch_and_records(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=123.0), \
+             patch("app.routers.defectives.build_model_overrun_plan", return_value={
+                 "model": "MODEL-A",
+                 "requested_model": "MODEL-A",
+                 "extra_pcs": 10,
+                 "matched_models": ["MODEL-A"],
+                 "matched_boms": [{"id": "bom-1", "filename": "model-a.xlsx", "model": "MODEL-A", "group_model": "MODEL-A"}],
+                 "items": [
+                     {"part_number": "PART-1", "description": "IC-1", "defective_qty": 30},
+                     {"part_number": "PART-2", "description": "IC-2", "defective_qty": 20},
+                 ],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 2,
+                 "skipped_parts": [],
+                 "results": [
+                     {"part_number": "PART-1", "stock_before": 100, "stock_after": 70},
+                     {"part_number": "PART-2", "stock_before": 80, "stock_after": 60},
+                 ],
+             }) as mock_deduct, \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.create_defective_batch", return_value=55) as mock_batch, \
+             patch("app.routers.defectives.db.create_defective_record", side_effect=[101, 102]) as mock_record, \
+             patch("app.routers.defectives.db.log_activity") as mock_log:
+            response = self.client.post("/api/defectives/overrun", json={
+                "model": "MODEL-A",
+                "extra_pcs": 10,
+                "reason": "加工廠多打",
+                "note": "晚班補單",
+                "reported_by": "Andy",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["batch_id"], 55)
+        self.assertEqual(data["batch_type"], "overrun")
+        self.assertEqual(mock_record.call_count, 2)
+        self.assertTrue(mock_batch.call_args.args[0].startswith("加工多打｜MODEL-A｜+10"))
+        self.assertIn("加工廠多打", mock_batch.call_args.kwargs["note"])
+        mock_deduct.assert_called_once()
+        mock_log.assert_called_once()
+
+    def test_import_overrun_detail_file_creates_overrun_batch(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=456.0), \
+             patch("app.routers.defectives.parse_overrun_detail_excel", return_value={
+                 "title": "12-7 02/02 T356789IU-A (REV3.4) * 4",
+                 "mo_info": "4500059105 多打 S+D",
+                 "items": [
+                     {"part_number": "EC-10025A", "description": "", "defective_qty": 56},
+                     {"part_number": "EC-10028A", "description": "", "defective_qty": 24},
+                 ],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 2,
+                 "skipped_parts": [],
+                 "results": [
+                     {"part_number": "EC-10025A", "stock_before": 100, "stock_after": 44},
+                     {"part_number": "EC-10028A", "stock_before": 50, "stock_after": 26},
+                 ],
+             }) as mock_deduct, \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.create_defective_batch", return_value=77) as mock_batch, \
+             patch("app.routers.defectives.db.create_defective_record", side_effect=[201, 202]) as mock_record, \
+             patch("app.routers.defectives.db.log_activity") as mock_log:
+            response = self.client.post(
+                "/api/defectives/overrun/import",
+                files={"file": ("20260202 T356789IU多打扣帳明細.xlsx", io.BytesIO(b"detail"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["batch_id"], 77)
+        self.assertEqual(data["batch_type"], "overrun")
+        self.assertEqual(mock_record.call_count, 2)
+        self.assertTrue(mock_batch.call_args.args[0].startswith("加工多打明細｜20260202 T356789IU多打扣帳明細.xlsx"))
+        self.assertIn("4500059105 多打 S+D", mock_batch.call_args.kwargs["note"])
+        mock_deduct.assert_called_once()
+        mock_log.assert_called_once()
+
+    def test_preview_overrun_detail_import_returns_missing_items(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives.parse_overrun_detail_excel", return_value={
+                 "title": "12-7 02/02 T356789IU-A (REV3.4) * 4",
+                 "mo_info": "4500059105 多打 S+D",
+                 "items": [{"source_row": 3, "part_number": "EC-10029A", "description": "", "defective_qty": 24}],
+             }), \
+             patch("app.routers.defectives.build_overrun_import_preview", return_value={
+                 "title": "12-7 02/02 T356789IU-A (REV3.4) * 4",
+                 "mo_info": "4500059105 多打 S+D",
+                 "source_filename": "20260202 T356789IU多打扣帳明細.xlsx",
+                 "item_count": 1,
+                 "deducted_count": 0,
+                 "negative_count": 0,
+                 "total_deduction_qty": 0,
+                 "items": [],
+                 "results": [],
+                 "missing_items": [{"source_row": 3, "part_number": "EC-10029A", "suggestions": [{"part_number": "EC-10028A", "stock_qty": 50}]}],
+                 "missing_count": 1,
+                 "requires_confirmation": True,
+             }) as mock_preview:
+            response = self.client.post(
+                "/api/defectives/overrun/import-preview",
+                files={"file": ("20260202 T356789IU多打扣帳明細.xlsx", io.BytesIO(b"detail"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["missing_count"], 1)
+        mock_preview.assert_called_once()
+
+    def test_confirm_overrun_detail_import_applies_replacements(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=789.0), \
+             patch("app.routers.defectives.apply_overrun_import_confirmations", return_value={
+                 "final_items": [
+                     {"source_row": 3, "part_number": "EC-10025A", "description": "", "defective_qty": 56, "source_part_number": "EC-10025A"},
+                     {"source_row": 4, "part_number": "EC-10028A", "description": "", "defective_qty": 24, "source_part_number": "EC-10029A"},
+                 ],
+                 "replaced_items": [
+                     {"source_row": 4, "source_part_number": "EC-10029A", "target_part_number": "EC-10028A", "defective_qty": 24},
+                 ],
+                 "skipped_items": [
+                     {"source_row": 5, "part_number": "EC-10099A", "defective_qty": 10},
+                 ],
+                 "unresolved_items": [],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 2,
+                 "skipped_parts": [],
+                 "results": [
+                     {"part_number": "EC-10025A", "stock_before": 100, "stock_after": 44},
+                     {"part_number": "EC-10028A", "stock_before": 50, "stock_after": 26},
+                 ],
+             }) as mock_deduct, \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.create_defective_batch", return_value=88) as mock_batch, \
+             patch("app.routers.defectives.db.create_defective_record", side_effect=[301, 302]) as mock_record, \
+             patch("app.routers.defectives.db.log_activity") as mock_log:
+            response = self.client.post("/api/defectives/overrun/import-confirm", json={
+                "source_filename": "20260202 T356789IU多打扣帳明細.xlsx",
+                "title": "12-7 02/02 T356789IU-A (REV3.4) * 4",
+                "mo_info": "4500059105 多打 S+D",
+                "items": [
+                    {"source_row": 3, "part_number": "EC-10025A", "defective_qty": 56, "action": "deduct", "target_part_number": ""},
+                    {"source_row": 4, "part_number": "EC-10029A", "defective_qty": 24, "action": "replace", "target_part_number": "EC-10028A"},
+                    {"source_row": 5, "part_number": "EC-10099A", "defective_qty": 10, "action": "skip", "target_part_number": ""},
+                ],
+            })
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["batch_id"], 88)
+        self.assertEqual(data["replaced_count"], 1)
+        self.assertEqual(data["skipped_count"], 1)
+        self.assertEqual(mock_record.call_count, 2)
+        self.assertIn("改正料號", mock_batch.call_args.kwargs["note"])
+        mock_deduct.assert_called_once()
+        mock_log.assert_called_once()
 
     def test_load_active_merge_draft_context_accepts_repaired_main_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1077,6 +1307,48 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=7, column=8).value, 0)
         self.assertEqual(ws.cell(row=8, column=7).value, 12)
         self.assertEqual(ws.cell(row=8, column=8).value, 0)
+        downloaded.close()
+
+    def test_dispatch_download_marks_manual_supplement_orange_when_qty_exceeds_st_stock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.merge_cells("G1:H1")
+            ws.cell(row=1, column=7).value = "製單號碼M/O:"
+            ws.cell(row=5, column=3).value = "PART-1"
+            ws.cell(row=5, column=7).value = 0
+            ws.cell(row=5, column=8).value = 0
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-1",
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "source_filename": "dispatch.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "po_number": "0",
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
+                 patch("app.routers.bom.db.get_st_inventory_stock", return_value={"PART-1": 10000}):
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-1"],
+                    "supplements": {"PART-1": 20000},
+                    "header_overrides": {"bom-1": {"po_number": "4500059234"}},
+                    "carry_overs": {"bom-1": {"PART-1": 135}},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = downloaded.active
+        self.assertEqual(ws.cell(row=5, column=8).value, 20000)
+        self.assertEqual(ws.cell(row=5, column=8).fill.fill_type, "solid")
+        self.assertTrue(str(ws.cell(row=5, column=8).fill.start_color.rgb or "").endswith("FFC000"))
         downloaded.close()
 
     def test_dispatch_download_persists_order_supplements_for_selected_orders(self):

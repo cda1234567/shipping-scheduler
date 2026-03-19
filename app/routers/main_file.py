@@ -18,6 +18,7 @@ from ..services.main_reader import (
     read_stock,
 )
 from ..services.merge_to_main import backup_main_file
+from ..snapshot_sync import refresh_snapshot_from_main
 
 router = APIRouter()
 
@@ -53,11 +54,8 @@ async def upload_main_file(file: UploadFile = File(...)):
     db.set_setting("main_loaded_at", datetime.now().isoformat())
     db.set_setting("main_part_count", str(len(stock)))
 
-    existing = db.get_snapshot()
-    if not existing:
-        db.save_snapshot(stock, moq)
-        db.log_activity("snapshot_created", f"首次建立主檔快照，共 {len(stock)} 筆")
-
+    # 上傳主檔 = 新基準，永遠更新快照
+    refresh_snapshot_from_main(str(dest))
     db.log_activity("main_file_upload", f"{file.filename}, {len(stock)} 筆")
     return {"ok": True, "part_count": len(stock), "filename": file.filename}
 
@@ -98,9 +96,15 @@ async def get_main_data():
         stock = read_stock(main_path)
         moq = read_moq(main_path)
 
+    try:
+        live_stock = read_stock(main_path)
+    except Exception:
+        live_stock = dict(stock)
+
     return {
         "stock": stock,
         "moq": moq,
+        "live_stock": live_stock,
         "part_count": int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),
         "filename": db.get_setting("main_filename") or Path(main_path).name,
@@ -195,6 +199,7 @@ async def edit_main_cell(req: EditCellRequest):
     cell.value = new_value if new_value != "" else None
     wb.save(main_path)
     wb.close()
+    refresh_snapshot_from_main(main_path)
 
     db.log_activity("主檔編輯", f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}")
     return {"ok": True, "old_value": str(old_value or ""), "new_value": str(new_value)}

@@ -5,8 +5,12 @@
                                     ↘ cancelled
 """
 from __future__ import annotations
+import logging
 import shutil
+import time
 from datetime import datetime, date
+
+log = logging.getLogger(__name__)
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
@@ -18,6 +22,7 @@ from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, r
 from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
+from ..services.order_decisions import build_order_decision_allocations
 from ..services.order_supplements import build_order_supplement_allocations
 from ..services.shortage_rules import (
     filter_main_write_blocking_shortages,
@@ -33,6 +38,7 @@ from ..services.merge_drafts import (
     download_selected_merge_drafts,
     restore_recent_committed_merge_drafts,
 )
+from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
@@ -120,6 +126,96 @@ def _normalize_supplements(supplements: dict[str, float] | None = None) -> dict[
             continue
         normalized[key] = amount
     return normalized
+
+
+def _normalize_supplements_preserve_keys(supplements: dict[str, float] | None = None) -> dict[str, float]:
+    normalized: dict[str, float] = {}
+    for part, qty in (supplements or {}).items():
+        key = str(part or "").strip()
+        try:
+            amount = float(qty or 0)
+        except (TypeError, ValueError):
+            amount = 0.0
+        if not key or amount <= 0:
+            continue
+        normalized[key] = amount
+    return normalized
+
+
+def _normalize_order_decisions(order_decisions: dict | None = None) -> dict[int, dict[str, str]]:
+    normalized: dict[int, dict[str, str]] = {}
+    for raw_order_id, decisions in (order_decisions or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+        normalized[order_id] = _normalize_decisions(decisions or {})
+    return normalized
+
+
+def _normalize_order_supplements(order_supplements: dict | None = None) -> dict[int, dict[str, float]]:
+    normalized: dict[int, dict[str, float]] = {}
+    for raw_order_id, supplements in (order_supplements or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+        normalized[order_id] = _normalize_supplements(supplements or {})
+    return normalized
+
+
+def _merge_order_decision_allocations(
+    order_ids: list[int],
+    decisions: dict[str, str] | None = None,
+    order_decisions: dict[int, dict[str, str]] | None = None,
+    *,
+    include_none: bool = False,
+) -> dict[int, dict[str, str]]:
+    merged = build_order_decision_allocations(
+        order_ids,
+        decisions or {},
+        include_none=include_none,
+    )
+    for order_id in order_ids:
+        scoped = _normalize_decisions((order_decisions or {}).get(order_id) or {})
+        if not scoped:
+            merged.setdefault(order_id, {})
+            continue
+        merged.setdefault(order_id, {}).update(scoped)
+    return merged
+
+
+def _merge_order_supplement_allocations(
+    order_ids: list[int],
+    supplements: dict[str, float] | None = None,
+    order_supplements: dict[int, dict[str, float]] | None = None,
+) -> dict[int, dict[str, float]]:
+    merged = build_order_supplement_allocations(order_ids, supplements or {})
+    for order_id in order_ids:
+        scoped = _normalize_supplements((order_supplements or {}).get(order_id) or {})
+        if not scoped:
+            merged.setdefault(order_id, {})
+            continue
+        current = dict(merged.get(order_id, {}))
+        current.update(scoped)
+        merged[order_id] = current
+    return merged
+
+
+def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None) -> dict[str, str]:
+    draft = db.get_active_merge_draft_for_order(order_id) or {}
+    merged = _normalize_decisions(draft.get("decisions"))
+    merged.update(_normalize_decisions(db.get_decisions_for_order(order_id)))
+    for part, decision in (updates or {}).items():
+        key = str(part or "").strip().upper()
+        value = str(decision or "").strip() or "None"
+        if not key:
+            continue
+        if value == "None":
+            merged.pop(key, None)
+            continue
+        merged[key] = value
+    return merged
 
 
 def _format_blocking_shortage_line(shortage: dict) -> str:
@@ -244,6 +340,7 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     restore_target_path = Path(restore_target)
     restore_target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(backup_path, restore_target_path)
+    refresh_snapshot_from_main(str(restore_target_path))
 
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
     session_ids = [int(session["id"]) for session in normalized_sessions]
@@ -500,12 +597,15 @@ async def calculate_shortage():
 # ── Order status changes ──────────────────────────────────────────────────────
 
 @router.post("/schedule/batch-merge")
-async def batch_merge(req: BatchMergeRequest):
+def batch_merge(req: BatchMergeRequest):
     """批次將 pending 訂單改為 merged。"""
     if not req.order_ids:
         raise HTTPException(400, "請選擇要 merge 的訂單")
+    t0 = time.monotonic()
     db.batch_merge_orders(req.order_ids)
+    log.info("[batch_merge] status updated, rebuilding drafts for %d orders...", len(req.order_ids))
     drafts = rebuild_merge_drafts(req.order_ids)
+    log.info("[batch_merge] done in %.1fs, %d drafts created", time.monotonic() - t0, len(drafts))
     db.log_activity("batch_merge", f"批次 merge {len(req.order_ids)} 筆訂單")
     db.create_alert(AlertType.BATCH_MERGE_DONE, f"批次 merge 完成，共 {len(req.order_ids)} 筆")
     return {"ok": True, "count": len(req.order_ids), "draft_count": len(drafts)}
@@ -611,6 +711,7 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     )
     _ensure_main_write_allowed(preview["shortages"])
     result = _execute_dispatch(order, groups, all_components, main_path, decisions, supplements)
+    refresh_snapshot_from_main(main_path)
     if supplements:
         allocations = build_order_supplement_allocations([order_id], supplements)
         db.replace_order_supplements([order_id], allocations)
@@ -660,7 +761,24 @@ async def preview_main_write(req: BatchDispatchRequest):
 
     decisions = _normalize_decisions(req.decisions)
     supplements = _normalize_supplements(req.supplements)
-    supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
+    order_decisions = _normalize_order_decisions(req.order_decisions)
+    order_supplements = _normalize_order_supplements(req.order_supplements)
+    use_scoped_decisions = bool(order_decisions)
+    decision_allocations = (
+        _merge_order_decision_allocations(
+            normalized_order_ids,
+            decisions,
+            order_decisions,
+            include_none=True,
+        )
+        if use_scoped_decisions
+        else {order_id: decisions for order_id in normalized_order_ids}
+    )
+    supplement_allocations = _merge_order_supplement_allocations(
+        normalized_order_ids,
+        supplements,
+        order_supplements,
+    )
 
     batches = []
     for order_id in normalized_order_ids:
@@ -671,6 +789,8 @@ async def preview_main_write(req: BatchDispatchRequest):
             "groups": groups,
             "supplements": supplement_allocations.get(int(order["id"]), {}),
         })
+        if use_scoped_decisions:
+            batches[-1]["decisions"] = decision_allocations.get(int(order["id"]), {})
 
     preview = preview_order_batches(
         main_path,
@@ -688,7 +808,7 @@ async def preview_main_write(req: BatchDispatchRequest):
 
 
 @router.post("/schedule/batch-dispatch")
-async def batch_dispatch(req: BatchDispatchRequest):
+def batch_dispatch(req: BatchDispatchRequest):
     if not req.order_ids:
         raise HTTPException(400, "請選擇要發料的訂單")
 
@@ -724,7 +844,24 @@ async def batch_dispatch(req: BatchDispatchRequest):
     else:
         decisions = _normalize_decisions(req.decisions)
         supplements = _normalize_supplements(req.supplements)
-        supplement_allocations = build_order_supplement_allocations(normalized_order_ids, supplements)
+        order_decisions = _normalize_order_decisions(req.order_decisions)
+        order_supplements = _normalize_order_supplements(req.order_supplements)
+        use_scoped_decisions = bool(order_decisions)
+        decision_allocations = (
+            _merge_order_decision_allocations(
+                normalized_order_ids,
+                decisions,
+                order_decisions,
+                include_none=True,
+            )
+            if use_scoped_decisions
+            else {order_id: decisions for order_id in normalized_order_ids}
+        )
+        supplement_allocations = _merge_order_supplement_allocations(
+            normalized_order_ids,
+            supplements,
+            order_supplements,
+        )
         raw_contexts = [_prepare_dispatch_context(order_id, main_path) for order_id in normalized_order_ids]
         contexts = [
             {
@@ -732,7 +869,7 @@ async def batch_dispatch(req: BatchDispatchRequest):
                 "order": order,
                 "groups": groups,
                 "all_components": all_components,
-                "decisions": decisions,
+                "decisions": decision_allocations.get(int(order["id"]), decisions),
                 "supplements": supplement_allocations.get(int(order["id"]), {}),
             }
             for order, groups, all_components in raw_contexts
@@ -757,6 +894,7 @@ async def batch_dispatch(req: BatchDispatchRequest):
             if float(s.get("shortage_amount") or 0) > 0
         ]
         use_drafts = False
+    _ensure_main_write_allowed(remaining_shortages)
 
     results: list[dict] = []
     processed_sessions: list[dict] = []
@@ -801,6 +939,7 @@ async def batch_dispatch(req: BatchDispatchRequest):
             rebuild_merge_drafts(remaining_active_orders)
 
     total_merged_parts = sum(int(item.get("merged_parts") or 0) for item in results)
+    refresh_snapshot_from_main(main_path)
     db.log_activity("batch_dispatch", f"批次發料 {len(results)} 筆訂單，合計 {total_merged_parts} 筆 merge")
     return {
         "ok": True,
@@ -833,17 +972,40 @@ async def update_selected_schedule_drafts(req: BatchDispatchRequest):
     if missing_orders:
         raise HTTPException(400, "部分訂單尚未建立副檔，請先重新 merge")
 
-    allocations = build_order_supplement_allocations(normalized_order_ids, req.supplements)
+    decision_updates = build_order_decision_allocations(
+        normalized_order_ids,
+        req.decisions,
+        include_none=True,
+    )
+    scoped_decisions = _normalize_order_decisions(req.order_decisions)
+    decision_allocations = {
+        order_id: _merge_decision_updates(
+            order_id,
+            {
+                **decision_updates.get(order_id, {}),
+                **scoped_decisions.get(order_id, {}),
+            },
+        )
+        for order_id in normalized_order_ids
+    }
+    supplement_allocations = _merge_order_supplement_allocations(
+        normalized_order_ids,
+        req.supplements,
+        _normalize_order_supplements(req.order_supplements),
+    )
     refreshed = rebuild_merge_drafts(
         normalized_order_ids,
         {
             order_id: {
-                "decisions": req.decisions,
-                "supplements": allocations.get(order_id, {}),
+                "decisions": scoped_decisions.get(order_id) or req.decisions,
+                "supplements": supplement_allocations.get(order_id, {}),
             }
             for order_id in normalized_order_ids
         },
     )
+    db.replace_order_decisions(normalized_order_ids, decision_allocations)
+    # 同步更新 order_supplements，讓發料單、右側面板等都能讀到最新補料值
+    db.replace_order_supplements(normalized_order_ids, supplement_allocations)
     drafts = get_schedule_draft_map()
     db.log_activity("merge_draft_batch_update", f"批次更新副檔 {len(normalized_order_ids)} 筆")
     return {
@@ -866,8 +1028,8 @@ async def download_selected_schedule_drafts(req: BatchMergeRequest):
 
 
 @router.get("/schedule/drafts/{draft_id}/download")
-async def download_schedule_draft(draft_id: int):
-    return download_merge_draft(draft_id)
+async def download_schedule_draft(draft_id: int, file_id: int | None = None):
+    return download_merge_draft(draft_id, file_id=file_id)
 
 
 @router.put("/schedule/drafts/{draft_id}")
@@ -875,16 +1037,27 @@ async def update_schedule_draft(draft_id: int, req: DecisionRequest):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到副檔草稿")
+    order_id = int(draft["order_id"])
+    decision_allocations = {
+        order_id: _merge_decision_updates(order_id, req.decisions or {})
+    }
+    supplement_allocations = {
+        order_id: _normalize_supplements_preserve_keys(req.supplements or {})
+    }
     refreshed = rebuild_merge_drafts(
-        [int(draft["order_id"])],
+        [order_id],
         {
-            int(draft["order_id"]): {
+            order_id: {
                 "decisions": req.decisions,
-                "supplements": req.supplements,
+                "supplements": supplement_allocations.get(order_id, {}),
             }
         },
     )
-    current = db.get_active_merge_draft_for_order(int(draft["order_id"]))
+    db.replace_order_decisions([order_id], decision_allocations)
+    # 同步更新 order_supplements，讓生成發料單也能讀到最新補料值
+    db.replace_order_supplements([order_id], supplement_allocations)
+
+    current = db.get_active_merge_draft_for_order(order_id)
     if not current:
         raise HTTPException(404, "副檔草稿更新後不存在")
     db.log_activity("merge_draft_update", f"更新副檔草稿 {current['id']} / order {current['order_id']}")
@@ -901,7 +1074,7 @@ async def delete_schedule_draft(draft_id: int):
 
 
 @router.post("/schedule/drafts/{draft_id}/commit")
-async def commit_schedule_draft(draft_id: int):
+def commit_schedule_draft(draft_id: int):
     main_path = str(db.get_setting("main_file_path") or "").strip()
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先載入主檔")
@@ -918,6 +1091,7 @@ async def commit_schedule_draft(draft_id: int):
         context["decisions"],
         moq_map=_get_effective_moq(main_path),
     )
+    _ensure_main_write_allowed(preview["shortages"])
     commit_shortages = [
         s for s in preview["shortages"]
         if float(s.get("shortage_amount") or 0) > 0
@@ -935,6 +1109,7 @@ async def commit_schedule_draft(draft_id: int):
         {int(context["order"]["id"]): context["supplements"]},
     )
     db.mark_merge_draft_committed(draft_id)
+    refresh_snapshot_from_main(main_path)
     remaining_active_orders = [item["order_id"] for item in db.get_active_merge_drafts()]
     if remaining_active_orders:
         rebuild_merge_drafts(remaining_active_orders)
@@ -1031,7 +1206,7 @@ async def get_all_decisions_api():
 # ── Supplement (post-dispatch) ────────────────────────────────────────────────
 
 @router.post("/schedule/supplement-part")
-async def supplement_part(req: SupplementPartRequest):
+def supplement_part(req: SupplementPartRequest):
     """寫入後補料：直接對主檔指定料號新增一欄補料庫存。"""
     main_path = str(db.get_setting("main_file_path") or "").strip()
     if not main_path or not Path(main_path).exists():
@@ -1044,6 +1219,7 @@ async def supplement_part(req: SupplementPartRequest):
     )
     if not result.get("ok"):
         raise HTTPException(400, result.get("message", "補料失敗"))
+    refresh_snapshot_from_main(main_path)
     db.log_activity(
         "supplement_part",
         f"補料 {result['part_number']}: {result['supplement_qty']:g} → 庫存 {result['stock_before']:g} → {result['stock_after']:g}",

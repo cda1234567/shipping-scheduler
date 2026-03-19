@@ -14,6 +14,7 @@ from ..services.calculator import run as calc_run
 from ..services.dispatch_form_generator import generate_dispatch_form
 from ..services.download_names import build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
+from ..services.shortage_rules import is_order_scoped_shortage_part, summarize_requested_supply
 
 router = APIRouter()
 
@@ -114,6 +115,75 @@ def _build_component_description_map(components: list[dict]) -> dict[str, str]:
     return descriptions
 
 
+def _build_order_dispatch_context(
+    order: dict,
+    result_by_order: dict[int, dict],
+    saved_supplements: dict[int, dict[str, float]],
+    decision_overrides: dict[str, str],
+    bom_map: dict[str, list[dict]],
+) -> dict | None:
+    order_id = int(order["id"])
+    model_key = _normalize_part_key(order.get("model"))
+    components = bom_map.get(model_key, [])
+    if not components:
+        return None
+
+    descriptions = _build_component_description_map(components)
+    saved_decisions = db.get_decisions_for_order(order_id)
+    decisions = {**saved_decisions, **decision_overrides}
+    stored_order_supplements = saved_supplements.get(order_id, {})
+
+    result = result_by_order.get(order_id) or {}
+    shortage_items = [
+        *(result.get("shortages") or []),
+        *(result.get("customer_material_shortages") or []),
+    ]
+    shortages_by_part = {
+        _normalize_part_key(item.get("part_number")): item
+        for item in shortage_items
+        if _normalize_part_key(item.get("part_number"))
+    }
+
+    candidate_parts = set(shortages_by_part) | set(stored_order_supplements)
+    candidate_parts.update(
+        part_number
+        for part_number, decision in decisions.items()
+        if decision in {"CreateRequirement", "Shortage"}
+    )
+
+    return {
+        "order": order,
+        "order_id": order_id,
+        "descriptions": descriptions,
+        "decisions": decisions,
+        "stored_supplements": stored_order_supplements,
+        "shortages_by_part": shortages_by_part,
+        "candidate_parts": sorted(candidate_parts),
+    }
+
+
+def _should_render_dispatch_item(decision: str, supplement_qty: float, shortage_item: dict | None) -> bool:
+    if decision in {"MarkHasPO", "IgnoreOnce"}:
+        return False
+    if decision == "Shortage":
+        return True
+    if supplement_qty > 0:
+        return True
+    suggested_qty = float((shortage_item or {}).get("suggested_qty") or (shortage_item or {}).get("shortage_amount") or 0)
+    return bool(shortage_item) and suggested_qty > 0
+
+
+def _should_highlight_dispatch_qty(part: str, qty: float, shortage_item: dict | None, st_inventory_stock: dict[str, float]) -> bool:
+    part_key = _normalize_part_key(part)
+    shortage = shortage_item or {}
+    st_stock_qty = max(
+        float(shortage.get("st_stock_qty") or 0),
+        float(shortage.get("st_available_qty") or 0),
+        float(st_inventory_stock.get(part_key, 0) or 0),
+    )
+    return bool(summarize_requested_supply(qty, st_stock_qty)["needs_purchase"])
+
+
 @router.post("/dispatch/generate")
 async def generate(req: DispatchRequest):
     bom_map = db.get_all_bom_components_by_model()
@@ -133,51 +203,57 @@ async def generate(req: DispatchRequest):
     result_by_order = {int(result.get("order_id")): result for result in calc_results if result.get("order_id") is not None}
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
+    st_inventory_stock = {
+        _normalize_part_key(part): float(qty or 0)
+        for part, qty in db.get_st_inventory_stock().items()
+        if _normalize_part_key(part)
+    }
 
     today = datetime.now().strftime("%Y/%m/%d")
     groups = []
+    order_contexts = [
+        context
+        for order in orders
+        for context in [_build_order_dispatch_context(order, result_by_order, saved_supplements, decision_overrides, bom_map)]
+        if context
+    ]
 
-    for order in orders:
-        order_id = int(order["id"])
-        model_key = _normalize_part_key(order.get("model"))
-        components = bom_map.get(model_key, [])
-        if not components:
-            continue
+    first_order_by_part: dict[str, int] = {}
+    final_shortage_by_part: dict[str, dict] = {}
+    for context in order_contexts:
+        for part in context["candidate_parts"]:
+            decision = context["decisions"].get(part, "None")
+            supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
+            shortage_item = context["shortages_by_part"].get(part)
+            if not _should_render_dispatch_item(decision, supplement_qty, shortage_item):
+                continue
+            if is_order_scoped_shortage_part(part):
+                continue
+            first_order_by_part.setdefault(part, context["order_id"])
+            if shortage_item:
+                final_shortage_by_part[part] = shortage_item
 
-        descriptions = _build_component_description_map(components)
-        saved_decisions = db.get_decisions_for_order(order_id)
-        decisions = {**saved_decisions, **decision_overrides}
-        stored_order_supplements = saved_supplements.get(order_id, {})
-
-        result = result_by_order.get(order_id) or {}
-        shortage_items = [
-            *(result.get("shortages") or []),
-            *(result.get("customer_material_shortages") or []),
-        ]
-        shortages_by_part = {
-            _normalize_part_key(item.get("part_number")): item
-            for item in shortage_items
-            if _normalize_part_key(item.get("part_number"))
-        }
-
-        candidate_parts = set(shortages_by_part) | set(stored_order_supplements)
-        candidate_parts.update(
-            part_number
-            for part_number, decision in decisions.items()
-            if decision in {"CreateRequirement", "Shortage"}
-        )
-
+    for context in order_contexts:
+        order = context["order"]
         items = []
-        for part in sorted(candidate_parts):
-            decision = decisions.get(part, "None")
-            if decision in {"MarkHasPO", "IgnoreOnce"}:
+
+        for part in context["candidate_parts"]:
+            decision = context["decisions"].get(part, "None")
+            supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
+            shortage_item = context["shortages_by_part"].get(part)
+            use_order_scoped = is_order_scoped_shortage_part(part)
+            final_shortage = shortage_item if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
+            if not _should_render_dispatch_item(decision, supplement_qty, shortage_item):
+                continue
+            if not use_order_scoped and first_order_by_part.get(part) != context["order_id"]:
                 continue
 
-            shortage_item = shortages_by_part.get(part)
-            purchase_needed_qty = float((shortage_item or {}).get("purchase_needed_qty") or 0)
-            fill_color = "FFFFC000" if purchase_needed_qty > 0 else None
-            description = descriptions.get(part) or (shortage_item or {}).get("description", "")
-            display_part = (shortage_item or {}).get("part_number") or part
+            description = (
+                context["descriptions"].get(part)
+                or final_shortage.get("description")
+                or (shortage_item or {}).get("description", "")
+            )
+            display_part = final_shortage.get("part_number") or (shortage_item or {}).get("part_number") or part
 
             if decision == "Shortage":
                 items.append({
@@ -189,8 +265,12 @@ async def generate(req: DispatchRequest):
                 })
                 continue
 
-            supplement_qty = float(stored_order_supplements.get(part, 0) or 0)
             if supplement_qty > 0:
+                fill_color = (
+                    "FFFFC000"
+                    if _should_highlight_dispatch_qty(display_part, supplement_qty, final_shortage or shortage_item, st_inventory_stock)
+                    else None
+                )
                 items.append({
                     "part": display_part,
                     "desc": description,
@@ -200,13 +280,15 @@ async def generate(req: DispatchRequest):
                 })
                 continue
 
-            if not shortage_item:
-                continue
-
-            suggested_qty = float(shortage_item.get("suggested_qty") or shortage_item.get("shortage_amount") or 0)
+            suggested_qty = float(final_shortage.get("suggested_qty") or final_shortage.get("shortage_amount") or 0)
             if suggested_qty <= 0:
                 continue
 
+            fill_color = (
+                "FFFFC000"
+                if _should_highlight_dispatch_qty(display_part, suggested_qty, final_shortage or shortage_item, st_inventory_stock)
+                else None
+            )
             items.append({
                 "part": display_part,
                 "desc": description,

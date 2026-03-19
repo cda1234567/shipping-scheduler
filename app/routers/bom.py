@@ -34,7 +34,12 @@ from ..services.bom_revision import (
 from ..services.download_names import append_minute_timestamp, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from ..services.order_supplements import build_order_supplement_allocations
-from ..services.shortage_rules import calculate_shortage_amount, summarize_st_supply
+from ..services.shortage_rules import (
+    calculate_current_order_shortage_amount,
+    calculate_shortage_amount,
+    is_order_scoped_shortage_part,
+    summarize_requested_supply,
+)
 router = APIRouter()
 
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
@@ -372,6 +377,7 @@ class BomDispatchDownloadRequest(BaseModel):
     bom_ids: List[str]
     order_ids: List[int] = Field(default_factory=list)
     supplements: Dict[str, float]
+    order_supplements: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     header_overrides: Dict[str, Dict[str, str]] = Field(default_factory=dict)
     carry_overs: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
@@ -415,6 +421,7 @@ def _build_order_based_export_values(
     target_boms: list[dict],
     order_ids: list[int],
     supplements: dict[str, float],
+    order_supplements: dict[int, dict[str, float]] | None = None,
 ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]]]:
     if not order_ids or not target_boms:
         return {}, {}, {}
@@ -430,6 +437,14 @@ def _build_order_based_export_values(
         for part, qty in (supplements or {}).items()
         if _normalize_lookup_key(part) and float(qty or 0) > 0
     }
+    normalized_order_supplements = {
+        int(order_id): {
+            _normalize_lookup_key(part): float(qty or 0)
+            for part, qty in (part_map or {}).items()
+            if _normalize_lookup_key(part) and float(qty or 0) > 0
+        }
+        for order_id, part_map in (order_supplements or {}).items()
+    }
 
     for order_id in order_ids:
         order = db.get_order(int(order_id))
@@ -439,6 +454,7 @@ def _build_order_based_export_values(
         order_model = _normalize_lookup_key(order.get("model"))
         if not order_model:
             continue
+        remaining_order_supplements = dict(normalized_order_supplements.get(int(order_id), {}))
 
         matched_boms = [bom for bom in target_boms if order_model in _get_bom_match_keys(bom)]
         for bom in matched_boms:
@@ -468,21 +484,37 @@ def _build_order_based_export_values(
 
             for part, totals in part_totals.items():
                 current_stock = float(running.get(part, 0))
-                ending_without_supplement = (
+                st_stock_qty = float(st_inventory_stock.get(part, 0.0) or 0.0)
+                available_before = (
                     current_stock
                     + float(totals.get("prev_qty_cs") or 0)
+                )
+                ending_without_supplement = (
+                    available_before
                     - float(totals.get("needed_qty") or 0)
                 )
                 shortage_without_supplement = calculate_shortage_amount(part, ending_without_supplement)
-                st_context = summarize_st_supply(shortage_without_supplement, st_inventory_stock.get(part, 0.0))
-                if float(st_context["purchase_needed_qty"] or 0) > 0:
-                    purchase_parts.add(part)
+                current_order_shortage = calculate_current_order_shortage_amount(
+                    part,
+                    available_before,
+                    float(totals.get("needed_qty") or 0),
+                )
 
                 supplement_qty = 0.0
-                if shortage_without_supplement > 0 and remaining_supplements.get(part, 0) > 0:
-                    supplement_qty = float(remaining_supplements.get(part, 0))
+                available_supplement_qty = float(remaining_order_supplements.get(part, 0))
+                if available_supplement_qty <= 0:
+                    available_supplement_qty = float(remaining_supplements.get(part, 0))
+                if shortage_without_supplement > 0 and available_supplement_qty > 0:
+                    supplement_qty = available_supplement_qty
+                    if is_order_scoped_shortage_part(part):
+                        supplement_qty = min(supplement_qty, current_order_shortage)
                     supplement_map[part] = supplement_qty
-                    remaining_supplements[part] = 0.0
+                    if part in remaining_order_supplements:
+                        remaining_order_supplements[part] = max(0.0, remaining_order_supplements.get(part, 0) - supplement_qty)
+                    if part in remaining_supplements:
+                        remaining_supplements[part] = max(0.0, remaining_supplements.get(part, 0) - supplement_qty)
+                    if bool(summarize_requested_supply(supplement_qty, st_stock_qty)["needs_purchase"]):
+                        purchase_parts.add(part)
 
                 running[part] = ending_without_supplement + supplement_qty
 
@@ -491,6 +523,39 @@ def _build_order_based_export_values(
             purchase_highlights[bom_id] = purchase_parts
 
     return carry_overs, supplement_allocations, purchase_highlights
+
+
+def _build_direct_purchase_highlights(supplements: dict[str, float]) -> set[str]:
+    st_inventory_stock = {
+        _normalize_lookup_key(part): float(qty or 0)
+        for part, qty in db.get_st_inventory_stock().items()
+        if _normalize_lookup_key(part)
+    }
+    return {
+        part
+        for part, qty in supplements.items()
+        if bool(summarize_requested_supply(qty, st_inventory_stock.get(part, 0.0))["needs_purchase"])
+    }
+
+
+def _normalize_order_supplement_map(payload: dict | None) -> dict[int, dict[str, float]]:
+    normalized: dict[int, dict[str, float]] = {}
+    for raw_order_id, part_map in (payload or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+        normalized_parts: dict[str, float] = {}
+        for part, qty in (part_map or {}).items():
+            key = _normalize_lookup_key(part)
+            try:
+                amount = float(qty or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if key and amount > 0:
+                normalized_parts[key] = amount
+        normalized[order_id] = normalized_parts
+    return normalized
 
 
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
@@ -579,15 +644,26 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         raise HTTPException(404, "找不到指定的 BOM")
 
     supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
+    order_supplements = _normalize_order_supplement_map(req.order_supplements)
+    effective_order_supplements = (
+        build_order_supplement_allocations(req.order_ids, supplements)
+        if req.order_ids else {}
+    )
+    for order_id, part_map in order_supplements.items():
+        current = dict(effective_order_supplements.get(order_id, {}))
+        current.update(part_map)
+        effective_order_supplements[order_id] = current
+    direct_purchase_highlights = _build_direct_purchase_highlights(supplements)
     computed_carry_overs, computed_supplements, computed_purchase_highlights = _build_order_based_export_values(
         target_boms,
         req.order_ids,
         supplements,
+        order_supplements=effective_order_supplements,
     )
     if req.order_ids:
         db.replace_order_supplements(
             req.order_ids,
-            build_order_supplement_allocations(req.order_ids, supplements),
+            effective_order_supplements,
         )
     output_files: list[tuple[str, io.BytesIO]] = []
 
@@ -610,7 +686,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         else:
             carry_over_source = req.carry_overs.get(bom["id"], {})
             supplement_source = supplements
-            purchase_parts = set()
+            purchase_parts = direct_purchase_highlights
         carry_overs = {
             str(part).strip().upper(): qty
             for part, qty in carry_over_source.items()

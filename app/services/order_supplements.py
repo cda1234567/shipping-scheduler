@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .. import database as db
 from .main_reader import read_stock
-from .shortage_rules import calculate_shortage_amount
+from .shortage_rules import calculate_current_order_shortage_amount, calculate_shortage_amount, is_order_scoped_shortage_part
 
 
 def normalize_part_key(value) -> str:
@@ -78,18 +78,28 @@ def build_order_supplement_allocations(order_ids: list[int], supplements: dict[s
         order_allocations: dict[str, float] = {}
         for part, totals in part_totals.items():
             current_stock = float(running.get(part, 0))
-            ending_without_supplement = (
+            available_before = (
                 current_stock
                 + float(totals.get("prev_qty_cs") or 0)
+            )
+            ending_without_supplement = (
+                available_before
                 - float(totals.get("needed_qty") or 0)
             )
             shortage_without_supplement = calculate_shortage_amount(part, ending_without_supplement)
+            current_order_shortage = calculate_current_order_shortage_amount(
+                part,
+                available_before,
+                float(totals.get("needed_qty") or 0),
+            )
 
             supplement_qty = 0.0
             if shortage_without_supplement > 0 and remaining_supplements.get(part, 0) > 0:
                 supplement_qty = float(remaining_supplements.get(part, 0))
+                if is_order_scoped_shortage_part(part):
+                    supplement_qty = min(supplement_qty, current_order_shortage)
                 order_allocations[part] = supplement_qty
-                remaining_supplements[part] = 0.0
+                remaining_supplements[part] = max(0.0, remaining_supplements.get(part, 0) - supplement_qty)
 
             running[part] = ending_without_supplement + supplement_qty
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import shutil
+import time
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
+
+log = logging.getLogger(__name__)
 
 import openpyxl
 from openpyxl.styles import PatternFill
@@ -18,7 +22,13 @@ from ..config import MERGE_DRAFT_DIR, cfg
 from .download_names import append_minute_timestamp, build_generated_filename
 from .main_reader import read_moq, read_stock
 from ..models import calc_suggested_qty
-from .shortage_rules import calculate_shortage_amount, summarize_st_supply
+from .shortage_rules import (
+    calculate_current_order_shortage_amount,
+    calculate_shortage_amount,
+    is_order_scoped_shortage_part,
+    summarize_requested_supply,
+    summarize_st_supply,
+)
 
 COMMITTED_DRAFT_RETENTION_DAYS = 30
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
@@ -299,15 +309,18 @@ def _plan_order_draft(
             prev_qty_cs = float(summary.get("prev_qty_cs") or 0)
             needed_qty = float(summary.get("needed_qty") or 0)
             decision = decisions.get(part, "None")
+            st_stock_qty = float(st_inventory_stock.get(part, 0.0) or 0.0)
 
             available_before = current_stock + prev_qty_cs
             ending_without_supplement = available_before - needed_qty
-            shortage_before = calculate_shortage_amount(part, ending_without_supplement)
+            shortage_before = calculate_current_order_shortage_amount(part, available_before, needed_qty)
             supplement_qty = 0.0
             if decision != "Shortage" and remaining_supplements.get(part, 0) > 0:
                 supplement_qty = float(remaining_supplements.get(part, 0))
                 remaining_supplements[part] = 0.0
                 supplement_allocations[part] = supplement_qty
+                if bool(summarize_requested_supply(supplement_qty, st_stock_qty)["needs_purchase"]):
+                    purchase_parts.add(part)
 
             available_after_supply = available_before + supplement_qty
             if decision == "Shortage":
@@ -315,19 +328,24 @@ def _plan_order_draft(
                 shortage_after = shortage_before
             else:
                 ending_stock = available_after_supply - needed_qty
-                shortage_after = calculate_shortage_amount(part, ending_stock)
+                shortage_after = calculate_current_order_shortage_amount(part, available_after_supply, needed_qty)
 
             running_stock[part] = ending_stock
 
             if shortage_after > 0:
                 moq = float(moq_map.get(part, 0) or 0)
-                st_context = summarize_st_supply(shortage_after, st_inventory_stock.get(part, 0.0), moq)
-                st_available_qty = float(st_context["st_available_qty"] or 0.0)
-                purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
-                purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, moq) if purchase_needed_qty > 0 else 0.0
-                suggested_qty = calc_suggested_qty(shortage_after, moq)
-                if purchase_needed_qty > 0:
-                    purchase_parts.add(part)
+                if is_order_scoped_shortage_part(part):
+                    st_context = summarize_requested_supply(shortage_after, st_stock_qty)
+                    st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                    purchase_suggested_qty = purchase_needed_qty
+                    suggested_qty = shortage_after
+                else:
+                    st_context = summarize_st_supply(shortage_after, st_stock_qty, moq)
+                    st_available_qty = float(st_context["st_available_qty"] or 0.0)
+                    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+                    purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, moq) if purchase_needed_qty > 0 else 0.0
+                    suggested_qty = st_available_qty + purchase_suggested_qty
                 shortages.append({
                     "part_number": summary.get("part_number") or part,
                     "description": summary.get("description") or "",
@@ -457,9 +475,17 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             shortages=existing.get("shortages", []),
         )
 
+    t0 = time.monotonic()
     active_drafts = db.get_active_merge_drafts()
+    log.info("[rebuild_merge_drafts] %d active drafts, reading main file...", len(active_drafts))
+
+    t1 = time.monotonic()
     running_stock = _build_running_stock(main_path)
+    t2 = time.monotonic()
     moq_map = _load_effective_moq(main_path)
+    t3 = time.monotonic()
+    log.info("[rebuild_merge_drafts] read_stock=%.1fs, read_moq=%.1fs", t2 - t1, t3 - t2)
+
     st_inventory_stock = db.get_st_inventory_stock()
     refreshed_ids: set[int] = set()
 
@@ -471,6 +497,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             db.delete_merge_draft(draft_id)
             continue
 
+        td0 = time.monotonic()
         bom_files = db.get_bom_files_by_models([str(order.get("model") or "")])
         plan = _plan_order_draft(order, draft, bom_files, running_stock, moq_map, st_inventory_stock)
         db.replace_merge_draft(
@@ -489,7 +516,10 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
         written = _write_draft_files(int(refreshed["id"]), plan["file_plans"])
         db.replace_merge_draft_files(int(refreshed["id"]), written)
         refreshed_ids.add(int(refreshed["id"]))
+        log.info("[rebuild_merge_drafts] draft %d (order %d) done in %.1fs, %d files written",
+                 draft_id, int(draft["order_id"]), time.monotonic() - td0, len(written))
 
+    log.info("[rebuild_merge_drafts] total %.1fs for %d drafts", time.monotonic() - t0, len(refreshed_ids))
     return [draft for draft in db.get_active_merge_drafts() if int(draft["id"]) in refreshed_ids]
 
 
@@ -642,13 +672,15 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
     return re.sub(r"PO#\S+", safe_po, filename, count=1)
 
 
-def download_merge_draft(draft_id: int):
+def download_merge_draft(draft_id: int, *, file_id: int | None = None):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到副檔草稿")
     order = db.get_order(int(draft["order_id"])) or {}
     po = order.get("po_number", "")
     files = db.get_merge_draft_files(draft_id)
+    if file_id is not None:
+        files = [f for f in files if int(f.get("id", -1)) == file_id]
     valid_files = [
         {
             "path": file_path,

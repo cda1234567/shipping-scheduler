@@ -2,6 +2,11 @@ from __future__ import annotations
 
 EC_PART_PREFIX = "EC-"
 EC_MIN_ENDING_STOCK = 100.0
+ORDER_SCOPED_PART_PREFIXES = (
+    "IC-STM",
+    "IC-M24",
+    "IC-XC2C32",
+)
 
 
 def normalize_part_key(value) -> str:
@@ -19,6 +24,11 @@ def is_ec_part(part_number: str) -> bool:
     return normalize_part_key(part_number).startswith(EC_PART_PREFIX)
 
 
+def is_order_scoped_shortage_part(part_number: str) -> bool:
+    part_key = normalize_part_key(part_number)
+    return any(part_key.startswith(prefix) for prefix in ORDER_SCOPED_PART_PREFIXES)
+
+
 def get_min_ending_stock(part_number: str) -> float:
     part_key = normalize_part_key(part_number)
     if part_key.startswith(EC_PART_PREFIX):
@@ -29,6 +39,13 @@ def get_min_ending_stock(part_number: str) -> float:
 def calculate_shortage_amount(part_number: str, ending_stock: float) -> float:
     required_min = get_min_ending_stock(part_number)
     return max(0.0, float(required_min) - float(ending_stock or 0))
+
+
+def calculate_current_order_shortage_amount(part_number: str, available_before: float, needed_qty: float) -> float:
+    if is_order_scoped_shortage_part(part_number):
+        return max(0.0, float(needed_qty or 0) - max(0.0, float(available_before or 0)))
+    ending_stock = float(available_before or 0) - float(needed_qty or 0)
+    return calculate_shortage_amount(part_number, ending_stock)
 
 
 def _ceil_to_moq(qty: float, moq: float) -> float:
@@ -47,6 +64,20 @@ def summarize_st_supply(shortage_amount: float, st_stock_qty: float, moq: float 
     st_available = min(shortage_rounded, st_stock)
     purchase_needed = max(0.0, shortage - st_available)
     return {
+        "st_stock_qty": st_stock,
+        "st_available_qty": st_available,
+        "purchase_needed_qty": purchase_needed,
+        "needs_purchase": purchase_needed > 0,
+    }
+
+
+def summarize_requested_supply(request_qty: float, st_stock_qty: float) -> dict[str, float | bool]:
+    requested = max(0.0, float(request_qty or 0))
+    st_stock = max(0.0, float(st_stock_qty or 0))
+    st_available = min(requested, st_stock)
+    purchase_needed = max(0.0, requested - st_available)
+    return {
+        "requested_qty": requested,
         "st_stock_qty": st_stock,
         "st_available_qty": st_available,
         "purchase_needed_qty": purchase_needed,

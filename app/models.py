@@ -132,6 +132,8 @@ class BatchDispatchRequest(BaseModel):
     order_ids: list[int]
     decisions: dict[str, str] = Field(default_factory=dict)
     supplements: dict[str, float] = Field(default_factory=dict)
+    order_decisions: dict[str, dict[str, str]] = Field(default_factory=dict)
+    order_supplements: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class DecisionRequest(BaseModel):
@@ -203,3 +205,27 @@ class UpdateDefectiveRequest(BaseModel):
 class SupplementPartRequest(BaseModel):
     part_number: str
     supplement_qty: float
+
+
+class OverrunDeductionRequest(BaseModel):
+    model: str
+    extra_pcs: float = Field(gt=0)
+    reason: str = ""
+    note: str = ""
+    reported_by: str = ""
+
+
+class OverrunImportConfirmItem(BaseModel):
+    source_row: int = Field(ge=1)
+    part_number: str
+    defective_qty: float = Field(gt=0)
+    description: str = ""
+    action: str = "deduct"
+    target_part_number: str = ""
+
+
+class OverrunImportConfirmRequest(BaseModel):
+    source_filename: str = ""
+    title: str = ""
+    mo_info: str = ""
+    items: list[OverrunImportConfirmItem] = Field(default_factory=list)

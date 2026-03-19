@@ -12,6 +12,7 @@ from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main
 from app.services.db_backup import database_backup_scheduler
 from app.services.merge_drafts import cleanup_expired_committed_merge_drafts
 from app.services.backup_cleanup import cleanup_old_backups
+from app.snapshot_sync import refresh_snapshot_from_main
 from app.version_info import APP_VERSION
 
 
@@ -34,9 +35,20 @@ class NoCacheStaticFiles(StaticFiles):
 init_db()
 
 
+def _sync_snapshot_on_startup():
+    """Server 啟動時，把快照同步到當前主檔庫存。"""
+    from app.database import get_setting
+    main_path = str(get_setting("main_file_path") or "").strip()
+    if main_path:
+        count = refresh_snapshot_from_main(main_path)
+        if count:
+            print(f"[startup] 快照已同步，共 {count} 筆料號")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if not os.environ.get("PYTEST_CURRENT_TEST"):
+        _sync_snapshot_on_startup()
         cleanup_expired_committed_merge_drafts()
         cleanup_old_backups()
         database_backup_scheduler.start()

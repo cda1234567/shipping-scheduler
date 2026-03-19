@@ -7,17 +7,35 @@
 """
 from __future__ import annotations
 from ..models import calc_suggested_qty
-from .shortage_rules import calculate_shortage_amount, summarize_st_supply
+from .shortage_rules import (
+    calculate_current_order_shortage_amount,
+    calculate_shortage_amount,
+    is_order_scoped_shortage_part,
+    summarize_requested_supply,
+    summarize_st_supply,
+)
 
 
 def _build_shortage_item(summary: dict, moq: dict[str, float], st_inventory_stock: dict[str, float] | None = None) -> dict:
-    shortage_amt = calculate_shortage_amount(summary["part_number"], summary["ending_stock"])
+    shortage_amt = calculate_current_order_shortage_amount(
+        summary["part_number"],
+        float(summary.get("current_stock") or 0) + float(summary.get("prev_qty_cs") or 0),
+        float(summary.get("needed") or 0),
+    )
     item_moq = moq.get(summary["part_key"], 0.0)
-    st_context = summarize_st_supply(shortage_amt, (st_inventory_stock or {}).get(summary["part_key"], 0.0), item_moq)
-    st_available_qty = float(st_context["st_available_qty"] or 0.0)
-    purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
-    purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
-    suggested_qty = calc_suggested_qty(shortage_amt, item_moq)
+    st_stock_qty = (st_inventory_stock or {}).get(summary["part_key"], 0.0)
+    if is_order_scoped_shortage_part(summary["part_number"]):
+        st_context = summarize_requested_supply(shortage_amt, st_stock_qty)
+        st_available_qty = float(st_context["st_available_qty"] or 0.0)
+        purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+        purchase_suggested_qty = purchase_needed_qty
+        suggested_qty = shortage_amt
+    else:
+        st_context = summarize_st_supply(shortage_amt, st_stock_qty, item_moq)
+        st_available_qty = float(st_context["st_available_qty"] or 0.0)
+        purchase_needed_qty = float(st_context["purchase_needed_qty"] or 0.0)
+        purchase_suggested_qty = calc_suggested_qty(purchase_needed_qty, item_moq) if purchase_needed_qty > 0 else 0.0
+        suggested_qty = st_available_qty + purchase_suggested_qty
     return {
         "part_number": summary["part_number"],
         "description": summary["description"],
@@ -101,6 +119,7 @@ def run(
                     "description": comp.get("description", ""),
                     "current_stock": running.get(part, 0.0),
                     "needed": 0.0,
+                    "prev_qty_cs": 0.0,
                     "ending_stock": running.get(part, 0.0),
                 }
                 part_summaries[part] = summary
@@ -113,6 +132,7 @@ def run(
             j = g + h - f
             running[part] = j
             summary["needed"] += f
+            summary["prev_qty_cs"] += h
             summary["ending_stock"] = j
 
         for summary in part_summaries.values():

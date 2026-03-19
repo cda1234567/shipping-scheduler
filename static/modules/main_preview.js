@@ -44,6 +44,10 @@ export async function initMainPreview() {
 
 export async function onMainPreviewTabActivated() {
   hydratePreviewLabels();
+  // 已有快取且畫面已渲染 → 不重繪，保留捲動位置
+  const alreadyRendered = _activeSheet && _sheetCache.has(_activeSheet)
+    && document.querySelector("#main-preview-stage .main-preview-sheet-card");
+  if (alreadyRendered) return;
   await refreshMainPreview({ eager: true });
 }
 

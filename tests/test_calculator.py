@@ -149,6 +149,48 @@ class CalculatorTests(unittest.TestCase):
         self.assertTrue(shortage["needs_purchase"])
         self.assertEqual(shortage["suggested_qty"], 11)
 
+    def test_order_scoped_ic_parts_report_only_current_order_shortage(self):
+        results = run(
+            orders=[
+                {"id": 1, "po_number": 2001, "pcb": "F", "model": "MODEL-F1"},
+                {"id": 2, "po_number": 2002, "pcb": "G", "model": "MODEL-F2"},
+            ],
+            bom_map={
+                "MODEL-F1": [
+                    {
+                        "part_number": "IC-STM32F",
+                        "description": "STM MCU",
+                        "needed_qty": 100,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+                "MODEL-F2": [
+                    {
+                        "part_number": "IC-STM32F",
+                        "description": "STM MCU",
+                        "needed_qty": 50,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"IC-STM32F": 0},
+            moq={"IC-STM32F": 100},
+            st_inventory_stock={"IC-STM32F": 80},
+        )
+
+        first_shortage = results[0]["shortages"][0]
+        second_shortage = results[1]["shortages"][0]
+        self.assertEqual(first_shortage["shortage_amount"], 100)
+        self.assertEqual(first_shortage["suggested_qty"], 100)
+        self.assertEqual(first_shortage["purchase_suggested_qty"], 20)
+        self.assertEqual(second_shortage["shortage_amount"], 50)
+        self.assertEqual(second_shortage["suggested_qty"], 50)
+        self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
