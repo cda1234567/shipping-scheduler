@@ -9,6 +9,7 @@ env/
 build/
 dist/
 desktop_client.json
+.env.localserver
 
 data/
 

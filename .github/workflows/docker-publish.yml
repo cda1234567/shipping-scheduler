@@ -24,7 +24,7 @@ jobs:
       - name: Prepare image name
         id: prep
         shell: bash
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/opentext-scheduler" >> "$GITHUB_OUTPUT"
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dispatch-scheduler" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3

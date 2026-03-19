@@ -461,7 +461,7 @@ import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/m
 import { initVersionInfo } from "/static/modules/version_info.js";
 import { initStInventory } from "/static/modules/st_inventory.js";
 import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
-import { initDefectives, refreshDefectives } from "/static/modules/defectives.js";
+import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -476,7 +476,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") refreshDbBackupPanel();
     if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
-    if (btn.dataset.tab === "defectives-tab") refreshDefectives();
+    if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();
   });
 });
 

@@ -33,14 +33,23 @@ export async function initDefectives() {
   renderOverrunPreview();
 }
 
-export async function refreshDefectives() {
+export async function refreshDefectives(options = {}) {
+  const collapseAll = Boolean(options?.collapseAll);
   try {
     const d = await apiJson("/api/defectives/batches");
     _batches = d.batches || [];
   } catch (_) {
     _batches = [];
   }
+  if (collapseAll) {
+    _collapsed.clear();
+    _batches.forEach(batch => _collapsed.add(batch.id));
+  }
   renderBatches();
+}
+
+export async function onDefectivesTabActivated() {
+  await refreshDefectives({ collapseAll: true });
 }
 
 // ── Excel 匯入 ──────────────────────────────────────────────────────────────

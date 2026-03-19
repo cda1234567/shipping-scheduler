@@ -1,9 +1,11 @@
+name: dispatch-dev
+
 services:
-  opentext-scheduler:
+  dispatch-scheduler:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: opentext-scheduler
+    container_name: dispatch-scheduler
     restart: unless-stopped
     ports:
       - "8765:8765"

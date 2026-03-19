@@ -215,6 +215,19 @@ console.log(JSON.stringify(results));
         self.assertIn("const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;", schedule_module)
         self.assertIn("const defaultQty = shortageChecked && !hasStoredSupplement", schedule_module)
 
+    def test_defectives_tab_auto_collapses_batch_history_on_activation(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        defectives_module = (root / "static" / "modules" / "defectives.js").read_text(encoding="utf-8")
+
+        self.assertIn('import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";', index_html)
+        self.assertIn('if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();', index_html)
+        self.assertIn("export async function onDefectivesTabActivated()", defectives_module)
+        self.assertIn("await refreshDefectives({ collapseAll: true });", defectives_module)
+        self.assertIn("const collapseAll = Boolean(options?.collapseAll);", defectives_module)
+        self.assertIn("_collapsed.clear();", defectives_module)
+        self.assertIn("_batches.forEach(batch => _collapsed.add(batch.id));", defectives_module)
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")

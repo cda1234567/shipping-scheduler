@@ -107,8 +107,8 @@ docker compose up -d --build
 如果只想手動 build image：
 
 ```bash
-docker build -t opentext-scheduler .
-docker run -d --name opentext-scheduler -p 8765:8765 -v $(pwd)/data:/app/data opentext-scheduler
+docker build -t dispatch-scheduler .
+docker run -d --name dispatch-scheduler -p 8765:8765 -v $(pwd)/data:/app/data dispatch-scheduler
 ```
 
 ### Server 自動更新版
@@ -123,11 +123,11 @@ docker compose -f docker-compose.server.yml up -d
 這條線會做兩件事：
 
 - GitHub Actions 在 `main` push 後自動發佈 GHCR image
-- `watchtower` 每隔一段時間自動檢查並更新 `opentext-scheduler`
+- `watchtower` 每隔一段時間自動檢查並更新 `dispatch-scheduler`
 
 預設設定：
 
-- image：`ghcr.io/cda1234567/opentext-scheduler:latest`
+- image：`ghcr.io/cda1234567/dispatch-scheduler:latest`
 - port：`8765`
 - 更新檢查間隔：`300` 秒
 

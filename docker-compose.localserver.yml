@@ -1,21 +1,21 @@
-name: dispatch-scheduler
+name: dispatch-local
 
 services:
   dispatch-scheduler:
-    image: ${APP_IMAGE:-ghcr.io/cda1234567/dispatch-scheduler:latest}
-    container_name: ${APP_CONTAINER_NAME:-dispatch-scheduler}
+    image: ${APP_IMAGE:-dispatch-scheduler:test}
+    container_name: ${APP_CONTAINER_NAME:-dispatch-scheduler-localserver}
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-8765}:8765"
+      - "${APP_PORT:-18765}:8765"
     volumes:
-      - ./data:/app/data
+      - scheduler-data:/app/data
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
-      - "com.centurylinklabs.watchtower.scope=${WATCHTOWER_SCOPE:-dispatch-scheduler}"
+      - "com.centurylinklabs.watchtower.scope=${WATCHTOWER_SCOPE:-dispatch-local}"
 
   watchtower:
     image: containrrr/watchtower:latest
-    container_name: ${WATCHTOWER_CONTAINER_NAME:-dispatch-watchtower}
+    container_name: ${WATCHTOWER_CONTAINER_NAME:-dispatch-watchtower-localserver}
     restart: unless-stopped
     environment:
       DOCKER_API_VERSION: "${WATCHTOWER_DOCKER_API_VERSION:-1.44}"
@@ -24,8 +24,13 @@ services:
       - "--cleanup"
       - "--rolling-restart"
       - "--scope"
-      - "${WATCHTOWER_SCOPE:-dispatch-scheduler}"
+      - "${WATCHTOWER_SCOPE:-dispatch-local}"
       - "--interval"
       - "${WATCHTOWER_POLL_INTERVAL:-300}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  scheduler-data:
+    name: ${APP_DATA_VOLUME:-scheduler-data}
+    external: true
