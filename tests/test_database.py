@@ -302,6 +302,23 @@ class ManagedPathMigrationTests(InMemoryDbTestCase):
         self.assertEqual(repaired, str(candidate))
         self.assertEqual(stored, str(candidate))
 
+    def test_get_setting_repairs_unc_main_file_path(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            managed_dir = Path(temp_dir)
+            candidate = managed_dir / "main.xlsx"
+            candidate.write_bytes(b"main")
+
+            with patch.dict(db._MANAGED_PATH_FALLBACKS, {"main_file_path": managed_dir}, clear=False):
+                db.set_setting("main_file_path", r"\\St-nas\個人資料夾\Andy\Job\code\-\shipping-scheduler\data\main_file\main.xlsx")
+
+                repaired = db.get_setting("main_file_path")
+
+        stored = self.conn.execute(
+            "SELECT value FROM settings WHERE key='main_file_path'"
+        ).fetchone()["value"]
+        self.assertEqual(repaired, str(candidate))
+        self.assertEqual(stored, str(candidate))
+
     def test_resolve_managed_path_can_repair_dispatch_session_path_without_setting_key(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             managed_dir = Path(temp_dir)
@@ -347,6 +364,38 @@ class ManagedPathMigrationTests(InMemoryDbTestCase):
         ).fetchone()["filepath"]
         self.assertEqual(bom["filepath"], str(candidate))
         self.assertEqual(matched[0]["filepath"], str(candidate))
+        self.assertEqual(stored, str(candidate))
+
+    def test_get_bom_file_repairs_unc_bom_filepath(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_dir = Path(temp_dir) / "bom"
+            bom_dir.mkdir()
+            candidate = bom_dir / "bom-1.xlsx"
+            candidate.write_bytes(b"bom")
+
+            db.save_bom_file({
+                "id": "bom-1",
+                "filename": "bom-1.xlsx",
+                "filepath": r"\\St-nas\個人資料夾\Andy\Job\code\-\shipping-scheduler\data\bom\bom-1.xlsx",
+                "source_filename": "bom-1.xls",
+                "source_format": ".xls",
+                "is_converted": True,
+                "po_number": "4500059162",
+                "model": "TDA3-3",
+                "pcb": "PCB-A1109",
+                "group_model": "TDA3-3",
+                "order_qty": 10,
+                "uploaded_at": "2026-03-13T14:40:00",
+                "components": [],
+            })
+
+            with patch.object(db, "_BOM_FILE_FALLBACK_DIRS", (bom_dir,)):
+                bom = db.get_bom_file("bom-1")
+
+        stored = self.conn.execute(
+            "SELECT filepath FROM bom_files WHERE id='bom-1'"
+        ).fetchone()["filepath"]
+        self.assertEqual(bom["filepath"], str(candidate))
         self.assertEqual(stored, str(candidate))
 
 

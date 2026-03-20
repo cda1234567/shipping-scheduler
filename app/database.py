@@ -16,7 +16,7 @@ from __future__ import annotations
 import sqlite3
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from contextlib import contextmanager
 
 from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR
@@ -421,6 +421,18 @@ def resolve_managed_path(
     if path.exists():
         return str(path)
 
+    candidate_names: list[str] = []
+    for name in (
+        path.name,
+        PureWindowsPath(normalized).name,
+        PurePosixPath(normalized).name,
+    ):
+        normalized_name = str(name or "").strip()
+        if normalized_name and normalized_name not in candidate_names:
+            candidate_names.append(normalized_name)
+    if not candidate_names:
+        return normalized
+
     candidate_dirs: list[Path] = []
     if fallback_dirs:
         candidate_dirs.extend(Path(item) for item in fallback_dirs)
@@ -430,16 +442,17 @@ def resolve_managed_path(
         candidate_dirs.extend(_MANAGED_PATH_FALLBACKS.values())
 
     for fallback_dir in candidate_dirs:
-        candidate = fallback_dir / path.name
-        if candidate.exists():
-            return str(candidate)
-        if recursive and fallback_dir.exists():
-            try:
-                nested_candidate = next(fallback_dir.rglob(path.name))
-            except StopIteration:
-                nested_candidate = None
-            if nested_candidate and nested_candidate.exists():
-                return str(nested_candidate)
+        for candidate_name in candidate_names:
+            candidate = fallback_dir / candidate_name
+            if candidate.exists():
+                return str(candidate)
+            if recursive and fallback_dir.exists():
+                try:
+                    nested_candidate = next(fallback_dir.rglob(candidate_name))
+                except StopIteration:
+                    nested_candidate = None
+                if nested_candidate and nested_candidate.exists():
+                    return str(nested_candidate)
 
     return normalized
 

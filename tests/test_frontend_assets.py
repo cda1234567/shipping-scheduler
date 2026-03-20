@@ -228,6 +228,20 @@ console.log(JSON.stringify(results));
         self.assertIn("_collapsed.clear();", defectives_module)
         self.assertIn("_batches.forEach(batch => _collapsed.add(batch.id));", defectives_module)
 
+    def test_desktop_bridge_supports_browser_save_picker_for_web_downloads(self):
+        root = Path(__file__).resolve().parents[1]
+        bridge_module = (root / "static" / "modules" / "desktop_bridge.js").read_text(encoding="utf-8")
+
+        self.assertIn("function supportsBrowserSavePicker()", bridge_module)
+        self.assertIn('typeof window.showSaveFilePicker === "function" && window.isSecureContext', bridge_module)
+        self.assertIn("async function saveBlobWithBrowserPicker(blob, filename, contentType = \"\")", bridge_module)
+        self.assertIn("await window.showSaveFilePicker({", bridge_module)
+        self.assertIn("const writable = await fileHandle.createWritable();", bridge_module)
+        self.assertIn("saved_with_picker: true", bridge_module)
+        self.assertIn("if (supportsBrowserSavePicker()) {", bridge_module)
+        self.assertIn("return saveBlobWithBrowserPicker(blob, outputName, response.headers.get(\"content-type\"));", bridge_module)
+        self.assertIn("儲存位置：你剛剛選擇的位置", bridge_module)
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")

@@ -48,6 +48,73 @@ function normalizeDownloadText(value) {
   return String(value || "").trim();
 }
 
+function supportsBrowserSavePicker() {
+  return typeof window.showSaveFilePicker === "function" && window.isSecureContext;
+}
+
+function buildPickerTypes(filename, contentType = "") {
+  const safeName = normalizeDownloadText(filename) || "download.bin";
+  const ext = safeName.includes(".") ? `.${safeName.split(".").pop().toLowerCase()}` : "";
+  const normalizedType = normalizeDownloadText(contentType).split(";")[0].trim().toLowerCase();
+  const typeMap = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    ".xls": "application/vnd.ms-excel",
+    ".zip": "application/zip",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".txt": "text/plain",
+    ".db": "application/octet-stream",
+    ".sqlite": "application/octet-stream",
+  };
+  const resolvedType = normalizedType || typeMap[ext] || "application/octet-stream";
+  const descriptionMap = {
+    ".xlsx": "Excel 檔案",
+    ".xlsm": "Excel 巨集檔",
+    ".xls": "Excel 97-2003 檔",
+    ".zip": "ZIP 壓縮檔",
+    ".csv": "CSV 檔案",
+    ".json": "JSON 檔案",
+    ".txt": "文字檔",
+    ".db": "資料庫檔案",
+    ".sqlite": "SQLite 資料庫",
+  };
+  const acceptExt = ext || ".bin";
+  return [{
+    description: descriptionMap[ext] || "下載檔案",
+    accept: {
+      [resolvedType]: [acceptExt],
+    },
+  }];
+}
+
+async function saveBlobWithBrowserPicker(blob, filename, contentType = "") {
+  let fileHandle = null;
+  try {
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: filename || "download.bin",
+      types: buildPickerTypes(filename, contentType),
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("已取消選擇下載位置");
+    }
+    throw error;
+  }
+
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+
+  return {
+    ok: true,
+    filename: fileHandle.name || filename || "download.bin",
+    path: fileHandle.name || filename || "download.bin",
+    directory: "",
+    saved_with_picker: true,
+  };
+}
+
 function applyDesktopTheme() {
   document.body.classList.toggle("desktop-dark", Boolean(_desktopState?.dark_mode_enabled));
 }
@@ -244,6 +311,9 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const blob = await response.blob();
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
+  if (supportsBrowserSavePicker()) {
+    return saveBlobWithBrowserPicker(blob, outputName, response.headers.get("content-type"));
+  }
   const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = blobUrl;
@@ -258,9 +328,13 @@ export function buildDownloadToastMessage(result, noun = "檔案") {
   const filename = normalizeDownloadText(result?.filename);
   const directory = normalizeDownloadText(result?.directory);
   const path = normalizeDownloadText(result?.path);
+  const savedWithPicker = Boolean(result?.saved_with_picker);
 
   if (filename && directory) {
     return `${label}已下載：${filename}\n儲存位置：${directory}`;
+  }
+  if (filename && savedWithPicker) {
+    return `${label}已下載：${filename}\n儲存位置：你剛剛選擇的位置`;
   }
   if (filename && path && path !== filename) {
     return `${label}已下載：${filename}\n儲存位置：${path}`;
