@@ -1342,6 +1342,20 @@ def get_dispatch_session_tail(session_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_active_dispatch_sessions_after(dispatched_after: str) -> list[dict]:
+    cutoff = str(dispatched_after or "").strip()
+    if not cutoff:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM dispatch_sessions "
+            "WHERE rolled_back_at='' AND dispatched_at>? "
+            "ORDER BY dispatched_at, id",
+            (cutoff,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def mark_dispatch_sessions_rolled_back(session_ids: list[int]) -> int:
     normalized_ids = []
     for session_id in session_ids or []:
@@ -1865,6 +1879,36 @@ def get_activity_logs(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_activity_logs_after(
+    created_after: str,
+    *,
+    actions: list[str] | tuple[str, ...] | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    cutoff = str(created_after or "").strip()
+    if not cutoff:
+        return []
+
+    normalized_actions = [str(action or "").strip() for action in (actions or []) if str(action or "").strip()]
+    try:
+        normalized_limit = max(int(limit), 1)
+    except (TypeError, ValueError):
+        normalized_limit = 100
+
+    sql = "SELECT * FROM activity_logs WHERE created_at>?"
+    params: list[object] = [cutoff]
+    if normalized_actions:
+        placeholders = ",".join("?" * len(normalized_actions))
+        sql += f" AND action IN ({placeholders})"
+        params.extend(normalized_actions)
+    sql += " ORDER BY created_at, id LIMIT ?"
+    params.append(normalized_limit)
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ── Defective Records ────────────────────────────────────────────────────────
 
 def create_defective_batch(filename: str, note: str = "", main_file_mtime: float = 0) -> int:
@@ -1919,6 +1963,31 @@ def get_defective_batches() -> list[dict]:
             batch["items"] = [dict(i) for i in items]
             result.append(batch)
     return result
+
+
+def get_defective_batch_summaries_after(imported_after: str) -> list[dict]:
+    cutoff = str(imported_after or "").strip()
+    if not cutoff:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM defective_batches WHERE imported_at>? ORDER BY imported_at, id",
+            (cutoff,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_defective_batch_summaries_after_id(batch_id: int) -> list[dict]:
+    try:
+        normalized_id = int(batch_id)
+    except (TypeError, ValueError):
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM defective_batches WHERE id>? ORDER BY id",
+            (normalized_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_defective_records(status: str = "all") -> list[dict]:

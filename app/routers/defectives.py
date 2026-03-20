@@ -19,6 +19,7 @@ from ..services.defective_deduction import (
     deduct_defectives_from_main,
     reverse_defectives_from_main,
 )
+from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed
 from ..services.overrun_deduction import (
     apply_overrun_import_confirmations,
     build_overrun_import_preview,
@@ -762,6 +763,7 @@ async def delete_batch(batch_id: int):
     target_batch = next((b for b in batches if b["id"] == batch_id), None)
     if not target_batch:
         raise HTTPException(404, "找不到批次")
+    ensure_defective_batch_delete_allowed(target_batch)
 
     records = target_batch.get("items") or []
     reverse_items = [

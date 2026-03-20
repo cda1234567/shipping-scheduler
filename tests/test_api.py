@@ -581,11 +581,15 @@ class ApiTests(unittest.TestCase):
         with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
             "id": 88,
             "filename": "加工多打｜MODEL-A｜+10 pcs",
+            "imported_at": "2026-03-20T08:00:00",
             "main_file_mtime": 123.0,
             "items": [
                 {"part_number": "PART-1", "defective_qty": 30, "action_taken": "加工多打扣帳"},
             ],
         }]), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after_id", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_active_dispatch_sessions_after", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
              patch("app.routers.defectives.db.get_setting", return_value="C:/main.xlsx"), \
              patch("app.routers.defectives._get_main_file_mtime", return_value=123.0), \
              patch("app.routers.defectives.Path.exists", return_value=True), \
@@ -602,6 +606,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["reversed_count"], 1)
         self.assertEqual(mock_reverse.call_args.kwargs["entry_header"], "加工多打回復")
+
+    def test_delete_defective_batch_blocks_when_later_inventory_mutation_exists(self):
+        with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+            "id": 88,
+            "filename": "不良品批次.xlsx",
+            "imported_at": "2026-03-20T08:00:00",
+            "main_file_mtime": 123.0,
+            "items": [
+                {"part_number": "PART-1", "defective_qty": 30},
+            ],
+        }]), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after_id", return_value=[{"id": 99}]), \
+             patch("app.services.inventory_restore_guard.db.get_active_dispatch_sessions_after", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
+             patch("app.routers.defectives.reverse_defectives_from_main") as mock_reverse, \
+             patch("app.routers.defectives.db.delete_defective_batch") as mock_delete_batch:
+            response = self.client.delete("/api/defectives/batches/88")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "後面已有其他庫存異動，不能直接回復。請先下載目前主檔，手動修正後重新上傳主檔。重新上傳後一定要重設快照。",
+        )
+        mock_reverse.assert_not_called()
+        mock_delete_batch.assert_not_called()
 
     def test_load_active_merge_draft_context_accepts_repaired_main_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1378,7 +1407,13 @@ class ApiTests(unittest.TestCase):
             5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
             6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
         }
-        session = {"id": 9, "order_id": 5, "backup_path": "C:/backup.xlsx", "main_file_path": "C:/main.xlsx"}
+        session = {
+            "id": 9,
+            "order_id": 5,
+            "backup_path": "C:/backup.xlsx",
+            "main_file_path": "C:/main.xlsx",
+            "dispatched_at": "2026-03-20T09:00:00",
+        }
         tail = [
             {"id": 9, "order_id": 5, "previous_status": "merged"},
             {"id": 10, "order_id": 6, "previous_status": "pending"},
@@ -1386,6 +1421,8 @@ class ApiTests(unittest.TestCase):
 
         with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
              patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
              patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
             response = self.client.get("/api/schedule/orders/5/rollback-preview")
 
@@ -1400,6 +1437,30 @@ class ApiTests(unittest.TestCase):
             ],
         )
 
+    def test_rollback_preview_blocks_when_later_inventory_mutation_exists(self):
+        order = {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"}
+        session = {
+            "id": 9,
+            "order_id": 5,
+            "backup_path": "C:/backup.xlsx",
+            "main_file_path": "C:/main.xlsx",
+            "dispatched_at": "2026-03-20T09:00:00",
+        }
+
+        with patch("app.routers.schedule.db.get_order", return_value=order), \
+             patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[{"id": 88}]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
+             patch("app.routers.schedule.db.get_dispatch_session_tail") as mock_tail:
+            response = self.client.get("/api/schedule/orders/5/rollback-preview")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["detail"],
+            "後面已有其他庫存異動，不能直接回復。請先下載目前主檔，手動修正後重新上傳主檔。重新上傳後一定要重設快照。",
+        )
+        mock_tail.assert_not_called()
+
     def test_rollback_restores_backup_and_reverts_tail_orders(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
@@ -1411,7 +1472,13 @@ class ApiTests(unittest.TestCase):
                 5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
                 6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
             }
-            session = {"id": 9, "order_id": 5, "backup_path": str(backup_path), "main_file_path": str(main_path)}
+            session = {
+                "id": 9,
+                "order_id": 5,
+                "backup_path": str(backup_path),
+                "main_file_path": str(main_path),
+                "dispatched_at": "2026-03-20T09:00:00",
+            }
             tail = [
                 {"id": 9, "order_id": 5, "previous_status": "merged", "backup_path": str(backup_path), "main_file_path": str(main_path)},
                 {"id": 10, "order_id": 6, "previous_status": "pending", "backup_path": str(backup_path), "main_file_path": str(main_path)},
@@ -1419,6 +1486,8 @@ class ApiTests(unittest.TestCase):
 
             with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
                  patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+                 patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[]), \
+                 patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
                  patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail), \
                  patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
                  patch("app.routers.schedule.db.delete_dispatch_records_for_orders") as mock_delete_records, \

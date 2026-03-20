@@ -41,6 +41,7 @@ from ..services.dispatch_pipeline import (
     prepare_dispatch_context as _prepare_dispatch_context,
     require_existing_main_path as _require_existing_main_path,
 )
+from ..services.inventory_restore_guard import ensure_dispatch_rollback_allowed
 from ..services.merge_drafts import (
     rebuild_merge_drafts,
     delete_merge_draft_and_refresh,
@@ -92,6 +93,7 @@ def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
     session = db.get_active_dispatch_session(order_id)
     if not session:
         raise HTTPException(400, "找不到這筆訂單的發料歷史，無法反悔")
+    ensure_dispatch_rollback_allowed(session)
 
     tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
     if not tail_sessions:
