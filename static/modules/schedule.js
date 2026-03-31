@@ -3390,12 +3390,21 @@ async function handleDedupSchedule() {
 
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
-  const targets = _rows.filter(row => _checkedIds.has(row.id) && (row.status === "pending" || row.status === "merged"));
+  const selectedRows = _rows.filter(row => _checkedIds.has(row.id));
+  const targets = selectedRows.filter(row => {
+    if (row.status === "pending") return true;
+    if (row.status !== "merged") return false;
+    return !_draftsByOrderId?.[row.id];
+  });
   if (!_checkedIds.size) {
     showToast("請先勾選要 merge 的訂單");
     return;
   }
   if (!targets.length) {
+    if (selectedRows.some(row => row.status === "merged" && _draftsByOrderId?.[row.id])) {
+      showToast("勾選的訂單已經有副檔，請直接在訂單下方副檔工作台修改");
+      return;
+    }
     showToast("勾選的訂單中沒有可 merge 的");
     return;
   }
@@ -3421,7 +3430,10 @@ async function handleBatchMerge() {
     // overlay 已關閉，背景刷新資料
     await refresh();
 
-    const refreshedTargets = _rows.filter(row => targetIds.includes(row.id));
+    const targetOrderIndex = new Map(targetIds.map((id, index) => [id, index]));
+    const refreshedTargets = _rows
+      .filter(row => targetOrderIndex.has(row.id))
+      .sort((a, b) => (targetOrderIndex.get(a.id) ?? 0) - (targetOrderIndex.get(b.id) ?? 0));
     showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
     try {
       await showBatchMergeDraftModal(refreshedTargets);

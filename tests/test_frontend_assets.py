@@ -158,6 +158,24 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("buildRawModalShortageGroups(targets)", shortage_body)
         self.assertNotIn("_calcResults.forEach", shortage_body)
 
+    def test_batch_merge_only_rebuilds_pending_or_missing_draft_targets(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        match = re.search(
+            r"async function handleBatchMerge\(\) \{(?P<body>.*?)\n\}",
+            schedule_module,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn("const selectedRows = _rows.filter(row => _checkedIds.has(row.id));", body)
+        self.assertIn('if (row.status === "pending") return true;', body)
+        self.assertIn('if (row.status !== "merged") return false;', body)
+        self.assertIn("return !_draftsByOrderId?.[row.id];", body)
+        self.assertIn("勾選的訂單已經有副檔，請直接在訂單下方副檔工作台修改", body)
+        self.assertIn("const targetOrderIndex = new Map(targetIds.map((id, index) => [id, index]));", body)
+
     def test_frontend_calculator_keeps_order_scoped_ic_shortages_per_current_order(self):
         root = Path(__file__).resolve().parents[1]
         script = """
