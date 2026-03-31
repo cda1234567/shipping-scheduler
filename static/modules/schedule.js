@@ -605,7 +605,9 @@ function buildRowCard(r, resultMap) {
       <input type="checkbox" class="row-check" data-order-id="${r.id}" ${isChecked ? "checked" : ""}
              style="width:16px;height:16px;margin:0;cursor:pointer;accent-color:#34c759">
       <span class="drag-handle" title="拖曳調整順序">⠿</span>
-      <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>${draftToggleHtml}
+      <span class="po-model-wrap">
+        <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>${draftToggleHtml}
+      </span>
       <span style="color:#c7c7cc;font-size:13px;text-align:center">|</span>
       <span class="po-number" style="color:#6b7280;font-weight:500">${r.po_number}</span>
       <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>

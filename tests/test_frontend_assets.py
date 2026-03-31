@@ -48,6 +48,7 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertIn("btn-draft-toggle", text)
         self.assertIn("row-draft-toggle", text)
+        self.assertIn("po-model-wrap", text)
         self.assertIn("preview_rows", text)
         self.assertIn("draft-preview-inline-stat", text)
         self.assertIn("draft-preview-editors", text)
@@ -95,9 +96,12 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertIn(".merge-draft-panel.is-collapsed {", stylesheet)
         self.assertIn("display: none;", stylesheet)
+        self.assertIn(".po-model-wrap {", stylesheet)
+        self.assertIn(".po-model-wrap .model-editable {", stylesheet)
         self.assertIn(".row-draft-toggle {", stylesheet)
         self.assertIn(".row-draft-toggle.is-expanded {", stylesheet)
         self.assertIn('>${isDraftPanelCollapsed(r.id) ? "▶" : "▼"}</button>`', schedule_module)
+        self.assertIn('<span class="po-model-wrap">', schedule_module)
         self.assertIn('button.textContent = nextCollapsed ? "▶" : "▼";', schedule_module)
         self.assertIn('const row = button.closest(".po-group");', schedule_module)
 
