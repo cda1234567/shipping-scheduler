@@ -124,17 +124,20 @@ docker compose -f docker-compose.server.yml up -d
 
 - GitHub Actions 在 `main` push 後自動發佈 GHCR image
 - `watchtower` 每隔一段時間自動檢查並更新 `dispatch-scheduler`
+- `caddy` 會自動申請/續期 HTTPS 憑證，對外提供 `https://你的網域`
 
 預設設定：
 
 - image：`ghcr.io/cda1234567/dispatch-scheduler:latest`
-- port：`8765`
+- 對外：`80 / 443`
+- app upstream：`dispatch-scheduler:8765`
 - 更新檢查間隔：`60` 秒
 
 對應檔案：
 
 - server compose：[docker-compose.server.yml](./docker-compose.server.yml)
 - 環境變數範本：[.env.server.example](./.env.server.example)
+- Caddy 設定：[deploy/Caddyfile](./deploy/Caddyfile)
 - 自動發佈 workflow：[.github/workflows/docker-publish.yml](./.github/workflows/docker-publish.yml)
 
 注意：
@@ -142,6 +145,32 @@ docker compose -f docker-compose.server.yml up -d
 - `watchtower` 只能更新「registry 上的 image」，不能更新本機 `build:` 出來的 container。
 - 如果 GHCR package 是 private，server 端要先 `docker login ghcr.io`。
 - 如果要讓更新完全免登入，建議把 GHCR package 設成 public。
+
+HTTPS 與網域設定：
+
+1. 在買網域的平台，把 `cda1234567.com` 的 `A Record` 指到 server 的外網 IP。
+2. 如果要支援 `www.cda1234567.com`，再加一筆 `CNAME www -> cda1234567.com`。
+3. 確認 server 防火牆有開 `80` 與 `443`。
+4. 修改 `.env`：
+
+```env
+APP_DOMAIN=cda1234567.com
+ACME_EMAIL=你的 email
+```
+
+5. 啟動：
+
+```bash
+docker compose -f docker-compose.server.yml up -d
+```
+
+6. 第一次成功後，就可以直接用：
+
+```text
+https://cda1234567.com
+```
+
+如果 DNS 還沒生效，或 `80/443` 沒有對外打通，Caddy 就不會成功簽到正式憑證。
 
 ---
 

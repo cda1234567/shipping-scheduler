@@ -5,10 +5,31 @@ services:
     image: ${APP_IMAGE:-ghcr.io/cda1234567/dispatch-scheduler:latest}
     container_name: ${APP_CONTAINER_NAME:-dispatch-scheduler}
     restart: unless-stopped
-    ports:
-      - "${APP_PORT:-8765}:8765"
+    expose:
+      - "8765"
     volumes:
       - ./data:/app/data
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+      - "com.centurylinklabs.watchtower.scope=${WATCHTOWER_SCOPE:-dispatch-scheduler}"
+
+  caddy:
+    image: caddy:2
+    container_name: ${CADDY_CONTAINER_NAME:-dispatch-caddy}
+    restart: unless-stopped
+    depends_on:
+      - dispatch-scheduler
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN}
+      APP_UPSTREAM: ${APP_UPSTREAM:-dispatch-scheduler:8765}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "com.centurylinklabs.watchtower.scope=${WATCHTOWER_SCOPE:-dispatch-scheduler}"
@@ -29,3 +50,7 @@ services:
       - "${WATCHTOWER_POLL_INTERVAL:-60}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  caddy_data:
+  caddy_config:
