@@ -129,7 +129,7 @@ docker compose -f docker-compose.server.yml up -d
 
 - image：`ghcr.io/cda1234567/dispatch-scheduler:latest`
 - port：`8765`
-- 更新檢查間隔：`300` 秒
+- 更新檢查間隔：`60` 秒
 
 對應檔案：
 
