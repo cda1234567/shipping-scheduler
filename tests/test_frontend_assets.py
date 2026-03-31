@@ -231,14 +231,31 @@ console.log(JSON.stringify(results));
     def test_desktop_bridge_supports_browser_save_picker_for_web_downloads(self):
         root = Path(__file__).resolve().parents[1]
         bridge_module = (root / "static" / "modules" / "desktop_bridge.js").read_text(encoding="utf-8")
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
 
+        self.assertIn('id="browser-choose-download-dir"', index_html)
+        self.assertIn('id="browser-clear-download-dir"', index_html)
+        self.assertIn('id="browser-download-folder"', index_html)
+        self.assertIn('id="browser-download-note"', index_html)
+        self.assertIn('id="desktop-modal-title"', index_html)
+        self.assertIn('id="desktop-modal-subtitle"', index_html)
         self.assertIn("function supportsBrowserSavePicker()", bridge_module)
+        self.assertIn("function supportsBrowserDirectoryPicker()", bridge_module)
+        self.assertIn('window.showDirectoryPicker', bridge_module)
+        self.assertIn("openBrowserDownloadDb()", bridge_module)
+        self.assertIn("loadBrowserDownloadDirectoryHandle()", bridge_module)
+        self.assertIn("saveBrowserDownloadDirectoryHandle(handle)", bridge_module)
+        self.assertIn("clearBrowserDownloadDirectoryHandle()", bridge_module)
+        self.assertIn("saveBlobWithConfiguredBrowserDirectory(blob, filename)", bridge_module)
+        self.assertIn("findAvailableFilenameInDirectory(directoryHandle, filename)", bridge_module)
         self.assertIn('typeof window.showSaveFilePicker === "function" && window.isSecureContext', bridge_module)
         self.assertIn("async function saveBlobWithBrowserPicker(blob, filename, contentType = \"\")", bridge_module)
         self.assertIn("await window.showSaveFilePicker({", bridge_module)
         self.assertIn("const writable = await fileHandle.createWritable();", bridge_module)
         self.assertIn("saved_with_picker: true", bridge_module)
+        self.assertIn("saved_with_browser_directory: true", bridge_module)
         self.assertIn("if (supportsBrowserSavePicker()) {", bridge_module)
+        self.assertIn("const preferredDirectoryResult = await saveBlobWithConfiguredBrowserDirectory(blob, outputName);", bridge_module)
         self.assertIn("return saveBlobWithBrowserPicker(blob, outputName, response.headers.get(\"content-type\"));", bridge_module)
         self.assertIn("儲存位置：你剛剛選擇的位置", bridge_module)
         self.assertIn("document.body.appendChild(anchor);", bridge_module)
@@ -246,6 +263,8 @@ console.log(JSON.stringify(results));
         self.assertIn("URL.revokeObjectURL(blobUrl);", bridge_module)
         self.assertIn("anchor.remove();", bridge_module)
         self.assertIn("browser_download_started: true", bridge_module)
+        self.assertIn("已更新網頁版下載資料夾", bridge_module)
+        self.assertIn("已清除網頁版下載資料夾設定", bridge_module)
 
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]

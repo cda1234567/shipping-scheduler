@@ -35,7 +35,7 @@
     <span id="app-version-label">版本資訊</span>
   </button>
   <span class="spacer"></span>
-  <button class="btn btn-sm btn-secondary" id="btn-desktop-controls" title="桌面版設定" style="display:none">桌面版</button>
+  <button class="btn btn-sm btn-secondary" id="btn-desktop-controls" title="下載設定" style="display:none">下載設定</button>
   <button class="btn btn-sm btn-secondary" id="btn-refresh-app" title="重新整理">↻ 重新整理</button>
 </header>
 
@@ -732,8 +732,8 @@ init().catch(error => {
   <div class="modal-box" style="width:min(520px, 92vw)">
     <div class="modal-header">
       <div>
-        <h3 style="margin:0;font-size:16px">桌面版設定</h3>
-        <div class="modal-subtitle">按右上角 X 會縮到工作列，不會直接把系統關掉。</div>
+        <h3 id="desktop-modal-title" style="margin:0;font-size:16px">下載與桌面版設定</h3>
+        <div id="desktop-modal-subtitle" class="modal-subtitle">可以設定網頁版下載位置；桌面版則另外支援本機服務與開機自啟。</div>
       </div>
       <button id="desktop-close" class="modal-close-btn">&times;</button>
     </div>
@@ -741,6 +741,17 @@ init().catch(error => {
       <div class="desktop-status-card">
         <div id="desktop-status" class="desktop-status-title">桌面版未連線</div>
         <div id="desktop-url" class="desktop-status-meta"></div>
+      </div>
+      <div class="desktop-setting-group">
+        <div class="desktop-setting-header">
+          <div class="desktop-autostart-title">網頁版下載資料夾</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="browser-choose-download-dir" type="button" class="btn btn-secondary btn-sm">選擇資料夾</button>
+            <button id="browser-clear-download-dir" type="button" class="btn btn-secondary btn-sm">清除設定</button>
+          </div>
+        </div>
+        <div id="browser-download-folder" class="desktop-status-meta"></div>
+        <div id="browser-download-note" class="desktop-status-meta" style="margin-top:4px"></div>
       </div>
       <div class="desktop-setting-group">
         <div class="desktop-setting-header">

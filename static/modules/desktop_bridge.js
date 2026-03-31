@@ -1,9 +1,15 @@
 import { showToast } from "./api.js";
 
 let _desktopState = null;
+let _browserDownloadState = null;
 let _initialized = false;
 let _stateHydrationStarted = false;
 let _stateHydrationStatus = "idle";
+let _browserStateHydrationStarted = false;
+const BROWSER_DOWNLOAD_DB_NAME = "shipping-scheduler-browser-downloads";
+const BROWSER_DOWNLOAD_DB_VERSION = 1;
+const BROWSER_DOWNLOAD_STORE = "handles";
+const BROWSER_DOWNLOAD_KEY = "preferred-download-directory";
 
 function getDesktopApi() {
   const api = window.pywebview?.api;
@@ -50,6 +56,22 @@ function normalizeDownloadText(value) {
 
 function supportsBrowserSavePicker() {
   return typeof window.showSaveFilePicker === "function" && window.isSecureContext;
+}
+
+function supportsBrowserDirectoryPicker() {
+  return typeof window.showDirectoryPicker === "function" && window.isSecureContext;
+}
+
+function createDefaultBrowserDownloadState() {
+  return {
+    supported: supportsBrowserDirectoryPicker(),
+    save_picker_supported: supportsBrowserSavePicker(),
+    secure_context: Boolean(window.isSecureContext),
+    download_directory_set: false,
+    download_directory: "",
+    permission_state: "prompt",
+    handle: null,
+  };
 }
 
 function buildPickerTypes(filename, contentType = "") {
@@ -115,6 +137,184 @@ async function saveBlobWithBrowserPicker(blob, filename, contentType = "") {
   };
 }
 
+function openBrowserDownloadDb() {
+  return new Promise((resolve, reject) => {
+    if (!("indexedDB" in window)) {
+      reject(new Error("瀏覽器不支援 IndexedDB"));
+      return;
+    }
+    const request = window.indexedDB.open(BROWSER_DOWNLOAD_DB_NAME, BROWSER_DOWNLOAD_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(BROWSER_DOWNLOAD_STORE)) {
+        db.createObjectStore(BROWSER_DOWNLOAD_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("開啟瀏覽器下載設定失敗"));
+  });
+}
+
+async function loadBrowserDownloadDirectoryHandle() {
+  if (!supportsBrowserDirectoryPicker()) return null;
+  try {
+    const db = await openBrowserDownloadDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(BROWSER_DOWNLOAD_STORE, "readonly");
+      const store = tx.objectStore(BROWSER_DOWNLOAD_STORE);
+      const request = store.get(BROWSER_DOWNLOAD_KEY);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("讀取網頁版下載資料夾失敗"));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+      tx.onabort = () => db.close();
+    });
+  } catch (error) {
+    console.warn("loadBrowserDownloadDirectoryHandle failed", error);
+    return null;
+  }
+}
+
+async function saveBrowserDownloadDirectoryHandle(handle) {
+  if (!supportsBrowserDirectoryPicker()) return false;
+  try {
+    const db = await openBrowserDownloadDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(BROWSER_DOWNLOAD_STORE, "readwrite");
+      const store = tx.objectStore(BROWSER_DOWNLOAD_STORE);
+      const request = store.put(handle, BROWSER_DOWNLOAD_KEY);
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error || new Error("儲存網頁版下載資料夾失敗"));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+      tx.onabort = () => db.close();
+    });
+    return true;
+  } catch (error) {
+    console.warn("saveBrowserDownloadDirectoryHandle failed", error);
+    return false;
+  }
+}
+
+async function clearBrowserDownloadDirectoryHandle() {
+  if (!supportsBrowserDirectoryPicker()) return false;
+  try {
+    const db = await openBrowserDownloadDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(BROWSER_DOWNLOAD_STORE, "readwrite");
+      const store = tx.objectStore(BROWSER_DOWNLOAD_STORE);
+      const request = store.delete(BROWSER_DOWNLOAD_KEY);
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error || new Error("清除網頁版下載資料夾失敗"));
+      tx.oncomplete = () => db.close();
+      tx.onerror = () => db.close();
+      tx.onabort = () => db.close();
+    });
+    return true;
+  } catch (error) {
+    console.warn("clearBrowserDownloadDirectoryHandle failed", error);
+    return false;
+  }
+}
+
+async function getBrowserHandlePermissionState(handle) {
+  if (!handle) return "prompt";
+  if (typeof handle.queryPermission !== "function") return "granted";
+  try {
+    return await handle.queryPermission({ mode: "readwrite" });
+  } catch (_) {
+    return "prompt";
+  }
+}
+
+async function ensureBrowserHandlePermission(handle) {
+  if (!handle) return false;
+  let permission = await getBrowserHandlePermissionState(handle);
+  if (permission === "granted") return true;
+  if (typeof handle.requestPermission !== "function") return false;
+  try {
+    permission = await handle.requestPermission({ mode: "readwrite" });
+  } catch (_) {
+    return false;
+  }
+  return permission === "granted";
+}
+
+async function hydrateBrowserDownloadState(force = false) {
+  if (_browserStateHydrationStarted && !force) return;
+  _browserStateHydrationStarted = true;
+  const state = createDefaultBrowserDownloadState();
+  if (supportsBrowserDirectoryPicker()) {
+    const handle = await loadBrowserDownloadDirectoryHandle();
+    if (handle) {
+      state.handle = handle;
+      state.download_directory_set = true;
+      state.download_directory = String(handle.name || "").trim();
+      state.permission_state = await getBrowserHandlePermissionState(handle);
+    }
+  }
+  _browserDownloadState = state;
+  renderDesktopState();
+}
+
+async function findAvailableFilenameInDirectory(directoryHandle, filename) {
+  const safeName = normalizeDownloadText(filename) || "download.bin";
+  const dotIndex = safeName.lastIndexOf(".");
+  const stem = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const suffix = dotIndex > 0 ? safeName.slice(dotIndex) : "";
+  let candidate = safeName;
+  let counter = 1;
+  while (true) {
+    try {
+      await directoryHandle.getFileHandle(candidate);
+      candidate = `${stem}_${counter}${suffix}`;
+      counter += 1;
+    } catch (error) {
+      if (error?.name === "NotFoundError") {
+        return candidate;
+      }
+      throw error;
+    }
+  }
+}
+
+async function saveBlobWithConfiguredBrowserDirectory(blob, filename) {
+  const handle = _browserDownloadState?.handle;
+  if (!handle) return null;
+
+  const granted = await ensureBrowserHandlePermission(handle);
+  if (!granted) {
+    await clearBrowserDownloadDirectoryHandle();
+    _browserDownloadState = createDefaultBrowserDownloadState();
+    renderDesktopState();
+    showToast("網頁版下載資料夾權限已失效，這次改為重新選擇下載位置");
+    return null;
+  }
+
+  const availableName = await findAvailableFilenameInDirectory(handle, filename || "download.bin");
+  const fileHandle = await handle.getFileHandle(availableName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+
+  _browserDownloadState = {
+    ...(_browserDownloadState || createDefaultBrowserDownloadState()),
+    handle,
+    download_directory_set: true,
+    download_directory: String(handle.name || "").trim(),
+    permission_state: "granted",
+  };
+  renderDesktopState();
+
+  return {
+    ok: true,
+    filename: availableName,
+    path: availableName,
+    directory: String(handle.name || "").trim(),
+    saved_with_browser_directory: true,
+  };
+}
+
 function applyDesktopTheme() {
   document.body.classList.toggle("desktop-dark", Boolean(_desktopState?.dark_mode_enabled));
 }
@@ -151,52 +351,146 @@ function renderDesktopState() {
   const checkbox = document.getElementById("desktop-autostart");
   const folderEl = document.getElementById("desktop-download-folder");
   const darkModeEl = document.getElementById("desktop-dark-mode");
-  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !darkModeEl) return;
+  const desktopChooseBtn = document.getElementById("desktop-choose-download-dir");
+  const desktopMinimizeBtn = document.getElementById("desktop-minimize");
+  const desktopOpenBrowserBtn = document.getElementById("desktop-open-browser");
+  const desktopQuitBtn = document.getElementById("desktop-quit");
+  const browserFolderEl = document.getElementById("browser-download-folder");
+  const browserNoteEl = document.getElementById("browser-download-note");
+  const browserChooseBtn = document.getElementById("browser-choose-download-dir");
+  const browserClearBtn = document.getElementById("browser-clear-download-dir");
+  const modalTitle = document.getElementById("desktop-modal-title");
+  const modalSubtitle = document.getElementById("desktop-modal-subtitle");
+  const controlBtn = document.getElementById("btn-desktop-controls");
+  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !darkModeEl || !desktopChooseBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !browserFolderEl || !browserNoteEl || !browserChooseBtn || !browserClearBtn || !modalTitle || !modalSubtitle || !controlBtn) return;
+
+  const browserState = _browserDownloadState || createDefaultBrowserDownloadState();
+  const desktopAvailable = hasDesktopApi();
+  controlBtn.style.display = "inline-flex";
+  controlBtn.textContent = desktopAvailable ? "下載設定" : "網頁下載";
+  controlBtn.title = desktopAvailable ? "下載與桌面版設定" : "網頁版下載設定";
+  modalTitle.textContent = desktopAvailable ? "下載與桌面版設定" : "網頁版下載設定";
+  modalSubtitle.textContent = desktopAvailable
+    ? "可以設定網頁版下載位置；桌面版則另外支援本機服務與開機自啟。"
+    : "可以設定網頁版固定下載資料夾；若瀏覽器不支援，則會改成每次另存。";
+  desktopChooseBtn.disabled = !desktopAvailable;
+  desktopMinimizeBtn.disabled = !desktopAvailable;
+  desktopOpenBrowserBtn.disabled = !desktopAvailable;
+  desktopQuitBtn.disabled = !desktopAvailable;
 
   if (!_desktopState) {
-    statusEl.textContent = _stateHydrationStatus === "loading" ? "桌面版連線中..." : "桌面版未連線";
-    urlEl.textContent = "";
-    startupEl.textContent = _stateHydrationStatus === "error" ? "桌面橋接尚未就緒，請稍後再試一次。" : "";
+    statusEl.textContent = desktopAvailable
+      ? (_stateHydrationStatus === "loading" ? "桌面版連線中..." : "桌面版未連線")
+      : "網頁版模式";
+    urlEl.textContent = desktopAvailable ? "" : window.location.origin;
+    startupEl.textContent = desktopAvailable
+      ? (_stateHydrationStatus === "error" ? "桌面橋接尚未就緒，請稍後再試一次。" : "")
+      : "網頁版不提供開機自動啟動";
     folderEl.textContent = "尚未指定下載資料夾";
     checkbox.checked = false;
     checkbox.disabled = true;
     darkModeEl.checked = false;
     darkModeEl.disabled = true;
-    applyDesktopTheme();
-    return;
+  } else {
+    statusEl.textContent = _desktopState.remote_server
+      ? "桌面版已連到遠端服務"
+      : _desktopState.server_started_here
+        ? "桌面版已啟動本機服務"
+        : "桌面版已連到既有本機服務";
+    urlEl.textContent = _desktopState.app_url || "";
+    folderEl.textContent = _desktopState.download_directory_set
+      ? (_desktopState.download_directory || "尚未指定下載資料夾")
+      : "尚未指定，首次下載時會詢問資料夾";
+    darkModeEl.checked = Boolean(_desktopState.dark_mode_enabled);
+    darkModeEl.disabled = false;
+    if (_desktopState.autostart_managed) {
+      startupEl.textContent = _desktopState.autostart_enabled
+        ? "開機後會自動啟動，並縮小在工作列"
+        : "目前不會隨 Windows 開機自動啟動";
+      checkbox.disabled = false;
+    } else {
+      startupEl.textContent = "目前環境不支援自動啟動設定";
+      checkbox.disabled = true;
+    }
+    checkbox.checked = Boolean(_desktopState.autostart_enabled);
   }
 
-  statusEl.textContent = _desktopState.remote_server
-    ? "桌面版已連到遠端服務"
-    : _desktopState.server_started_here
-      ? "桌面版已啟動本機服務"
-      : "桌面版已連到既有本機服務";
-  urlEl.textContent = _desktopState.app_url || "";
-  folderEl.textContent = _desktopState.download_directory_set
-    ? (_desktopState.download_directory || "尚未指定下載資料夾")
-    : "尚未指定，首次下載時會詢問資料夾";
-  darkModeEl.checked = Boolean(_desktopState.dark_mode_enabled);
-  darkModeEl.disabled = false;
-  if (_desktopState.autostart_managed) {
-    startupEl.textContent = _desktopState.autostart_enabled
-      ? "開機後會自動啟動，並縮小在工作列"
-      : "目前不會隨 Windows 開機自動啟動";
-    checkbox.disabled = false;
+  if (browserState.supported) {
+    browserFolderEl.textContent = browserState.download_directory_set
+      ? `${browserState.download_directory || "已指定資料夾"}${browserState.permission_state === "granted" ? "" : "（需要重新授權）"}`
+      : "尚未指定，下載時會直接存進這個資料夾";
+    browserNoteEl.textContent = browserState.download_directory_set
+      ? "設定後，網頁版下載會直接寫進這個資料夾。"
+      : "支援固定下載資料夾，設定後不必每次重新選位置。";
+    browserChooseBtn.disabled = false;
+    browserClearBtn.disabled = !browserState.download_directory_set;
+  } else if (browserState.save_picker_supported) {
+    browserFolderEl.textContent = "此環境支援每次下載時自行選位置";
+    browserNoteEl.textContent = "目前瀏覽器不支援固定下載資料夾，但每次下載都可以另存到你指定的位置。";
+    browserChooseBtn.disabled = true;
+    browserClearBtn.disabled = true;
   } else {
-    startupEl.textContent = "目前環境不支援自動啟動設定";
-    checkbox.disabled = true;
+    browserFolderEl.textContent = "目前無法由系統指定網頁版下載資料夾";
+    browserNoteEl.textContent = browserState.secure_context
+      ? "這個瀏覽器不支援固定下載資料夾，會改用瀏覽器預設下載位置。"
+      : "目前不是安全連線環境，瀏覽器不允許網站設定固定下載資料夾。";
+    browserChooseBtn.disabled = true;
+    browserClearBtn.disabled = true;
   }
-  checkbox.checked = Boolean(_desktopState.autostart_enabled);
+
   applyDesktopTheme();
 }
 
 function openDesktopModal() {
   document.getElementById("desktop-modal").style.display = "flex";
+  void hydrateBrowserDownloadState(true);
   void hydrateDesktopState(true);
 }
 
 function closeDesktopModal() {
   document.getElementById("desktop-modal").style.display = "none";
+}
+
+async function handleChooseBrowserDownloadDirectory() {
+  try {
+    if (!supportsBrowserDirectoryPicker()) {
+      if (supportsBrowserSavePicker()) {
+        throw new Error("目前只能每次下載時自行選位置，還不能固定資料夾");
+      }
+      throw new Error("目前瀏覽器或連線環境不支援固定下載資料夾");
+    }
+    const handle = await window.showDirectoryPicker({
+      id: "shipping-scheduler-downloads",
+      mode: "readwrite",
+    });
+    const granted = await ensureBrowserHandlePermission(handle);
+    if (!granted) {
+      throw new Error("未取得這個資料夾的寫入權限");
+    }
+    const persisted = await saveBrowserDownloadDirectoryHandle(handle);
+    _browserDownloadState = {
+      ...createDefaultBrowserDownloadState(),
+      supported: true,
+      save_picker_supported: supportsBrowserSavePicker(),
+      secure_context: Boolean(window.isSecureContext),
+      handle,
+      download_directory_set: true,
+      download_directory: String(handle.name || "").trim(),
+      permission_state: "granted",
+    };
+    renderDesktopState();
+    showToast(persisted ? "已更新網頁版下載資料夾" : "已更新本次工作階段的網頁版下載資料夾");
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    showToast("設定網頁版下載資料夾失敗: " + error.message);
+  }
+}
+
+async function handleClearBrowserDownloadDirectory() {
+  await clearBrowserDownloadDirectoryHandle();
+  _browserDownloadState = createDefaultBrowserDownloadState();
+  renderDesktopState();
+  showToast("已清除網頁版下載資料夾設定");
 }
 
 async function handleAutostartChange(event) {
@@ -281,6 +575,8 @@ async function handleQuitDesktop() {
 }
 
 function bindDesktopEvents() {
+  if (_initialized) return;
+  _initialized = true;
   document.getElementById("btn-desktop-controls").addEventListener("click", openDesktopModal);
   document.getElementById("desktop-close").addEventListener("click", closeDesktopModal);
   document.getElementById("desktop-cancel").addEventListener("click", closeDesktopModal);
@@ -289,6 +585,8 @@ function bindDesktopEvents() {
   document.getElementById("desktop-quit").addEventListener("click", handleQuitDesktop);
   document.getElementById("desktop-autostart").addEventListener("change", handleAutostartChange);
   document.getElementById("desktop-choose-download-dir").addEventListener("click", handleChooseDownloadDirectory);
+  document.getElementById("browser-choose-download-dir").addEventListener("click", handleChooseBrowserDownloadDirectory);
+  document.getElementById("browser-clear-download-dir").addEventListener("click", handleClearBrowserDownloadDirectory);
   document.getElementById("desktop-dark-mode").addEventListener("change", handleDarkModeChange);
   document.getElementById("desktop-modal").addEventListener("click", event => {
     if (event.target.id === "desktop-modal") closeDesktopModal();
@@ -311,6 +609,10 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const blob = await response.blob();
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
+  const preferredDirectoryResult = await saveBlobWithConfiguredBrowserDirectory(blob, outputName);
+  if (preferredDirectoryResult) {
+    return preferredDirectoryResult;
+  }
   if (supportsBrowserSavePicker()) {
     return saveBlobWithBrowserPicker(blob, outputName, response.headers.get("content-type"));
   }
@@ -377,10 +679,20 @@ export async function desktopDownload({ path, method = "GET", body = null, filen
 }
 
 async function bootDesktopBridge() {
-  if (_initialized || !hasDesktopApi()) return;
-  _initialized = true;
   bindDesktopEvents();
-  document.getElementById("btn-desktop-controls").style.display = "inline-flex";
+  if (!_browserDownloadState) {
+    _browserDownloadState = createDefaultBrowserDownloadState();
+    renderDesktopState();
+    void hydrateBrowserDownloadState();
+  }
+  if (!hasDesktopApi()) {
+    renderDesktopState();
+    return;
+  }
+  if (_stateHydrationStarted || _desktopState) {
+    renderDesktopState();
+    return;
+  }
   _stateHydrationStatus = "loading";
   renderDesktopState();
   window.setTimeout(() => {
@@ -389,8 +701,8 @@ async function bootDesktopBridge() {
 }
 
 export async function initDesktopBridge() {
+  await bootDesktopBridge();
   if (hasDesktopApi()) {
-    await bootDesktopBridge();
     return;
   }
 
