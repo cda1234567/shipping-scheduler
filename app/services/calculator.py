@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 from ..models import calc_suggested_qty
+from .bom_quantity import coerce_qty, get_component_effective_needed_qty
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -88,6 +89,7 @@ def run(
     for order in orders:
         model_key = (order.get("model") or "").upper()
         components = bom_map.get(model_key)
+        order_qty = coerce_qty(order.get("order_qty"))
 
         if components is None:
             results.append({
@@ -106,7 +108,7 @@ def run(
 
         for comp in components:
             is_dash = comp.get("is_dash", False)
-            needed_qty = comp.get("needed_qty", 0)
+            needed_qty = get_component_effective_needed_qty(comp, order_qty)
             if is_dash or needed_qty <= 0:
                 continue
 

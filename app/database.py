@@ -1147,7 +1147,11 @@ def save_bom_order(groups: list[dict]) -> int:
 def get_bom_components(bom_file_id: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM bom_components WHERE bom_file_id=?", (bom_file_id,)
+            "SELECT bc.*, bf.order_qty AS bom_order_qty "
+            "FROM bom_components bc "
+            "JOIN bom_files bf ON bf.id = bc.bom_file_id "
+            "WHERE bc.bom_file_id=?",
+            (bom_file_id,),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -1158,7 +1162,8 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
         rows = conn.execute(
             "SELECT bf.group_model, bf.model, "
             "bc.part_number, bc.description, bc.qty_per_board, "
-            "bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied "
+            "bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied, "
+            "bf.order_qty AS bom_order_qty "
             "FROM bom_files bf JOIN bom_components bc ON bc.bom_file_id = bf.id "
             "ORDER BY bf.sort_order, bf.uploaded_at, bf.filename, bc.id"
         ).fetchall()
@@ -1167,6 +1172,7 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
         comp = {
             "part_number": r["part_number"], "description": r["description"],
             "qty_per_board": r["qty_per_board"], "needed_qty": r["needed_qty"],
+            "bom_order_qty": r["bom_order_qty"],
             "prev_qty_cs": r["prev_qty_cs"], "is_dash": bool(r["is_dash"]),
             "is_customer_supplied": bool(r["is_customer_supplied"]),
         }

@@ -20,6 +20,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .. import database as db
 from ..config import MERGE_DRAFT_DIR, cfg
 from .download_names import append_minute_timestamp, build_generated_filename
+from .bom_quantity import (
+    calculate_effective_needed_qty,
+    coerce_qty,
+    format_excel_qty,
+    get_component_effective_needed_qty,
+)
 from .main_reader import read_moq, read_stock
 from ..models import calc_suggested_qty
 from .shortage_rules import (
@@ -125,10 +131,55 @@ def _format_bom_po_value(existing_value, po_number):
     return po_text
 
 
-def _write_bom_header_values(ws, po_number):
+def _read_ws_bom_order_qty(ws) -> float:
+    order_qty_col = cfg("excel.bom_order_qty_col", 10) + 1
+    order_qty_cell = _resolve_cell_for_write(ws, 1, order_qty_col)
+    order_qty = coerce_qty(order_qty_cell.value)
+    if order_qty > 0:
+        return order_qty
+    return coerce_qty(ws.cell(row=2, column=7).value)
+
+
+def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_order_qty: float | None = None):
+    effective_order_qty = coerce_qty(target_order_qty)
+    if effective_order_qty <= 0:
+        return
+
+    base_order_qty = coerce_qty(source_order_qty) or _read_ws_bom_order_qty(ws)
+    part_col = cfg("excel.bom_part_col", 2) + 1
+    qty_col = cfg("excel.bom_qty_per_board", 1) + 1
+    needed_col = cfg("excel.bom_needed_col", 5) + 1
+    g_col = cfg("excel.bom_g_col", 6) + 1
+    h_col = cfg("excel.bom_h_col", 7) + 1
+    data_start = cfg("excel.bom_data_start_row", 5)
+    dash_markers = {"-", "x", "X", "n", "N", "n/a", "N/A", "na", "NA", "?"}
+
+    for row_idx in range(data_start, ws.max_row + 1):
+        if not normalize_part_key(ws.cell(row=row_idx, column=part_col).value):
+            continue
+        g_text = str(ws.cell(row=row_idx, column=g_col).value or "").strip()
+        h_text = str(ws.cell(row=row_idx, column=h_col).value or "").strip()
+        if g_text in dash_markers or h_text in dash_markers:
+            continue
+        needed_qty = calculate_effective_needed_qty(
+            needed_qty=ws.cell(row=row_idx, column=needed_col).value,
+            qty_per_board=ws.cell(row=row_idx, column=qty_col).value,
+            schedule_order_qty=effective_order_qty,
+            bom_order_qty=base_order_qty,
+        )
+        _set_cell_value(ws, row_idx, needed_col, format_excel_qty(needed_qty))
+
+
+def _write_bom_header_values(ws, po_number, order_qty: float | None = None):
     po_col = cfg("excel.bom_po_col", 7) + 1
     po_cell = _resolve_cell_for_write(ws, 1, po_col)
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
+    if coerce_qty(order_qty) > 0:
+        order_qty_col = cfg("excel.bom_order_qty_col", 10) + 1
+        _resolve_cell_for_write(ws, 1, order_qty_col).value = format_excel_qty(order_qty)
+        fallback_row2_qty = ws.cell(row=2, column=7).value
+        if fallback_row2_qty in (None, "") or isinstance(fallback_row2_qty, (int, float)):
+            ws.cell(row=2, column=7).value = format_excel_qty(order_qty)
 
 
 def _write_dispatch_values_to_ws(
@@ -136,7 +187,10 @@ def _write_dispatch_values_to_ws(
     supplements: dict[str, float],
     carry_overs: dict[str, float],
     purchase_parts: set[str] | None = None,
+    target_order_qty: float | None = None,
+    source_order_qty: float | None = None,
 ):
+    _apply_target_order_qty_to_ws(ws, target_order_qty, source_order_qty=source_order_qty)
     part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -272,11 +326,13 @@ def _plan_order_draft(
     remaining_supplements = _normalize_supplements(draft.get("supplements"))
     file_plans: list[dict] = []
     shortages: list[dict] = []
+    schedule_order_qty = coerce_qty(order.get("order_qty"))
 
     for bom in bom_files:
         components = db.get_bom_components(str(bom["id"]))
         if not components:
             continue
+        target_order_qty = schedule_order_qty if schedule_order_qty > 0 else None
 
         carry_overs: dict[str, float] = {}
         supplement_allocations: dict[str, float] = {}
@@ -284,7 +340,11 @@ def _plan_order_draft(
         part_totals: dict[str, dict[str, float]] = {}
 
         for component in components:
-            needed_qty = float(component.get("needed_qty") or 0)
+            needed_qty = get_component_effective_needed_qty(
+                component,
+                schedule_order_qty=schedule_order_qty,
+                bom_order_qty=bom.get("order_qty"),
+            )
             if component.get("is_dash") or needed_qty <= 0:
                 continue
 
@@ -371,6 +431,8 @@ def _plan_order_draft(
             "model": str(bom.get("model") or ""),
             "group_model": str(bom.get("group_model") or ""),
             "po_number": str(order.get("po_number") or bom.get("po_number") or ""),
+            "order_qty": target_order_qty,
+            "source_order_qty": coerce_qty(bom.get("order_qty")),
             "carry_overs": carry_overs,
             "supplements": supplement_allocations,
             "purchase_parts": sorted(purchase_parts),
@@ -405,13 +467,15 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         workbook = openpyxl.load_workbook(str(source_path), keep_vba=(ext == ".xlsm"))
         try:
             sheet = workbook.active
-            _write_bom_header_values(sheet, plan.get("po_number", ""))
             _write_dispatch_values_to_ws(
                 sheet,
                 plan.get("supplements") or {},
                 plan.get("carry_overs") or {},
                 purchase_parts={normalize_part_key(part) for part in (plan.get("purchase_parts") or [])},
+                target_order_qty=plan.get("order_qty"),
+                source_order_qty=plan.get("source_order_qty"),
             )
+            _write_bom_header_values(sheet, plan.get("po_number", ""), plan.get("order_qty"))
             workbook.save(output_path)
         finally:
             workbook.close()
@@ -538,6 +602,7 @@ def _build_draft_file_preview_rows(
     file_item: dict,
     decisions: dict[str, str],
     shortages_by_part: dict[str, dict],
+    order: dict | None = None,
 ) -> list[dict]:
     bom_file_id = str(file_item.get("bom_file_id") or "").strip()
     if not bom_file_id:
@@ -555,8 +620,9 @@ def _build_draft_file_preview_rows(
     }
 
     grouped: dict[str, dict] = {}
+    schedule_order_qty = coerce_qty((order or {}).get("order_qty"))
     for component in db.get_bom_components(bom_file_id):
-        needed_qty = float(component.get("needed_qty") or 0)
+        needed_qty = get_component_effective_needed_qty(component, schedule_order_qty=schedule_order_qty)
         if component.get("is_dash") or needed_qty <= 0:
             continue
 
@@ -648,6 +714,7 @@ def get_draft_detail(draft_id: int) -> dict:
             enriched,
             decisions,
             shortages_by_part,
+            order=order or {},
         )
         files.append(enriched)
     return {

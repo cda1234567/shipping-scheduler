@@ -8,6 +8,7 @@ from typing import Callable
 from fastapi import HTTPException
 
 from .. import database as db
+from .bom_quantity import build_effective_components
 from .main_reader import read_moq
 from .merge_to_main import merge_row_to_main, preview_order_batches
 from .shortage_rules import (
@@ -285,7 +286,11 @@ def prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[
     groups = []
     all_components = []
     for bf in bom_files:
-        comps = db.get_bom_components(bf["id"])
+        comps = build_effective_components(
+            db.get_bom_components(bf["id"]),
+            schedule_order_qty=order.get("order_qty"),
+            bom_order_qty=bf.get("order_qty"),
+        )
         groups.append({
             "batch_code": label,
             "po_number": po_number,

@@ -2051,7 +2051,7 @@ class ApiTests(unittest.TestCase):
             }
 
             with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
-                 patch("app.routers.bom._build_order_based_export_values", return_value=({}, {}, {})), \
+                 patch("app.routers.bom._build_order_based_export_values", return_value=({}, {}, {}, {})), \
                  patch("app.routers.bom.build_order_supplement_allocations", return_value={5: {"PART-1": 3000}}) as mock_allocations, \
                  patch("app.routers.bom.db.replace_order_supplements") as mock_replace:
                 response = self.client.post("/api/bom/dispatch-download", json={
@@ -2302,6 +2302,67 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=1, column=7).value, "鋆賢?ⅣM/O:4500059234")
         self.assertEqual(ws.cell(row=5, column=7).value, 135)
         self.assertEqual(ws.cell(row=5, column=8).value, 7)
+        downloaded.close()
+
+    def test_dispatch_download_scales_order_qty_and_needed_cells_from_schedule(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=11).value = 10
+            ws.cell(row=2, column=3).value = "MODEL-A"
+            ws.cell(row=2, column=7).value = 10
+            ws.cell(row=5, column=2).value = 2
+            ws.cell(row=5, column=3).value = "PART-1"
+            ws.cell(row=5, column=6).value = 20
+            ws.cell(row=5, column=7).value = 0
+            ws.cell(row=5, column=8).value = 0
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-scale",
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "source_filename": "dispatch.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 1,
+                "po_number": "0",
+                "order_qty": 10,
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
+                 patch("app.routers.bom.db.get_order", return_value={"id": 1, "model": "MODEL-A", "order_qty": 5}), \
+                 patch("app.routers.bom.db.get_bom_components", return_value=[{
+                     "part_number": "PART-1",
+                     "qty_per_board": 2,
+                     "bom_order_qty": 10,
+                     "needed_qty": 20,
+                     "prev_qty_cs": 0,
+                     "is_dash": 0,
+                 }]), \
+                 patch("app.routers.bom.db.get_snapshot", return_value={"PART-1": {"stock_qty": 50, "moq": 0}}), \
+                 patch("app.routers.bom.db.get_setting", return_value=""), \
+                 patch("app.routers.bom.db.get_snapshot_taken_at", return_value="2026-03-12T08:00:00"), \
+                 patch("app.routers.bom.db.get_all_dispatched_consumption", return_value={}), \
+                 patch("app.routers.bom.build_order_supplement_allocations", return_value={1: {}}), \
+                 patch("app.routers.bom.db.replace_order_supplements"):
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-scale"],
+                    "order_ids": [1],
+                    "supplements": {},
+                    "header_overrides": {"bom-scale": {"po_number": "4500059234"}},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        downloaded = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = downloaded.active
+        self.assertEqual(ws.cell(row=1, column=11).value, 5)
+        self.assertEqual(ws.cell(row=2, column=7).value, 5)
+        self.assertEqual(ws.cell(row=5, column=6).value, 10)
         downloaded.close()
 
     def test_get_database_backups_returns_overview(self):

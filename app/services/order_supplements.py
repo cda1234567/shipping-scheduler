@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import database as db
+from .bom_quantity import coerce_qty, get_component_effective_needed_qty
 from .main_reader import read_stock
 from .shortage_rules import calculate_current_order_shortage_amount, calculate_shortage_amount, is_order_scoped_shortage_part
 
@@ -61,9 +62,10 @@ def build_order_supplement_allocations(order_ids: list[int], supplements: dict[s
 
         model_key = normalize_part_key(order.get("model"))
         components = bom_map.get(model_key, [])
+        schedule_order_qty = coerce_qty(order.get("order_qty"))
         part_totals: dict[str, dict[str, float]] = {}
         for component in components:
-            needed_qty = float(component.get("needed_qty") or 0)
+            needed_qty = get_component_effective_needed_qty(component, schedule_order_qty=schedule_order_qty)
             if component.get("is_dash") or needed_qty <= 0:
                 continue
 

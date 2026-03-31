@@ -28,6 +28,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
     const orderId = Number(order?.id);
     const key = (order.model || "").toUpperCase();
     const bomEntry = bom[key] ?? null;
+    const orderQty = toNumber(order?.order_qty);
 
     if (!bomEntry) {
       results.push({
@@ -43,7 +44,8 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
     const partSummaries = {};
 
     for (const comp of components) {
-      if (comp.is_dash || comp.needed_qty <= 0) continue;
+      const effectiveNeededQty = calculateEffectiveNeededQty(comp, orderQty);
+      if (comp.is_dash || effectiveNeededQty <= 0) continue;
 
       const part = (comp.part_number || "").toUpperCase();
       if (!partSummaries[part]) {
@@ -62,7 +64,7 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
 
       const summary = partSummaries[part];
       const g = running[part] ?? 0;
-      const f = comp.needed_qty;
+      const f = effectiveNeededQty;
       const h = comp.prev_qty_cs || 0;
       const j = g + h - f;
       running[part] = j;
@@ -141,6 +143,33 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
 function calcSuggested(shortage, moq) {
   if (moq > 0) return Math.ceil(shortage / moq) * moq;
   return shortage;
+}
+
+function toNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function resolveEffectiveOrderQty(scheduleOrderQty, bomOrderQty = 0) {
+  const scheduleQty = toNumber(scheduleOrderQty);
+  if (scheduleQty > 0) return scheduleQty;
+  return toNumber(bomOrderQty);
+}
+
+function calculateEffectiveNeededQty(component = {}, scheduleOrderQty = 0) {
+  const originalNeededQty = toNumber(component.needed_qty);
+  const scheduleQty = toNumber(scheduleOrderQty);
+  if (scheduleQty <= 0) return originalNeededQty;
+
+  const qtyPerBoard = toNumber(component.qty_per_board);
+  if (qtyPerBoard > 0) return qtyPerBoard * scheduleQty;
+
+  const bomOrderQty = toNumber(component.bom_order_qty);
+  if (bomOrderQty > 0 && originalNeededQty > 0) {
+    return originalNeededQty * scheduleQty / bomOrderQty;
+  }
+
+  return originalNeededQty;
 }
 
 function isOrderScopedShortagePart(partNumber) {

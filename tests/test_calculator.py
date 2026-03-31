@@ -191,6 +191,31 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(second_shortage["suggested_qty"], 50)
         self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
 
+    def test_scales_component_need_by_schedule_order_qty(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 3001, "pcb": "H", "model": "MODEL-H", "order_qty": 5}],
+            bom_map={
+                "MODEL-H": [
+                    {
+                        "part_number": "PART-SCALED",
+                        "description": "Scaled part",
+                        "qty_per_board": 2,
+                        "bom_order_qty": 10,
+                        "needed_qty": 20,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"PART-SCALED": 8},
+            moq={"PART-SCALED": 0},
+        )
+
+        self.assertEqual(results[0]["status"], "shortage")
+        self.assertEqual(results[0]["shortages"][0]["needed"], 10)
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

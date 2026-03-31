@@ -26,6 +26,12 @@ from ..services.bom_editor import (
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
 )
+from ..services.bom_quantity import (
+    calculate_effective_needed_qty,
+    coerce_qty,
+    format_excel_qty,
+    get_component_effective_needed_qty,
+)
 from ..services.bom_revision import (
     delete_bom_revision_files,
     ensure_bom_revision_history,
@@ -422,9 +428,9 @@ def _build_order_based_export_values(
     order_ids: list[int],
     supplements: dict[str, float],
     order_supplements: dict[int, dict[str, float]] | None = None,
-) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]], dict[str, float]]:
     if not order_ids or not target_boms:
-        return {}, {}, {}
+        return {}, {}, {}, {}
 
     running = _build_dispatch_running_stock()
     st_inventory_stock = db.get_st_inventory_stock()
@@ -432,6 +438,7 @@ def _build_order_based_export_values(
     carry_overs: dict[str, dict[str, float]] = {}
     supplement_allocations: dict[str, dict[str, float]] = {}
     purchase_highlights: dict[str, set[str]] = {}
+    order_qty_by_bom: dict[str, float] = {}
     remaining_supplements = {
         _normalize_lookup_key(part): float(qty or 0)
         for part, qty in (supplements or {}).items()
@@ -461,13 +468,18 @@ def _build_order_based_export_values(
             bom_id = str(bom["id"])
             if bom_id in carry_overs:
                 continue
+            target_order_qty = coerce_qty(order.get("order_qty"))
 
             part_map: dict[str, float] = {}
             supplement_map: dict[str, float] = {}
             purchase_parts: set[str] = set()
             part_totals: dict[str, dict[str, float]] = {}
             for component in components_by_bom.get(bom_id, []):
-                needed_qty = float(component.get("needed_qty") or 0)
+                needed_qty = get_component_effective_needed_qty(
+                    component,
+                    schedule_order_qty=order.get("order_qty"),
+                    bom_order_qty=bom.get("order_qty"),
+                )
                 if component.get("is_dash") or needed_qty <= 0:
                     continue
 
@@ -521,8 +533,9 @@ def _build_order_based_export_values(
             carry_overs[bom_id] = part_map
             supplement_allocations[bom_id] = supplement_map
             purchase_highlights[bom_id] = purchase_parts
+            order_qty_by_bom[bom_id] = target_order_qty
 
-    return carry_overs, supplement_allocations, purchase_highlights
+    return carry_overs, supplement_allocations, purchase_highlights, order_qty_by_bom
 
 
 def _build_direct_purchase_highlights(supplements: dict[str, float]) -> set[str]:
@@ -584,10 +597,54 @@ def _format_bom_po_value(existing_value, po_number):
     return po_number
 
 
-def _write_bom_header_values(ws, po_number):
+def _read_ws_bom_order_qty(ws) -> float:
+    order_qty_col = cfg("excel.bom_order_qty_col", 10) + 1
+    order_qty = coerce_qty(_resolve_cell_for_write(ws, 1, order_qty_col).value)
+    if order_qty > 0:
+        return order_qty
+    return coerce_qty(ws.cell(row=2, column=7).value)
+
+
+def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_order_qty: float | None = None):
+    effective_order_qty = coerce_qty(target_order_qty)
+    if effective_order_qty <= 0:
+        return
+
+    base_order_qty = coerce_qty(source_order_qty) or _read_ws_bom_order_qty(ws)
+    part_col = cfg("excel.bom_part_col", 2) + 1
+    qty_col = cfg("excel.bom_qty_per_board", 1) + 1
+    needed_col = cfg("excel.bom_needed_col", 5) + 1
+    g_col = cfg("excel.bom_g_col", 6) + 1
+    h_col = cfg("excel.bom_h_col", 7) + 1
+    data_start = cfg("excel.bom_data_start_row", 5)
+    dash_markers = {"-", "x", "X", "n", "N", "n/a", "N/A", "na", "NA", "?"}
+
+    for row_idx in range(data_start, ws.max_row + 1):
+        if not _normalize_lookup_key(ws.cell(row=row_idx, column=part_col).value):
+            continue
+        g_text = str(ws.cell(row=row_idx, column=g_col).value or "").strip()
+        h_text = str(ws.cell(row=row_idx, column=h_col).value or "").strip()
+        if g_text in dash_markers or h_text in dash_markers:
+            continue
+        needed_qty = calculate_effective_needed_qty(
+            needed_qty=ws.cell(row=row_idx, column=needed_col).value,
+            qty_per_board=ws.cell(row=row_idx, column=qty_col).value,
+            schedule_order_qty=effective_order_qty,
+            bom_order_qty=base_order_qty,
+        )
+        _set_cell_value(ws, row_idx, needed_col, format_excel_qty(needed_qty))
+
+
+def _write_bom_header_values(ws, po_number, order_qty: float | None = None):
     po_col = cfg("excel.bom_po_col", 7) + 1
     po_cell = _resolve_cell_for_write(ws, 1, po_col)
     po_cell.value = _format_bom_po_value(po_cell.value, po_number)
+    if coerce_qty(order_qty) > 0:
+        order_qty_col = cfg("excel.bom_order_qty_col", 10) + 1
+        _resolve_cell_for_write(ws, 1, order_qty_col).value = format_excel_qty(order_qty)
+        fallback_row2_qty = ws.cell(row=2, column=7).value
+        if fallback_row2_qty in (None, "") or isinstance(fallback_row2_qty, (int, float)):
+            ws.cell(row=2, column=7).value = format_excel_qty(order_qty)
 
 
 def _write_dispatch_values_to_ws(
@@ -595,7 +652,10 @@ def _write_dispatch_values_to_ws(
     supplements: dict[str, float],
     carry_overs: dict[str, float],
     purchase_parts: set[str] | None = None,
+    target_order_qty: float | None = None,
+    source_order_qty: float | None = None,
 ):
+    _apply_target_order_qty_to_ws(ws, target_order_qty, source_order_qty=source_order_qty)
     part_col = cfg("excel.bom_part_col", 2) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -654,7 +714,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         current.update(part_map)
         effective_order_supplements[order_id] = current
     direct_purchase_highlights = _build_direct_purchase_highlights(supplements)
-    computed_carry_overs, computed_supplements, computed_purchase_highlights = _build_order_based_export_values(
+    computed_carry_overs, computed_supplements, computed_purchase_highlights, computed_order_qtys = _build_order_based_export_values(
         target_boms,
         req.order_ids,
         supplements,
@@ -683,10 +743,12 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             carry_over_source = computed_carry_overs.get(bom["id"], {})
             supplement_source = computed_supplements.get(bom["id"], {})
             purchase_parts = computed_purchase_highlights.get(bom["id"], set())
+            order_qty_source = computed_order_qtys.get(bom["id"], 0.0)
         else:
             carry_over_source = req.carry_overs.get(bom["id"], {})
             supplement_source = supplements
             purchase_parts = direct_purchase_highlights
+            order_qty_source = 0.0
         carry_overs = {
             str(part).strip().upper(): qty
             for part, qty in carry_over_source.items()
@@ -697,13 +759,15 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             for part, qty in supplement_source.items()
             if str(part).strip()
         }
-        _write_bom_header_values(wb.active, po_number)
         _write_dispatch_values_to_ws(
             wb.active,
             per_bom_supplements,
             carry_overs,
             purchase_parts={str(part).strip().upper() for part in purchase_parts if str(part).strip()},
+            target_order_qty=order_qty_source,
+            source_order_qty=bom.get("order_qty"),
         )
+        _write_bom_header_values(wb.active, po_number, order_qty_source)
         buffer = io.BytesIO()
         wb.save(buffer)
         wb.close()

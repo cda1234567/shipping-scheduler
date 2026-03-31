@@ -205,6 +205,53 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(h_cell.fill.fill_type, "solid")
         self.assertTrue(str(h_cell.fill.start_color.rgb or "").endswith("FFC000"))
 
+    def test_plan_order_draft_scales_needed_qty_from_schedule_order_qty(self):
+        order = {"id": 30, "code": "4-1", "model": "MODEL-S", "order_qty": 5}
+        draft = {"decisions": {}, "supplements": {}}
+        bom_files = [{"id": "bom-scale", "model": "MODEL-S", "group_model": "MODEL-S", "order_qty": 10}]
+        running_stock = {"PART-S": 4.0}
+        moq_map = {"PART-S": 0.0}
+        components = [{
+            "part_number": "PART-S",
+            "description": "Scaled",
+            "qty_per_board": 2,
+            "bom_order_qty": 10,
+            "needed_qty": 20,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with patch("app.services.merge_drafts.db.get_bom_components", return_value=components):
+            plan = merge_drafts._plan_order_draft(order, draft, bom_files, running_stock, moq_map)
+
+        self.assertEqual(plan["file_plans"][0]["order_qty"], 5.0)
+        self.assertEqual(plan["shortages"][0]["needed"], 10.0)
+        self.assertEqual(plan["running_stock"]["PART-S"], -6.0)
+
+    def test_write_dispatch_values_to_ws_updates_order_qty_and_needed_column(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.cell(row=1, column=11, value=10)
+        worksheet.cell(row=2, column=7, value=10)
+        worksheet.cell(row=5, column=2, value=2)
+        worksheet.cell(row=5, column=3, value="PART-S")
+        worksheet.cell(row=5, column=6, value=20)
+        worksheet.cell(row=5, column=7, value=0)
+        worksheet.cell(row=5, column=8, value=0)
+
+        merge_drafts._write_bom_header_values(worksheet, "4500059234", 5)
+        merge_drafts._write_dispatch_values_to_ws(
+            worksheet,
+            supplements={},
+            carry_overs={},
+            target_order_qty=5,
+            source_order_qty=10,
+        )
+
+        self.assertEqual(worksheet.cell(row=1, column=11).value, 5)
+        self.assertEqual(worksheet.cell(row=2, column=7).value, 5)
+        self.assertEqual(worksheet.cell(row=5, column=6).value, 10)
+
     def test_restore_recent_committed_merge_drafts_reactivates_and_rebuilds(self):
         active_drafts = [{"id": 7, "order_id": 21}]
 
