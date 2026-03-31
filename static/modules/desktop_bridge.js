@@ -437,8 +437,8 @@ function renderDesktopState() {
       folderEl.textContent = "目前無法由系統指定下載資料夾";
       folderNoteEl.textContent = browserState.secure_context
         ? "這個瀏覽器不支援固定下載資料夾，會改用瀏覽器預設下載位置。"
-        : "目前不是安全連線環境，瀏覽器不允許網站設定固定下載資料夾。";
-      desktopChooseBtn.disabled = true;
+        : "目前網址不是 HTTPS 或 localhost，瀏覽器不允許網站設定下載位置。點選按鈕會告訴你可行做法。";
+      desktopChooseBtn.disabled = false;
       desktopClearBtn.disabled = true;
     }
   } else {
@@ -462,6 +462,9 @@ function closeDesktopModal() {
 async function handleChooseBrowserDownloadDirectory() {
   try {
     if (!supportsBrowserDirectoryPicker()) {
+      if (!window.isSecureContext) {
+        throw new Error("目前是一般 HTTP 網址；瀏覽器只有在 HTTPS 或 localhost 才允許網站選擇下載位置。若要固定下載資料夾，請改用 HTTPS、localhost，或改用桌面版。");
+      }
       if (supportsBrowserSavePicker()) {
         throw new Error("目前只能每次下載時自行選位置，還不能固定資料夾");
       }

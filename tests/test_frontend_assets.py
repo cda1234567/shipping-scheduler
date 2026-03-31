@@ -169,9 +169,13 @@ class FrontendAssetTests(unittest.TestCase):
         )
         self.assertIsNotNone(match)
         body = match.group("body")
+        self.assertIn("if (_batchMergeInFlight) {", body)
+        self.assertIn('showToast("批次 merge 進行中，請稍候");', body)
         self.assertIn("const selectedRows = _rows.filter(row => _checkedIds.has(row.id));", body)
         self.assertIn('const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");', body)
         self.assertNotIn("勾選的訂單已經有副檔，請直接在訂單下方副檔工作台修改", body)
+        self.assertIn("const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);", body)
+        self.assertIn('await apiPost("/api/schedule/reorder", { order_ids: currentOrderIds });', body)
         self.assertIn("const targetOrderIndex = new Map(targetIds.map((id, index) => [id, index]));", body)
 
     def test_frontend_calculator_keeps_order_scoped_ic_shortages_per_current_order(self):
@@ -284,7 +288,18 @@ console.log(JSON.stringify(results));
         self.assertIn("browser_download_started: true", bridge_module)
         self.assertIn("已更新網頁版下載資料夾", bridge_module)
         self.assertIn("已清除網頁版下載資料夾設定", bridge_module)
+        self.assertIn("目前網址不是 HTTPS 或 localhost", bridge_module)
+        self.assertIn("桌面版。", bridge_module)
+        self.assertIn("desktopChooseBtn.disabled = false;", bridge_module)
         self.assertNotIn('id="browser-choose-download-dir"', index_html)
+
+    def test_schedule_init_only_binds_listeners_once(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn("let _scheduleInitialized = false;", schedule_module)
+        self.assertIn("if (!_scheduleInitialized) {", schedule_module)
+        self.assertIn("_scheduleInitialized = true;", schedule_module)
 
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]

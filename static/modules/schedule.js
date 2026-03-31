@@ -19,6 +19,8 @@ let _completedFolders = [];
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
+let _scheduleInitialized = false;
+let _batchMergeInFlight = false;
 let _modalProgressTimer = null;
 let _modalProgressValue = 0;
 let _completedFolderCollapsedState = loadCompletedFolderCollapsedState();
@@ -35,14 +37,17 @@ const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-M24", "IC-XC2C32"];
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
   _onRefreshMain = onRefreshMain || null;
-  document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
-  document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
-  document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
-  document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
-  document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
-  document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
-  document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
-  _loadPostDispatchShortages();
+  if (!_scheduleInitialized) {
+    document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
+    document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
+    document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
+    document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
+    document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
+    document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
+    document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
+    _loadPostDispatchShortages();
+    _scheduleInitialized = true;
+  }
   await refresh();
   if (_postDispatchShortages.length) renderPostDispatchPanel();
 }
@@ -3390,6 +3395,10 @@ async function handleDedupSchedule() {
 
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
+  if (_batchMergeInFlight) {
+    showToast("批次 merge 進行中，請稍候");
+    return;
+  }
   const selectedRows = _rows.filter(row => _checkedIds.has(row.id));
   const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");
   if (!_checkedIds.size) {
@@ -3403,16 +3412,23 @@ async function handleBatchMerge() {
 
   const button = document.getElementById("btn-batch-merge");
   const originalText = button?.textContent || "批次 Merge";
+  _batchMergeInFlight = true;
   try {
     if (button) {
       button.disabled = true;
       button.textContent = "建立中...";
     }
     const targetIds = targets.map(row => row.id);
+    const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);
 
-    // 只把 API call 放在 withGlobalBusy，refresh 在 overlay 關閉後執行
+    // 先把目前畫面順序寫回後端，再依這個順序重建副檔
     const result = await withGlobalBusy(
-      () => apiPost("/api/schedule/batch-merge", { order_ids: targetIds }),
+      async () => {
+        if (currentOrderIds.length) {
+          await apiPost("/api/schedule/reorder", { order_ids: currentOrderIds });
+        }
+        return apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
+      },
       {
         title: "正在批次建立副檔",
         detail: `共 ${targets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
@@ -3437,6 +3453,7 @@ async function handleBatchMerge() {
     console.error("[handleBatchMerge] batch merge failed:", error);
     showToast("批次 merge 失敗: " + error.message, { sticky: true, tone: "error" });
   } finally {
+    _batchMergeInFlight = false;
     if (button) {
       button.disabled = false;
       button.textContent = originalText;
