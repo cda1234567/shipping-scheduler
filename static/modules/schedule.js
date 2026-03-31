@@ -3391,20 +3391,12 @@ async function handleDedupSchedule() {
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
   const selectedRows = _rows.filter(row => _checkedIds.has(row.id));
-  const targets = selectedRows.filter(row => {
-    if (row.status === "pending") return true;
-    if (row.status !== "merged") return false;
-    return !_draftsByOrderId?.[row.id];
-  });
+  const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");
   if (!_checkedIds.size) {
     showToast("請先勾選要 merge 的訂單");
     return;
   }
   if (!targets.length) {
-    if (selectedRows.some(row => row.status === "merged" && _draftsByOrderId?.[row.id])) {
-      showToast("勾選的訂單已經有副檔，請直接在訂單下方副檔工作台修改");
-      return;
-    }
     showToast("勾選的訂單中沒有可 merge 的");
     return;
   }
