@@ -1836,10 +1836,8 @@ async function showWriteToMainModal(targets) {
       </div>
     </div>
     <button id="modal-write-main" class="btn btn-success btn-sm">寫入主檔</button>
-    <button id="modal-download-bom" class="btn btn-primary btn-sm">下載 BOM</button>
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-write-main").onclick = handleModalWriteMain;
-  document.getElementById("modal-download-bom").onclick = handleModalDownloadBom;
   document.getElementById("modal-cancel").onclick = closeShortageModal;
   document.getElementById("modal-close").onclick = closeShortageModal;
   modal.style.display = "flex";
@@ -2903,26 +2901,38 @@ async function handleBatchDispatch() {
 
   const button = document.getElementById("btn-batch-dispatch");
   const originalText = button?.textContent || "寫入主檔";
+  const confirmed = confirm(`確定要直接寫入主檔 ${targets.length} 筆訂單嗎？`);
+  if (!confirmed) return;
   try {
     if (button) {
       button.disabled = true;
-      button.textContent = "整理中...";
+      button.textContent = "寫入中...";
     }
     await withGlobalBusy(
       async () => {
-        await showWriteToMainModal(targets);
+        const result = await apiPost("/api/schedule/batch-dispatch", {
+          order_ids: targets.map(item => item.id),
+          decisions: _decisions,
+          order_supplements: _orderSupplementsByOrderId,
+        });
+        targets.forEach(item => _checkedIds.delete(item.id));
+        await Promise.all([refresh(), refreshCompleted()]);
+        if (_onRefreshMain) await _onRefreshMain();
+        const shortageCount = (result.shortages || []).length;
+        if (shortageCount > 0) {
+          showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
+          showPostDispatchShortages(result.shortages);
+        } else {
+          showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
+        }
       },
       {
-        title: "正在整理寫入主檔預覽",
-        detail: `共 ${targets.length} 筆訂單，正在整理補料與缺料結果，請稍候。`,
+        title: "正在寫入主檔",
+        detail: `共 ${targets.length} 筆訂單，系統會依目前順序直接寫入主檔。`,
       },
     );
   } catch (error) {
-    if (isMainWriteBlockedMessage(error.message)) {
-      showMainWriteBlockedNotice(error.message);
-    } else {
-      showToast("開啟寫入主檔預覽失敗: " + error.message, { sticky: true, tone: "error" });
-    }
+    showToast("寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
   } finally {
     if (button) {
       button.disabled = false;

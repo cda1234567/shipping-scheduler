@@ -225,6 +225,41 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('if (list) list.innerHTML = "";', schedule_module)
         self.assertIn('if (footer) footer.innerHTML = "";', schedule_module)
 
+    def test_write_main_button_dispatches_directly_without_preview_modal(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="btn-batch-dispatch">寫入主檔</button>', index_html)
+        match = re.search(
+            r"async function handleBatchDispatch\(\) \{(?P<body>.*?)\n\}",
+            schedule_module,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn('const confirmed = confirm(`確定要直接寫入主檔 ${targets.length} 筆訂單嗎？`);', body)
+        self.assertIn('const result = await apiPost("/api/schedule/batch-dispatch", {', body)
+        self.assertIn("order_supplements: _orderSupplementsByOrderId,", body)
+        self.assertIn('button.textContent = "寫入中...";', body)
+        self.assertIn('title: "正在寫入主檔"', body)
+        self.assertNotIn("showWriteToMainModal(targets)", body)
+        self.assertNotIn("main-write-preview", body)
+
+    def test_write_main_modal_footer_no_longer_offers_download_bom(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        match = re.search(
+            r"async function showWriteToMainModal\(targets\) \{(?P<body>.*?)\n\}",
+            schedule_module,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn('<button id="modal-write-main" class="btn btn-success btn-sm">寫入主檔</button>', body)
+        self.assertNotIn('id="modal-download-bom"', body)
+
     def test_dispatch_download_keeps_checked_orders_selected(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
@@ -430,9 +465,9 @@ console.log(JSON.stringify(results));
         self.assertIn("sticky: false", api_module)
         self.assertIn("tone-error", api_module)
         self.assertIn('id="btn-batch-dispatch">寫入主檔</button>', index_html)
-        self.assertIn("await showWriteToMainModal(targets);", schedule_module)
-        self.assertIn('button.textContent = "整理中...";', schedule_module)
-        self.assertIn('title: "正在整理寫入主檔預覽"', schedule_module)
+        self.assertIn('const result = await apiPost("/api/schedule/batch-dispatch", {', schedule_module)
+        self.assertIn('button.textContent = "寫入中...";', schedule_module)
+        self.assertIn('title: "正在寫入主檔"', schedule_module)
 
     def test_desktop_icon_assets_are_wired_into_shell_and_html(self):
         root = Path(__file__).resolve().parents[1]
