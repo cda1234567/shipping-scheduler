@@ -1554,6 +1554,9 @@ async function showBatchMergeDraftModal(targets) {
   _modalPreviewShortages = [];
   _modalDraftId = null;
   _modalDraftReadOnly = false;
+  _modalDraftBaseDecisions = {};
+  _modalDraftBaseSupplements = {};
+  _modalDraftVisibleParts = [];
 
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
@@ -1862,7 +1865,12 @@ function modalShortageItem(s, isCS) {
 function closeShortageModal() {
   stopModalProgressAnimation();
   setModalDownloadProgress(false, "", "", 0);
-  document.getElementById("shortage-modal").style.display = "none";
+  const modal = document.getElementById("shortage-modal");
+  const list = document.getElementById("modal-shortage-list");
+  const footer = document.getElementById("modal-footer");
+  if (modal) modal.style.display = "none";
+  if (list) list.innerHTML = "";
+  if (footer) footer.innerHTML = "";
   _modalTargets = [];
   _modalBomFiles = [];
   _modalCarryOversByModel = {};
@@ -3399,6 +3407,8 @@ async function handleBatchMerge() {
     showToast("批次 merge 進行中，請稍候");
     return;
   }
+  closeShortageModal();
+  await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
   const selectedRows = _rows.filter(row => _checkedIds.has(row.id));
   const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");
   if (!_checkedIds.size) {

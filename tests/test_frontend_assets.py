@@ -171,12 +171,19 @@ class FrontendAssetTests(unittest.TestCase):
         body = match.group("body")
         self.assertIn("if (_batchMergeInFlight) {", body)
         self.assertIn('showToast("批次 merge 進行中，請稍候");', body)
+        self.assertIn("closeShortageModal();", body)
+        self.assertIn("window.requestAnimationFrame", body)
         self.assertIn("const selectedRows = _rows.filter(row => _checkedIds.has(row.id));", body)
         self.assertIn('const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");', body)
         self.assertNotIn("勾選的訂單已經有副檔，請直接在訂單下方副檔工作台修改", body)
         self.assertIn("const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);", body)
         self.assertIn('await apiPost("/api/schedule/reorder", { order_ids: currentOrderIds });', body)
         self.assertIn("const targetOrderIndex = new Map(targetIds.map((id, index) => [id, index]));", body)
+        self.assertIn("_modalDraftBaseDecisions = {};", schedule_module)
+        self.assertIn("_modalDraftBaseSupplements = {};", schedule_module)
+        self.assertIn("_modalDraftVisibleParts = [];", schedule_module)
+        self.assertIn('if (list) list.innerHTML = "";', schedule_module)
+        self.assertIn('if (footer) footer.innerHTML = "";', schedule_module)
 
     def test_frontend_calculator_keeps_order_scoped_ic_shortages_per_current_order(self):
         root = Path(__file__).resolve().parents[1]
