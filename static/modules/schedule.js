@@ -58,6 +58,10 @@ export async function refresh() {
   renderSchedule();
 }
 
+function waitForNextFrame() {
+  return new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+}
+
 export async function refreshCompleted() {
   await loadCompletedRows();
   renderCompletedTab();
@@ -3408,7 +3412,7 @@ async function handleBatchMerge() {
     return;
   }
   closeShortageModal();
-  await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+  await waitForNextFrame();
   const selectedRows = _rows.filter(row => _checkedIds.has(row.id));
   const targets = selectedRows.filter(row => row.status === "pending" || row.status === "merged");
   if (!_checkedIds.size) {
@@ -3448,13 +3452,9 @@ async function handleBatchMerge() {
     // overlay 已關閉，背景刷新資料
     await refresh();
 
-    const targetOrderIndex = new Map(targetIds.map((id, index) => [id, index]));
-    const refreshedTargets = _rows
-      .filter(row => targetOrderIndex.has(row.id))
-      .sort((a, b) => (targetOrderIndex.get(a.id) ?? 0) - (targetOrderIndex.get(b.id) ?? 0));
     showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
     try {
-      await showBatchMergeDraftModal(refreshedTargets);
+      await openBatchMergeDraftModalStable(targetIds, targets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
       showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
@@ -3468,6 +3468,39 @@ async function handleBatchMerge() {
       button.disabled = false;
       button.textContent = originalText;
     }
+  }
+}
+
+function buildBatchMergeModalTargets(targetIds, fallbackTargets = []) {
+  const targetOrderIndex = new Map((targetIds || []).map((id, index) => [id, index]));
+  const refreshedTargets = _rows
+    .filter(row => targetOrderIndex.has(row.id))
+    .sort((a, b) => (targetOrderIndex.get(a.id) ?? 0) - (targetOrderIndex.get(b.id) ?? 0));
+  if (refreshedTargets.length) return refreshedTargets;
+  return (fallbackTargets || [])
+    .filter(row => targetOrderIndex.has(row?.id))
+    .sort((a, b) => (targetOrderIndex.get(a.id) ?? 0) - (targetOrderIndex.get(b.id) ?? 0));
+}
+
+async function openBatchMergeDraftModalStable(targetIds, fallbackTargets = []) {
+  await waitForNextFrame();
+  await waitForNextFrame();
+
+  let modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
+  await showBatchMergeDraftModal(modalTargets);
+  await waitForNextFrame();
+
+  const modal = document.getElementById("shortage-modal");
+  if (modal?.style.display === "flex") return;
+
+  closeShortageModal();
+  await waitForNextFrame();
+  modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
+  await showBatchMergeDraftModal(modalTargets);
+  await waitForNextFrame();
+
+  if (modal?.style.display !== "flex") {
+    throw new Error("補料 modal 沒有成功顯示");
   }
 }
 
