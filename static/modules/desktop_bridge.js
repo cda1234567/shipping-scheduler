@@ -362,7 +362,6 @@ function renderDesktopState() {
   const controlBtn = document.getElementById("btn-desktop-controls");
   if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn) return;
 
-  const browserState = _browserDownloadState || createDefaultBrowserDownloadState();
   const desktopAvailable = hasDesktopApi();
   controlBtn.style.display = "inline-flex";
   controlBtn.textContent = "下載設定";
@@ -370,10 +369,12 @@ function renderDesktopState() {
   modalTitle.textContent = "下載設定";
   modalSubtitle.textContent = desktopAvailable
     ? "下載位置會依目前模式套用；桌面版另外支援本機服務與開機自啟。"
-    : "下載位置會依目前模式套用；若瀏覽器不支援固定資料夾，會改成每次另存。";
+    : "網頁版下載會交給瀏覽器處理；如要變更位置，請使用瀏覽器本身的下載設定。";
   desktopMinimizeBtn.disabled = !desktopAvailable;
   desktopOpenBrowserBtn.disabled = !desktopAvailable;
   desktopQuitBtn.disabled = !desktopAvailable;
+  desktopChooseBtn.style.display = desktopAvailable ? "inline-flex" : "none";
+  desktopClearBtn.style.display = desktopAvailable ? "inline-flex" : "none";
 
   if (!_desktopState) {
     statusEl.textContent = desktopAvailable
@@ -419,28 +420,8 @@ function renderDesktopState() {
   }
 
   if (!desktopAvailable) {
-    if (browserState.supported) {
-      folderEl.textContent = browserState.download_directory_set
-        ? `${browserState.download_directory || "已指定資料夾"}${browserState.permission_state === "granted" ? "" : "（需要重新授權）"}`
-        : "尚未指定下載資料夾";
-      folderNoteEl.textContent = browserState.download_directory_set
-        ? "設定後，網頁版下載會直接存進這個資料夾。"
-        : "支援固定下載資料夾，設定後不必每次重新選位置。";
-      desktopChooseBtn.disabled = false;
-      desktopClearBtn.disabled = !browserState.download_directory_set;
-    } else if (browserState.save_picker_supported) {
-      folderEl.textContent = "此環境支援每次下載時自行選位置";
-      folderNoteEl.textContent = "目前瀏覽器不支援固定下載資料夾，但每次下載都可以另存到你指定的位置。";
-      desktopChooseBtn.disabled = true;
-      desktopClearBtn.disabled = true;
-    } else {
-      folderEl.textContent = "目前無法由系統指定下載資料夾";
-      folderNoteEl.textContent = browserState.secure_context
-        ? "這個瀏覽器不支援固定下載資料夾，會改用瀏覽器預設下載位置。"
-        : "目前網址不是 HTTPS 或 localhost，瀏覽器不允許網站設定下載位置。點選按鈕會告訴你可行做法。";
-      desktopChooseBtn.disabled = false;
-      desktopClearBtn.disabled = true;
-    }
+    folderEl.textContent = "使用瀏覽器預設下載位置";
+    folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
   } else {
     desktopChooseBtn.disabled = false;
     desktopClearBtn.disabled = true;
@@ -508,7 +489,7 @@ async function handleChooseDownloadDirectory() {
   if (hasDesktopApi()) {
     return handleChooseDesktopDownloadDirectory();
   }
-  return handleChooseBrowserDownloadDirectory();
+  showToast("網頁版下載交由瀏覽器處理；如要每次選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。");
 }
 
 async function handleClearDownloadDirectory() {
@@ -516,7 +497,7 @@ async function handleClearDownloadDirectory() {
     showToast("桌面版目前不支援清除下載資料夾設定");
     return;
   }
-  return handleClearBrowserDownloadDirectory();
+  showToast("網頁版沒有系統內的下載資料夾設定可清除。");
 }
 
 async function handleAutostartChange(event) {
@@ -634,13 +615,6 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const blob = await response.blob();
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
-  const preferredDirectoryResult = await saveBlobWithConfiguredBrowserDirectory(blob, outputName);
-  if (preferredDirectoryResult) {
-    return preferredDirectoryResult;
-  }
-  if (supportsBrowserSavePicker()) {
-    return saveBlobWithBrowserPicker(blob, outputName, response.headers.get("content-type"));
-  }
   const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = blobUrl;
