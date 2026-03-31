@@ -129,6 +129,7 @@ def _build_order_dispatch_context(
         return None
 
     descriptions = _build_component_description_map(components)
+    bom_parts = set(descriptions)
     saved_decisions = db.get_decisions_for_order(order_id)
     decisions = {**saved_decisions, **decision_overrides}
     stored_order_supplements = saved_supplements.get(order_id, {})
@@ -150,6 +151,7 @@ def _build_order_dispatch_context(
         for part_number, decision in decisions.items()
         if decision in {"CreateRequirement", "Shortage"}
     )
+    candidate_parts &= bom_parts
 
     return {
         "order": order,

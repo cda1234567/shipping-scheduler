@@ -211,6 +211,65 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
         wb.close()
 
+    def test_dispatch_generate_ignores_non_bom_decision_parts_for_selected_order(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059234",
+                "model": "TX2",
+                "code": "2-1",
+                "delivery_date": "2026-03-31",
+            },
+        }
+        bom_map = {
+            "TX2": [
+                {"part_number": "IC-CSD18531Q5AT-TAB", "description": "Valid TX2 part", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {
+                        "part_number": "IC-CSD18531Q5AT-TAB",
+                        "description": "Valid TX2 part",
+                        "suggested_qty": 1500,
+                        "shortage_amount": 1500,
+                    },
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={
+                 "IC-CSD18531Q5AT-TAB": "CreateRequirement",
+                 "IC-NB675-TAB": "CreateRequirement",
+             }), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        parts = [
+            str(ws.cell(row=row_idx, column=3).value or "").strip()
+            for row_idx in range(1, ws.max_row + 1)
+        ]
+        self.assertIn("IC-CSD18531Q5AT-TAB", parts)
+        self.assertNotIn("IC-NB675-TAB", parts)
+        wb.close()
+
     def test_dispatch_generate_keeps_order_scoped_ic_parts_separate_per_model(self):
         orders = {
             1: {

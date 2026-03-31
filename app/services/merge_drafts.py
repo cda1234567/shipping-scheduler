@@ -527,8 +527,10 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             continue
         existing = db.get_active_merge_draft_for_order(raw_order_id) or {}
         payload = normalized_overrides.get(raw_order_id, {})
-        decisions = payload.get("decisions", existing.get("decisions", {}))
-        supplements = payload.get("supplements", existing.get("supplements", {}))
+        persisted_decisions = db.get_decisions_for_order(raw_order_id)
+        persisted_supplements = db.get_order_supplements([raw_order_id]).get(raw_order_id, {})
+        decisions = payload.get("decisions", persisted_decisions)
+        supplements = payload.get("supplements", persisted_supplements)
         db.replace_merge_draft(
             order_id=raw_order_id,
             main_file_path=main_path,

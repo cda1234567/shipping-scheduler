@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from openpyxl import Workbook
 from unittest.mock import patch
 
@@ -265,3 +267,34 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(restored, [21])
         mock_reactivate.assert_called_once_with(7)
         mock_rebuild.assert_called_once_with([21])
+
+    def test_rebuild_merge_drafts_uses_latest_persisted_order_settings_when_no_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"test")
+            replace_calls = []
+
+            with patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
+                "main_file_path": str(main_path),
+                "main_loaded_at": "2026-03-31T10:00:00",
+            }.get(key, default)), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 12, "status": "merged", "model": "MODEL-A"}), \
+                 patch("app.services.merge_drafts.db.get_active_merge_draft_for_order", return_value={
+                     "id": 5,
+                     "order_id": 12,
+                     "decisions": {"PART-OLD": "IgnoreOnce"},
+                     "supplements": {"PART-OLD": 1000},
+                     "shortages": [],
+                 }), \
+                 patch("app.services.merge_drafts.db.get_decisions_for_order", return_value={"IC-CSD18531Q5AT-TAB": "CreateRequirement"}), \
+                 patch("app.services.merge_drafts.db.get_order_supplements", return_value={12: {"IC-CSD18531Q5AT-TAB": 2000}}), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft", side_effect=lambda **kwargs: replace_calls.append(kwargs)), \
+                 patch("app.services.merge_drafts.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.services.merge_drafts._build_running_stock", return_value={}), \
+                 patch("app.services.merge_drafts._load_effective_moq", return_value={}), \
+                 patch("app.services.merge_drafts.db.get_st_inventory_stock", return_value={}):
+                merge_drafts.rebuild_merge_drafts([12])
+
+        self.assertEqual(len(replace_calls), 1)
+        self.assertEqual(replace_calls[0]["decisions"], {"IC-CSD18531Q5AT-TAB": "CreateRequirement"})
+        self.assertEqual(replace_calls[0]["supplements"], {"IC-CSD18531Q5AT-TAB": 2000})
