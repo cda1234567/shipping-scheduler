@@ -241,6 +241,11 @@ console.log(JSON.stringify(results));
         self.assertIn("if (supportsBrowserSavePicker()) {", bridge_module)
         self.assertIn("return saveBlobWithBrowserPicker(blob, outputName, response.headers.get(\"content-type\"));", bridge_module)
         self.assertIn("儲存位置：你剛剛選擇的位置", bridge_module)
+        self.assertIn("document.body.appendChild(anchor);", bridge_module)
+        self.assertIn("window.setTimeout(() => {", bridge_module)
+        self.assertIn("URL.revokeObjectURL(blobUrl);", bridge_module)
+        self.assertIn("anchor.remove();", bridge_module)
+        self.assertIn("browser_download_started: true", bridge_module)
 
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]

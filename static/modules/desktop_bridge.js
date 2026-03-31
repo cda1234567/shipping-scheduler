@@ -318,9 +318,14 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const anchor = document.createElement("a");
   anchor.href = blobUrl;
   anchor.download = outputName;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
   anchor.click();
-  URL.revokeObjectURL(blobUrl);
-  return { ok: true, filename: outputName, path: outputName, directory: "" };
+  window.setTimeout(() => {
+    URL.revokeObjectURL(blobUrl);
+    anchor.remove();
+  }, 1200);
+  return { ok: true, filename: outputName, path: outputName, directory: "", browser_download_started: true };
 }
 
 export function buildDownloadToastMessage(result, noun = "檔案") {
