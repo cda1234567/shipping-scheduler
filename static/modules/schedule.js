@@ -801,6 +801,24 @@ function buildShortageItemsForRow(row, items = []) {
   }));
 }
 
+function getRightPanelResultingStock(item) {
+  const explicitResulting = Number(item?.resulting_stock);
+  if (Number.isFinite(explicitResulting)) return explicitResulting;
+
+  const currentStock = Number(item?.current_stock || 0);
+  const prevQtyCs = Number(item?.prev_qty_cs || 0);
+  const supplementQty = Number(item?.supplement_qty || item?.default_supplement || 0);
+  const neededQty = Number(item?.needed || 0);
+  return currentStock + prevQtyCs + supplementQty - neededQty;
+}
+
+function shouldRenderRightPanelShortageItem(item) {
+  const shortageAmount = Number(item?.shortage_amount || 0);
+  if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
+  const resultingStock = getRightPanelResultingStock(item);
+  return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;
+}
+
 function getEffectiveShortageState(row, res = null) {
   const draft = row ? _draftsByOrderId?.[row.id] || null : null;
   if (draft) {
@@ -872,7 +890,7 @@ function buildRightPanelShortageData() {
     if (!shortagesByModel[model]) shortagesByModel[model] = [];
     if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
 
-    for (const item of effective.shortages || []) {
+    for (const item of (effective.shortages || []).filter(shouldRenderRightPanelShortageItem)) {
       const partKey = normalizePartKey(item?.part_number);
       shortagesByModel[model].push({
         ...item,
@@ -884,7 +902,7 @@ function buildRightPanelShortageData() {
             : Number(item?.supplement_qty || 0)),
       });
     }
-    for (const item of effective.customer_material_shortages || []) {
+    for (const item of (effective.customer_material_shortages || []).filter(shouldRenderRightPanelShortageItem)) {
       const partKey = normalizePartKey(item?.part_number);
       csShortagesByModel[model].push({
         ...item,
