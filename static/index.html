@@ -635,7 +635,6 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
       method: "POST",
       body: { order_ids: orderIds, decisions },
     });
-    clearCheckedOrderIds(orderIds);
     statusEl.textContent = "已下載";
     showDownloadToast(result, "發料單");
     setTimeout(() => statusEl.textContent = "", 3000);

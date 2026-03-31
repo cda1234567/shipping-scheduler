@@ -225,6 +225,22 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('if (list) list.innerHTML = "";', schedule_module)
         self.assertIn('if (footer) footer.innerHTML = "";', schedule_module)
 
+    def test_dispatch_download_keeps_checked_orders_selected(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        match = re.search(
+            r'document\.getElementById\("btn-gen-dispatch"\)\.addEventListener\("click", async \(\) => \{(?P<body>.*?)\n\}\);',
+            index_html,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn('const orderIds = getCheckedOrderIds();', body)
+        self.assertIn('path: "/api/dispatch/generate",', body)
+        self.assertIn('showDownloadToast(result, "發料單");', body)
+        self.assertNotIn("clearCheckedOrderIds(orderIds);", body)
+
     def test_frontend_calculator_keeps_order_scoped_ic_shortages_per_current_order(self):
         root = Path(__file__).resolve().parents[1]
         script = """
