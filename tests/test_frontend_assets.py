@@ -47,6 +47,7 @@ class FrontendAssetTests(unittest.TestCase):
         text = schedule_module.read_text(encoding="utf-8")
 
         self.assertIn("btn-draft-toggle", text)
+        self.assertIn("row-draft-toggle", text)
         self.assertIn("preview_rows", text)
         self.assertIn("draft-preview-inline-stat", text)
         self.assertIn("draft-preview-editors", text)
@@ -88,15 +89,17 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("Number(s.default_supplement) > 0", text)
         self.assertIn("Number(s.suggested_qty) > 0", text)
 
-    def test_collapsed_draft_panel_uses_compact_half_width_layout(self):
+    def test_collapsed_draft_panel_hides_panel_and_uses_row_triangle_toggle(self):
         stylesheet = (Path(__file__).resolve().parents[1] / "static" / "style.css").read_text(encoding="utf-8")
+        schedule_module = (Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         self.assertIn(".merge-draft-panel.is-collapsed {", stylesheet)
-        self.assertIn("width: min(21%, 215px);", stylesheet)
-        self.assertIn("padding: 5px 8px;", stylesheet)
-        self.assertIn(".merge-draft-panel.is-collapsed .btn-draft-toggle {", stylesheet)
-        self.assertIn("min-height: 24px;", stylesheet)
-        self.assertIn("font-size: 10px;", stylesheet)
+        self.assertIn("display: none;", stylesheet)
+        self.assertIn(".row-draft-toggle {", stylesheet)
+        self.assertIn(".row-draft-toggle.is-expanded {", stylesheet)
+        self.assertIn('>${isDraftPanelCollapsed(r.id) ? "▶" : "▼"}</button>`', schedule_module)
+        self.assertIn('button.textContent = nextCollapsed ? "▶" : "▼";', schedule_module)
+        self.assertIn('const row = button.closest(".po-group");', schedule_module)
 
     def test_schedule_module_marks_st_purchase_state_with_dedicated_visuals(self):
         root = Path(__file__).resolve().parents[1]

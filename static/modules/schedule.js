@@ -590,13 +590,22 @@ function buildRowCard(r, resultMap) {
       ? "請先重新 merge 生成副檔"
       : "直接發料";
   const draftHtml = draft ? buildDraftPanelHtml(draft) : "";
+  const draftToggleHtml = draft
+    ? `<button
+        class="btn-draft-toggle row-draft-toggle ${isDraftPanelCollapsed(r.id) ? "" : "is-expanded"}"
+        type="button"
+        data-order-id="${r.id}"
+        aria-expanded="${isDraftPanelCollapsed(r.id) ? "false" : "true"}"
+        title="${isDraftPanelCollapsed(r.id) ? "展開副檔工作台" : "收起副檔工作台"}"
+      >${isDraftPanelCollapsed(r.id) ? "▶" : "▼"}</button>`
+    : "";
 
   div.innerHTML = `
     <div class="po-group-header">
       <input type="checkbox" class="row-check" data-order-id="${r.id}" ${isChecked ? "checked" : ""}
              style="width:16px;height:16px;margin:0;cursor:pointer;accent-color:#34c759">
       <span class="drag-handle" title="拖曳調整順序">⠿</span>
-      <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>
+      <span class="po-number model-editable" data-order-id="${r.id}" title="雙擊編輯機種名稱">${esc(r.model)}</span>${draftToggleHtml}
       <span style="color:#c7c7cc;font-size:13px;text-align:center">|</span>
       <span class="po-number" style="color:#6b7280;font-weight:500">${r.po_number}</span>
       <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
@@ -750,13 +759,16 @@ function handleDraftPanelToggleClick(event) {
   const orderId = parseInt(button.dataset.orderId || "", 10);
   if (!Number.isInteger(orderId)) return;
 
-  const panel = button.closest(".merge-draft-panel");
+  const row = button.closest(".po-group");
+  const panel = row?.querySelector(".merge-draft-panel");
   if (!panel) return;
 
   const nextCollapsed = !panel.classList.contains("is-collapsed");
   panel.classList.toggle("is-collapsed", nextCollapsed);
   button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
-  button.textContent = nextCollapsed ? "展開" : "收起";
+  button.textContent = nextCollapsed ? "▶" : "▼";
+  button.classList.toggle("is-expanded", !nextCollapsed);
+  button.title = nextCollapsed ? "展開副檔工作台" : "收起副檔工作台";
   setDraftPanelCollapsed(orderId, nextCollapsed);
 }
 
@@ -3631,9 +3643,6 @@ function buildDraftPanelHtml(draft) {
     <div class="merge-draft-panel ${collapsed ? "is-collapsed" : ""}">
       <div class="merge-draft-head">
         <div class="merge-draft-head-label">副檔工作台</div>
-        <button class="btn-draft-toggle" type="button" data-order-id="${Number.isInteger(orderId) ? orderId : ""}" aria-expanded="${collapsed ? "false" : "true"}">
-          ${collapsed ? "展開" : "收起"}
-        </button>
       </div>
       <div class="merge-draft-body">
         <div class="merge-draft-summary">
