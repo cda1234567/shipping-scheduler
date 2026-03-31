@@ -220,6 +220,7 @@ async def generate(req: DispatchRequest):
 
     first_order_by_part: dict[str, int] = {}
     final_shortage_by_part: dict[str, dict] = {}
+    aggregated_supplement_by_part: dict[str, float] = {}
     for context in order_contexts:
         for part in context["candidate_parts"]:
             decision = context["decisions"].get(part, "None")
@@ -232,6 +233,8 @@ async def generate(req: DispatchRequest):
             first_order_by_part.setdefault(part, context["order_id"])
             if shortage_item:
                 final_shortage_by_part[part] = shortage_item
+            if supplement_qty > 0:
+                aggregated_supplement_by_part[part] = aggregated_supplement_by_part.get(part, 0.0) + supplement_qty
 
     for context in order_contexts:
         order = context["order"]
@@ -254,6 +257,7 @@ async def generate(req: DispatchRequest):
                 or (shortage_item or {}).get("description", "")
             )
             display_part = final_shortage.get("part_number") or (shortage_item or {}).get("part_number") or part
+            effective_supplement_qty = supplement_qty if use_order_scoped else float(aggregated_supplement_by_part.get(part, supplement_qty) or 0)
 
             if decision == "Shortage":
                 items.append({
@@ -265,16 +269,16 @@ async def generate(req: DispatchRequest):
                 })
                 continue
 
-            if supplement_qty > 0:
+            if effective_supplement_qty > 0:
                 fill_color = (
                     "FFFFC000"
-                    if _should_highlight_dispatch_qty(display_part, supplement_qty, final_shortage or shortage_item, st_inventory_stock)
+                    if _should_highlight_dispatch_qty(display_part, effective_supplement_qty, final_shortage or shortage_item, st_inventory_stock)
                     else None
                 )
                 items.append({
                     "part": display_part,
                     "desc": description,
-                    "qty": round(supplement_qty),
+                    "qty": round(effective_supplement_qty),
                     "fill_color": fill_color,
                     "is_shortage": False,
                 })

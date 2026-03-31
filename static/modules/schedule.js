@@ -818,6 +818,37 @@ function shouldRenderRightPanelShortageItem(item) {
   return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;
 }
 
+function removeRightPanelShortageRowIfResolved(row) {
+  const scroll = document.getElementById("right-scroll");
+  if (!row || !scroll) return;
+
+  const header = row.previousElementSibling && !row.previousElementSibling.classList.contains("shortage-item")
+    ? row.previousElementSibling
+    : null;
+  row.remove();
+
+  if (header) {
+    const next = header.nextElementSibling;
+    if (!next || !next.classList.contains("shortage-item")) {
+      header.remove();
+    }
+  }
+
+  const remainingRows = scroll.querySelectorAll(".shortage-item").length;
+  const badge = document.getElementById("shortage-count");
+  if (badge) {
+    if (remainingRows > 0) {
+      badge.style.display = "inline";
+      badge.textContent = String(remainingRows);
+    } else {
+      badge.style.display = "none";
+    }
+  }
+  if (!remainingRows) {
+    scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
+  }
+}
+
 function getEffectiveShortageState(row, res = null) {
   const draft = row ? _draftsByOrderId?.[row.id] || null : null;
   if (draft) {
@@ -3253,6 +3284,13 @@ async function saveRightPanelSupplement(button) {
         },
       },
     });
+    const currentStock = Number(input?.dataset.currentStock || row?.dataset.currentStock || 0);
+    const prevQtyCs = Number(input?.dataset.prevQtyCs || row?.dataset.prevQtyCs || 0);
+    const neededQty = Number(input?.dataset.needed || row?.dataset.needed || 0);
+    const nextResultingStock = currentStock + prevQtyCs + qty - neededQty;
+    if (Number.isFinite(nextResultingStock) && nextResultingStock >= 0) {
+      removeRightPanelShortageRowIfResolved(row);
+    }
     showToast(qty > 0 ? `已保存 ${part} 補料 ${fmt(qty)}` : `已清除 ${part} 補料`);
     await refresh();
   } catch (e) {
@@ -3343,6 +3381,9 @@ function shortageItemHtml(s, isCS) {
           type="number"
           class="right-panel-supplement-input"
           data-part="${esc(s.part_number)}"${orderIdAttr}
+          data-current-stock="${esc(s.current_stock)}"
+          data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}"
+          data-needed="${esc(s.needed)}"
           value="${s.supplement_qty}"
           min="0"
           step="any"

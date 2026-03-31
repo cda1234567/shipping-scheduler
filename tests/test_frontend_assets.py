@@ -179,6 +179,18 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;", schedule_module)
         self.assertIn("const supplementQty = Number(item?.supplement_qty || item?.default_supplement || 0);", schedule_module)
 
+    def test_right_panel_save_removes_row_when_supplement_turns_balance_positive(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn("function removeRightPanelShortageRowIfResolved(row)", schedule_module)
+        self.assertIn("const nextResultingStock = currentStock + prevQtyCs + qty - neededQty;", schedule_module)
+        self.assertIn("if (Number.isFinite(nextResultingStock) && nextResultingStock >= 0) {", schedule_module)
+        self.assertIn("removeRightPanelShortageRowIfResolved(row);", schedule_module)
+        self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
+        self.assertIn('data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}"', schedule_module)
+        self.assertIn('data-needed="${esc(s.needed)}"', schedule_module)
+
     def test_batch_merge_modal_rebuilds_raw_shortages_before_reapplying_stored_inputs(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

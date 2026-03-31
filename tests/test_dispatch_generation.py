@@ -280,3 +280,71 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=6, column=3).value, "IC-STM32F")
         self.assertEqual(ws.cell(row=6, column=5).value, 50)
         wb.close()
+
+    def test_dispatch_generate_aggregates_saved_supplements_from_later_orders_for_normal_parts(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "2-2",
+                "delivery_date": "2026-03-27",
+            },
+            2: {
+                "id": 2,
+                "status": "merged",
+                "po_number": "4500059235",
+                "model": "MODEL-B",
+                "code": "2-3",
+                "delivery_date": "2026-03-28",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "EC-20080A", "description": "Cap desc", "needed_qty": 1, "is_dash": 0},
+            ],
+            "MODEL-B": [
+                {"part_number": "EC-20080A", "description": "Cap desc", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {"part_number": "EC-20080A", "description": "Cap desc", "suggested_qty": 1000, "shortage_amount": 1000},
+                ],
+                "customer_material_shortages": [],
+            },
+            {
+                "order_id": 2,
+                "shortages": [
+                    {"part_number": "EC-20080A", "description": "Cap desc", "suggested_qty": 2000, "shortage_amount": 2000},
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={1: {}, 2: {"EC-20080A": 3000}}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={"EC-20080A": "CreateRequirement"}), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={}), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1, 2],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        self.assertEqual(ws.cell(row=1, column=1).value, "2-2")
+        self.assertEqual(ws.cell(row=3, column=3).value, "EC-20080A")
+        self.assertEqual(ws.cell(row=3, column=5).value, 3000)
+        self.assertIsNone(ws.cell(row=4, column=1).value)
+        wb.close()
