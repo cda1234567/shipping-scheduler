@@ -732,8 +732,8 @@ init().catch(error => {
   <div class="modal-box" style="width:min(520px, 92vw)">
     <div class="modal-header">
       <div>
-        <h3 id="desktop-modal-title" style="margin:0;font-size:16px">下載與桌面版設定</h3>
-        <div id="desktop-modal-subtitle" class="modal-subtitle">可以設定網頁版下載位置；桌面版則另外支援本機服務與開機自啟。</div>
+        <h3 id="desktop-modal-title" style="margin:0;font-size:16px">下載設定</h3>
+        <div id="desktop-modal-subtitle" class="modal-subtitle">下載位置會依目前模式套用；桌面版另外支援本機服務與開機自啟。</div>
       </div>
       <button id="desktop-close" class="modal-close-btn">&times;</button>
     </div>
@@ -744,21 +744,14 @@ init().catch(error => {
       </div>
       <div class="desktop-setting-group">
         <div class="desktop-setting-header">
-          <div class="desktop-autostart-title">網頁版下載資料夾</div>
+          <div class="desktop-autostart-title">下載資料夾</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap">
-            <button id="browser-choose-download-dir" type="button" class="btn btn-secondary btn-sm">選擇資料夾</button>
-            <button id="browser-clear-download-dir" type="button" class="btn btn-secondary btn-sm">清除設定</button>
+            <button id="desktop-choose-download-dir" type="button" class="btn btn-secondary btn-sm">選擇資料夾</button>
+            <button id="desktop-clear-download-dir" type="button" class="btn btn-secondary btn-sm">清除設定</button>
           </div>
         </div>
-        <div id="browser-download-folder" class="desktop-status-meta"></div>
-        <div id="browser-download-note" class="desktop-status-meta" style="margin-top:4px"></div>
-      </div>
-      <div class="desktop-setting-group">
-        <div class="desktop-setting-header">
-          <div class="desktop-autostart-title">下載資料夾</div>
-          <button id="desktop-choose-download-dir" type="button" class="btn btn-secondary btn-sm">選擇資料夾</button>
-        </div>
         <div id="desktop-download-folder" class="desktop-status-meta"></div>
+        <div id="desktop-download-note" class="desktop-status-meta" style="margin-top:4px"></div>
       </div>
       <label class="desktop-autostart-row">
         <input id="desktop-autostart" type="checkbox">

@@ -233,10 +233,10 @@ console.log(JSON.stringify(results));
         bridge_module = (root / "static" / "modules" / "desktop_bridge.js").read_text(encoding="utf-8")
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="browser-choose-download-dir"', index_html)
-        self.assertIn('id="browser-clear-download-dir"', index_html)
-        self.assertIn('id="browser-download-folder"', index_html)
-        self.assertIn('id="browser-download-note"', index_html)
+        self.assertIn('id="desktop-choose-download-dir"', index_html)
+        self.assertIn('id="desktop-clear-download-dir"', index_html)
+        self.assertIn('id="desktop-download-folder"', index_html)
+        self.assertIn('id="desktop-download-note"', index_html)
         self.assertIn('id="desktop-modal-title"', index_html)
         self.assertIn('id="desktop-modal-subtitle"', index_html)
         self.assertIn("function supportsBrowserSavePicker()", bridge_module)
@@ -248,6 +248,9 @@ console.log(JSON.stringify(results));
         self.assertIn("clearBrowserDownloadDirectoryHandle()", bridge_module)
         self.assertIn("saveBlobWithConfiguredBrowserDirectory(blob, filename)", bridge_module)
         self.assertIn("findAvailableFilenameInDirectory(directoryHandle, filename)", bridge_module)
+        self.assertIn("handleChooseDownloadDirectory()", bridge_module)
+        self.assertIn("handleChooseDesktopDownloadDirectory()", bridge_module)
+        self.assertIn("handleClearDownloadDirectory()", bridge_module)
         self.assertIn('typeof window.showSaveFilePicker === "function" && window.isSecureContext', bridge_module)
         self.assertIn("async function saveBlobWithBrowserPicker(blob, filename, contentType = \"\")", bridge_module)
         self.assertIn("await window.showSaveFilePicker({", bridge_module)
@@ -265,6 +268,7 @@ console.log(JSON.stringify(results));
         self.assertIn("browser_download_started: true", bridge_module)
         self.assertIn("已更新網頁版下載資料夾", bridge_module)
         self.assertIn("已清除網頁版下載資料夾設定", bridge_module)
+        self.assertNotIn('id="browser-choose-download-dir"', index_html)
 
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]

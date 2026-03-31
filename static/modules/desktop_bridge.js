@@ -350,30 +350,27 @@ function renderDesktopState() {
   const startupEl = document.getElementById("desktop-startup-note");
   const checkbox = document.getElementById("desktop-autostart");
   const folderEl = document.getElementById("desktop-download-folder");
+  const folderNoteEl = document.getElementById("desktop-download-note");
   const darkModeEl = document.getElementById("desktop-dark-mode");
   const desktopChooseBtn = document.getElementById("desktop-choose-download-dir");
+  const desktopClearBtn = document.getElementById("desktop-clear-download-dir");
   const desktopMinimizeBtn = document.getElementById("desktop-minimize");
   const desktopOpenBrowserBtn = document.getElementById("desktop-open-browser");
   const desktopQuitBtn = document.getElementById("desktop-quit");
-  const browserFolderEl = document.getElementById("browser-download-folder");
-  const browserNoteEl = document.getElementById("browser-download-note");
-  const browserChooseBtn = document.getElementById("browser-choose-download-dir");
-  const browserClearBtn = document.getElementById("browser-clear-download-dir");
   const modalTitle = document.getElementById("desktop-modal-title");
   const modalSubtitle = document.getElementById("desktop-modal-subtitle");
   const controlBtn = document.getElementById("btn-desktop-controls");
-  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !darkModeEl || !desktopChooseBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !browserFolderEl || !browserNoteEl || !browserChooseBtn || !browserClearBtn || !modalTitle || !modalSubtitle || !controlBtn) return;
+  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn) return;
 
   const browserState = _browserDownloadState || createDefaultBrowserDownloadState();
   const desktopAvailable = hasDesktopApi();
   controlBtn.style.display = "inline-flex";
-  controlBtn.textContent = desktopAvailable ? "下載設定" : "網頁下載";
-  controlBtn.title = desktopAvailable ? "下載與桌面版設定" : "網頁版下載設定";
-  modalTitle.textContent = desktopAvailable ? "下載與桌面版設定" : "網頁版下載設定";
+  controlBtn.textContent = "下載設定";
+  controlBtn.title = "下載設定";
+  modalTitle.textContent = "下載設定";
   modalSubtitle.textContent = desktopAvailable
-    ? "可以設定網頁版下載位置；桌面版則另外支援本機服務與開機自啟。"
-    : "可以設定網頁版固定下載資料夾；若瀏覽器不支援，則會改成每次另存。";
-  desktopChooseBtn.disabled = !desktopAvailable;
+    ? "下載位置會依目前模式套用；桌面版另外支援本機服務與開機自啟。"
+    : "下載位置會依目前模式套用；若瀏覽器不支援固定資料夾，會改成每次另存。";
   desktopMinimizeBtn.disabled = !desktopAvailable;
   desktopOpenBrowserBtn.disabled = !desktopAvailable;
   desktopQuitBtn.disabled = !desktopAvailable;
@@ -387,6 +384,9 @@ function renderDesktopState() {
       ? (_stateHydrationStatus === "error" ? "桌面橋接尚未就緒，請稍後再試一次。" : "")
       : "網頁版不提供開機自動啟動";
     folderEl.textContent = "尚未指定下載資料夾";
+    folderNoteEl.textContent = desktopAvailable
+      ? "桌面版下載完成後，會存進這個資料夾。"
+      : "目前會依瀏覽器能力決定下載方式。";
     checkbox.checked = false;
     checkbox.disabled = true;
     darkModeEl.checked = false;
@@ -401,6 +401,9 @@ function renderDesktopState() {
     folderEl.textContent = _desktopState.download_directory_set
       ? (_desktopState.download_directory || "尚未指定下載資料夾")
       : "尚未指定，首次下載時會詢問資料夾";
+    folderNoteEl.textContent = _desktopState.download_directory_set
+      ? "桌面版下載會直接存進這個資料夾。"
+      : "桌面版下載時，若還沒設定資料夾，會先詢問一次。";
     darkModeEl.checked = Boolean(_desktopState.dark_mode_enabled);
     darkModeEl.disabled = false;
     if (_desktopState.autostart_managed) {
@@ -415,27 +418,32 @@ function renderDesktopState() {
     checkbox.checked = Boolean(_desktopState.autostart_enabled);
   }
 
-  if (browserState.supported) {
-    browserFolderEl.textContent = browserState.download_directory_set
-      ? `${browserState.download_directory || "已指定資料夾"}${browserState.permission_state === "granted" ? "" : "（需要重新授權）"}`
-      : "尚未指定，下載時會直接存進這個資料夾";
-    browserNoteEl.textContent = browserState.download_directory_set
-      ? "設定後，網頁版下載會直接寫進這個資料夾。"
-      : "支援固定下載資料夾，設定後不必每次重新選位置。";
-    browserChooseBtn.disabled = false;
-    browserClearBtn.disabled = !browserState.download_directory_set;
-  } else if (browserState.save_picker_supported) {
-    browserFolderEl.textContent = "此環境支援每次下載時自行選位置";
-    browserNoteEl.textContent = "目前瀏覽器不支援固定下載資料夾，但每次下載都可以另存到你指定的位置。";
-    browserChooseBtn.disabled = true;
-    browserClearBtn.disabled = true;
+  if (!desktopAvailable) {
+    if (browserState.supported) {
+      folderEl.textContent = browserState.download_directory_set
+        ? `${browserState.download_directory || "已指定資料夾"}${browserState.permission_state === "granted" ? "" : "（需要重新授權）"}`
+        : "尚未指定下載資料夾";
+      folderNoteEl.textContent = browserState.download_directory_set
+        ? "設定後，網頁版下載會直接存進這個資料夾。"
+        : "支援固定下載資料夾，設定後不必每次重新選位置。";
+      desktopChooseBtn.disabled = false;
+      desktopClearBtn.disabled = !browserState.download_directory_set;
+    } else if (browserState.save_picker_supported) {
+      folderEl.textContent = "此環境支援每次下載時自行選位置";
+      folderNoteEl.textContent = "目前瀏覽器不支援固定下載資料夾，但每次下載都可以另存到你指定的位置。";
+      desktopChooseBtn.disabled = true;
+      desktopClearBtn.disabled = true;
+    } else {
+      folderEl.textContent = "目前無法由系統指定下載資料夾";
+      folderNoteEl.textContent = browserState.secure_context
+        ? "這個瀏覽器不支援固定下載資料夾，會改用瀏覽器預設下載位置。"
+        : "目前不是安全連線環境，瀏覽器不允許網站設定固定下載資料夾。";
+      desktopChooseBtn.disabled = true;
+      desktopClearBtn.disabled = true;
+    }
   } else {
-    browserFolderEl.textContent = "目前無法由系統指定網頁版下載資料夾";
-    browserNoteEl.textContent = browserState.secure_context
-      ? "這個瀏覽器不支援固定下載資料夾，會改用瀏覽器預設下載位置。"
-      : "目前不是安全連線環境，瀏覽器不允許網站設定固定下載資料夾。";
-    browserChooseBtn.disabled = true;
-    browserClearBtn.disabled = true;
+    desktopChooseBtn.disabled = false;
+    desktopClearBtn.disabled = true;
   }
 
   applyDesktopTheme();
@@ -493,6 +501,21 @@ async function handleClearBrowserDownloadDirectory() {
   showToast("已清除網頁版下載資料夾設定");
 }
 
+async function handleChooseDownloadDirectory() {
+  if (hasDesktopApi()) {
+    return handleChooseDesktopDownloadDirectory();
+  }
+  return handleChooseBrowserDownloadDirectory();
+}
+
+async function handleClearDownloadDirectory() {
+  if (hasDesktopApi()) {
+    showToast("桌面版目前不支援清除下載資料夾設定");
+    return;
+  }
+  return handleClearBrowserDownloadDirectory();
+}
+
 async function handleAutostartChange(event) {
   const checkbox = event.currentTarget;
   const enabled = checkbox.checked;
@@ -514,7 +537,7 @@ async function handleAutostartChange(event) {
   }
 }
 
-async function handleChooseDownloadDirectory() {
+async function handleChooseDesktopDownloadDirectory() {
   try {
     const api = await waitForDesktopApi();
     if (!api) throw new Error("桌面版尚未連線完成");
@@ -585,8 +608,7 @@ function bindDesktopEvents() {
   document.getElementById("desktop-quit").addEventListener("click", handleQuitDesktop);
   document.getElementById("desktop-autostart").addEventListener("change", handleAutostartChange);
   document.getElementById("desktop-choose-download-dir").addEventListener("click", handleChooseDownloadDirectory);
-  document.getElementById("browser-choose-download-dir").addEventListener("click", handleChooseBrowserDownloadDirectory);
-  document.getElementById("browser-clear-download-dir").addEventListener("click", handleClearBrowserDownloadDirectory);
+  document.getElementById("desktop-clear-download-dir").addEventListener("click", handleClearDownloadDirectory);
   document.getElementById("desktop-dark-mode").addEventListener("change", handleDarkModeChange);
   document.getElementById("desktop-modal").addEventListener("click", event => {
     if (event.target.id === "desktop-modal") closeDesktopModal();
