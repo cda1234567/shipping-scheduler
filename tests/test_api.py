@@ -458,6 +458,42 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_deduct.call_args.kwargs["entry_header"], "加工多打扣帳")
         mock_log.assert_called_once()
 
+    def test_create_model_overrun_rebuilds_active_merge_drafts_after_main_change(self):
+        with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=123.0), \
+             patch("app.routers.defectives.build_model_overrun_plan", return_value={
+                 "model": "MODEL-A",
+                 "requested_model": "MODEL-A",
+                 "extra_pcs": 10,
+                 "matched_models": ["MODEL-A"],
+                 "matched_boms": [{"id": "bom-1", "filename": "model-a.xlsx", "model": "MODEL-A", "group_model": "MODEL-A"}],
+                 "items": [{"part_number": "PART-1", "description": "IC-1", "defective_qty": 30}],
+             }), \
+             patch("app.routers.defectives.deduct_defectives_from_main", return_value={
+                 "deducted_count": 1,
+                 "skipped_parts": [],
+                 "results": [{"part_number": "PART-1", "stock_before": 100, "stock_after": 70}],
+             }), \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.get_active_merge_drafts", return_value=[
+                 {"id": 9, "order_id": 101},
+                 {"id": 10, "order_id": 102},
+             ]), \
+             patch("app.routers.defectives.rebuild_merge_drafts") as mock_rebuild, \
+             patch("app.routers.defectives.db.create_defective_batch", return_value=55), \
+             patch("app.routers.defectives.db.create_defective_record", return_value=101), \
+             patch("app.routers.defectives.db.log_activity"):
+            response = self.client.post("/api/defectives/overrun", json={
+                "model": "MODEL-A",
+                "extra_pcs": 10,
+                "reason": "加工廠多打",
+                "note": "",
+                "reported_by": "",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        mock_rebuild.assert_called_once_with([101, 102])
+
     def test_import_overrun_detail_file_creates_overrun_batch(self):
         with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
              patch("app.routers.defectives._get_main_file_mtime", return_value=456.0), \
@@ -606,6 +642,37 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["reversed_count"], 1)
         self.assertEqual(mock_reverse.call_args.kwargs["entry_header"], "加工多打回復")
+
+    def test_delete_batch_rebuilds_active_merge_drafts_after_reverse(self):
+        with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+            "id": 88,
+            "filename": "不良品批次.xlsx",
+            "imported_at": "2026-03-20T08:00:00",
+            "main_file_mtime": 123.0,
+            "items": [{"part_number": "PART-1", "defective_qty": 30}],
+        }]), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after_id", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_active_dispatch_sessions_after", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
+             patch("app.routers.defectives.db.get_setting", return_value="C:/main.xlsx"), \
+             patch("app.routers.defectives._get_main_file_mtime", return_value=123.0), \
+             patch("app.routers.defectives.Path.exists", return_value=True), \
+             patch("app.routers.defectives.reverse_defectives_from_main", return_value={
+                 "reversed_count": 1,
+                 "skipped_parts": [],
+                 "results": [],
+             }), \
+             patch("app.routers.defectives.refresh_snapshot_from_main"), \
+             patch("app.routers.defectives.db.get_active_merge_drafts", return_value=[
+                 {"id": 9, "order_id": 101},
+             ]), \
+             patch("app.routers.defectives.rebuild_merge_drafts") as mock_rebuild, \
+             patch("app.routers.defectives.db.delete_defective_batch", return_value=True), \
+             patch("app.routers.defectives.db.log_activity"):
+            response = self.client.delete("/api/defectives/batches/88")
+
+        self.assertEqual(response.status_code, 200)
+        mock_rebuild.assert_called_once_with([101])
 
     def test_delete_defective_batch_blocks_when_later_inventory_mutation_exists(self):
         with patch("app.routers.defectives.db.get_defective_batches", return_value=[{

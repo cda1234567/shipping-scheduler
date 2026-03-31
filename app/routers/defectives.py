@@ -1,6 +1,7 @@
 """不良品 / 加工多打扣帳 API。"""
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -20,6 +21,7 @@ from ..services.defective_deduction import (
     reverse_defectives_from_main,
 )
 from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed
+from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.overrun_deduction import (
     apply_overrun_import_confirmations,
     build_overrun_import_preview,
@@ -30,6 +32,7 @@ from ..services.overrun_deduction import (
 from ..snapshot_sync import refresh_snapshot_from_main
 
 router = APIRouter(prefix="/defectives", tags=["defectives"])
+log = logging.getLogger(__name__)
 OVERRUN_DEDUCT_HEADER = "加工多打扣帳"
 OVERRUN_REVERSE_HEADER = "加工多打回復"
 
@@ -47,6 +50,18 @@ def _require_main_path() -> str:
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "主檔尚未上傳，無法扣帳")
     return main_path
+
+
+def _refresh_active_merge_drafts_after_main_change():
+    active_drafts = db.get_active_merge_drafts()
+    if not active_drafts:
+        return
+    order_ids = [int(item.get("order_id") or 0) for item in active_drafts if int(item.get("order_id") or 0) > 0]
+    if order_ids:
+        try:
+            rebuild_merge_drafts(order_ids)
+        except Exception as exc:
+            log.warning("refresh active merge drafts skipped after defective mutation: %s", exc)
 
 
 def _detect_batch_type(batch: dict) -> str:
@@ -344,6 +359,7 @@ async def import_defectives(file: UploadFile = File(...)):
         main_path, items, backup_dir=str(BACKUP_DIR),
     )
     refresh_snapshot_from_main(main_path)
+    _refresh_active_merge_drafts_after_main_change()
 
     # 記錄扣帳當下的主檔 mtime
     mtime = _get_main_file_mtime()
@@ -414,6 +430,7 @@ async def add_item_to_batch(batch_id: int, file: UploadFile = File(...)):
         main_path, items, backup_dir=str(BACKUP_DIR),
     )
     refresh_snapshot_from_main(main_path)
+    _refresh_active_merge_drafts_after_main_change()
 
     result_map = {r["part_number"]: r for r in (result.get("results") or [])}
     for item in items:
@@ -491,6 +508,7 @@ async def create_model_overrun(req: OverrunDeductionRequest):
         entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
+    _refresh_active_merge_drafts_after_main_change()
 
     if int(result.get("deducted_count") or 0) <= 0:
         skipped_parts = result.get("skipped_parts") or []
@@ -600,6 +618,7 @@ async def confirm_overrun_detail_import(req: OverrunImportConfirmRequest):
         entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
+    _refresh_active_merge_drafts_after_main_change()
 
     batch_note = _append_import_resolution_summary(
         _format_overrun_file_batch_note(req.source_filename, {
@@ -703,6 +722,7 @@ async def import_overrun_detail(file: UploadFile = File(...)):
         entry_header=OVERRUN_DEDUCT_HEADER,
     )
     refresh_snapshot_from_main(main_path)
+    _refresh_active_merge_drafts_after_main_change()
 
     if int(result.get("deducted_count") or 0) <= 0:
         skipped_parts = result.get("skipped_parts") or []
@@ -795,6 +815,7 @@ async def delete_batch(batch_id: int):
             )
             reversed_count = result["reversed_count"]
             refresh_snapshot_from_main(main_path)
+            _refresh_active_merge_drafts_after_main_change()
 
     # 刪除 DB 紀錄
     if not db.delete_defective_batch(batch_id):
