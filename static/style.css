@@ -1895,13 +1895,13 @@ body.desktop-dark .defective-skipped {
   display: none;
 }
 .merge-draft-panel.is-collapsed {
-  width: min(42%, 430px);
-  padding: 8px 12px;
-  border-radius: 14px;
+  width: min(21%, 215px);
+  padding: 5px 8px;
+  border-radius: 12px;
   background:
     radial-gradient(circle at top right, rgba(59, 130, 246, 0.09), transparent 28%),
     linear-gradient(180deg, #fcfdff 0%, #f6f9fd 100%);
-  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.06);
 }
 .merge-draft-head {
   display: flex;
@@ -1911,7 +1911,7 @@ body.desktop-dark .defective-skipped {
   margin-bottom: 12px;
 }
 .merge-draft-panel.is-collapsed .merge-draft-head {
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 0;
 }
 .merge-draft-head-label {
@@ -1926,8 +1926,8 @@ body.desktop-dark .defective-skipped {
   letter-spacing: 0.08em;
 }
 .merge-draft-panel.is-collapsed .merge-draft-head-label {
-  padding: 3px 8px;
-  font-size: 10px;
+  padding: 2px 6px;
+  font-size: 9px;
   letter-spacing: 0.06em;
 }
 .btn-draft-toggle {
@@ -1941,9 +1941,9 @@ body.desktop-dark .defective-skipped {
   cursor: pointer;
 }
 .merge-draft-panel.is-collapsed .btn-draft-toggle {
-  min-height: 28px;
-  padding: 4px 10px;
-  font-size: 11px;
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 10px;
 }
 .btn-draft-toggle:hover {
   border-color: #2563eb;
@@ -2140,7 +2140,7 @@ body.desktop-dark .defective-skipped {
     margin-left: 0;
   }
   .merge-draft-panel.is-collapsed {
-    width: min(72%, 360px);
+    width: min(36%, 180px);
   }
 }
 .merge-draft-modal-head {
