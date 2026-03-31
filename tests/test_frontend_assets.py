@@ -141,6 +141,26 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const shortageChecked = shouldAutoShortageCheck(row);", schedule_module)
         self.assertIn("const shortageChecked = shouldAutoShortageCheck(s);", schedule_module)
 
+    def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        match = re.search(
+            r"function buildRightPanelShortageData\(\) \{(?P<body>.*?)\n\}",
+            schedule_module,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn("const shortagesByModel = {};", body)
+        self.assertIn("const checkedRows = _rows.filter(row => _checkedIds.has(row.id));", body)
+        self.assertIn("const storedSupplementsByPart = {};", body)
+        self.assertIn("_consolidateShortagesAcrossModels(shortagesByModel, allModels, {", body)
+        self.assertIn("preserveOrderScopedParts: true", body)
+        self.assertIn("preserveShortageDecisions: true", body)
+        self.assertIn("storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;", body)
+        self.assertNotIn("shortages.push(...effective.shortages);", body)
+
     def test_batch_merge_modal_rebuilds_raw_shortages_before_reapplying_stored_inputs(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

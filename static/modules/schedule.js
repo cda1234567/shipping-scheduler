@@ -824,16 +824,79 @@ function buildOrderBadge(row, res) {
 }
 
 function buildRightPanelShortageData() {
+  const shortagesByModel = {};
+  const csShortagesByModel = {};
+  const checkedRows = _rows.filter(row => _checkedIds.has(row.id));
+  const allModels = [];
+  const seenModels = new Set();
+  const storedSupplementsByPart = {};
+
+  checkedRows.forEach(row => {
+    const model = row?.model || "未分類機種";
+    if (!seenModels.has(model)) {
+      seenModels.add(model);
+      allModels.push(model);
+    }
+
+    const orderId = normalizeOrderId(row?.id);
+    if (!Number.isInteger(orderId)) return;
+
+    for (const [rawPart, rawQty] of Object.entries(_orderSupplementsByOrderId?.[orderId] || {})) {
+      const partKey = normalizePartKey(rawPart);
+      const qty = Number(rawQty || 0);
+      if (!partKey || !Number.isFinite(qty) || qty <= 0 || isOrderScopedPart(partKey)) continue;
+      storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;
+    }
+  });
+
+  checkedRows.forEach(row => {
+    const index = _rows.findIndex(item => item.id === row.id);
+    if (index < 0) return;
+
+    const model = row?.model || "未分類機種";
+    const effective = getEffectiveShortageState(row, _calcResults[index]);
+    if (!shortagesByModel[model]) shortagesByModel[model] = [];
+    if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
+
+    for (const item of effective.shortages || []) {
+      const partKey = normalizePartKey(item?.part_number);
+      shortagesByModel[model].push({
+        ...item,
+        decision: _decisions[partKey] || item?.decision || "None",
+        default_supplement: Number(item?.default_supplement || 0) > 0
+          ? Number(item.default_supplement || 0)
+          : (!isOrderScopedPart(partKey) && Number(storedSupplementsByPart[partKey]) > 0
+            ? Number(storedSupplementsByPart[partKey] || 0)
+            : Number(item?.supplement_qty || 0)),
+      });
+    }
+    for (const item of effective.customer_material_shortages || []) {
+      const partKey = normalizePartKey(item?.part_number);
+      csShortagesByModel[model].push({
+        ...item,
+        decision: _decisions[partKey] || item?.decision || "None",
+      });
+    }
+  });
+
+  for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
+  for (const items of Object.values(csShortagesByModel)) items.sort(compareShortageItems);
+
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+
   const shortages = [];
   const csShortages = [];
-
-  _rows.forEach((row, index) => {
-    if (!_checkedIds.has(row.id)) return;
-
-    const effective = getEffectiveShortageState(row, _calcResults[index]);
-    shortages.push(...effective.shortages);
-    csShortages.push(...effective.customer_material_shortages);
-  });
+  for (const model of allModels) {
+    shortages.push(...(shortagesByModel[model] || []));
+    csShortages.push(...(csShortagesByModel[model] || []));
+  }
 
   return { shortages, csShortages };
 }
