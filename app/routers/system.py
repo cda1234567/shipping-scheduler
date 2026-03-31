@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -9,6 +8,7 @@ from .. import database as db
 from ..config import ST_INVENTORY_DIR
 from ..models import DatabaseBackupRestoreRequest, DatabaseBackupSettingsRequest
 from ..services import db_backup
+from ..services.local_time import local_now
 from ..services.st_inventory import parse_st_inventory_file
 from ..version_info import get_app_meta
 
@@ -36,7 +36,7 @@ async def upload_st_inventory(file: UploadFile = File(...)):
         raise HTTPException(400, f"ST 庫存解析失敗：{error}") from error
 
     db.save_st_inventory_snapshot(parsed["stock"], parsed["descriptions"])
-    loaded_at = datetime.now().isoformat()
+    loaded_at = local_now().isoformat(timespec="seconds")
     db.set_setting("st_inventory_file_path", str(dest))
     db.set_setting("st_inventory_filename", file.filename or dest.name)
     db.set_setting("st_inventory_loaded_at", loaded_at)

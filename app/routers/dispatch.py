@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +12,7 @@ from .. import database as db
 from ..services.calculator import run as calc_run
 from ..services.dispatch_form_generator import generate_dispatch_form
 from ..services.download_names import build_generated_filename
+from ..services.local_time import local_now
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.shortage_rules import is_order_scoped_shortage_part, summarize_requested_supply
 
@@ -209,7 +209,7 @@ async def generate(req: DispatchRequest):
         if _normalize_part_key(part)
     }
 
-    today = datetime.now().strftime("%Y/%m/%d")
+    today = local_now().strftime("%Y/%m/%d")
     groups = []
     order_contexts = [
         context

@@ -9,13 +9,13 @@
 from __future__ import annotations
 
 from copy import copy
-from datetime import datetime
 from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
+from .local_time import local_now
 from .xls_reader import open_workbook_any
 from .merge_to_main import (
     PART_COL,
@@ -146,7 +146,7 @@ def deduct_defectives_from_main(
     _prepare_new_entry_columns(ws, max_col, col_deduct, col_stock)
 
     # 寫表頭
-    ts_label = datetime.now().strftime("%m/%d %H:%M")
+    ts_label = local_now().strftime("%m/%d %H:%M")
     deduct_header = ws.cell(row=1, column=col_deduct)
     deduct_header.value = str(entry_header or "不良品扣帳").strip() or "不良品扣帳"
     deduct_header.font = HEADER_FONT
@@ -226,7 +226,7 @@ def reverse_defectives_from_main(
     col_stock = max_col + 2
     _prepare_new_entry_columns(ws, max_col, col_reverse, col_stock)
 
-    ts_label = datetime.now().strftime("%m/%d %H:%M")
+    ts_label = local_now().strftime("%m/%d %H:%M")
     reverse_header = ws.cell(row=1, column=col_reverse)
     reverse_header.value = str(entry_header or "不良品回復").strip() or "不良品回復"
     reverse_header.font = HEADER_FONT

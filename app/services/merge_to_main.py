@@ -8,7 +8,6 @@ This module now exposes both:
 from __future__ import annotations
 
 import shutil
-from datetime import datetime
 from math import copysign, floor
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
 from ..models import calc_suggested_qty
+from .local_time import local_now
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -96,7 +96,7 @@ def backup_main_file(main_path: str, backup_dir: str) -> str:
     source = Path(main_path)
     destination_dir = Path(backup_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = local_now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{source.stem}_backup_{ts}{source.suffix}"
     destination = destination_dir / backup_name
     shutil.copy2(main_path, destination)

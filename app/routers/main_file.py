@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -17,6 +16,7 @@ from ..services.main_reader import (
     read_moq,
     read_stock,
 )
+from ..services.local_time import local_now
 from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
 
@@ -51,7 +51,7 @@ async def upload_main_file(file: UploadFile = File(...)):
 
     db.set_setting("main_file_path", str(dest))
     db.set_setting("main_filename", file.filename or dest.name)
-    db.set_setting("main_loaded_at", datetime.now().isoformat())
+    db.set_setting("main_loaded_at", local_now().isoformat(timespec="seconds"))
     db.set_setting("main_part_count", str(len(stock)))
 
     # 上傳主檔 = 新基準，永遠更新快照
