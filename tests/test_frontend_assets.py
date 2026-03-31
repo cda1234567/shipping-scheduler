@@ -167,6 +167,10 @@ class FrontendAssetTests(unittest.TestCase):
         shortage_body = shortage_modal_match.group("body")
         self.assertIn("buildRawModalShortageGroups(targets)", shortage_body)
         self.assertNotIn("_calcResults.forEach", shortage_body)
+        self.assertIn("preserveShortageDecisions: true", shortage_body)
+        self.assertIn("preserveShortageDecisions: true", batch_body)
+        self.assertIn("function bindShortageEditors(list)", schedule_module)
+        self.assertIn("syncDraftPartControls(list, partKey, {", schedule_module)
 
     def test_batch_merge_rebuilds_all_checked_pending_or_merged_targets_in_current_order(self):
         root = Path(__file__).resolve().parents[1]

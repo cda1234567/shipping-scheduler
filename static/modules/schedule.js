@@ -1364,8 +1364,6 @@ async function showShortageModal(targets) {
     if (!seenModels.has(m)) { seenModels.add(m); targetModelOrder.push(m); }
   }
   const allModels = targetModelOrder.filter(m => shortagesByModel[m] || csShortagesByModel[m]);
-  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
-  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, { preserveOrderScopedParts: true });
 
   // 從已存的副檔草稿還原上次的 decisions / supplements
   const storedDecisions = {};
@@ -1409,6 +1407,14 @@ async function showShortageModal(targets) {
     storedOrderScopedDecisions,
     storedOrderScopedSupplements,
   );
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
 
   // 合併後有些機種的項目可能全被移走，過濾掉空機種
   const visibleModels = allModels.filter(m =>
@@ -1439,17 +1445,7 @@ async function showShortageModal(targets) {
   }
 
   list.innerHTML = html;
-
-  // 綁定缺料 checkbox — 勾選時停用輸入框
-  list.querySelectorAll(".shortage-mark").forEach(chk => {
-    chk.addEventListener("change", () => {
-      const input = chk.closest(".shortage-item").querySelector(".supplement-input");
-      if (input) {
-        input.disabled = chk.checked;
-        if (chk.checked) input.value = "0";
-      }
-    });
-  });
+  bindShortageEditors(list);
 
   // 重設 footer
   bindMoqEditors(list);
@@ -1586,15 +1582,6 @@ async function showBatchMergeDraftModal(targets) {
   }
   const allModels = targetModelOrder.filter(m => shortagesByModel[m] || csShortagesByModel[m]);
 
-  // 合併跨機種同料號缺料：running balance 是累積的，後面機種的 shortage 包含前面的，
-  // 所以同一料號只在「第一個出現的機種」顯示，補料量取最終累積缺量。
-  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
-  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, { preserveOrderScopedParts: true });
-  // 合併後有些機種的項目可能全被移走，過濾掉空機種
-  const visibleModels = allModels.filter(m =>
-    (shortagesByModel[m] || []).length > 0 || (csShortagesByModel[m] || []).length > 0
-  );
-
   // 從已存的副檔草稿載入上次的 decisions / supplements，下次開 modal 直接還原
   const storedDecisions = {};
   const storedSupplements = {};
@@ -1637,6 +1624,21 @@ async function showBatchMergeDraftModal(targets) {
     storedOrderScopedDecisions,
     storedOrderScopedSupplements,
   );
+  // 合併跨機種同料號缺料：running balance 是累積的，後面機種的 shortage 包含前面的，
+  // 所以同一料號只在「第一個出現的機種」顯示，補料量取最終累積缺量。
+  // 但如果這顆料已明確標成缺料，就保留每個機種各自顯示，避免使用者誤以為後面機種沒受影響。
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+  _consolidateShortagesAcrossModels(csShortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+  // 合併後有些機種的項目可能全被移走，過濾掉空機種
+  const visibleModels = allModels.filter(m =>
+    (shortagesByModel[m] || []).length > 0 || (csShortagesByModel[m] || []).length > 0
+  );
 
   let html = "";
   if (!visibleModels.length) {
@@ -1661,14 +1663,7 @@ async function showBatchMergeDraftModal(targets) {
   }
 
   list.innerHTML = html;
-  list.querySelectorAll(".shortage-mark").forEach(chk => {
-    chk.addEventListener("change", () => {
-      const input = chk.closest(".shortage-item")?.querySelector(".supplement-input");
-      if (!input) return;
-      input.disabled = chk.checked;
-      if (chk.checked) input.value = "0";
-    });
-  });
+  bindShortageEditors(list);
 
   bindMoqEditors(list);
   bindShortageMoqBadgeEditors(list);
@@ -1740,7 +1735,10 @@ async function showWriteToMainModal(targets) {
     if (!seenModels.has(m)) { seenModels.add(m); targetModelOrder.push(m); }
   }
   const allModels = targetModelOrder.filter(m => shortagesByModel[m]);
-  _consolidateShortagesAcrossModels(shortagesByModel, allModels, { preserveOrderScopedParts: true });
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
   const visibleModels = allModels.filter(m => (shortagesByModel[m] || []).length > 0);
   const totalShortageCount = _modalPreviewShortages.length;
   let html = "";
@@ -1758,14 +1756,7 @@ async function showWriteToMainModal(targets) {
   }
 
   list.innerHTML = html;
-  list.querySelectorAll(".shortage-mark").forEach(chk => {
-    chk.addEventListener("change", () => {
-      const input = chk.closest(".shortage-item")?.querySelector(".supplement-input");
-      if (!input) return;
-      input.disabled = chk.checked;
-      if (chk.checked) input.value = "0";
-    });
-  });
+  bindShortageEditors(list);
 
   bindMoqEditors(list);
   bindShortageMoqBadgeEditors(list);
@@ -2931,13 +2922,23 @@ function updateStatusOnly() {
  * Running balance 是累積的，後面機種對同一料號的 shortage_amount 已包含前面的，
  * 因此同一料號只保留在「第一個出現的機種」，補料量取最大值（= 最終累積缺量）。
  */
-function _consolidateShortagesAcrossModels(byModel, orderedModels, { preserveOrderScopedParts = false } = {}) {
+function _consolidateShortagesAcrossModels(
+  byModel,
+  orderedModels,
+  { preserveOrderScopedParts = false, preserveShortageDecisions = false } = {},
+) {
   const bestByPart = {}; // PART_UPPER → { item (reference in first model's array) }
+  const preservedParts = new Set();
   for (const model of orderedModels) {
     const items = byModel[model] || [];
     for (const item of items) {
       const pk = (item.part_number || "").toUpperCase();
       if (preserveOrderScopedParts && isOrderScopedPart(pk)) continue;
+      if (preserveShortageDecisions && String(item?.decision || "").trim() === "Shortage") {
+        preservedParts.add(pk);
+        continue;
+      }
+      if (preservedParts.has(pk)) continue;
       if (!bestByPart[pk]) {
         bestByPart[pk] = { item };
       } else {
@@ -3368,6 +3369,39 @@ function renderPostDispatchPanel() {
       if (event.key !== "Enter") return;
       event.preventDefault();
       input.closest(".right-panel-supplement-row")?.querySelector(".right-panel-supplement-save")?.click();
+    });
+  });
+}
+
+function bindShortageEditors(list) {
+  if (!list) return;
+
+  list.querySelectorAll(".shortage-mark").forEach(checkbox => {
+    checkbox.addEventListener("change", () => {
+      const partKey = normalizePartKey(checkbox.dataset.part);
+      if (!partKey) return;
+
+      if (!isOrderScopedPart(partKey)) {
+        syncDraftPartControls(list, partKey, {
+          shortageChecked: checkbox.checked,
+        });
+        return;
+      }
+
+      const input = checkbox.closest(".shortage-item")?.querySelector(".supplement-input");
+      if (!input) return;
+      input.disabled = checkbox.checked;
+      if (checkbox.checked) input.value = "0";
+    });
+  });
+
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    input.addEventListener("input", () => {
+      const partKey = normalizePartKey(input.dataset.part);
+      if (!partKey || isOrderScopedPart(partKey)) return;
+      syncDraftPartControls(list, partKey, {
+        qty: parseFloat(input.value) || 0,
+      });
     });
   });
 }
