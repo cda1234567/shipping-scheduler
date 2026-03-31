@@ -800,21 +800,41 @@ function buildShortageItemsForRow(row, items = []) {
   }));
 }
 
-function getRightPanelResultingStock(item) {
-  const explicitResulting = Number(item?.resulting_stock);
-  if (Number.isFinite(explicitResulting)) return explicitResulting;
-
-  const currentStock = Number(item?.current_stock || 0);
-  const prevQtyCs = Number(item?.prev_qty_cs || 0);
-  const supplementQty = Number(item?.supplement_qty || item?.default_supplement || 0);
-  const neededQty = Number(item?.needed || 0);
-  return currentStock + prevQtyCs + supplementQty - neededQty;
+function getRightPanelSupplementQty(item, storedSupplementsByPart = {}) {
+  const partKey = normalizePartKey(item?.part_number);
+  if (Number(item?.default_supplement || 0) > 0) return Number(item?.default_supplement || 0);
+  if (!isOrderScopedPart(partKey) && Number(storedSupplementsByPart?.[partKey] || 0) > 0) {
+    return Number(storedSupplementsByPart?.[partKey] || 0);
+  }
+  return Number(item?.supplement_qty || 0);
 }
 
-function shouldRenderRightPanelShortageItem(item) {
+function applyRightPanelSupplementState(item, storedSupplementsByPart = {}) {
+  const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);
+  const currentStock = Number(item?.current_stock || 0);
+  const prevQtyCs = Number(item?.prev_qty_cs || 0);
+  const neededQty = Number(item?.needed || 0);
+  const explicitResulting = Number(item?.resulting_stock);
+  const resultingStock = [currentStock, prevQtyCs, neededQty].every(Number.isFinite)
+    ? currentStock + prevQtyCs + supplementQty - neededQty
+    : explicitResulting;
+  return {
+    ...item,
+    supplement_qty: supplementQty,
+    default_supplement: supplementQty,
+    resulting_stock: resultingStock,
+  };
+}
+
+function getRightPanelResultingStock(item, storedSupplementsByPart = {}) {
+  const enriched = applyRightPanelSupplementState(item, storedSupplementsByPart);
+  return Number(enriched?.resulting_stock);
+}
+
+function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {}) {
   const shortageAmount = Number(item?.shortage_amount || 0);
   if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
-  const resultingStock = getRightPanelResultingStock(item);
+  const resultingStock = getRightPanelResultingStock(item, storedSupplementsByPart);
   return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;
 }
 
@@ -920,24 +940,19 @@ function buildRightPanelShortageData() {
     if (!shortagesByModel[model]) shortagesByModel[model] = [];
     if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
 
-    for (const item of (effective.shortages || []).filter(shouldRenderRightPanelShortageItem)) {
+    for (const item of (effective.shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
-      shortagesByModel[model].push({
+      shortagesByModel[model].push(applyRightPanelSupplementState({
         ...item,
         decision: _decisions[partKey] || item?.decision || "None",
-        default_supplement: Number(item?.default_supplement || 0) > 0
-          ? Number(item.default_supplement || 0)
-          : (!isOrderScopedPart(partKey) && Number(storedSupplementsByPart[partKey]) > 0
-            ? Number(storedSupplementsByPart[partKey] || 0)
-            : Number(item?.supplement_qty || 0)),
-      });
+      }, storedSupplementsByPart));
     }
-    for (const item of (effective.customer_material_shortages || []).filter(shouldRenderRightPanelShortageItem)) {
+    for (const item of (effective.customer_material_shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
-      csShortagesByModel[model].push({
+      csShortagesByModel[model].push(applyRightPanelSupplementState({
         ...item,
         decision: _decisions[partKey] || item?.decision || "None",
-      });
+      }, storedSupplementsByPart));
     }
   });
 
@@ -956,8 +971,8 @@ function buildRightPanelShortageData() {
   const shortages = [];
   const csShortages = [];
   for (const model of allModels) {
-    shortages.push(...(shortagesByModel[model] || []));
-    csShortages.push(...(csShortagesByModel[model] || []));
+    shortages.push(...(shortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));
+    csShortages.push(...(csShortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));
   }
 
   return { shortages, csShortages };
@@ -3284,6 +3299,12 @@ async function saveRightPanelSupplement(button) {
         },
       },
     });
+    if (!_orderSupplementsByOrderId[orderId]) _orderSupplementsByOrderId[orderId] = {};
+    if (qty > 0) {
+      _orderSupplementsByOrderId[orderId][part] = qty;
+    } else {
+      delete _orderSupplementsByOrderId[orderId][part];
+    }
     const currentStock = Number(input?.dataset.currentStock || row?.dataset.currentStock || 0);
     const prevQtyCs = Number(input?.dataset.prevQtyCs || row?.dataset.prevQtyCs || 0);
     const neededQty = Number(input?.dataset.needed || row?.dataset.needed || 0);

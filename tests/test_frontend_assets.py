@@ -163,21 +163,28 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const shortagesByModel = {};", body)
         self.assertIn("const checkedRows = _rows.filter(row => _checkedIds.has(row.id));", body)
         self.assertIn("const storedSupplementsByPart = {};", body)
+        self.assertIn("shortagesByModel[model].push(applyRightPanelSupplementState({", body)
+        self.assertIn("csShortagesByModel[model].push(applyRightPanelSupplementState({", body)
         self.assertIn("_consolidateShortagesAcrossModels(shortagesByModel, allModels, {", body)
         self.assertIn("preserveOrderScopedParts: true", body)
         self.assertIn("preserveShortageDecisions: true", body)
         self.assertIn("storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;", body)
-        self.assertIn("filter(shouldRenderRightPanelShortageItem)", body)
-        self.assertNotIn("shortages.push(...effective.shortages);", body)
+        self.assertIn("shortages.push(...(shortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));", body)
+        self.assertIn("csShortages.push(...(csShortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));", body)
+        self.assertNotIn("for (const item of (effective.shortages || []).filter(shouldRenderRightPanelShortageItem))", body)
 
     def test_right_panel_only_renders_items_still_negative_after_merge(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
-        self.assertIn("function getRightPanelResultingStock(item)", schedule_module)
-        self.assertIn("function shouldRenderRightPanelShortageItem(item)", schedule_module)
+        self.assertIn("function getRightPanelSupplementQty(item, storedSupplementsByPart = {})", schedule_module)
+        self.assertIn("function applyRightPanelSupplementState(item, storedSupplementsByPart = {})", schedule_module)
+        self.assertIn("function getRightPanelResultingStock(item, storedSupplementsByPart = {})", schedule_module)
+        self.assertIn("function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {})", schedule_module)
         self.assertIn("return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;", schedule_module)
-        self.assertIn("const supplementQty = Number(item?.supplement_qty || item?.default_supplement || 0);", schedule_module)
+        self.assertIn("const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);", schedule_module)
+        self.assertIn("supplement_qty: supplementQty,", schedule_module)
+        self.assertIn("default_supplement: supplementQty,", schedule_module)
 
     def test_right_panel_save_removes_row_when_supplement_turns_balance_positive(self):
         root = Path(__file__).resolve().parents[1]
@@ -187,6 +194,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const nextResultingStock = currentStock + prevQtyCs + qty - neededQty;", schedule_module)
         self.assertIn("if (Number.isFinite(nextResultingStock) && nextResultingStock >= 0) {", schedule_module)
         self.assertIn("removeRightPanelShortageRowIfResolved(row);", schedule_module)
+        self.assertIn("if (!_orderSupplementsByOrderId[orderId]) _orderSupplementsByOrderId[orderId] = {};", schedule_module)
+        self.assertIn("_orderSupplementsByOrderId[orderId][part] = qty;", schedule_module)
         self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
         self.assertIn('data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}"', schedule_module)
         self.assertIn('data-needed="${esc(s.needed)}"', schedule_module)
