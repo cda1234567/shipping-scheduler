@@ -4,6 +4,9 @@
 
 {$APP_DOMAIN} {
   encode zstd gzip
+  basic_auth * {
+    {$APP_BASIC_AUTH_USER} {$APP_BASIC_AUTH_PASSWORD_HASH}
+  }
   reverse_proxy {$APP_UPSTREAM}
 
   header {

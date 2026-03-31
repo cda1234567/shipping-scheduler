@@ -26,6 +26,8 @@ services:
       APP_DOMAIN: ${APP_DOMAIN}
       APP_UPSTREAM: ${APP_UPSTREAM:-dispatch-scheduler:8765}
       ACME_EMAIL: ${ACME_EMAIL:-}
+      APP_BASIC_AUTH_USER: ${APP_BASIC_AUTH_USER:-admin}
+      APP_BASIC_AUTH_PASSWORD_HASH: ${APP_BASIC_AUTH_PASSWORD_HASH}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

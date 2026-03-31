@@ -156,7 +156,17 @@ HTTPS 與網域設定：
 ```env
 APP_DOMAIN=cda1234567.com
 ACME_EMAIL=你的 email
+APP_BASIC_AUTH_USER=admin
+APP_BASIC_AUTH_PASSWORD_HASH='$2b$12$Soo61t0XpKANoBu0jiWNmuiP6gaIf.i3TlfZO/L4sn.YkQ4LsM2IO'
 ```
+
+上面這組預設會讓網站先跳密碼視窗，帳號密碼是：
+
+```text
+admin / 123
+```
+
+注意：bcrypt hash 內有 `$`，放在 `.env` 裡時要保留外層單引號，不然 Docker Compose 會把它吃壞。
 
 5. 啟動：
 
