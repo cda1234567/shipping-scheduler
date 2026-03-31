@@ -49,7 +49,6 @@ export async function initSchedule(onRefreshMain) {
     _scheduleInitialized = true;
   }
   await refresh();
-  if (_postDispatchShortages.length) renderPostDispatchPanel();
 }
 
 export async function refresh() {

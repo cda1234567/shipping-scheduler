@@ -77,6 +77,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('saveBtn.dataset.idleText', text)
         self.assertIn('saveBtn.dataset.busyText', text)
         self.assertIn('id="modal-download-progress"', text)
+        self.assertNotIn("if (_postDispatchShortages.length) renderPostDispatchPanel();", text)
 
         preview_match = re.search(
             r"function\s+buildDraftPreviewRowHtml\s*\(row,\s*\{\s*editable\s*=\s*false\s*\}\s*=\s*\{\}\)\s*\{(?P<body>.*?)\n\}",
