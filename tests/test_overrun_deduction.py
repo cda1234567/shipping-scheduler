@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
+from openpyxl.styles import Border, Font, PatternFill, Side
 
 import app.database as db
 from app.services.defective_deduction import deduct_defectives_from_main, reverse_defectives_from_main
@@ -218,5 +219,74 @@ class OverrunDeductionTests(InMemoryDbTestCase):
                 self.assertEqual(result_ws.cell(row=2, column=6).value, 75)
                 self.assertEqual(result_ws.cell(row=2, column=7).value, 25)
                 self.assertEqual(result_ws.cell(row=2, column=8).value, 100)
+            finally:
+                result_wb.close()
+
+    def test_deduction_writes_to_first_sheet_even_if_other_sheet_is_active(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            wb = openpyxl.Workbook()
+            inventory_ws = wb.active
+            inventory_ws.title = "主檔"
+            inventory_ws.cell(row=1, column=1).value = "Part"
+            inventory_ws.cell(row=1, column=4).value = "Stock"
+            inventory_ws.cell(row=2, column=1).value = "PART-A"
+            inventory_ws.cell(row=2, column=4).value = 100
+            summary_ws = wb.create_sheet("摘要")
+            summary_ws.cell(row=1, column=1).value = "Summary"
+            wb.active = 1
+            wb.save(main_path)
+            wb.close()
+
+            deduct_defectives_from_main(
+                str(main_path),
+                [{"part_number": "PART-A", "description": "IC-A", "defective_qty": 25}],
+                entry_header="加工多打扣帳",
+            )
+
+            result_wb = openpyxl.load_workbook(main_path, data_only=False)
+            try:
+                inventory_ws = result_wb["主檔"]
+                summary_ws = result_wb["摘要"]
+                self.assertEqual(inventory_ws.cell(row=1, column=5).value, "加工多打扣帳")
+                self.assertEqual(inventory_ws.cell(row=2, column=6).value, 75)
+                self.assertIsNone(summary_ws.cell(row=1, column=2).value)
+            finally:
+                result_wb.close()
+
+    def test_deduction_copies_recent_column_layout_for_new_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "主檔"
+            ws.cell(row=1, column=1).value = "Part"
+            ws.cell(row=1, column=4).value = "Stock"
+            ws.cell(row=2, column=1).value = "PART-A"
+            source_cell = ws.cell(row=2, column=4)
+            source_cell.value = 100
+            source_cell.number_format = "#,##0.0"
+            source_cell.font = Font(name="Calibri", size=11, italic=True)
+            source_cell.fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+            source_cell.border = Border(left=Side(style="thin", color="000000"))
+            ws.column_dimensions["D"].width = 24
+            wb.save(main_path)
+            wb.close()
+
+            deduct_defectives_from_main(
+                str(main_path),
+                [{"part_number": "PART-A", "description": "IC-A", "defective_qty": 25}],
+                entry_header="加工多打扣帳",
+            )
+
+            result_wb = openpyxl.load_workbook(main_path, data_only=False)
+            try:
+                result_ws = result_wb.active
+                self.assertEqual(result_ws.column_dimensions["E"].width, 24)
+                self.assertEqual(result_ws.column_dimensions["F"].width, 24)
+                self.assertEqual(result_ws.cell(row=2, column=5).number_format, "#,##0.0")
+                self.assertTrue(result_ws.cell(row=2, column=5).font.italic)
+                self.assertEqual(result_ws.cell(row=2, column=5).fill.fill_type, "solid")
+                self.assertEqual(result_ws.cell(row=2, column=6).border.left.style, "thin")
             finally:
                 result_wb.close()

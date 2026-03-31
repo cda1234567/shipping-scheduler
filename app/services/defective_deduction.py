@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+from copy import copy
 from datetime import datetime
 from pathlib import Path
 
@@ -78,6 +79,46 @@ REVERSE_HEADER_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill
 CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
 
 
+def _get_main_worksheet(workbook):
+    if getattr(workbook, "worksheets", None):
+        return workbook.worksheets[0]
+    return workbook.active
+
+
+def _copy_column_layout(ws, source_col: int, target_col: int):
+    if source_col <= 0 or target_col <= 0 or source_col == target_col:
+        return
+
+    source_letter = openpyxl.utils.get_column_letter(source_col)
+    target_letter = openpyxl.utils.get_column_letter(target_col)
+    source_dimension = ws.column_dimensions[source_letter]
+    target_dimension = ws.column_dimensions[target_letter]
+
+    for attr in ("width", "hidden", "bestFit", "style", "outlineLevel", "collapsed"):
+        try:
+            setattr(target_dimension, attr, copy(getattr(source_dimension, attr)))
+        except Exception:
+            continue
+
+    for row_idx in range(1, ws.max_row + 1):
+        source_cell = ws.cell(row=row_idx, column=source_col)
+        target_cell = ws.cell(row=row_idx, column=target_col)
+        target_cell._style = copy(source_cell._style)
+        target_cell.number_format = source_cell.number_format
+        target_cell.protection = copy(source_cell.protection)
+        target_cell.alignment = copy(source_cell.alignment)
+        target_cell.font = copy(source_cell.font)
+        target_cell.fill = copy(source_cell.fill)
+        target_cell.border = copy(source_cell.border)
+
+
+def _prepare_new_entry_columns(ws, max_col: int, col_delta: int, col_stock: int):
+    source_stock_col = max_col
+    source_delta_col = max_col - 1 if max_col - 1 >= STOCK_SEARCH_START_COL else source_stock_col
+    _copy_column_layout(ws, source_delta_col, col_delta)
+    _copy_column_layout(ws, source_stock_col, col_stock)
+
+
 def deduct_defectives_from_main(
     main_path: str,
     items: list[dict],
@@ -96,12 +137,13 @@ def deduct_defectives_from_main(
 
     is_xlsm = Path(main_path).suffix.lower() == ".xlsm"
     wb = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
-    ws = wb.active
+    ws = _get_main_worksheet(wb)
     part_row_map = _build_part_row_map(ws)
     max_col = ws.max_column
 
     col_deduct = max_col + 1
     col_stock = max_col + 2
+    _prepare_new_entry_columns(ws, max_col, col_deduct, col_stock)
 
     # 寫表頭
     ts_label = datetime.now().strftime("%m/%d %H:%M")
@@ -136,8 +178,6 @@ def deduct_defectives_from_main(
         stock_cell.value = new_stock
         if new_stock < 0:
             stock_cell.fill = RED_FILL
-        else:
-            stock_cell.fill = PatternFill(fill_type=None)
 
         results.append({
             "part_number": part_upper,
@@ -178,12 +218,13 @@ def reverse_defectives_from_main(
 
     is_xlsm = Path(main_path).suffix.lower() == ".xlsm"
     wb = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
-    ws = wb.active
+    ws = _get_main_worksheet(wb)
     part_row_map = _build_part_row_map(ws)
     max_col = ws.max_column
 
     col_reverse = max_col + 1
     col_stock = max_col + 2
+    _prepare_new_entry_columns(ws, max_col, col_reverse, col_stock)
 
     ts_label = datetime.now().strftime("%m/%d %H:%M")
     reverse_header = ws.cell(row=1, column=col_reverse)
@@ -217,8 +258,6 @@ def reverse_defectives_from_main(
         stock_cell.value = new_stock
         if new_stock < 0:
             stock_cell.fill = RED_FILL
-        else:
-            stock_cell.fill = PatternFill(fill_type=None)
 
         results.append({
             "part_number": part_upper,
