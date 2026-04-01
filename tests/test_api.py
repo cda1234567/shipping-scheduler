@@ -98,7 +98,15 @@ class ApiTests(unittest.TestCase):
         mock_merge_supplements.assert_called_once_with(1, {"PART-1": 1200.0})
         mock_replace_decisions.assert_called_once_with([1], {1: {"PART-OLD": "IgnoreOnce"}})
         mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}})
-        mock_rebuild.assert_called_once_with([1, 2])
+        mock_rebuild.assert_called_once_with(
+            [1, 2],
+            {
+                1: {
+                    "decisions": {"PART-OLD": "IgnoreOnce"},
+                    "supplements": {"PART-1": 1200},
+                },
+            },
+        )
 
     def test_batch_merge_creates_merge_drafts(self):
         with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \

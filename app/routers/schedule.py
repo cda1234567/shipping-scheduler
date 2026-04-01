@@ -770,7 +770,16 @@ async def update_schedule_shortage_settings(req: BatchDispatchRequest):
         if item.get("order_id") is not None
     ))
     if active_draft_orders:
-        rebuild_merge_drafts(active_draft_orders)
+        rebuild_merge_drafts(
+            active_draft_orders,
+            {
+                order_id: {
+                    "decisions": decision_allocations.get(order_id, {}),
+                    "supplements": supplement_allocations.get(order_id, {}),
+                }
+                for order_id in normalized_order_ids
+            },
+        )
 
     db.log_activity("shortage_settings_update", f"更新右側補料設定 {len(normalized_order_ids)} 筆")
     return {"ok": True, "count": len(normalized_order_ids)}
