@@ -20,6 +20,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .. import database as db
 from ..config import MERGE_DRAFT_DIR, cfg
 from .download_names import append_minute_timestamp, build_generated_filename
+from .bom_editor import (
+    build_bom_storage_payload,
+    normalize_bom_record_to_editable,
+    parse_bom_for_storage,
+)
 from .bom_quantity import (
     calculate_effective_needed_qty,
     coerce_qty,
@@ -285,6 +290,26 @@ def _write_dispatch_values_to_ws(
             target_h_cell.fill = ORANGE_FILL
 
 
+def _ensure_editable_bom_for_draft(bom: dict) -> dict:
+    normalized = normalize_bom_record_to_editable(bom or {})
+    if normalized == bom:
+        return normalized
+
+    parsed = parse_bom_for_storage(
+        path=normalized["filepath"],
+        bom_id=normalized["id"],
+        filename=normalized["filename"],
+        uploaded_at=normalized["uploaded_at"],
+        group_model=normalized.get("group_model", ""),
+        source_filename=normalized.get("source_filename", ""),
+        source_format=normalized.get("source_format", ""),
+        is_converted=bool(normalized.get("is_converted")),
+    )
+    db.save_bom_file(build_bom_storage_payload(parsed))
+    db.log_activity("bom_convert", f"{bom.get('filename') or bom['id']} 已在副檔生成前轉為可編輯 xlsx")
+    return db.get_bom_file(bom["id"]) or normalized
+
+
 def _cleanup_draft_files(draft_id: int):
     for item in db.get_merge_draft_files(draft_id):
         Path(str(item.get("filepath") or "")).unlink(missing_ok=True)
@@ -529,6 +554,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         bom = db.get_bom_file(plan["bom_file_id"])
         if not bom:
             continue
+        bom = _ensure_editable_bom_for_draft(bom)
 
         source_path = Path(str(bom.get("filepath") or ""))
         if not source_path.exists():

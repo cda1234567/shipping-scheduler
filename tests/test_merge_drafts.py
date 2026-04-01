@@ -365,6 +365,39 @@ class MergeDraftDetailTests(unittest.TestCase):
             finally:
                 saved.close()
 
+    def test_ensure_editable_bom_for_draft_converts_old_xls_before_writing(self):
+        bom = {
+            "id": "bom-legacy",
+            "filename": "legacy.xls",
+            "filepath": "C:/bom-legacy.xls",
+            "uploaded_at": "2026-04-01T12:00:00",
+            "group_model": "MODEL-X",
+            "source_filename": "legacy.xls",
+            "source_format": "",
+            "is_converted": 0,
+        }
+
+        with patch("app.services.merge_drafts.normalize_bom_record_to_editable", return_value={
+            **bom,
+            "filename": "legacy.xlsx",
+            "filepath": "C:/bom-legacy.xlsx",
+            "source_format": ".xls",
+            "is_converted": True,
+        }) as mock_normalize, \
+             patch("app.services.merge_drafts.parse_bom_for_storage", return_value=type("ParsedBom", (), {"id": "bom-legacy", "filename": "legacy.xlsx", "path": "C:/bom-legacy.xlsx", "source_filename": "legacy.xls", "source_format": ".xls", "is_converted": True, "po_number": 0, "model": "", "pcb": "", "group_model": "MODEL-X", "order_qty": 0.0, "uploaded_at": "2026-04-01T12:00:00", "components": []})()) as mock_parse, \
+             patch("app.services.merge_drafts.build_bom_storage_payload", return_value={"id": "bom-legacy"}) as mock_payload, \
+             patch("app.services.merge_drafts.db.save_bom_file") as mock_save, \
+             patch("app.services.merge_drafts.db.log_activity") as mock_log, \
+             patch("app.services.merge_drafts.db.get_bom_file", return_value={"id": "bom-legacy", "filename": "legacy.xlsx", "filepath": "C:/bom-legacy.xlsx"}):
+            result = merge_drafts._ensure_editable_bom_for_draft(bom)
+
+        self.assertEqual(result["filepath"], "C:/bom-legacy.xlsx")
+        mock_normalize.assert_called_once_with(bom)
+        mock_parse.assert_called_once()
+        mock_payload.assert_called_once()
+        mock_save.assert_called_once_with({"id": "bom-legacy"})
+        mock_log.assert_called_once()
+
     def test_restore_recent_committed_merge_drafts_reactivates_and_rebuilds(self):
         active_drafts = [{"id": 7, "order_id": 21}]
 
