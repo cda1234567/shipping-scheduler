@@ -15,6 +15,7 @@ RUN apt-get update \
 COPY app /app/app
 COPY static /app/static
 COPY templates /app/templates
+COPY tools /app/tools
 COPY config.yaml /app/config.yaml
 COPY main.py /app/main.py
 
