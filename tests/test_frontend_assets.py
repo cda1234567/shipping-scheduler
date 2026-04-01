@@ -31,7 +31,7 @@ class FrontendAssetTests(unittest.TestCase):
         text = schedule_module.read_text(encoding="utf-8")
 
         match = re.search(
-            r"function\s+buildRowCard\s*\(r,\s*resultMap\)\s*\{(?P<body>.*?)\n\}",
+            r"function\s+buildRowCard\s*\(r,\s*resultMap(?:,\s*visibleShortageTotals\s*=\s*null)?\)\s*\{(?P<body>.*?)\n\}",
             text,
             re.S,
         )
@@ -201,6 +201,17 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);", schedule_module)
         self.assertIn("supplement_qty: supplementQty,", schedule_module)
         self.assertIn("default_supplement: supplementQty,", schedule_module)
+
+    def test_order_badge_reuses_visible_right_panel_shortages_for_checked_rows(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn("function buildCheckedOrderVisibleShortageBadgeMap()", schedule_module)
+        self.assertIn("const { shortages, csShortages } = buildRightPanelShortageData();", schedule_module)
+        self.assertIn("badgeMap.set(orderId, (badgeMap.get(orderId) || 0) + Number(item?.shortage_amount || 0));", schedule_module)
+        self.assertIn("const visibleShortageTotals = buildCheckedOrderVisibleShortageBadgeMap();", schedule_module)
+        self.assertIn("const total = Number(visibleShortageTotals.get(orderId) || 0);", schedule_module)
+        self.assertIn("effective.status === \"no_bom\"", schedule_module)
 
     def test_right_panel_save_removes_row_when_supplement_turns_balance_positive(self):
         root = Path(__file__).resolve().parents[1]

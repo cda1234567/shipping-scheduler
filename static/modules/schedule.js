@@ -563,14 +563,14 @@ function buildDraftPanelHtmlLegacyBase(draft) {
 }
 
 // ── Build single-row card ─────────────────────────────────────────────────────
-function buildRowCard(r, resultMap) {
+function buildRowCard(r, resultMap, visibleShortageTotals = null) {
   const div = document.createElement("div");
   div.className = "po-group";
   div.dataset.orderId = r.id;
 
   const res = resultMap[r.id];
   const draft = _draftsByOrderId?.[r.id] || null;
-  const badge = buildOrderBadge(r, res);
+  const badge = buildOrderBadge(r, res, visibleShortageTotals);
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
   const code = esc(r.code || "");
@@ -882,12 +882,22 @@ function getEffectiveShortageState(row, res = null) {
   };
 }
 
-function buildOrderBadge(row, res) {
+function buildOrderBadge(row, res, visibleShortageTotals = null) {
   if (!res && row?.id !== undefined && !_checkedIds.has(row.id)) {
     return { cls: "badge-unchecked", text: "—" };
   }
 
+  const orderId = normalizeOrderId(row?.id);
   const effective = getEffectiveShortageState(row, res);
+  if (Number.isInteger(orderId) && _checkedIds.has(orderId) && visibleShortageTotals instanceof Map && (effective.hasDraft || res)) {
+    const total = Number(visibleShortageTotals.get(orderId) || 0);
+    return total > 0
+      ? { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` }
+      : effective.status === "no_bom"
+        ? { cls: "badge-no-bom", text: "BOM未上傳" }
+        : { cls: "badge-ok", text: "OK" };
+  }
+
   if (effective.hasDraft) {
     const total = [...effective.shortages, ...effective.customer_material_shortages]
       .reduce((sum, item) => sum + (item.shortage_amount || 0), 0);
@@ -970,6 +980,17 @@ function buildRightPanelShortageData() {
   }
 
   return { shortages, csShortages };
+}
+
+function buildCheckedOrderVisibleShortageBadgeMap() {
+  const badgeMap = new Map();
+  const { shortages, csShortages } = buildRightPanelShortageData();
+  for (const item of [...shortages, ...csShortages]) {
+    const orderId = normalizeOrderId(item?._order_id);
+    if (!Number.isInteger(orderId)) continue;
+    badgeMap.set(orderId, (badgeMap.get(orderId) || 0) + Number(item?.shortage_amount || 0));
+  }
+  return badgeMap;
 }
 
 function buildRawModalShortageGroups(targets) {
@@ -3104,6 +3125,7 @@ function initSortable(container) {
 function updateStatusOnly() {
   const resultMap = {};
   _calcResults.forEach((r, i) => { resultMap[_rows[i]?.id] = r; });
+  const visibleShortageTotals = buildCheckedOrderVisibleShortageBadgeMap();
 
   document.querySelectorAll("#schedule-scroll .po-group[data-order-id]").forEach(div => {
     const orderId = parseInt(div.dataset.orderId);
@@ -3111,7 +3133,7 @@ function updateStatusOnly() {
     const res = resultMap[orderId];
     const badge = div.querySelector(".po-status-badge");
     if (badge) {
-      const b = buildOrderBadge(row, res);
+      const b = buildOrderBadge(row, res, visibleShortageTotals);
       badge.className = `po-status-badge ${b.cls}`;
       badge.textContent = b.text;
     }
@@ -3965,9 +3987,10 @@ function renderSchedule() {
   try {
     const resultMap = {};
     _calcResults.forEach((r, i) => { resultMap[_rows[i]?.id] = r; });
+    const visibleShortageTotals = buildCheckedOrderVisibleShortageBadgeMap();
 
     _rows.forEach(row => {
-      container.appendChild(buildRowCard(row, resultMap));
+      container.appendChild(buildRowCard(row, resultMap, visibleShortageTotals));
     });
 
     initSortable(container);
