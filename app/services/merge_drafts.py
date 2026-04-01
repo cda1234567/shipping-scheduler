@@ -75,6 +75,24 @@ def _normalize_supplements(supplements: dict[str, float] | None = None) -> dict[
     return normalized
 
 
+def _get_persisted_decision_map(order_ids: list[int]) -> dict[int, dict[str, str]]:
+    if not order_ids:
+        return {}
+    return {
+        int(order_id): _normalize_decisions(decisions)
+        for order_id, decisions in db.get_order_decisions(order_ids).items()
+    }
+
+
+def _get_persisted_supplement_map(order_ids: list[int]) -> dict[int, dict[str, float]]:
+    if not order_ids:
+        return {}
+    return {
+        int(order_id): _normalize_supplements(supplements)
+        for order_id, supplements in db.get_order_supplements(order_ids).items()
+    }
+
+
 def _get_main_signature(main_path: str) -> tuple[str, str]:
     path = Path(main_path)
     if not path.exists():
@@ -320,10 +338,13 @@ def _plan_order_draft(
     running_stock: dict[str, float],
     moq_map: dict[str, float],
     st_inventory_stock: dict[str, float] | None = None,
+    *,
+    decisions: dict[str, str] | None = None,
+    supplements: dict[str, float] | None = None,
 ) -> dict:
     st_inventory_stock = st_inventory_stock or {}
-    decisions = _normalize_decisions(draft.get("decisions"))
-    remaining_supplements = _normalize_supplements(draft.get("supplements"))
+    decisions = _normalize_decisions(decisions if decisions is not None else draft.get("decisions"))
+    remaining_supplements = _normalize_supplements(supplements if supplements is not None else draft.get("supplements"))
     file_plans: list[dict] = []
     shortages: list[dict] = []
     schedule_order_qty = coerce_qty(order.get("order_qty"))
@@ -521,16 +542,16 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             "supplements": _normalize_supplements((payload or {}).get("supplements")),
         }
 
+    persisted_decisions_by_order = _get_persisted_decision_map(normalized_ids)
+    persisted_supplements_by_order = _get_persisted_supplement_map(normalized_ids)
     for raw_order_id in normalized_ids:
         order = db.get_order(raw_order_id)
         if not order:
             continue
         existing = db.get_active_merge_draft_for_order(raw_order_id) or {}
         payload = normalized_overrides.get(raw_order_id, {})
-        persisted_decisions = db.get_decisions_for_order(raw_order_id)
-        persisted_supplements = db.get_order_supplements([raw_order_id]).get(raw_order_id, {})
-        decisions = payload.get("decisions", persisted_decisions)
-        supplements = payload.get("supplements", persisted_supplements)
+        decisions = payload.get("decisions", persisted_decisions_by_order.get(raw_order_id, {}))
+        supplements = payload.get("supplements", persisted_supplements_by_order.get(raw_order_id, {}))
         db.replace_merge_draft(
             order_id=raw_order_id,
             main_file_path=main_path,
@@ -554,10 +575,14 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
 
     st_inventory_stock = db.get_st_inventory_stock()
     refreshed_ids: set[int] = set()
+    active_order_ids = [int(draft["order_id"]) for draft in active_drafts]
+    active_decisions_by_order = _get_persisted_decision_map(active_order_ids)
+    active_supplements_by_order = _get_persisted_supplement_map(active_order_ids)
 
     for draft in active_drafts:
         draft_id = int(draft["id"])
-        order = db.get_order(int(draft["order_id"]))
+        order_id = int(draft["order_id"])
+        order = db.get_order(order_id)
         if not order or order.get("status") not in ("pending", "merged"):
             _cleanup_draft_files(draft_id)
             db.delete_merge_draft(draft_id)
@@ -565,14 +590,25 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
 
         td0 = time.monotonic()
         bom_files = db.get_bom_files_by_models([str(order.get("model") or "")])
-        plan = _plan_order_draft(order, draft, bom_files, running_stock, moq_map, st_inventory_stock)
+        effective_decisions = active_decisions_by_order.get(order_id, {})
+        effective_supplements = active_supplements_by_order.get(order_id, {})
+        plan = _plan_order_draft(
+            order,
+            draft,
+            bom_files,
+            running_stock,
+            moq_map,
+            st_inventory_stock,
+            decisions=effective_decisions,
+            supplements=effective_supplements,
+        )
         db.replace_merge_draft(
             order_id=int(order["id"]),
             main_file_path=main_path,
             main_file_mtime_ns=main_mtime_ns,
             main_loaded_at=main_loaded_at,
-            decisions=draft.get("decisions", {}),
-            supplements=draft.get("supplements", {}),
+            decisions=effective_decisions,
+            supplements=effective_supplements,
             shortages=plan["shortages"],
         )
         refreshed = db.get_active_merge_draft_for_order(int(order["id"]))
@@ -671,18 +707,22 @@ def _build_draft_file_preview_rows(
 
 def get_schedule_draft_map() -> dict[int, dict]:
     drafts = db.get_active_merge_drafts()
+    order_ids = [int(draft["order_id"]) for draft in drafts]
+    decisions_by_order = _get_persisted_decision_map(order_ids)
+    supplements_by_order = _get_persisted_supplement_map(order_ids)
     result: dict[int, dict] = {}
     for draft in drafts:
-        result[int(draft["order_id"])] = {
+        order_id = int(draft["order_id"])
+        result[order_id] = {
             "id": int(draft["id"]),
-            "order_id": int(draft["order_id"]),
+            "order_id": order_id,
             "status": draft.get("status", "active"),
             "model": draft.get("model", ""),
             "po_number": draft.get("po_number", ""),
             "main_loaded_at": draft.get("main_loaded_at", ""),
             "updated_at": draft.get("updated_at", ""),
-            "supplements": draft.get("supplements", {}),
-            "decisions": draft.get("decisions", {}),
+            "supplements": supplements_by_order.get(order_id, {}),
+            "decisions": decisions_by_order.get(order_id, {}),
             "shortages": draft.get("shortages", []),
             "files": [
                 {
@@ -702,8 +742,10 @@ def get_draft_detail(draft_id: int) -> dict:
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到副檔草稿")
-    order = db.get_order(int(draft["order_id"]))
-    decisions = _normalize_decisions(draft.get("decisions"))
+    order_id = int(draft["order_id"])
+    order = db.get_order(order_id)
+    decisions = _get_persisted_decision_map([order_id]).get(order_id, {})
+    supplements = _get_persisted_supplement_map([order_id]).get(order_id, {})
     shortages_by_part = {
         normalize_part_key(item.get("part_number")): item
         for item in (draft.get("shortages") or [])
@@ -722,12 +764,12 @@ def get_draft_detail(draft_id: int) -> dict:
     return {
         "draft": {
             "id": int(draft["id"]),
-            "order_id": int(draft["order_id"]),
+            "order_id": order_id,
             "status": draft.get("status", "active"),
             "main_loaded_at": draft.get("main_loaded_at", ""),
             "updated_at": draft.get("updated_at", ""),
-            "supplements": draft.get("supplements", {}),
-            "decisions": draft.get("decisions", {}),
+            "supplements": supplements,
+            "decisions": decisions,
             "shortages": draft.get("shortages", []),
             "files": files,
         },

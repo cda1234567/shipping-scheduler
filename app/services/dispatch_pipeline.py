@@ -331,14 +331,15 @@ def load_active_merge_draft_context(draft_id: int, main_path: str) -> DispatchCo
     if str(draft.get("main_file_mtime_ns") or "") != current_main_signature(resolved_main_path):
         raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
 
-    order, groups, all_components = prepare_dispatch_context(int(draft["order_id"]), resolved_main_path)
+    order_id = int(draft["order_id"])
+    order, groups, all_components = prepare_dispatch_context(order_id, resolved_main_path)
     return DispatchContext(
         draft=draft,
         order=order,
         groups=groups,
         all_components=all_components,
-        decisions=normalize_decisions(draft.get("decisions")),
-        supplements=normalize_supplements(draft.get("supplements")),
+        decisions=normalize_decisions(db.get_order_decisions([order_id]).get(order_id, {})),
+        supplements=normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {})),
     )
 
 

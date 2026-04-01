@@ -98,15 +98,7 @@ class ApiTests(unittest.TestCase):
         mock_merge_supplements.assert_called_once_with(1, {"PART-1": 1200.0})
         mock_replace_decisions.assert_called_once_with([1], {1: {"PART-OLD": "IgnoreOnce"}})
         mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}})
-        mock_rebuild.assert_called_once_with(
-            [1, 2],
-            {
-                1: {
-                    "decisions": {"PART-OLD": "IgnoreOnce"},
-                    "supplements": {"PART-1": 1200},
-                },
-            },
-        )
+        mock_rebuild.assert_called_once_with([1, 2])
 
     def test_batch_merge_creates_merge_drafts(self):
         with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
@@ -142,19 +134,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["count"], 2)
         self.assertEqual(response.json()["draft_count"], 2)
         mock_allocations.assert_called_once_with([1, 2], {"part-1": 3000})
-        mock_rebuild.assert_called_once_with(
-            [1, 2],
-            {
-                1: {
-                    "decisions": {"part-1": "Shortage"},
-                    "supplements": {"PART-1": 3000},
-                },
-                2: {
-                    "decisions": {"part-1": "Shortage"},
-                    "supplements": {},
-                },
-            },
-        )
+        mock_rebuild.assert_called_once_with([1, 2])
 
     def test_update_selected_schedule_drafts_prefers_order_scoped_supplements(self):
         with patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
@@ -179,19 +159,7 @@ class ApiTests(unittest.TestCase):
             })
 
         self.assertEqual(response.status_code, 200)
-        mock_rebuild.assert_called_once_with(
-            [1, 2],
-            {
-                1: {
-                    "decisions": {},
-                    "supplements": {"IC-STM32F": 100.0},
-                },
-                2: {
-                    "decisions": {},
-                    "supplements": {"IC-STM32F": 50.0},
-                },
-            },
-        )
+        mock_rebuild.assert_called_once_with([1, 2])
 
     def test_download_selected_schedule_drafts_proxies_to_bundle_service(self):
         with patch(
@@ -730,6 +698,8 @@ class ApiTests(unittest.TestCase):
                 return ""
 
             with patch("app.routers.schedule.db.get_merge_draft", return_value=draft), \
+                 patch("app.routers.schedule.db.get_order_decisions", return_value={1: {"PART-1": "Shortage"}}), \
+                 patch("app.routers.schedule.db.get_order_supplements", return_value={1: {"PART-1": 3000}}), \
                  patch("app.routers.schedule.db.resolve_managed_path", side_effect=fake_resolve), \
                  patch("app.routers.schedule._prepare_dispatch_context", return_value=(order, [{"components": []}], [])):
                 context = schedule_router._load_active_merge_draft_context(9, str(main_path))
@@ -1133,8 +1103,17 @@ class ApiTests(unittest.TestCase):
         mock_rollback.assert_called_once_with([{"id": 11, "order_id": 1}])
 
     def test_update_schedule_draft_rebuilds_from_saved_payload(self):
+        call_order = []
+
+        def _record(name):
+            def _inner(*args, **kwargs):
+                call_order.append(name)
+            return _inner
+
         with patch("app.routers.schedule.db.get_merge_draft", return_value={"id": 5, "order_id": 1, "status": "active"}), \
-             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 8}]) as mock_rebuild, \
+             patch("app.routers.schedule.rebuild_merge_drafts", side_effect=lambda order_ids: (call_order.append("rebuild"), [{"id": 8}])[1]) as mock_rebuild, \
+             patch("app.routers.schedule.db.replace_order_decisions", side_effect=_record("decisions")) as mock_replace_decisions, \
+             patch("app.routers.schedule.db.replace_order_supplements", side_effect=_record("supplements")) as mock_replace_supplements, \
              patch("app.routers.schedule.db.get_active_merge_draft_for_order", return_value={"id": 8, "order_id": 1, "status": "active"}), \
              patch("app.routers.schedule.get_draft_detail", return_value={"draft": {"id": 8, "supplements": {"PART-1": 3000}}}), \
              patch("app.routers.schedule.db.log_activity"):
@@ -1146,15 +1125,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["draft"]["id"], 8)
         self.assertEqual(response.json()["refreshed_count"], 1)
-        mock_rebuild.assert_called_once_with(
-            [1],
-            {
-                1: {
-                    "decisions": {"part-1": "Shortage"},
-                    "supplements": {"part-1": 3000},
-                }
-            },
-        )
+        mock_replace_decisions.assert_called_once_with([1], {1: {"PART-1": "Shortage"}})
+        mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 3000.0}})
+        mock_rebuild.assert_called_once_with([1])
+        self.assertEqual(call_order, ["decisions", "supplements", "rebuild"])
 
     def test_commit_schedule_draft_uses_latest_saved_draft_context(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1496,6 +1496,36 @@ def replace_order_decisions(order_ids: list[int], allocations: dict[int, dict[st
                 )
 
 
+def get_order_decisions(order_ids: list[int] | None = None) -> dict[int, dict[str, str]]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+
+    sql = "SELECT order_id, part_number, decision FROM decisions"
+    params: list[int] = []
+    if normalized_ids:
+        placeholders = ",".join("?" * len(normalized_ids))
+        sql += f" WHERE order_id IN ({placeholders})"
+        params.extend(normalized_ids)
+    sql += " ORDER BY order_id, part_number"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    result: dict[int, dict[str, str]] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        result.setdefault(order_id, {})
+        decision = str(row["decision"] or "").strip()
+        if decision and decision != "None":
+            result[order_id][str(row["part_number"]).strip().upper()] = decision
+    return result
+
+
 def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[str, float]] | None = None):
     normalized_ids: list[int] = []
     for order_id in order_ids or []:

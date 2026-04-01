@@ -37,7 +37,6 @@ from ..services.dispatch_pipeline import (
     normalize_order_supplements as _normalize_order_supplements,
     normalize_order_supplement_updates as _normalize_order_supplement_updates,
     normalize_supplements as _normalize_supplements,
-    normalize_supplements_preserve_keys as _normalize_supplements_preserve_keys,
     prepare_dispatch_context as _prepare_dispatch_context,
     require_existing_main_path as _require_existing_main_path,
 )
@@ -157,9 +156,7 @@ def _merge_order_supplement_allocations(
 
 
 def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None) -> dict[str, str]:
-    draft = db.get_active_merge_draft_for_order(order_id) or {}
-    merged = _normalize_decisions(draft.get("decisions"))
-    merged.update(_normalize_decisions(db.get_decisions_for_order(order_id)))
+    merged = _normalize_decisions(db.get_order_decisions([order_id]).get(order_id, {}))
     for part, decision in (updates or {}).items():
         key = str(part or "").strip().upper()
         value = str(decision or "").strip() or "None"
@@ -173,9 +170,7 @@ def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None
 
 
 def _merge_supplement_updates(order_id: int, updates: dict[str, float] | None = None) -> dict[str, float]:
-    draft = db.get_active_merge_draft_for_order(order_id) or {}
-    merged = _normalize_supplements(draft.get("supplements"))
-    merged.update(_normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {})))
+    merged = _normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {}))
     for part, qty in (updates or {}).items():
         key = str(part or "").strip().upper()
         if not key:
@@ -276,14 +271,15 @@ def _load_active_merge_draft_context(draft_id: int, main_path: str):
     if str(draft.get("main_file_mtime_ns") or "") != _current_main_signature(resolved_main_path):
         raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
 
-    order, groups, all_components = _prepare_dispatch_context(int(draft["order_id"]), resolved_main_path)
+    order_id = int(draft["order_id"])
+    order, groups, all_components = _prepare_dispatch_context(order_id, resolved_main_path)
     return DispatchContext(
         draft=draft,
         order=order,
         groups=groups,
         all_components=all_components,
-        decisions=_normalize_decisions(draft.get("decisions")),
-        supplements=_normalize_supplements(draft.get("supplements")),
+        decisions=_normalize_decisions(db.get_order_decisions([order_id]).get(order_id, {})),
+        supplements=_normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {})),
     )
 
 
@@ -770,16 +766,7 @@ async def update_schedule_shortage_settings(req: BatchDispatchRequest):
         if item.get("order_id") is not None
     ))
     if active_draft_orders:
-        rebuild_merge_drafts(
-            active_draft_orders,
-            {
-                order_id: {
-                    "decisions": decision_allocations.get(order_id, {}),
-                    "supplements": supplement_allocations.get(order_id, {}),
-                }
-                for order_id in normalized_order_ids
-            },
-        )
+        rebuild_merge_drafts(active_draft_orders)
 
     db.log_activity("shortage_settings_update", f"更新右側補料設定 {len(normalized_order_ids)} 筆")
     return {"ok": True, "count": len(normalized_order_ids)}
@@ -822,19 +809,9 @@ async def update_selected_schedule_drafts(req: BatchDispatchRequest):
         req.supplements,
         _normalize_order_supplements(req.order_supplements),
     )
-    refreshed = rebuild_merge_drafts(
-        normalized_order_ids,
-        {
-            order_id: {
-                "decisions": scoped_decisions.get(order_id) or req.decisions,
-                "supplements": supplement_allocations.get(order_id, {}),
-            }
-            for order_id in normalized_order_ids
-        },
-    )
     db.replace_order_decisions(normalized_order_ids, decision_allocations)
-    # 同步更新 order_supplements，讓發料單、右側面板等都能讀到最新補料值
     db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+    refreshed = rebuild_merge_drafts(normalized_order_ids)
     drafts = get_schedule_draft_map()
     db.log_activity("merge_draft_batch_update", f"批次更新副檔 {len(normalized_order_ids)} 筆")
     return {
@@ -871,20 +848,11 @@ async def update_schedule_draft(draft_id: int, req: DecisionRequest):
         order_id: _merge_decision_updates(order_id, req.decisions or {})
     }
     supplement_allocations = {
-        order_id: _normalize_supplements_preserve_keys(req.supplements or {})
+        order_id: _normalize_supplements(req.supplements or {})
     }
-    refreshed = rebuild_merge_drafts(
-        [order_id],
-        {
-            order_id: {
-                "decisions": req.decisions,
-                "supplements": supplement_allocations.get(order_id, {}),
-            }
-        },
-    )
     db.replace_order_decisions([order_id], decision_allocations)
-    # 同步更新 order_supplements，讓生成發料單也能讀到最新補料值
     db.replace_order_supplements([order_id], supplement_allocations)
+    refreshed = rebuild_merge_drafts([order_id])
 
     current = db.get_active_merge_draft_for_order(order_id)
     if not current:
