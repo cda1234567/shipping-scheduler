@@ -28,6 +28,42 @@ def _copy_xls_to_xlsx_values(src_path: Path, dest_path: Path):
     wb.close()
 
 
+def _find_libreoffice_executable() -> str | None:
+    return shutil.which("soffice") or shutil.which("libreoffice")
+
+
+def _convert_with_libreoffice(src_path: Path, dest_path: Path):
+    soffice = _find_libreoffice_executable()
+    if not soffice:
+        raise FileNotFoundError("LibreOffice not found")
+
+    expected_path = src_path.with_suffix(".xlsx")
+    expected_path.unlink(missing_ok=True)
+    if dest_path != expected_path:
+        dest_path.unlink(missing_ok=True)
+
+    subprocess.run(
+        [
+            soffice,
+            "--headless",
+            "--convert-to",
+            "xlsx",
+            "--outdir",
+            str(src_path.parent),
+            str(src_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    if not expected_path.exists():
+        raise FileNotFoundError(f"LibreOffice did not create converted file: {expected_path}")
+
+    if expected_path != dest_path:
+        expected_path.replace(dest_path)
+
+
 def convert_xls_to_xlsx(src_path: str, dest_path: str):
     """
     將 .xls 轉成 .xlsx。
@@ -69,6 +105,13 @@ try {{
             capture_output=True,
             text=True,
         )
+        return
+    except Exception:
+        pass
+
+    try:
+        _convert_with_libreoffice(src, dest)
+        return
     except Exception:
         _copy_xls_to_xlsx_values(src, dest)
 

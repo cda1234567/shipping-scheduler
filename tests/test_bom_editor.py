@@ -11,6 +11,7 @@ from app.models import BomEditorComponentUpdate, BomEditorSaveRequest
 from app.services.bom_editor import (
     apply_bom_editor_changes,
     build_editable_filename,
+    convert_xls_to_xlsx,
     prepare_uploaded_bom_file,
 )
 
@@ -84,6 +85,45 @@ class BomEditorTests(unittest.TestCase):
         self.assertEqual(build_editable_filename("legacy.xls"), "legacy.xlsx")
         self.assertEqual(build_editable_filename("modern.xlsx"), "modern.xlsx")
         self.assertEqual(build_editable_filename("macro.xlsm"), "macro.xlsm")
+
+    def test_convert_xls_to_xlsx_uses_libreoffice_when_powershell_unavailable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src = temp_path / "legacy.xls"
+            dest = temp_path / "legacy.xlsx"
+            src.write_bytes(b"legacy")
+
+            def fake_run(cmd, check, capture_output, text):
+                exe = Path(str(cmd[0])).name.lower()
+                if exe == "powershell":
+                    raise RuntimeError("excel com unavailable")
+                if exe in {"soffice", "libreoffice"}:
+                    wb = Workbook()
+                    wb.save(dest)
+                    wb.close()
+                    return None
+                raise AssertionError(f"Unexpected command: {cmd}")
+
+            with patch("app.services.bom_editor.shutil.which", side_effect=lambda name: "soffice" if name == "soffice" else None), \
+                 patch("app.services.bom_editor.subprocess.run", side_effect=fake_run), \
+                 patch("app.services.bom_editor._copy_xls_to_xlsx_values") as copy_fallback:
+                convert_xls_to_xlsx(str(src), str(dest))
+                self.assertTrue(dest.exists())
+                copy_fallback.assert_not_called()
+
+    def test_convert_xls_to_xlsx_falls_back_to_value_copy_when_all_converters_fail(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            src = temp_path / "legacy.xls"
+            dest = temp_path / "legacy.xlsx"
+            src.write_bytes(b"legacy")
+
+            with patch("app.services.bom_editor.shutil.which", return_value="soffice"), \
+                 patch("app.services.bom_editor.subprocess.run", side_effect=RuntimeError("all converters failed")), \
+                 patch("app.services.bom_editor._copy_xls_to_xlsx_values") as copy_fallback:
+                convert_xls_to_xlsx(str(src), str(dest))
+
+        copy_fallback.assert_called_once_with(src, dest)
 
     def test_apply_bom_editor_changes_updates_workbook_cells(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -7,7 +7,10 @@ ENV APP_PORT=8765
 WORKDIR /app
 
 COPY requirements-server.txt /app/requirements-server.txt
-RUN pip install --no-cache-dir -r /app/requirements-server.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-calc \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r /app/requirements-server.txt
 
 COPY app /app/app
 COPY static /app/static
