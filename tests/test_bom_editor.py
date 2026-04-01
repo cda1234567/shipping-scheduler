@@ -93,7 +93,7 @@ class BomEditorTests(unittest.TestCase):
             dest = temp_path / "legacy.xlsx"
             src.write_bytes(b"legacy")
 
-            def fake_run(cmd, check, capture_output, text):
+            def fake_run(cmd, check, **kwargs):
                 exe = Path(str(cmd[0])).name.lower()
                 if exe == "powershell":
                     raise RuntimeError("excel com unavailable")

@@ -53,8 +53,8 @@ def _convert_with_libreoffice(src_path: Path, dest_path: Path):
             str(src_path),
         ],
         check=True,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
     if not expected_path.exists():
@@ -102,8 +102,8 @@ try {{
         subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
             check=True,
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         return
     except Exception:
@@ -205,6 +205,15 @@ def normalize_bom_record_to_editable(bom: dict) -> dict:
         return dict(bom)
 
     target_path = BOM_DIR / f"{bom['id']}.xlsx"
+    if not filepath.exists() and target_path.exists():
+        normalized = dict(bom)
+        normalized["filepath"] = str(target_path)
+        normalized["source_filename"] = bom.get("source_filename") or bom.get("filename") or filepath.name
+        normalized["source_format"] = bom.get("source_format") or ".xls"
+        normalized["filename"] = build_editable_filename(bom.get("filename") or filepath.name)
+        normalized["is_converted"] = True
+        return normalized
+
     convert_xls_to_xlsx(str(filepath), str(target_path))
     filepath.unlink(missing_ok=True)
 
