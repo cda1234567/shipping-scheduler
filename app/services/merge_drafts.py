@@ -123,6 +123,37 @@ def _build_running_stock(main_path: str) -> dict[str, float]:
     }
 
 
+def _sanitize_resolved_shortage_decisions(
+    part_totals: dict[str, dict[str, float]],
+    running_stock: dict[str, float],
+    decisions: dict[str, str] | None = None,
+    supplements: dict[str, float] | None = None,
+) -> dict[str, str]:
+    sanitized = _normalize_decisions(decisions)
+    normalized_supplements = _normalize_supplements(supplements)
+
+    for part, summary in (part_totals or {}).items():
+        if sanitized.get(part) != "Shortage":
+            continue
+
+        current_stock = float(running_stock.get(part, 0) or 0)
+        prev_qty_cs = float(summary.get("prev_qty_cs") or 0)
+        needed_qty = float(summary.get("needed_qty") or 0)
+        available_before = current_stock + prev_qty_cs
+        shortage_before = calculate_current_order_shortage_amount(part, available_before, needed_qty)
+        planned_supplement = float(normalized_supplements.get(part, 0) or 0)
+        shortage_with_planned_supply = calculate_current_order_shortage_amount(
+            part,
+            available_before + planned_supplement,
+            needed_qty,
+        )
+
+        if shortage_before <= 0 or (planned_supplement > 0 and shortage_with_planned_supply <= 0):
+            sanitized.pop(part, None)
+
+    return sanitized
+
+
 def _resolve_cell_for_write(ws, row_idx: int, col_idx: int):
     cell = ws.cell(row=row_idx, column=col_idx)
     for merged_range in ws.merged_cells.ranges:
@@ -385,6 +416,13 @@ def _plan_order_draft(
             summary["needed_qty"] += needed_qty
             summary["prev_qty_cs"] += float(component.get("prev_qty_cs") or 0)
 
+        decisions = _sanitize_resolved_shortage_decisions(
+            part_totals,
+            running_stock,
+            decisions,
+            remaining_supplements,
+        )
+
         for part, summary in part_totals.items():
             current_stock = float(running_stock.get(part, 0))
             prev_qty_cs = float(summary.get("prev_qty_cs") or 0)
@@ -463,6 +501,7 @@ def _plan_order_draft(
         "running_stock": running_stock,
         "file_plans": file_plans,
         "shortages": shortages,
+        "decisions": decisions,
     }
 
 
@@ -590,7 +629,8 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
 
         td0 = time.monotonic()
         bom_files = db.get_bom_files_by_models([str(order.get("model") or "")])
-        effective_decisions = active_decisions_by_order.get(order_id, {})
+        effective_decisions = dict(active_decisions_by_order.get(order_id, {}))
+        original_decisions = dict(effective_decisions)
         effective_supplements = active_supplements_by_order.get(order_id, {})
         plan = _plan_order_draft(
             order,
@@ -602,6 +642,11 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             decisions=effective_decisions,
             supplements=effective_supplements,
         )
+        sanitized_decisions = plan.get("decisions") if "decisions" in plan else effective_decisions
+        effective_decisions = _normalize_decisions(sanitized_decisions)
+        if effective_decisions != original_decisions:
+            db.replace_order_decisions([order_id], {order_id: effective_decisions})
+            active_decisions_by_order[order_id] = effective_decisions
         db.replace_merge_draft(
             order_id=int(order["id"]),
             main_file_path=main_path,

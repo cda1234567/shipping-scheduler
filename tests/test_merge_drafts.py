@@ -163,6 +163,27 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(plan["shortages"][0]["prev_qty_cs"], 2.0)
         self.assertEqual(plan["shortages"][0]["resulting_stock"], -1.0)
 
+    def test_plan_order_draft_clears_shortage_decision_when_saved_supplement_already_resolves_it(self):
+        order = {"id": 21, "code": "3-1", "model": "MODEL-C"}
+        draft = {"decisions": {"PART-1": "Shortage"}, "supplements": {"PART-1": 10}}
+        bom_files = [{"id": "bom-3", "model": "MODEL-C", "group_model": "MODEL-C"}]
+        running_stock = {"PART-1": 5.0}
+        moq_map = {"PART-1": 0.0}
+        components = [{
+            "part_number": "PART-1",
+            "description": "Resolved part",
+            "needed_qty": 10,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with patch("app.services.merge_drafts.db.get_bom_components", return_value=components):
+            plan = merge_drafts._plan_order_draft(order, draft, bom_files, running_stock, moq_map)
+
+        self.assertEqual(plan["decisions"], {})
+        self.assertEqual(plan["shortages"], [])
+        self.assertEqual(plan["file_plans"][0]["supplements"], {"PART-1": 10.0})
+
     def test_plan_order_draft_keeps_total_supply_suggestion_when_st_covers_part_of_shortage(self):
         order = {"id": 22, "code": "3-2", "model": "MODEL-ST"}
         draft = {"decisions": {}, "supplements": {}}
@@ -364,6 +385,7 @@ class MergeDraftDetailTests(unittest.TestCase):
                  patch("app.services.merge_drafts._build_running_stock", return_value={}), \
                  patch("app.services.merge_drafts._load_effective_moq", return_value={}), \
                  patch("app.services.merge_drafts.db.get_st_inventory_stock", return_value={}), \
+                 patch("app.services.merge_drafts.db.replace_order_decisions"), \
                  patch("app.services.merge_drafts._cleanup_draft_files"), \
                  patch("app.services.merge_drafts._write_draft_files", return_value=[]), \
                  patch("app.services.merge_drafts.db.replace_merge_draft_files"), \
@@ -371,9 +393,55 @@ class MergeDraftDetailTests(unittest.TestCase):
                      "running_stock": {},
                      "file_plans": [],
                      "shortages": [],
+                     "decisions": kwargs["decisions"],
                  }):
                 merge_drafts.rebuild_merge_drafts([12])
 
         self.assertEqual(len(plan_calls), 1)
         self.assertEqual(plan_calls[0]["decisions"], {"PART-NEW": "Shortage"})
         self.assertEqual(plan_calls[0]["supplements"], {"PART-NEW": 2200.0})
+
+    def test_rebuild_merge_drafts_persists_cleaned_shortage_decisions(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"test")
+
+            with patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
+                "main_file_path": str(main_path),
+                "main_loaded_at": "2026-04-01T10:00:00",
+            }.get(key, default)), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 12, "status": "merged", "model": "MODEL-A"}), \
+                 patch("app.services.merge_drafts.db.get_active_merge_draft_for_order", return_value={
+                     "id": 5,
+                     "order_id": 12,
+                     "decisions": {"PART-OLD": "IgnoreOnce"},
+                     "supplements": {"PART-OLD": 1000},
+                     "shortages": [],
+                 }), \
+                 patch("app.services.merge_drafts.db.get_order_decisions", return_value={12: {"PART-NEW": "Shortage"}}), \
+                 patch("app.services.merge_drafts.db.get_order_supplements", return_value={12: {"PART-NEW": 2200}}), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft"), \
+                 patch("app.services.merge_drafts.db.get_active_merge_drafts", return_value=[{
+                     "id": 5,
+                     "order_id": 12,
+                     "decisions": {"PART-OLD": "IgnoreOnce"},
+                     "supplements": {"PART-OLD": 1000},
+                     "shortages": [],
+                 }]), \
+                 patch("app.services.merge_drafts.db.get_bom_files_by_models", return_value=[]), \
+                 patch("app.services.merge_drafts._build_running_stock", return_value={}), \
+                 patch("app.services.merge_drafts._load_effective_moq", return_value={}), \
+                 patch("app.services.merge_drafts.db.get_st_inventory_stock", return_value={}), \
+                 patch("app.services.merge_drafts._cleanup_draft_files"), \
+                 patch("app.services.merge_drafts._write_draft_files", return_value=[]), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft_files"), \
+                 patch("app.services.merge_drafts._plan_order_draft", return_value={
+                     "running_stock": {},
+                     "file_plans": [],
+                     "shortages": [],
+                     "decisions": {},
+                 }), \
+                 patch("app.services.merge_drafts.db.replace_order_decisions") as mock_replace_order_decisions:
+                merge_drafts.rebuild_merge_drafts([12])
+
+        mock_replace_order_decisions.assert_called_once_with([12], {12: {}})
