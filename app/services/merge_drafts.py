@@ -231,6 +231,21 @@ def _write_bom_header_values(ws, po_number, order_qty: float | None = None):
             ws.cell(row=2, column=7).value = format_excel_qty(order_qty)
 
 
+def _get_bom_worksheet(workbook):
+    if getattr(workbook, "worksheets", None):
+        return workbook.worksheets[0]
+    return workbook.active
+
+
+def _select_bom_worksheet(workbook):
+    ws = _get_bom_worksheet(workbook)
+    try:
+        workbook.active = workbook.index(ws)
+    except Exception:
+        pass
+    return ws
+
+
 def _write_dispatch_values_to_ws(
     ws,
     supplements: dict[str, float],
@@ -526,7 +541,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         ext = source_path.suffix.lower()
         workbook = openpyxl.load_workbook(str(source_path), keep_vba=(ext == ".xlsm"))
         try:
-            sheet = workbook.active
+            sheet = _select_bom_worksheet(workbook)
             _write_dispatch_values_to_ws(
                 sheet,
                 plan.get("supplements") or {},

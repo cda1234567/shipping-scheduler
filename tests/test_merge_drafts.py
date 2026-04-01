@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from unittest.mock import patch
 
 from app.services import merge_drafts
@@ -307,6 +307,63 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(worksheet.cell(row=1, column=11).value, 5)
         self.assertEqual(worksheet.cell(row=2, column=7).value, 5)
         self.assertEqual(worksheet.cell(row=5, column=6).value, 10)
+
+    def test_write_draft_files_uses_first_worksheet_and_sets_it_active(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            source_path = temp_path / "source.xlsx"
+            draft_dir = temp_path / "drafts"
+
+            workbook = Workbook()
+            first_sheet = workbook.active
+            first_sheet.title = "BOM"
+            first_sheet.cell(row=1, column=11, value=10)
+            first_sheet.cell(row=2, column=7, value=10)
+            first_sheet.cell(row=5, column=2, value=2)
+            first_sheet.cell(row=5, column=3, value="PART-A")
+            first_sheet.cell(row=5, column=6, value=20)
+            first_sheet.cell(row=5, column=7, value=0)
+            first_sheet.cell(row=5, column=8, value=0)
+            other_sheet = workbook.create_sheet("說明頁")
+            other_sheet["A1"] = "不要寫到這張"
+            workbook.active = 1
+            workbook.save(source_path)
+            workbook.close()
+
+            with patch("app.services.merge_drafts.MERGE_DRAFT_DIR", draft_dir), \
+                 patch("app.services.merge_drafts.db.get_bom_file", return_value={
+                     "id": "bom-1",
+                     "filename": "source.xlsx",
+                     "filepath": str(source_path),
+                 }):
+                written = merge_drafts._write_draft_files(5, [{
+                    "bom_file_id": "bom-1",
+                    "source_filename": "source.xlsx",
+                    "source_format": ".xlsx",
+                    "model": "MODEL-A",
+                    "group_model": "MODEL-A",
+                    "po_number": "4500059234",
+                    "order_qty": 5,
+                    "source_order_qty": 10,
+                    "carry_overs": {"PART-A": 8},
+                    "supplements": {"PART-A": 3},
+                    "purchase_parts": [],
+                }])
+
+            self.assertEqual(len(written), 1)
+            output_path = Path(written[0]["filepath"])
+            self.assertTrue(output_path.exists())
+
+            saved = load_workbook(output_path)
+            try:
+                self.assertEqual(saved.sheetnames[0], "BOM")
+                self.assertEqual(saved.active.title, "BOM")
+                self.assertEqual(saved.worksheets[0].cell(row=1, column=11).value, 5)
+                self.assertEqual(saved.worksheets[0].cell(row=5, column=7).value, 8)
+                self.assertEqual(saved.worksheets[0].cell(row=5, column=8).value, 3)
+                self.assertEqual(saved["說明頁"]["A1"].value, "不要寫到這張")
+            finally:
+                saved.close()
 
     def test_restore_recent_committed_merge_drafts_reactivates_and_rebuilds(self):
         active_drafts = [{"id": 7, "order_id": 21}]
