@@ -811,13 +811,7 @@ function getRightPanelSupplementQty(item, storedSupplementsByPart = {}) {
 
 function applyRightPanelSupplementState(item, storedSupplementsByPart = {}) {
   const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);
-  const currentStock = Number(item?.current_stock || 0);
-  const prevQtyCs = Number(item?.prev_qty_cs || 0);
-  const neededQty = Number(item?.needed || 0);
-  const explicitResulting = Number(item?.resulting_stock);
-  const resultingStock = [currentStock, prevQtyCs, neededQty].every(Number.isFinite)
-    ? currentStock + prevQtyCs + supplementQty - neededQty
-    : explicitResulting;
+  const resultingStock = computeShortageResultingStock(item, supplementQty);
   return {
     ...item,
     supplement_qty: supplementQty,
@@ -1244,6 +1238,8 @@ function syncDraftPartControls(list, part, { qty = null, shortageChecked = null 
       checkbox.checked = Boolean(shortageChecked);
     }
   });
+
+  refreshDraftPartTone(list, partKey);
 }
 
 function bindDraftPreviewEditors(list) {
@@ -1920,10 +1916,35 @@ async function showWriteToMainModal(targets) {
   modal.style.display = "flex";
 }
 
+function computeShortageResultingStock(shortage, supplementQty = undefined) {
+  const currentStock = Number(shortage?.current_stock);
+  const prevQtyCs = Number(shortage?.prev_qty_cs || 0);
+  const neededQty = Number(shortage?.needed);
+  const effectiveSupplement = supplementQty !== undefined
+    ? Number(supplementQty)
+    : Number(
+      Number(shortage?.default_supplement) > 0
+        ? shortage?.default_supplement
+        : shortage?.supplement_qty || 0
+    );
+
+  if ([currentStock, prevQtyCs, neededQty, effectiveSupplement].every(Number.isFinite)) {
+    return currentStock + prevQtyCs + effectiveSupplement - neededQty;
+  }
+
+  const explicitResulting = Number(shortage?.resulting_stock);
+  return Number.isFinite(explicitResulting) ? explicitResulting : NaN;
+}
+
+function isShortageStillNegative(shortage) {
+  const resultingStock = computeShortageResultingStock(shortage);
+  return Number.isFinite(resultingStock) && resultingStock < 0;
+}
+
 function shortageToneClass(shortage, isCS = false) {
   const classNames = ["shortage-item"];
   if (isCS) classNames.push("cs-item");
-  if (Number(shortage?.purchase_needed_qty || 0) > 0) classNames.push("is-st-purchase");
+  if (!isCS && isShortageStillNegative(shortage)) classNames.push("is-negative-after-supplement");
   return classNames.join(" ");
 }
 
@@ -1962,6 +1983,7 @@ function modalShortageItem(s, isCS) {
   const neededQty = roundShortageUiValue(s.needed);
   const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
   const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
+  const resultingStock = computeShortageResultingStock(s, defaultQty);
   s = {
     ...s,
     shortage_amount: shortageAmount,
@@ -1969,9 +1991,12 @@ function modalShortageItem(s, isCS) {
     needed: neededQty,
     st_available_qty: stAvailableQty,
     purchase_needed_qty: purchaseNeededQty,
+    default_supplement: defaultQty,
+    supplement_qty: defaultQty,
+    resulting_stock: resultingStock,
   };
 
-  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px"${orderIdAttr}>
+  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
     <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
@@ -1993,6 +2018,35 @@ function modalShortageItem(s, isCS) {
       </label>
     </div>`}
   </div>`;
+}
+
+function computeModalCardResultingStock(card) {
+  if (!card) return Number.NaN;
+  const currentStock = Number(card.dataset.currentStock);
+  const prevQtyCs = Number(card.dataset.prevQtyCs || 0);
+  const neededQty = Number(card.dataset.needed);
+  const input = card.querySelector(".supplement-input");
+  const checkbox = card.querySelector(".shortage-mark");
+  const supplementQty = checkbox?.checked ? 0 : Number(input?.value || 0);
+  if ([currentStock, prevQtyCs, neededQty, supplementQty].every(Number.isFinite)) {
+    return currentStock + prevQtyCs + supplementQty - neededQty;
+  }
+  return Number.NaN;
+}
+
+function updateModalShortageTone(card) {
+  if (!card || card.classList.contains("cs-item")) return;
+  const resultingStock = computeModalCardResultingStock(card);
+  card.classList.toggle("is-negative-after-supplement", Number.isFinite(resultingStock) && resultingStock < 0);
+}
+
+function refreshDraftPartTone(list, part) {
+  const partKey = normalizePartKey(part);
+  if (!partKey || !list) return;
+  list.querySelectorAll(".shortage-item[data-part]").forEach(card => {
+    if (normalizePartKey(card.dataset.part) !== partKey) return;
+    updateModalShortageTone(card);
+  });
 }
 
 function closeShortageModal() {
@@ -3497,7 +3551,7 @@ function renderPostDispatchPanel() {
       const resultingStock = roundShortageUiValue(s.resulting_stock ?? s.current_stock);
       const moqVal = roundShortageUiValue(s.moq || 0);
       const suggestedQty = roundShortageUiValue(s.suggested_qty || shortageAmt);
-      html += `<div class="shortage-item is-st-purchase" data-part="${esc(s.part_number)}" data-shortage="${shortageAmt}" data-moq="${moqVal}" data-suggested="${suggestedQty}" data-stock="${resultingStock}" data-desc="${esc(s.description || "")}">
+      html += `<div class="shortage-item is-negative-after-supplement" data-part="${esc(s.part_number)}" data-shortage="${shortageAmt}" data-moq="${moqVal}" data-suggested="${suggestedQty}" data-stock="${resultingStock}" data-desc="${esc(s.description || "")}">
         <div class="part">${esc(s.part_number)}</div>
         <div class="desc">${esc(s.description || "—")}</div>
         <div class="amounts">
@@ -3558,18 +3612,25 @@ function bindShortageEditors(list) {
       if (!input) return;
       input.disabled = checkbox.checked;
       if (checkbox.checked) input.value = "0";
+      updateModalShortageTone(checkbox.closest(".shortage-item"));
     });
   });
 
   list.querySelectorAll(".supplement-input").forEach(input => {
     input.addEventListener("input", () => {
       const partKey = normalizePartKey(input.dataset.part);
-      if (!partKey || isOrderScopedPart(partKey)) return;
+      if (!partKey) return;
+      if (isOrderScopedPart(partKey)) {
+        updateModalShortageTone(input.closest(".shortage-item"));
+        return;
+      }
       syncDraftPartControls(list, partKey, {
         qty: parseFloat(input.value) || 0,
       });
     });
   });
+
+  list.querySelectorAll(".shortage-item[data-part]").forEach(card => updateModalShortageTone(card));
 }
 
 // ── Toolbar actions ───────────────────────────────────────────────────────────

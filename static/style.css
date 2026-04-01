@@ -676,10 +676,10 @@ body {
 .shortage-item.cs-item {
   background: #fefce8; border-color: #fde68a;
 }
-.shortage-item.is-st-purchase {
-  background: #fff7ed;
-  border-color: #fdba74;
-  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.12);
+.shortage-item.is-negative-after-supplement {
+  background: #4c0519;
+  border-color: #be123c;
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.18);
 }
 .shortage-item .part { font-weight: 700; font-family: monospace; font-size: 12px; }
 .shortage-item .desc { color: #6b7280; font-size: 11px; margin-bottom: 4px; }
@@ -1472,10 +1472,10 @@ body.desktop-dark .shortage-item {
   background: #241313;
   border-color: #7f1d1d;
 }
-body.desktop-dark .shortage-item.is-st-purchase {
-  background: #2f1b08;
-  border-color: #c2410c;
-  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.18);
+body.desktop-dark .shortage-item.is-negative-after-supplement {
+  background: #3f0a17;
+  border-color: #fb7185;
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.24);
 }
 body.desktop-dark .bom-history-item {
   background: #111827;

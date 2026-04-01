@@ -106,25 +106,34 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('button.textContent = nextCollapsed ? "▶" : "▼";', schedule_module)
         self.assertIn('const row = button.closest(".po-group");', schedule_module)
 
-    def test_schedule_module_marks_st_purchase_state_with_dedicated_visuals(self):
+    def test_schedule_module_marks_negative_after_supplement_state_with_dedicated_visuals(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
         stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
 
         self.assertIn('apiJson("/api/system/st-inventory/data")', schedule_module)
         self.assertIn("function loadStInventoryData()", schedule_module)
+        self.assertIn("function computeShortageResultingStock(", schedule_module)
+        self.assertIn("function isShortageStillNegative(", schedule_module)
         self.assertIn("function shortageToneClass(", schedule_module)
+        self.assertIn("function computeModalCardResultingStock(", schedule_module)
+        self.assertIn("function updateModalShortageTone(", schedule_module)
+        self.assertIn("function refreshDraftPartTone(", schedule_module)
         self.assertIn("function stSupplySummaryHtml(", schedule_module)
         self.assertIn("purchase_needed_qty", schedule_module)
         self.assertIn("purchase_suggested_qty", schedule_module)
         self.assertIn("st_available_qty", schedule_module)
-        self.assertIn("is-st-purchase", schedule_module)
+        self.assertIn("is-negative-after-supplement", schedule_module)
+        self.assertIn('card.classList.toggle("is-negative-after-supplement"', schedule_module)
+        self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
         self.assertIn("ST 可補", schedule_module)
         self.assertIn("需買", schedule_module)
         self.assertNotIn("s.purchase_needed_qty ?? s.shortage_amount ?? 0", schedule_module)
+        self.assertNotIn("is-st-purchase", schedule_module)
 
-        self.assertIn(".shortage-item.is-st-purchase", stylesheet)
-        self.assertIn("body.desktop-dark .shortage-item.is-st-purchase", stylesheet)
+        self.assertIn(".shortage-item.is-negative-after-supplement", stylesheet)
+        self.assertIn("body.desktop-dark .shortage-item.is-negative-after-supplement", stylesheet)
+        self.assertNotIn(".shortage-item.is-st-purchase", stylesheet)
 
     def test_schedule_module_allows_main_file_deficits_to_supplement_from_right_panel(self):
         root = Path(__file__).resolve().parents[1]
