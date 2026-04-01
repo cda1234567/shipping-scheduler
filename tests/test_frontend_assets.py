@@ -158,6 +158,13 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const shortageChecked = shouldAutoShortageCheck(row);", schedule_module)
         self.assertIn("const shortageChecked = shouldAutoShortageCheck(s);", schedule_module)
 
+    def test_frontend_calculator_skips_ec_6_low_stock_warning_threshold(self):
+        root = Path(__file__).resolve().parents[1]
+        calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
+
+        self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
+        self.assertIn('return normalized.startsWith("EC-") ? 100 : 0;', calculator_module)
+
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

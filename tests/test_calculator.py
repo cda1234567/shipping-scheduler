@@ -120,6 +120,28 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 10)
         self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 10)
 
+    def test_ec_6_part_does_not_trigger_ec_low_stock_warning(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 998, "pcb": "D", "model": "MODEL-D6"}],
+            bom_map={
+                "MODEL-D6": [
+                    {
+                        "part_number": "EC-60001A",
+                        "description": "EC-6 part",
+                        "needed_qty": 30,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"EC-60001A": 120},
+            moq={"EC-60001A": 5},
+        )
+
+        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(results[0]["shortages"], [])
+
     def test_st_stock_reduces_purchase_needed_without_losing_total_supply_suggestion(self):
         results = run(
             orders=[{"id": 1, "po_number": 1001, "pcb": "E", "model": "MODEL-E"}],

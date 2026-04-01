@@ -197,7 +197,9 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
 }
 
 function getRequiredMinStock(partNumber) {
-  return String(partNumber || "").trim().toUpperCase().startsWith("EC-") ? 100 : 0;
+  const normalized = String(partNumber || "").trim().toUpperCase();
+  if (normalized.startsWith("EC-6")) return 0;
+  return normalized.startsWith("EC-") ? 100 : 0;
 }
 
 function calculateShortageAmount(partNumber, endingStock) {

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 EC_PART_PREFIX = "EC-"
 EC_MIN_ENDING_STOCK = 100.0
+EC_NO_WARNING_PREFIXES = (
+    "EC-6",
+)
 ORDER_SCOPED_PART_PREFIXES = (
     "IC-STM",
     "IC-M24",
@@ -24,6 +27,11 @@ def is_ec_part(part_number: str) -> bool:
     return normalize_part_key(part_number).startswith(EC_PART_PREFIX)
 
 
+def is_ec_low_stock_warning_exempt(part_number: str) -> bool:
+    part_key = normalize_part_key(part_number)
+    return any(part_key.startswith(prefix) for prefix in EC_NO_WARNING_PREFIXES)
+
+
 def is_order_scoped_shortage_part(part_number: str) -> bool:
     part_key = normalize_part_key(part_number)
     return any(part_key.startswith(prefix) for prefix in ORDER_SCOPED_PART_PREFIXES)
@@ -31,6 +39,8 @@ def is_order_scoped_shortage_part(part_number: str) -> bool:
 
 def get_min_ending_stock(part_number: str) -> float:
     part_key = normalize_part_key(part_number)
+    if is_ec_low_stock_warning_exempt(part_key):
+        return 0.0
     if part_key.startswith(EC_PART_PREFIX):
         return EC_MIN_ENDING_STOCK
     return 0.0
