@@ -48,6 +48,7 @@ from ..services.shortage_rules import (
     is_order_scoped_shortage_part,
     summarize_requested_supply,
 )
+from ..services.workbook_recalc import save_workbook_bytes_with_recalc
 router = APIRouter()
 
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
@@ -778,8 +779,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             source_order_qty=bom.get("order_qty"),
         )
         _write_bom_header_values(wb.active, po_number, order_qty_source)
-        buffer = io.BytesIO()
-        wb.save(buffer)
+        buffer = save_workbook_bytes_with_recalc(wb, output_name)
         wb.close()
         buffer.seek(0)
         output_files.append((output_name, buffer))

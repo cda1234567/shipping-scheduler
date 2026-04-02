@@ -40,6 +40,7 @@ from .shortage_rules import (
     summarize_requested_supply,
     summarize_st_supply,
 )
+from .workbook_recalc import save_workbook_with_recalc
 
 COMMITTED_DRAFT_RETENTION_DAYS = 30
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
@@ -577,7 +578,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
                 source_order_qty=plan.get("source_order_qty"),
             )
             _write_bom_header_values(sheet, plan.get("po_number", ""), plan.get("order_qty"))
-            workbook.save(output_path)
+            save_workbook_with_recalc(workbook, output_path)
         finally:
             workbook.close()
 

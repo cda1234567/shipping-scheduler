@@ -335,7 +335,11 @@ class MergeDraftDetailTests(unittest.TestCase):
                      "id": "bom-1",
                      "filename": "source.xlsx",
                      "filepath": str(source_path),
-                 }):
+                 }), \
+                 patch(
+                     "app.services.merge_drafts.save_workbook_with_recalc",
+                     side_effect=lambda workbook, output_path: workbook.save(output_path),
+                 ) as mock_save:
                 written = merge_drafts._write_draft_files(5, [{
                     "bom_file_id": "bom-1",
                     "source_filename": "source.xlsx",
@@ -351,6 +355,7 @@ class MergeDraftDetailTests(unittest.TestCase):
                 }])
 
             self.assertEqual(len(written), 1)
+            mock_save.assert_called_once()
             output_path = Path(written[0]["filepath"])
             self.assertTrue(output_path.exists())
 

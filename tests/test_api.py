@@ -2063,6 +2063,51 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=8, column=8).value, 0)
         downloaded.close()
 
+    def test_dispatch_download_uses_recalc_save_helper_for_generated_workbooks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bom_path = Path(temp_dir) / "dispatch.xlsx"
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.merge_cells("G1:H1")
+            ws.cell(row=1, column=7).value = "製單號碼M/O:"
+            ws.cell(row=5, column=3).value = "PART-1"
+            ws.cell(row=5, column=6).value = 10
+            ws.cell(row=5, column=7).value = 0
+            ws.cell(row=5, column=8).value = 0
+            wb.save(bom_path)
+            wb.close()
+
+            bom_record = {
+                "id": "bom-1",
+                "filename": "dispatch.xlsx",
+                "filepath": str(bom_path),
+                "source_filename": "dispatch.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "po_number": "0",
+                "group_model": "MODEL-A",
+                "uploaded_at": "2026-03-12T08:00:00",
+            }
+
+            def fake_save_bytes(workbook, filename):
+                buffer = io.BytesIO()
+                workbook.save(buffer)
+                buffer.seek(0)
+                return buffer
+
+            with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
+                 patch("app.routers.bom.save_workbook_bytes_with_recalc", side_effect=fake_save_bytes) as mock_save:
+                response = self.client.post("/api/bom/dispatch-download", json={
+                    "bom_ids": ["bom-1"],
+                    "supplements": {"PART-1": 7},
+                    "header_overrides": {"bom-1": {"po_number": "4500059234"}},
+                    "carry_overs": {"bom-1": {"PART-1": 135}},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        mock_save.assert_called_once()
+
     def test_dispatch_download_marks_manual_supplement_orange_when_qty_exceeds_st_stock(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             bom_path = Path(temp_dir) / "dispatch.xlsx"

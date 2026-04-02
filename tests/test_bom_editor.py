@@ -16,6 +16,7 @@ from app.services.bom_editor import (
     prepare_uploaded_bom_file,
     validate_uploaded_bom_layout,
 )
+from app.services.workbook_recalc import mark_workbook_for_recalc, save_workbook_with_recalc
 
 
 class BomEditorTests(unittest.TestCase):
@@ -279,4 +280,31 @@ class BomEditorTests(unittest.TestCase):
             self.assertEqual(ws["D2"].value, "PCB-NEW")
             self.assertEqual(ws["C5"].value, "PART-A-NEW")
             self.assertEqual(ws["D5"].value, "NEW DESC")
+            wb.close()
+
+    def test_mark_workbook_for_recalc_sets_full_rebuild_flags(self):
+        wb = Workbook()
+
+        mark_workbook_for_recalc(wb)
+
+        self.assertEqual(wb.calculation.calcMode, "auto")
+        self.assertTrue(wb.calculation.fullCalcOnLoad)
+        self.assertTrue(wb.calculation.forceFullCalc)
+        self.assertTrue(wb.calculation.calcOnSave)
+        self.assertFalse(wb.calculation.calcCompleted)
+        wb.close()
+
+    def test_save_workbook_with_recalc_skips_external_refresh_for_plain_values(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "plain.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws["A1"] = "plain"
+
+            with patch("app.services.workbook_recalc.refresh_saved_workbook_formula_cache") as mock_refresh:
+                refreshed = save_workbook_with_recalc(wb, path)
+
+            self.assertFalse(refreshed)
+            self.assertTrue(path.exists())
+            mock_refresh.assert_not_called()
             wb.close()
