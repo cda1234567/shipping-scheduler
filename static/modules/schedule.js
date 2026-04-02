@@ -14,6 +14,7 @@ let _calcResults = [];
 let _decisions = {};
 let _draftsByOrderId = {};
 let _orderSupplementsByOrderId = {};
+let _orderSupplementDetailsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
@@ -292,11 +293,46 @@ function normalizeOrderSupplementState(orderSupplements = {}) {
   return normalized;
 }
 
+function normalizeOrderSupplementDetailState(orderSupplementDetails = {}) {
+  const normalized = {};
+  for (const [rawOrderId, supplements] of Object.entries(orderSupplementDetails || {})) {
+    const orderId = normalizeOrderId(rawOrderId);
+    if (!Number.isInteger(orderId)) continue;
+    normalized[orderId] = {};
+    for (const [rawPart, detail] of Object.entries(supplements || {})) {
+      const part = normalizePartKey(rawPart);
+      if (!part) continue;
+      normalized[orderId][part] = {
+        supplement_qty: Number(detail?.supplement_qty || detail?.qty || 0) || 0,
+        note: String(detail?.note || "").trim(),
+        updated_at: String(detail?.updated_at || "").trim(),
+      };
+    }
+  }
+  return normalized;
+}
+
 function getStoredOrderSupplementQty(orderId, partNumber) {
   const normalizedOrderId = normalizeOrderId(orderId);
   const key = normalizePartKey(partNumber);
   if (!Number.isInteger(normalizedOrderId) || !key) return 0;
   return Number(_orderSupplementsByOrderId?.[normalizedOrderId]?.[key] || 0) || 0;
+}
+
+function getStoredOrderSupplementDetail(orderId, partNumber) {
+  const normalizedOrderId = normalizeOrderId(orderId);
+  const key = normalizePartKey(partNumber);
+  if (!Number.isInteger(normalizedOrderId) || !key) {
+    return { supplement_qty: 0, note: "", updated_at: "" };
+  }
+  const detail = _orderSupplementDetailsByOrderId?.[normalizedOrderId]?.[key];
+  return detail
+    ? {
+        supplement_qty: Number(detail.supplement_qty || 0) || 0,
+        note: String(detail.note || "").trim(),
+        updated_at: String(detail.updated_at || "").trim(),
+      }
+    : { supplement_qty: 0, note: "", updated_at: "" };
 }
 
 function isEcPart(partNumber) {
@@ -444,11 +480,12 @@ async function loadScheduleRows() {
   try {
     const d = await apiJson("/api/schedule/rows");
     _rows = d.rows || [];
-    _dispatchedConsumption = d.dispatched_consumption || {};
-    _decisions = normalizeDecisionMap(d.decisions || {});
-    _draftsByOrderId = d.merge_drafts || {};
-    _orderSupplementsByOrderId = normalizeOrderSupplementState(d.order_supplements || {});
-    _scheduleMeta = {
+      _dispatchedConsumption = d.dispatched_consumption || {};
+      _decisions = normalizeDecisionMap(d.decisions || {});
+      _draftsByOrderId = d.merge_drafts || {};
+      _orderSupplementsByOrderId = normalizeOrderSupplementState(d.order_supplements || {});
+      _orderSupplementDetailsByOrderId = normalizeOrderSupplementDetailState(d.order_supplement_details || {});
+      _scheduleMeta = {
       filename: String(d.filename || ""),
       loaded_at: String(d.loaded_at || ""),
       row_count: Array.isArray(d.rows) ? d.rows.length : 0,
@@ -462,11 +499,12 @@ async function loadScheduleRows() {
     }
   } catch (_) {
     _rows = [];
-    _dispatchedConsumption = {};
-    _decisions = {};
-    _draftsByOrderId = {};
-    _orderSupplementsByOrderId = {};
-    _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
+      _dispatchedConsumption = {};
+      _decisions = {};
+      _draftsByOrderId = {};
+      _orderSupplementsByOrderId = {};
+      _orderSupplementDetailsByOrderId = {};
+      _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
   }
 }
 
@@ -3425,6 +3463,13 @@ function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
       input.closest(".right-panel-supplement-row")?.querySelector(".right-panel-supplement-save")?.click();
     });
   });
+  scroll.querySelectorAll(".right-panel-supplement-note-input").forEach(input => {
+    input.addEventListener("keydown", event => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      input.closest(".shortage-item")?.querySelector(".right-panel-supplement-save")?.click();
+    });
+  });
   bindMoqEditors(scroll);
   bindShortageMoqBadgeEditors(scroll);
 }
@@ -3432,10 +3477,12 @@ function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
 async function saveRightPanelSupplement(button) {
   const row = button?.closest(".shortage-item");
   const input = row?.querySelector(".right-panel-supplement-input");
+  const noteInput = row?.querySelector(".right-panel-supplement-note-input");
   const orderId = normalizeOrderId(button?.dataset.orderId || input?.dataset.orderId);
   const part = normalizePartKey(button?.dataset.part || input?.dataset.part);
   const isMainSupplement = String(button?.dataset.mainSupplement || input?.dataset.mainSupplement || "").trim() === "true";
   const qty = Number(input?.value || 0);
+  const note = String(noteInput?.value || "").trim();
 
   if ((!Number.isInteger(orderId) && !isMainSupplement) || !part) {
     showToast("找不到要保存的補料項目");
@@ -3453,6 +3500,7 @@ async function saveRightPanelSupplement(button) {
     button.textContent = "保存中...";
   }
   if (input) input.disabled = true;
+  if (noteInput) noteInput.disabled = true;
 
   try {
     if (isMainSupplement) {
@@ -3471,19 +3519,38 @@ async function saveRightPanelSupplement(button) {
       return;
     }
 
-    await apiPut("/api/schedule/shortage-settings", {
+    const response = await apiPut("/api/schedule/shortage-settings", {
       order_ids: [orderId],
       order_supplements: {
         [String(orderId)]: {
           [part]: qty,
         },
       },
+      order_supplement_notes: {
+        [String(orderId)]: {
+          [part]: note,
+        },
+      },
     });
     if (!_orderSupplementsByOrderId[orderId]) _orderSupplementsByOrderId[orderId] = {};
+    if (!_orderSupplementDetailsByOrderId[orderId]) _orderSupplementDetailsByOrderId[orderId] = {};
     if (qty > 0) {
       _orderSupplementsByOrderId[orderId][part] = qty;
+      const detail = response?.order_supplement_details?.[String(orderId)]?.[part]
+        || response?.order_supplement_details?.[orderId]?.[part]
+        || {
+          supplement_qty: qty,
+          note,
+          updated_at: new Date().toISOString(),
+        };
+      _orderSupplementDetailsByOrderId[orderId][part] = {
+        supplement_qty: Number(detail?.supplement_qty || qty) || qty,
+        note: String(detail?.note || note).trim(),
+        updated_at: String(detail?.updated_at || new Date().toISOString()).trim(),
+      };
     } else {
       delete _orderSupplementsByOrderId[orderId][part];
+      delete _orderSupplementDetailsByOrderId[orderId][part];
     }
     const currentStock = Number(input?.dataset.currentStock || row?.dataset.currentStock || 0);
     const prevQtyCs = Number(input?.dataset.prevQtyCs || row?.dataset.prevQtyCs || 0);
@@ -3501,6 +3568,7 @@ async function saveRightPanelSupplement(button) {
       button.textContent = originalText;
     }
     if (input?.isConnected) input.disabled = false;
+    if (noteInput?.isConnected) noteInput.disabled = false;
   }
 }
 
@@ -3559,6 +3627,9 @@ function shortageItemHtml(s, isCS) {
         : getStoredOrderSupplementQty(s._order_id, s.part_number),
   );
   const orderId = normalizeOrderId(s._order_id);
+  const supplementDetail = getStoredOrderSupplementDetail(orderId, s.part_number);
+  const supplementNote = supplementDetail.note;
+  const supplementUpdatedAt = formatDraftTime(supplementDetail.updated_at);
   s = {
     ...s,
     shortage_amount: shortageAmount,
@@ -3591,6 +3662,17 @@ function shortageItemHtml(s, isCS) {
           style="flex:1;min-width:0;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
         >
         <button class="btn btn-secondary btn-xs right-panel-supplement-save" data-part="${esc(s.part_number)}"${orderIdAttr}>保存補料</button>
+      </div>
+      <input
+        type="text"
+        class="right-panel-supplement-note-input"
+        data-part="${esc(s.part_number)}"${orderIdAttr}
+        value="${esc(supplementNote)}"
+        placeholder="備註（選填）"
+        style="width:100%;margin-top:6px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
+      >
+      <div class="right-panel-supplement-meta" style="font-size:10px;color:#6b7280;margin-top:4px">
+        ${supplementUpdatedAt ? `最後修改 ${esc(supplementUpdatedAt)}` : "尚未保存"}
       </div>
       <div style="font-size:10px;color:#6b7280;margin-top:4px">只補這筆，後面機種會沿用剩餘量繼續扣帳</div>`
     : "";

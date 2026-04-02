@@ -52,6 +52,7 @@ class ApiTests(unittest.TestCase):
              patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-1": 12}), \
              patch("app.routers.schedule.db.get_all_decisions", return_value={"PART-1": "CreateRequirement"}), \
              patch("app.routers.schedule.db.get_order_supplements", return_value={1: {"PART-1": 1000}}), \
+             patch("app.routers.schedule.db.get_order_supplement_details", return_value={1: {"PART-1": {"supplement_qty": 1000, "note": "補急單", "updated_at": "2026-04-02T10:00:00"}}}), \
              patch("app.routers.schedule.get_schedule_draft_map", return_value={1: {"id": 9, "files": [], "shortages": []}}):
             response = self.client.get("/api/schedule/rows")
 
@@ -63,6 +64,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["decisions"], {"PART-1": "CreateRequirement"})
         self.assertEqual(data["merge_drafts"], {"1": {"id": 9, "files": [], "shortages": []}})
         self.assertEqual(data["order_supplements"], {"1": {"PART-1": 1000}})
+        self.assertEqual(data["order_supplement_details"], {"1": {"PART-1": {"supplement_qty": 1000, "note": "補急單", "updated_at": "2026-04-02T10:00:00"}}})
 
     def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
         with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \
@@ -70,7 +72,8 @@ class ApiTests(unittest.TestCase):
              patch("app.routers.schedule.db.get_snapshot_taken_at", return_value="2026-03-12T11:05:45.000000"), \
              patch("app.routers.schedule.db.get_all_dispatched_consumption", return_value={"PART-2": 15}) as mock_consumption, \
              patch("app.routers.schedule.db.get_all_decisions", return_value={}), \
-             patch("app.routers.schedule.db.get_order_supplements", return_value={}):
+             patch("app.routers.schedule.db.get_order_supplements", return_value={}), \
+             patch("app.routers.schedule.db.get_order_supplement_details", return_value={}):
             response = self.client.get("/api/schedule/rows")
 
         self.assertEqual(response.status_code, 200)
@@ -83,6 +86,7 @@ class ApiTests(unittest.TestCase):
              patch("app.routers.schedule._merge_supplement_updates", return_value={"PART-1": 1200}) as mock_merge_supplements, \
              patch("app.routers.schedule.db.replace_order_decisions") as mock_replace_decisions, \
              patch("app.routers.schedule.db.replace_order_supplements") as mock_replace_supplements, \
+             patch("app.routers.schedule.db.get_order_supplement_details", return_value={1: {"PART-1": {"supplement_qty": 1200, "note": "急件", "updated_at": "2026-04-02T11:00:00"}}}), \
              patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[{"order_id": 1}, {"order_id": 2}]), \
              patch("app.routers.schedule.rebuild_merge_drafts") as mock_rebuild, \
              patch("app.routers.schedule.db.log_activity"):
@@ -91,13 +95,20 @@ class ApiTests(unittest.TestCase):
                 "order_supplements": {
                     "1": {"part-1": 1200},
                 },
+                "order_supplement_notes": {
+                    "1": {"part-1": "急件"},
+                },
             })
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "count": 1})
+        self.assertEqual(response.json(), {
+            "ok": True,
+            "count": 1,
+            "order_supplement_details": {"1": {"PART-1": {"supplement_qty": 1200, "note": "急件", "updated_at": "2026-04-02T11:00:00"}}},
+        })
         mock_merge_supplements.assert_called_once_with(1, {"PART-1": 1200.0})
         mock_replace_decisions.assert_called_once_with([1], {1: {"PART-OLD": "IgnoreOnce"}})
-        mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}})
+        mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}}, {1: {"PART-1": "急件"}})
         mock_rebuild.assert_called_once_with([1, 2])
 
     def test_bom_upload_rejects_invalid_ghij_layout(self):

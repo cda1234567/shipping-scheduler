@@ -144,6 +144,7 @@ CREATE TABLE IF NOT EXISTS order_supplements (
     order_id       INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     part_number    TEXT    NOT NULL DEFAULT '',
     supplement_qty REAL    NOT NULL DEFAULT 0,
+    note           TEXT    NOT NULL DEFAULT '',
     updated_at     TEXT    NOT NULL DEFAULT '',
     UNIQUE(order_id, part_number)
 );
@@ -368,6 +369,9 @@ def init_db():
         draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
         if draft_cols and "main_file_mtime_ns" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
+        supplement_cols = [r[1] for r in conn.execute("PRAGMA table_info(order_supplements)").fetchall()]
+        if supplement_cols and "note" not in supplement_cols:
+            conn.execute("ALTER TABLE order_supplements ADD COLUMN note TEXT NOT NULL DEFAULT ''")
         # migration: defective_records 加 batch_id / stock 欄位
         def_cols = [r[1] for r in conn.execute("PRAGMA table_info(defective_records)").fetchall()]
         if def_cols and "batch_id" not in def_cols:
@@ -1526,7 +1530,50 @@ def get_order_decisions(order_ids: list[int] | None = None) -> dict[int, dict[st
     return result
 
 
-def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[str, float]] | None = None):
+def _normalize_supplement_note(value) -> str:
+    return str(value or "").strip()
+
+
+def get_order_supplement_details(order_ids: list[int] | None = None) -> dict[int, dict[str, dict]]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+
+    sql = "SELECT order_id, part_number, supplement_qty, note, updated_at FROM order_supplements"
+    params: list[int] = []
+    if normalized_ids:
+        placeholders = ",".join("?" * len(normalized_ids))
+        sql += f" WHERE order_id IN ({placeholders})"
+        params.extend(normalized_ids)
+    sql += " ORDER BY order_id, part_number"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    result: dict[int, dict[str, dict]] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        part_number = str(row["part_number"]).strip().upper()
+        if not part_number:
+            continue
+        result.setdefault(order_id, {})
+        result[order_id][part_number] = {
+            "supplement_qty": float(row["supplement_qty"] or 0),
+            "note": _normalize_supplement_note(row["note"]),
+            "updated_at": str(row["updated_at"] or "").strip(),
+        }
+    return result
+
+
+def replace_order_supplements(
+    order_ids: list[int],
+    allocations: dict[int, dict[str, float]] | None = None,
+    note_updates: dict[int, dict[str, str]] | None = None,
+):
     normalized_ids: list[int] = []
     for order_id in order_ids or []:
         try:
@@ -1538,6 +1585,7 @@ def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[
         return
 
     now = _now()
+    existing_details = get_order_supplement_details(normalized_ids)
     with get_conn() as conn:
         placeholders = ",".join("?" * len(normalized_ids))
         conn.execute(
@@ -1546,15 +1594,29 @@ def replace_order_supplements(order_ids: list[int], allocations: dict[int, dict[
         )
 
         for order_id in normalized_ids:
+            order_note_updates = {
+                str(part or "").strip().upper(): _normalize_supplement_note(note)
+                for part, note in (note_updates or {}).get(order_id, {}).items()
+                if str(part or "").strip()
+            }
             for part_number, supplement_qty in (allocations or {}).get(order_id, {}).items():
                 part = str(part_number or "").strip().upper()
                 qty = float(supplement_qty or 0)
                 if not part or qty <= 0:
                     continue
+                previous = ((existing_details.get(order_id) or {}).get(part) or {})
+                note = order_note_updates.get(part)
+                if note is None:
+                    note = _normalize_supplement_note(previous.get("note"))
+                previous_qty = float(previous.get("supplement_qty") or 0)
+                previous_note = _normalize_supplement_note(previous.get("note"))
+                updated_at = str(previous.get("updated_at") or "").strip()
+                if qty != previous_qty or note != previous_note or not updated_at:
+                    updated_at = now
                 conn.execute(
-                    "INSERT INTO order_supplements(order_id, part_number, supplement_qty, updated_at) "
-                    "VALUES(?,?,?,?)",
-                    (order_id, part, qty, now),
+                    "INSERT INTO order_supplements(order_id, part_number, supplement_qty, note, updated_at) "
+                    "VALUES(?,?,?,?,?)",
+                    (order_id, part, qty, note, updated_at),
                 )
 
 

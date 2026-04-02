@@ -186,6 +186,23 @@ def _merge_supplement_updates(order_id: int, updates: dict[str, float] | None = 
     return merged
 
 
+def _normalize_order_supplement_notes(value: dict | None = None) -> dict[int, dict[str, str]]:
+    normalized: dict[int, dict[str, str]] = {}
+    for raw_order_id, part_notes in (value or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+        notes: dict[str, str] = {}
+        for raw_part, raw_note in (part_notes or {}).items():
+            part = str(raw_part or "").strip().upper()
+            if not part:
+                continue
+            notes[part] = str(raw_note or "").strip()
+        normalized[order_id] = notes
+    return normalized
+
+
 def _apply_request_overrides_to_contexts(
     contexts: list[DispatchContext],
     order_ids: list[int],
@@ -507,6 +524,7 @@ async def get_schedule_rows():
         "decisions": db.get_all_decisions(),
         "merge_drafts": get_schedule_draft_map(),
         "order_supplements": db.get_order_supplements(order_ids) if order_ids else {},
+        "order_supplement_details": db.get_order_supplement_details(order_ids) if order_ids else {},
     }
 
 
@@ -756,9 +774,10 @@ async def update_schedule_shortage_settings(req: BatchDispatchRequest):
         )
         for order_id in normalized_order_ids
     }
+    supplement_note_updates = _normalize_order_supplement_notes(req.order_supplement_notes)
 
     db.replace_order_decisions(normalized_order_ids, decision_allocations)
-    db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+    db.replace_order_supplements(normalized_order_ids, supplement_allocations, supplement_note_updates)
 
     active_draft_orders = list(dict.fromkeys(
         int(item["order_id"])
@@ -769,7 +788,11 @@ async def update_schedule_shortage_settings(req: BatchDispatchRequest):
         rebuild_merge_drafts(active_draft_orders)
 
     db.log_activity("shortage_settings_update", f"更新右側補料設定 {len(normalized_order_ids)} 筆")
-    return {"ok": True, "count": len(normalized_order_ids)}
+    return {
+        "ok": True,
+        "count": len(normalized_order_ids),
+        "order_supplement_details": db.get_order_supplement_details(normalized_order_ids),
+    }
 
 
 @router.get("/schedule/drafts")

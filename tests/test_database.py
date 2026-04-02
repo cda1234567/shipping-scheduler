@@ -198,6 +198,46 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(bom["pcb"], "PCB-B")
 
 
+class OrderSupplementTests(InMemoryDbTestCase):
+    def test_replace_order_supplements_preserves_existing_timestamp_when_unchanged(self):
+        self.conn.execute(
+            "INSERT INTO orders(id, po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES(1, '1', 'MODEL', 'PCB', 1, 'pending', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO order_supplements(order_id, part_number, supplement_qty, note, updated_at) "
+            "VALUES(1, 'PART-1', 100, '原備註', '2026-04-02T09:00:00')"
+        )
+
+        db.replace_order_supplements([1], {1: {"PART-1": 100}})
+        row = self.conn.execute(
+            "SELECT supplement_qty, note, updated_at FROM order_supplements WHERE order_id=1 AND part_number='PART-1'"
+        ).fetchone()
+
+        self.assertEqual(row["supplement_qty"], 100)
+        self.assertEqual(row["note"], "原備註")
+        self.assertEqual(row["updated_at"], "2026-04-02T09:00:00")
+
+    def test_replace_order_supplements_updates_note_and_timestamp_when_changed(self):
+        self.conn.execute(
+            "INSERT INTO orders(id, po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES(1, '1', 'MODEL', 'PCB', 1, 'pending', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO order_supplements(order_id, part_number, supplement_qty, note, updated_at) "
+            "VALUES(1, 'PART-1', 100, '原備註', '2026-04-02T09:00:00')"
+        )
+
+        db.replace_order_supplements([1], {1: {"PART-1": 200}}, {1: {"PART-1": "新備註"}})
+        row = self.conn.execute(
+            "SELECT supplement_qty, note, updated_at FROM order_supplements WHERE order_id=1 AND part_number='PART-1'"
+        ).fetchone()
+
+        self.assertEqual(row["supplement_qty"], 200)
+        self.assertEqual(row["note"], "新備註")
+        self.assertNotEqual(row["updated_at"], "2026-04-02T09:00:00")
+
+
 class OrderReloadTests(InMemoryDbTestCase):
     def test_upsert_orders_clears_pending_decisions_before_rebuild(self):
         self.conn.execute(
