@@ -2062,10 +2062,13 @@ function isShortageStillNegative(shortage) {
   return Number.isFinite(resultingStock) && resultingStock < 0;
 }
 
-function shortageToneClass(shortage, isCS = false) {
-  const classNames = ["shortage-item"];
-  if (isCS) classNames.push("cs-item");
-  if (!isCS && isShortageStillNegative(shortage)) classNames.push("is-negative-after-supplement");
+function shortageToneClass(shortage) {
+  const classNames = ["shortage-item", "modal-shortage-item"];
+  if (isShortageStillNegative(shortage)) {
+    classNames.push("is-negative-after-supplement");
+  } else {
+    classNames.push("is-resolved-after-supplement");
+  }
   return classNames.join(" ");
 }
 
@@ -2118,7 +2121,7 @@ function modalShortageItem(s, isCS) {
     resulting_stock: resultingStock,
   };
 
-  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-search="${esc(searchText)}"${orderIdAttr}>
+  return `<div class="${shortageToneClass(s)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-search="${esc(searchText)}"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
     <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
@@ -2157,9 +2160,11 @@ function computeModalCardResultingStock(card) {
 }
 
 function updateModalShortageTone(card) {
-  if (!card || card.classList.contains("cs-item")) return;
+  if (!card) return;
   const resultingStock = computeModalCardResultingStock(card);
-  card.classList.toggle("is-negative-after-supplement", Number.isFinite(resultingStock) && resultingStock < 0);
+  const isNegative = Number.isFinite(resultingStock) && resultingStock < 0;
+  card.classList.toggle("is-negative-after-supplement", isNegative);
+  card.classList.toggle("is-resolved-after-supplement", !isNegative);
 }
 
 function refreshDraftPartTone(list, part) {

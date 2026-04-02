@@ -136,15 +136,21 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("purchase_suggested_qty", schedule_module)
         self.assertIn("st_available_qty", schedule_module)
         self.assertIn("is-negative-after-supplement", schedule_module)
+        self.assertIn("is-resolved-after-supplement", schedule_module)
         self.assertIn('card.classList.toggle("is-negative-after-supplement"', schedule_module)
+        self.assertIn('card.classList.toggle("is-resolved-after-supplement"', schedule_module)
+        self.assertIn('const classNames = ["shortage-item", "modal-shortage-item"];', schedule_module)
         self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
         self.assertIn("ST 可補", schedule_module)
         self.assertIn("需買", schedule_module)
         self.assertNotIn("s.purchase_needed_qty ?? s.shortage_amount ?? 0", schedule_module)
         self.assertNotIn("is-st-purchase", schedule_module)
 
-        self.assertIn(".shortage-item.is-negative-after-supplement", stylesheet)
-        self.assertIn("body.desktop-dark .shortage-item.is-negative-after-supplement", stylesheet)
+        self.assertIn(".modal-shortage-item.is-negative-after-supplement", stylesheet)
+        self.assertIn(".modal-shortage-item.is-resolved-after-supplement", stylesheet)
+        self.assertIn("body.desktop-dark .modal-shortage-item.is-negative-after-supplement", stylesheet)
+        self.assertIn("body.desktop-dark .modal-shortage-item.is-resolved-after-supplement", stylesheet)
+        self.assertNotIn(".shortage-item.cs-item", stylesheet)
         self.assertNotIn(".shortage-item.is-st-purchase", stylesheet)
 
     def test_schedule_module_allows_main_file_deficits_to_supplement_from_right_panel(self):
