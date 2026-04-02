@@ -161,6 +161,10 @@ class DatabaseBackupRestoreRequest(BaseModel):
     backup_name: str = Field(min_length=1)
 
 
+class EditAuthLoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def calc_suggested_qty(shortage: float, moq: float) -> float:

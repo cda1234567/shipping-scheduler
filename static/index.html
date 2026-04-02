@@ -36,6 +36,8 @@
   </button>
   <span class="spacer"></span>
   <button class="btn btn-sm btn-secondary" id="btn-desktop-controls" title="下載設定" style="display:none">下載設定</button>
+  <button class="btn btn-sm btn-secondary" id="btn-edit-auth" title="登入編輯">登入編輯</button>
+  <span id="edit-auth-status-chip" class="app-readonly-chip">唯讀</span>
   <button class="btn btn-sm btn-secondary" id="btn-refresh-app" title="重新整理">↻ 重新整理</button>
 </header>
 
@@ -462,6 +464,7 @@ import { initVersionInfo } from "/static/modules/version_info.js";
 import { initStInventory } from "/static/modules/st_inventory.js";
 import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
+import { initEditAuth } from "/static/modules/edit_auth.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -672,6 +675,7 @@ async function init() {
     setBootProgress(14, "讀取版本資訊...");
     await nextFrame();
   } catch (_) {}
+  await initEditAuth();
   await initDesktopBridge();
 
   setBootProgress(20, "正在準備主檔預覽...");
@@ -726,6 +730,30 @@ init().catch(error => {
   showToast("系統初始化失敗：" + error.message);
 });
 </script>
+<!-- Edit Auth Modal -->
+<div id="edit-auth-modal" class="modal-overlay" style="display:none">
+  <div class="modal-box" style="width:min(420px, 90vw)">
+    <div class="modal-header">
+      <div>
+        <h3 style="margin:0;font-size:16px">登入編輯模式</h3>
+        <div class="modal-subtitle">預設唯讀，登入後才允許寫入。</div>
+      </div>
+      <button id="edit-auth-close" class="modal-close-btn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <label class="desktop-setting-group" style="display:flex;flex-direction:column;gap:8px">
+        <span style="font-size:13px;font-weight:600;color:#3c3c43">編輯密碼</span>
+        <input id="edit-auth-password" type="password" placeholder="請輸入密碼" style="padding:10px 12px;border:1px solid #d1d5db;border-radius:10px;font-size:14px">
+      </label>
+      <div id="edit-auth-note" class="desktop-status-meta" style="margin-top:10px">目前為唯讀模式，登入後才可編輯。</div>
+    </div>
+    <div class="modal-footer">
+      <button id="edit-auth-cancel" class="btn btn-secondary btn-sm">取消</button>
+      <button id="edit-auth-submit" class="btn btn-primary btn-sm">登入編輯</button>
+    </div>
+  </div>
+</div>
+
 <!-- Desktop Modal -->
 <div id="desktop-modal" class="modal-overlay" style="display:none">
   <div class="modal-box" style="width:min(520px, 92vw)">

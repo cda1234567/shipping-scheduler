@@ -1,11 +1,23 @@
 // ── API helpers ──────────────────────────────────────────────────────────────
 export const BASE = "";
+let _apiAuthRequiredHandler = null;
+
+export function setApiAuthRequiredHandler(handler) {
+  _apiAuthRequiredHandler = typeof handler === "function" ? handler : null;
+}
 
 export async function apiFetch(path, opts = {}) {
   const res = await fetch(BASE + path, opts);
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
-    try { msg = (await res.json()).detail || msg; } catch (_) {}
+    let payload = null;
+    try {
+      payload = await res.clone().json();
+      msg = payload?.detail || msg;
+    } catch (_) {}
+    if (res.status === 403 && payload?.code === "edit_auth_required" && _apiAuthRequiredHandler) {
+      try { _apiAuthRequiredHandler(payload); } catch (_) {}
+    }
     throw new Error(msg);
   }
   return res;

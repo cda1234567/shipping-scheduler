@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 
 from .. import database as db
 from ..config import ST_INVENTORY_DIR
-from ..models import DatabaseBackupRestoreRequest, DatabaseBackupSettingsRequest
+from ..models import DatabaseBackupRestoreRequest, DatabaseBackupSettingsRequest, EditAuthLoginRequest
+from ..services.edit_auth import (
+    EDIT_AUTH_REQUIRED_MESSAGE,
+    apply_edit_auth_cookie,
+    clear_edit_auth_cookie,
+    get_edit_auth_status,
+    verify_edit_password,
+)
 from ..services import db_backup
 from ..services.local_time import local_now
 from ..services.st_inventory import parse_st_inventory_file
@@ -18,6 +25,40 @@ router = APIRouter()
 @router.get("/system/app-meta")
 async def get_system_app_meta():
     return get_app_meta()
+
+
+@router.get("/system/edit-auth/status")
+async def get_system_edit_auth_status(request: Request):
+    session = get_edit_auth_status(request)
+    return {
+        "authenticated": session.authenticated,
+        "readonly": not session.authenticated,
+        "expires_at": session.expires_at,
+    }
+
+
+@router.post("/system/edit-auth/login")
+async def login_system_edit_auth(req: EditAuthLoginRequest, request: Request, response: Response):
+    if not verify_edit_password(req.password):
+        raise HTTPException(401, "登入失敗，密碼不正確。")
+    expires_at = apply_edit_auth_cookie(response, request)
+    return {
+        "ok": True,
+        "authenticated": True,
+        "readonly": False,
+        "expires_at": expires_at,
+    }
+
+
+@router.post("/system/edit-auth/logout")
+async def logout_system_edit_auth(response: Response):
+    clear_edit_auth_cookie(response)
+    return {
+        "ok": True,
+        "authenticated": False,
+        "readonly": True,
+        "detail": EDIT_AUTH_REQUIRED_MESSAGE,
+    }
 
 
 @router.post("/system/st-inventory/upload")

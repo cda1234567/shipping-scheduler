@@ -615,3 +615,28 @@ console.log(JSON.stringify(results));
         self.assertIn(".app-version-chip", stylesheet)
         self.assertIn(".version-modal-box", stylesheet)
         self.assertIn(".version-section", stylesheet)
+
+    def test_edit_auth_assets_exist(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        api_module = (root / "static" / "modules" / "api.js").read_text(encoding="utf-8")
+        auth_module = (root / "static" / "modules" / "edit_auth.js").read_text(encoding="utf-8")
+        stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="btn-edit-auth"', index_html)
+        self.assertIn('id="edit-auth-status-chip"', index_html)
+        self.assertIn('id="edit-auth-modal"', index_html)
+        self.assertIn('import { initEditAuth } from "/static/modules/edit_auth.js";', index_html)
+        self.assertIn("await initEditAuth();", index_html)
+
+        self.assertIn("function setApiAuthRequiredHandler(handler)", api_module)
+        self.assertIn('payload?.code === "edit_auth_required"', api_module)
+
+        self.assertIn('apiJson("/api/system/edit-auth/status")', auth_module)
+        self.assertIn('apiPost("/api/system/edit-auth/login"', auth_module)
+        self.assertIn('apiPost("/api/system/edit-auth/logout")', auth_module)
+        self.assertIn('document.body.classList.toggle("edit-auth-readonly"', auth_module)
+        self.assertIn('setApiAuthRequiredHandler(() => {', auth_module)
+
+        self.assertIn(".app-readonly-chip", stylesheet)
+        self.assertIn(".edit-auth-locked", stylesheet)

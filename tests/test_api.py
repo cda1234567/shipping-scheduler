@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 import zipfile
@@ -65,6 +66,33 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["merge_drafts"], {"1": {"id": 9, "files": [], "shortages": []}})
         self.assertEqual(data["order_supplements"], {"1": {"PART-1": 1000}})
         self.assertEqual(data["order_supplement_details"], {"1": {"PART-1": {"supplement_qty": 1000, "note": "補急單", "updated_at": "2026-04-02T10:00:00"}}})
+
+    def test_edit_auth_blocks_mutating_api_until_login(self):
+        with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False):
+            blocked = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})
+            self.assertEqual(blocked.status_code, 403)
+            self.assertEqual(blocked.json()["code"], "edit_auth_required")
+
+            status = self.client.get("/api/system/edit-auth/status")
+            self.assertEqual(status.status_code, 200)
+            self.assertFalse(status.json()["authenticated"])
+
+            login = self.client.post("/api/system/edit-auth/login", json={"password": "123"})
+            self.assertEqual(login.status_code, 200)
+            self.assertTrue(login.json()["authenticated"])
+
+            with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
+                 patch("app.routers.schedule.rebuild_merge_drafts", return_value=[]) as mock_rebuild, \
+                 patch("app.routers.schedule.db.log_activity"), \
+                 patch("app.routers.schedule.db.create_alert"):
+                allowed = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})
+
+            self.assertEqual(allowed.status_code, 200)
+            mock_batch_merge.assert_called_once_with([1])
+            mock_rebuild.assert_called_once_with([1])
+
+            logout = self.client.post("/api/system/edit-auth/logout")
+            self.assertEqual(logout.status_code, 200)
 
     def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
         with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \

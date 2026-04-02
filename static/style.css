@@ -219,6 +219,30 @@ body {
 .btn-success   { background: #22c55e; color: #fff; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-full { width: 100%; }
+.app-readonly-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #7f1d1d;
+  color: #fecaca;
+  font-size: 11px;
+  font-weight: 700;
+}
+.app-readonly-chip.is-authenticated {
+  background: #14532d;
+  color: #bbf7d0;
+}
+.edit-auth-locked {
+  opacity: .55;
+  cursor: not-allowed !important;
+}
+body.edit-auth-readonly #bom-upload-area {
+  opacity: .55;
+  pointer-events: none;
+}
 
 .btn-alert { background: none; border: 1px solid #e5e5ea; position: relative; }
 .alert-badge {
@@ -1447,6 +1471,14 @@ body.desktop-dark .btn-alert {
   background: #1f2937;
   color: #e5e7eb;
   border-color: #334155;
+}
+body.desktop-dark .app-readonly-chip {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+body.desktop-dark .app-readonly-chip.is-authenticated {
+  background: #14532d;
+  color: #bbf7d0;
 }
 body.desktop-dark .modal-search-input {
   background: #0f172a;
