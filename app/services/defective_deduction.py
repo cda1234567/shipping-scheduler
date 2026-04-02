@@ -25,6 +25,8 @@ from .merge_to_main import (
     _read_latest_stock,
     _round_away,
     backup_main_file,
+    clear_cell_fill,
+    ensure_main_header_wrap,
 )
 
 
@@ -76,7 +78,7 @@ def parse_defective_excel(path: str) -> list[dict]:
 HEADER_FONT = Font(bold=True, size=9)
 HEADER_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 REVERSE_HEADER_FILL = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
-CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
+CENTER_ALIGN = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def _get_main_worksheet(workbook):
@@ -173,11 +175,15 @@ def deduct_defectives_from_main(
         deduct_qty = float(item["defective_qty"])
         new_stock = _round_away(current_stock - deduct_qty)
 
-        ws.cell(row=row_idx, column=col_deduct).value = _round_away(deduct_qty)
+        deduct_cell = ws.cell(row=row_idx, column=col_deduct)
+        deduct_cell.value = _round_away(deduct_qty)
+        clear_cell_fill(deduct_cell)
         stock_cell = ws.cell(row=row_idx, column=col_stock)
         stock_cell.value = new_stock
         if new_stock < 0:
             stock_cell.fill = RED_FILL
+        else:
+            clear_cell_fill(stock_cell)
 
         results.append({
             "part_number": part_upper,
@@ -187,6 +193,7 @@ def deduct_defectives_from_main(
             "stock_after": new_stock,
         })
 
+    ensure_main_header_wrap(ws)
     wb.save(main_path)
     wb.close()
 
@@ -253,11 +260,15 @@ def reverse_defectives_from_main(
         reverse_qty = float(item["defective_qty"])
         new_stock = _round_away(current_stock + reverse_qty)
 
-        ws.cell(row=row_idx, column=col_reverse).value = _round_away(reverse_qty)
+        reverse_cell = ws.cell(row=row_idx, column=col_reverse)
+        reverse_cell.value = _round_away(reverse_qty)
+        clear_cell_fill(reverse_cell)
         stock_cell = ws.cell(row=row_idx, column=col_stock)
         stock_cell.value = new_stock
         if new_stock < 0:
             stock_cell.fill = RED_FILL
+        else:
+            clear_cell_fill(stock_cell)
 
         results.append({
             "part_number": part_upper,
@@ -266,6 +277,7 @@ def reverse_defectives_from_main(
             "stock_after": new_stock,
         })
 
+    ensure_main_header_wrap(ws)
     wb.save(main_path)
     wb.close()
 

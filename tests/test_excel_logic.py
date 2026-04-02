@@ -110,6 +110,40 @@ class ExcelLogicTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=2, column=11).value, 20)
             wb.close()
 
+    def test_merge_to_main_sets_header_row_to_wrap_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            backup_dir = Path(temp_dir) / "backups"
+            self._build_main_workbook(path)
+
+            result = merge_row_to_main(
+                main_path=str(path),
+                groups=[{
+                    "batch_code": "1-3",
+                    "po_number": "4500059234",
+                    "bom_model": "MODEL-A-LONG-NAME",
+                    "components": [{
+                        "part_number": "PART-A",
+                        "description": "CAP",
+                        "is_dash": False,
+                        "needed_qty": 50,
+                        "prev_qty_cs": 0,
+                    }],
+                }],
+                decisions={},
+                supplements={"PART-A": 70},
+                backup_dir=str(backup_dir),
+            )
+
+            wb = load_workbook(path, data_only=False)
+            ws = wb.active
+            self.assertEqual(result["merged_parts"], 1)
+            self.assertTrue(ws.cell(row=1, column=1).alignment.wrap_text)
+            self.assertTrue(ws.cell(row=1, column=9).alignment.wrap_text)
+            self.assertTrue(ws.cell(row=1, column=10).alignment.wrap_text)
+            self.assertTrue(ws.cell(row=1, column=11).alignment.wrap_text)
+            wb.close()
+
     def test_preview_order_batches_includes_moq_and_rounded_suggestion(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "main.xlsx"

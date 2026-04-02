@@ -7,6 +7,7 @@ This module now exposes both:
 """
 from __future__ import annotations
 
+from copy import copy
 import shutil
 from math import copysign, floor
 from pathlib import Path
@@ -28,6 +29,7 @@ from .shortage_rules import (
 PART_COL = 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+CLEAR_FILL = PatternFill(fill_type=None)
 STOCK_SEARCH_START_COL = cfg("excel.main_moq_col", 2) + 2
 
 
@@ -90,6 +92,20 @@ def _read_latest_stock(ws, row_idx: int, max_col: int) -> float:
             current_stock = value
             break
     return current_stock
+
+
+def clear_cell_fill(cell) -> None:
+    cell.fill = CLEAR_FILL
+
+
+def ensure_main_header_wrap(ws) -> None:
+    for col_idx in range(1, ws.max_column + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        wrapped_alignment = copy(cell.alignment)
+        wrapped_alignment.wrap_text = True
+        if not wrapped_alignment.vertical:
+            wrapped_alignment.vertical = "center"
+        cell.alignment = wrapped_alignment
 
 
 def backup_main_file(main_path: str, backup_dir: str) -> str:
@@ -289,7 +305,7 @@ def _write_group_headers(ws, group_plan: dict):
         cell = ws.cell(row=row_idx, column=column)
         cell.value = value
         cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
 def _write_group_rows(ws, group_plan: dict):
@@ -306,13 +322,13 @@ def _write_group_rows(ws, group_plan: dict):
         elif row["decision"] == "Shortage":
             f_cell.fill = RED_FILL
         else:
-            f_cell.fill = PatternFill(fill_type=None)
+            clear_cell_fill(f_cell)
 
         j_cell.value = row["j_value"]
         if row["j_value"] < 0:
             j_cell.fill = RED_FILL
         else:
-            j_cell.fill = PatternFill(fill_type=None)
+            clear_cell_fill(j_cell)
 
 
 def merge_row_to_main(
@@ -342,6 +358,7 @@ def merge_row_to_main(
                 _write_group_headers(workbook.active, group_plan)
                 _write_group_rows(workbook.active, group_plan)
 
+        ensure_main_header_wrap(workbook.active)
         workbook.save(main_path)
     finally:
         workbook.close()
@@ -407,6 +424,7 @@ def supplement_part_in_main(
             if val is not None:
                 cell.value = val + supplement_qty
 
+        ensure_main_header_wrap(ws)
         workbook.save(main_path)
     finally:
         workbook.close()

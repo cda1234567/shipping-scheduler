@@ -286,7 +286,10 @@ class OverrunDeductionTests(InMemoryDbTestCase):
                 self.assertEqual(result_ws.column_dimensions["F"].width, 24)
                 self.assertEqual(result_ws.cell(row=2, column=5).number_format, "#,##0.0")
                 self.assertTrue(result_ws.cell(row=2, column=5).font.italic)
-                self.assertEqual(result_ws.cell(row=2, column=5).fill.fill_type, "solid")
+                self.assertIsNone(result_ws.cell(row=2, column=5).fill.fill_type)
                 self.assertEqual(result_ws.cell(row=2, column=6).border.left.style, "thin")
+                self.assertIsNone(result_ws.cell(row=2, column=6).fill.fill_type)
+                self.assertTrue(result_ws.cell(row=1, column=1).alignment.wrap_text)
+                self.assertTrue(result_ws.cell(row=1, column=5).alignment.wrap_text)
             finally:
                 result_wb.close()
