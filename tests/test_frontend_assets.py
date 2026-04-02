@@ -80,10 +80,16 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertNotIn("if (_postDispatchShortages.length) renderPostDispatchPanel();", text)
         self.assertIn("function configureModalSearch(", text)
         self.assertIn("function applyModalSearchFilter(", text)
+        self.assertIn("function matchesModalSearchQuery(", text)
+        self.assertIn("function tokenizeModalSearchText(", text)
         self.assertIn("modal-shortage-section", text)
         self.assertIn("modal-search-empty", text)
         self.assertIn('const sectionSearch = file?.filename || "";', text)
         self.assertNotIn('const sectionSearch = [file?.filename || "", ...rows.map(row => `${row?.part_number || ""} ${row?.description || ""}`)].join(" ");', text)
+        self.assertIn('data-search-primary="${esc(searchPrimary)}"', text)
+        self.assertIn('data-search-secondary="${esc(searchSecondary)}"', text)
+        self.assertIn('const hasAsciiLetter = /[a-z]/i.test(query);', text)
+        self.assertIn("return secondaryTokens.some(token => token.startsWith(query));", text)
 
         panel_match = re.search(
             r"function\s+buildDraftPanelHtml\s*\(draft\)\s*\{(?P<body>.*?)\n\}",

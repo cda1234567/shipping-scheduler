@@ -1322,7 +1322,8 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   const shortageChecked = shouldAutoShortageCheck(row);
   const supplementQty = roundShortageUiValue(row.supplement_qty || 0);
   const shortageAmount = roundShortageUiValue(row.shortage_amount || 0);
-  const searchText = [partNumber, row.description || "", row.model || "", row.bom_model || ""].join(" ");
+  const searchPrimary = [partNumber, row.model || "", row.bom_model || ""].join(" ");
+  const searchSecondary = row.description || "";
   const badges = [
     shortageAmount > 0 ? `<span class="draft-preview-badge is-shortage">缺 ${fmt(shortageAmount)}</span>` : "",
     row.decision && !["None", "CreateRequirement"].includes(row.decision)
@@ -1331,7 +1332,12 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   ].filter(Boolean).join("");
 
   return `
-    <div class="draft-preview-row ${editable ? "is-editable" : ""}" data-search="${esc(searchText)}">
+    <div
+      class="draft-preview-row ${editable ? "is-editable" : ""}"
+      data-search="${esc([searchPrimary, searchSecondary].join(" "))}"
+      data-search-primary="${esc(searchPrimary)}"
+      data-search-secondary="${esc(searchSecondary)}"
+    >
       <div class="draft-preview-top">
         <div class="draft-preview-part">${esc(partNumber)}</div>
         ${badges ? `<div class="draft-preview-badges">${badges}</div>` : ""}
@@ -1419,6 +1425,37 @@ function getModalSearchableText(node) {
   return normalizeModalSearchQuery(node?.dataset?.search || node?.textContent || "");
 }
 
+function tokenizeModalSearchText(value) {
+  return normalizeModalSearchQuery(value)
+    .split(/[^0-9a-z\u4e00-\u9fff]+/i)
+    .map(token => token.trim())
+    .filter(Boolean);
+}
+
+function matchesModalSearchQuery(node, rawQuery = "") {
+  const query = normalizeModalSearchQuery(rawQuery);
+  if (!query) return true;
+
+  const primary = normalizeModalSearchQuery(node?.dataset?.searchPrimary || "");
+  const secondary = normalizeModalSearchQuery(node?.dataset?.searchSecondary || "");
+  const fallback = getModalSearchableText(node);
+
+  if (primary && primary.includes(query)) return true;
+  if (!primary && fallback.includes(query)) return true;
+
+  if (!secondary) {
+    return primary ? fallback.includes(query) : false;
+  }
+
+  const hasAsciiLetter = /[a-z]/i.test(query);
+  if (hasAsciiLetter) {
+    return secondary.includes(query);
+  }
+
+  const secondaryTokens = tokenizeModalSearchText(secondary);
+  return secondaryTokens.some(token => token.startsWith(query));
+}
+
 function setModalSearchMetaText(text = "") {
   const meta = document.getElementById("modal-search-meta");
   if (meta) meta.textContent = text;
@@ -1451,7 +1488,7 @@ function applyModalSearchFilter(rawQuery = "") {
     totalRows += rowNodes.length;
 
     rowNodes.forEach(row => {
-      const visible = !query || sectionMatches || getModalSearchableText(row).includes(query);
+      const visible = !query || sectionMatches || matchesModalSearchQuery(row, query);
       row.style.display = visible ? "" : "none";
       if (visible) {
         visibleRows += 1;
@@ -3646,6 +3683,8 @@ function shortageItemHtml(s, isCS) {
     : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const orderIdAttr = Number.isInteger(orderId) ? ` data-order-id="${orderId}"` : "";
+  const searchPrimary = [s.part_number || "", s._row_code || "", s._row_model || ""].join(" ");
+  const searchSecondary = s.description || "";
   const supplementEditorHtml = !isCS && Number.isInteger(orderId)
     ? `<div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
         <label style="font-size:11px;color:#6b7280;white-space:nowrap">補這筆</label>
@@ -3677,7 +3716,7 @@ function shortageItemHtml(s, isCS) {
       <div style="font-size:10px;color:#6b7280;margin-top:4px">只補這筆，後面機種會沿用剩餘量繼續扣帳</div>`
     : "";
 
-  return `<div class="${shortageToneClass(s, isCS)}">
+  return `<div class="${shortageToneClass(s, isCS)}" data-search="${esc([searchPrimary, searchSecondary].join(" "))}" data-search-primary="${esc(searchPrimary)}" data-search-secondary="${esc(searchSecondary)}">
     <div class="part">${s.part_number}${codeTag}${csTag}</div>
     <div class="desc">${s.description || "—"}</div>
     <div class="amounts">
