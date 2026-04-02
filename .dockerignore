@@ -13,7 +13,6 @@ build
 dist
 test-results
 tests
-tools
 data
 launch_debug.log
 run_debug.vbs
