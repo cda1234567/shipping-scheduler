@@ -82,6 +82,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("function applyModalSearchFilter(", text)
         self.assertIn("modal-shortage-section", text)
         self.assertIn("modal-search-empty", text)
+        self.assertIn('const sectionSearch = file?.filename || "";', text)
+        self.assertNotIn('const sectionSearch = [file?.filename || "", ...rows.map(row => `${row?.part_number || ""} ${row?.description || ""}`)].join(" ");', text)
 
         panel_match = re.search(
             r"function\s+buildDraftPanelHtml\s*\(draft\)\s*\{(?P<body>.*?)\n\}",

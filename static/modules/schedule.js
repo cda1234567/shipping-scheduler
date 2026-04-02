@@ -1371,7 +1371,7 @@ function buildDraftFileSectionHtml(file, { editable = false } = {}) {
   const body = rows.length
     ? rows.map(row => buildDraftPreviewRowHtml(row, { editable })).join("")
     : '<div class="merge-draft-empty-note">這份副檔目前沒有可顯示的寫入明細。</div>';
-  const sectionSearch = [file?.filename || "", ...rows.map(row => `${row?.part_number || ""} ${row?.description || ""}`)].join(" ");
+  const sectionSearch = file?.filename || "";
 
   return `
     <section class="draft-preview-section" data-search="${esc(sectionSearch)}">
