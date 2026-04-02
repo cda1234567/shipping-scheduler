@@ -25,6 +25,7 @@ from ..services.bom_editor import (
     normalize_bom_record_to_editable,
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
+    validate_uploaded_bom_layout,
 )
 from ..services.bom_quantity import (
     calculate_effective_needed_qty,
@@ -106,6 +107,12 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 upload_name=uf.filename or f"{bom_id}{ext}",
                 content=await uf.read(),
             )
+            layout_errors = validate_uploaded_bom_layout(str(stored["filepath"]))
+            if layout_errors:
+                detail = "；".join(layout_errors[:6])
+                if len(layout_errors) > 6:
+                    detail += "；其餘列請打開原檔確認"
+                raise ValueError(f"副檔欄位檢查失敗（G/H 應空白，I/J 應為公式）：{detail}")
             parsed = parse_bom_for_storage(
                 path=str(stored["filepath"]),
                 bom_id=bom_id,

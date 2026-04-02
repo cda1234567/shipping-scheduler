@@ -13,6 +13,7 @@ from app.services.bom_editor import (
     build_editable_filename,
     convert_xls_to_xlsx,
     prepare_uploaded_bom_file,
+    validate_uploaded_bom_layout,
 )
 
 
@@ -59,6 +60,22 @@ class BomEditorTests(unittest.TestCase):
         ws["F5"] = 5
         ws["G5"] = "X"
         ws["H5"] = "-"
+        wb.save(path)
+        wb.close()
+
+    def _build_upload_validation_workbook(self, path: Path, *, valid: bool):
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "BOM"
+        ws["C2"] = "MODEL-A"
+        ws["D2"] = "PCB-A"
+        ws["C5"] = "PART-A"
+        ws["D5"] = "DESC-A"
+        ws["F5"] = 5
+        ws["G5"] = None if valid else "X"
+        ws["H5"] = None if valid else 1
+        ws["I5"] = "=SUM(1,1)" if valid else 2
+        ws["J5"] = "=I5+1" if valid else None
         wb.save(path)
         wb.close()
 
@@ -124,6 +141,29 @@ class BomEditorTests(unittest.TestCase):
                 convert_xls_to_xlsx(str(src), str(dest))
 
         copy_fallback.assert_called_once_with(src, dest)
+
+    def test_validate_uploaded_bom_layout_accepts_blank_gh_and_formula_ij(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "valid.xlsx"
+            self._build_upload_validation_workbook(path, valid=True)
+
+            problems = validate_uploaded_bom_layout(str(path))
+
+        self.assertEqual(problems, [])
+
+    def test_validate_uploaded_bom_layout_reports_invalid_ghij_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid.xlsx"
+            self._build_upload_validation_workbook(path, valid=False)
+
+            problems = validate_uploaded_bom_layout(str(path))
+
+        self.assertEqual(len(problems), 1)
+        self.assertIn("PART-A", problems[0])
+        self.assertIn("G 欄需為空白", problems[0])
+        self.assertIn("H 欄需為空白", problems[0])
+        self.assertIn("I 欄需為公式", problems[0])
+        self.assertIn("J 欄需為公式", problems[0])
 
     def test_apply_bom_editor_changes_updates_workbook_cells(self):
         with tempfile.TemporaryDirectory() as temp_dir:

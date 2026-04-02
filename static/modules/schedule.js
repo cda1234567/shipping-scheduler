@@ -715,10 +715,6 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
     div.querySelector(".btn-draft-commit")?.addEventListener("click", () => {
       void handleCommitDraft(draft.id, r.model);
     });
-    div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
-      const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
-      void showDraftModal(draft.id, { readOnly: true, fileId: selectedFileId });
-    });
     div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
       const selectedFileId = getSelectedDraftFileId(draft.id, draft.files || []);
       void showDraftModal(draft.id, { readOnly: false, fileId: selectedFileId });
@@ -1288,6 +1284,7 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   const shortageChecked = shouldAutoShortageCheck(row);
   const supplementQty = roundShortageUiValue(row.supplement_qty || 0);
   const shortageAmount = roundShortageUiValue(row.shortage_amount || 0);
+  const searchText = [partNumber, row.description || "", row.model || "", row.bom_model || ""].join(" ");
   const badges = [
     shortageAmount > 0 ? `<span class="draft-preview-badge is-shortage">缺 ${fmt(shortageAmount)}</span>` : "",
     row.decision && !["None", "CreateRequirement"].includes(row.decision)
@@ -1296,7 +1293,7 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   ].filter(Boolean).join("");
 
   return `
-    <div class="draft-preview-row ${editable ? "is-editable" : ""}">
+    <div class="draft-preview-row ${editable ? "is-editable" : ""}" data-search="${esc(searchText)}">
       <div class="draft-preview-top">
         <div class="draft-preview-part">${esc(partNumber)}</div>
         ${badges ? `<div class="draft-preview-badges">${badges}</div>` : ""}
@@ -1336,9 +1333,10 @@ function buildDraftFileSectionHtml(file, { editable = false } = {}) {
   const body = rows.length
     ? rows.map(row => buildDraftPreviewRowHtml(row, { editable })).join("")
     : '<div class="merge-draft-empty-note">這份副檔目前沒有可顯示的寫入明細。</div>';
+  const sectionSearch = [file?.filename || "", ...rows.map(row => `${row?.part_number || ""} ${row?.description || ""}`)].join(" ");
 
   return `
-    <section class="draft-preview-section">
+    <section class="draft-preview-section" data-search="${esc(sectionSearch)}">
       <div class="draft-preview-section-head">
         <div class="draft-preview-section-title">${esc(file.filename || "未命名副檔")}</div>
         <div class="draft-preview-section-meta">寫入列數 ${rows.length}</div>
@@ -1373,6 +1371,98 @@ function buildDraftFileListHtml(files, {
       <div class="merge-draft-files-label">${esc(label)}</div>
       <div class="merge-draft-file-strip">${items}</div>
     </div>`;
+}
+
+function normalizeModalSearchQuery(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getModalSearchableText(node) {
+  return normalizeModalSearchQuery(node?.dataset?.search || node?.textContent || "");
+}
+
+function setModalSearchMetaText(text = "") {
+  const meta = document.getElementById("modal-search-meta");
+  if (meta) meta.textContent = text;
+}
+
+function applyModalSearchFilter(rawQuery = "") {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return;
+
+  const query = normalizeModalSearchQuery(rawQuery);
+  list.querySelectorAll(".modal-search-empty").forEach(node => node.remove());
+
+  const sectionNodes = [
+    ...list.querySelectorAll(".modal-shortage-section"),
+    ...list.querySelectorAll(".draft-preview-section"),
+  ];
+
+  if (!sectionNodes.length) {
+    setModalSearchMetaText("");
+    return;
+  }
+
+  let totalRows = 0;
+  let visibleRows = 0;
+
+  sectionNodes.forEach(section => {
+    const rowNodes = [...section.querySelectorAll(".shortage-item, .draft-preview-row")];
+    const sectionMatches = query && getModalSearchableText(section).includes(query);
+    let sectionVisibleRows = 0;
+    totalRows += rowNodes.length;
+
+    rowNodes.forEach(row => {
+      const visible = !query || sectionMatches || getModalSearchableText(row).includes(query);
+      row.style.display = visible ? "" : "none";
+      if (visible) {
+        visibleRows += 1;
+        sectionVisibleRows += 1;
+      }
+    });
+
+    section.style.display = (!query || sectionMatches || sectionVisibleRows > 0) ? "" : "none";
+  });
+
+  if (query && totalRows > 0 && visibleRows === 0) {
+    list.insertAdjacentHTML("beforeend", '<div class="modal-search-empty">找不到符合的料號、說明或機種。</div>');
+  }
+
+  if (!totalRows) {
+    setModalSearchMetaText(query ? "無可搜尋資料" : "");
+    return;
+  }
+  setModalSearchMetaText(query ? `符合 ${visibleRows} / ${totalRows} 筆` : `共 ${totalRows} 筆`);
+}
+
+function configureModalSearch({
+  enabled = true,
+  placeholder = "搜尋料號 / 說明 / 機種",
+} = {}) {
+  const wrap = document.getElementById("modal-search-wrap");
+  const input = document.getElementById("modal-search-input");
+  const clearBtn = document.getElementById("modal-search-clear");
+  if (!wrap || !input || !clearBtn) return;
+
+  if (!enabled) {
+    wrap.style.display = "none";
+    input.value = "";
+    input.oninput = null;
+    clearBtn.onclick = null;
+    setModalSearchMetaText("");
+    return;
+  }
+
+  wrap.style.display = "flex";
+  input.placeholder = placeholder;
+  input.value = "";
+  input.oninput = () => applyModalSearchFilter(input.value);
+  clearBtn.onclick = () => {
+    input.value = "";
+    applyModalSearchFilter("");
+    input.focus();
+  };
+  applyModalSearchFilter("");
 }
 
 async function showDraftModal(draftId, { readOnly = false, fileId = null } = {}) {
@@ -1422,6 +1512,7 @@ async function showDraftModal(draftId, { readOnly = false, fileId = null } = {})
       ${previewSections}
     </section>
   `;
+  configureModalSearch({ placeholder: "搜尋料號 / 說明 / 副檔名稱" });
 
   if (!readOnly) {
     bindDraftPreviewEditors(list);
@@ -1586,6 +1677,7 @@ async function showShortageModal(targets) {
       全部 OK，無缺料！可直接扣帳。</div>`;
   } else {
     for (const model of visibleModels) {
+      html += `<section class="modal-shortage-section" data-search="${esc(model)}">`;
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       const csItems = csShortagesByModel[model] || [];
       const items = shortagesByModel[model] || [];
@@ -1598,10 +1690,12 @@ async function showShortageModal(targets) {
         html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
         html += items.map(s => modalShortageItem(s, false)).join("");
       }
+      html += "</section>";
     }
   }
 
   list.innerHTML = html;
+  configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
   bindShortageEditors(list);
 
   // 重設 footer
@@ -1804,6 +1898,7 @@ async function showBatchMergeDraftModal(targets) {
     </div>`;
   } else {
     for (const model of visibleModels) {
+      html += `<section class="modal-shortage-section" data-search="${esc(model)}">`;
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       const csItems = csShortagesByModel[model] || [];
       const items = shortagesByModel[model] || [];
@@ -1816,10 +1911,12 @@ async function showBatchMergeDraftModal(targets) {
         html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
         html += items.map(item => modalShortageItem(item, false)).join("");
       }
+      html += "</section>";
     }
   }
 
   list.innerHTML = html;
+  configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
   bindShortageEditors(list);
 
   bindMoqEditors(list);
@@ -1906,13 +2003,16 @@ async function showWriteToMainModal(targets) {
     html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
       ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
     for (const model of visibleModels) {
+      html += `<section class="modal-shortage-section" data-search="${esc(model)}">`;
       html += `<div style="margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937">${esc(model)}</div>`;
       html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
       html += (shortagesByModel[model] || []).map(item => modalShortageItem(item, false)).join("");
+      html += "</section>";
     }
   }
 
   list.innerHTML = html;
+  configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
   bindShortageEditors(list);
 
   bindMoqEditors(list);
@@ -1986,6 +2086,7 @@ function modalShortageItem(s, isCS) {
   const codeTag = s._row_code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:4px">${esc(s._row_code)}</span>` : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const orderIdAttr = Number.isInteger(normalizeOrderId(s._order_id)) ? ` data-order-id="${normalizeOrderId(s._order_id)}"` : "";
+  const searchText = [s.part_number || "", s.description || "", s._row_code || "", s._row_model || ""].join(" ");
   const shortageChecked = shouldAutoShortageCheck(s);
   const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;
   const defaultQty = shortageChecked && !hasStoredSupplement
@@ -2017,7 +2118,7 @@ function modalShortageItem(s, isCS) {
     resulting_stock: resultingStock,
   };
 
-  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}"${orderIdAttr}>
+  return `<div class="${shortageToneClass(s, isCS)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-search="${esc(searchText)}"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
     <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
@@ -2079,6 +2180,7 @@ function closeShortageModal() {
   if (modal) modal.style.display = "none";
   if (list) list.innerHTML = "";
   if (footer) footer.innerHTML = "";
+  configureModalSearch({ enabled: false });
   _modalTargets = [];
   _modalBomFiles = [];
   _modalCarryOversByModel = {};
@@ -3015,9 +3117,6 @@ function buildRowCardLegacyBase(r, resultMap) {
   });
 
   if (draft) {
-    div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
-      void showDraftModal(draft.id, { readOnly: true });
-    });
     div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
       void showDraftModal(draft.id, { readOnly: false });
     });
@@ -3796,12 +3895,11 @@ function buildDraftPanelHtml(draft) {
   const collapsed = Number.isInteger(orderId) ? isDraftPanelCollapsed(orderId) : false;
   const selectedFileId = Number.isInteger(draftId) ? getSelectedDraftFileId(draftId, files) : null;
   const fileHtml = buildDraftFileListHtml(files, {
-    label: "預覽目標",
+    label: "副檔目標",
     selectable: true,
     draftId,
     selectedFileId,
   });
-  const previewTitle = selectedFileId ? "只預覽所選副檔" : "預覽全部副檔";
 
   return `
     <div class="merge-draft-panel ${collapsed ? "is-collapsed" : ""}">
@@ -3817,7 +3915,6 @@ function buildDraftPanelHtml(draft) {
         ${fileHtml}
         <div class="merge-draft-actions">
           <button class="btn btn-success btn-sm btn-draft-commit" data-draft-id="${draft.id}">寫入主檔</button>
-          <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}" title="${previewTitle}">預覽</button>
           <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
           <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
           <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
@@ -3955,9 +4052,6 @@ function buildRowCardLegacyOriginal(r, resultMap) {
   });
 
   if (draft) {
-    div.querySelector(".btn-draft-preview")?.addEventListener("click", () => {
-      void showDraftModal(draft.id, { readOnly: true });
-    });
     div.querySelector(".btn-draft-edit")?.addEventListener("click", () => {
       void showDraftModal(draft.id, { readOnly: false });
     });

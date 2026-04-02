@@ -124,6 +124,48 @@ def build_editable_filename(filename: str) -> str:
     return path.name
 
 
+def _is_empty_excel_value(value) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _is_formula_excel_cell(cell) -> bool:
+    value = cell.value
+    return cell.data_type == "f" or (isinstance(value, str) and value.lstrip().startswith("="))
+
+
+def validate_uploaded_bom_layout(path: str) -> list[str]:
+    workbook_path = Path(path)
+    is_macro = workbook_path.suffix.lower() == ".xlsm"
+    wb = openpyxl.load_workbook(str(workbook_path), data_only=False, keep_vba=is_macro)
+    ws = wb.worksheets[0]
+
+    part_col = cfg("excel.bom_part_col", 2) + 1
+    data_start = max(5, cfg("excel.bom_data_start_row", 5))
+    problems: list[str] = []
+
+    try:
+        for row_idx in range(data_start, ws.max_row + 1):
+            part_number = ws.cell(row=row_idx, column=part_col).value
+            if not str(part_number or "").strip():
+                continue
+
+            row_errors: list[str] = []
+            if not _is_empty_excel_value(ws.cell(row=row_idx, column=7).value):
+                row_errors.append("G 欄需為空白")
+            if not _is_empty_excel_value(ws.cell(row=row_idx, column=8).value):
+                row_errors.append("H 欄需為空白")
+            if not _is_formula_excel_cell(ws.cell(row=row_idx, column=9)):
+                row_errors.append("I 欄需為公式")
+            if not _is_formula_excel_cell(ws.cell(row=row_idx, column=10)):
+                row_errors.append("J 欄需為公式")
+
+            if row_errors:
+                problems.append(f"第 {row_idx} 列 {str(part_number).strip()}: {'、'.join(row_errors)}")
+        return problems
+    finally:
+        wb.close()
+
+
 def prepare_uploaded_bom_file(bom_id: str, upload_name: str, content: bytes) -> dict[str, object]:
     ext = Path(upload_name or "").suffix.lower()
     if ext == ".xls":

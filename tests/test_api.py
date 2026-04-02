@@ -100,6 +100,34 @@ class ApiTests(unittest.TestCase):
         mock_replace_supplements.assert_called_once_with([1], {1: {"PART-1": 1200}})
         mock_rebuild.assert_called_once_with([1, 2])
 
+    def test_bom_upload_rejects_invalid_ghij_layout(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stored_path = Path(temp_dir) / "upload.xlsx"
+            stored_path.write_bytes(b"dummy")
+
+            with patch("app.routers.bom.prepare_uploaded_bom_file", return_value={
+                "filepath": str(stored_path),
+                "filename": "upload.xlsx",
+                "source_filename": "upload.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": False,
+            }), \
+                 patch("app.routers.bom.validate_uploaded_bom_layout", return_value=[
+                     "第 5 列 PART-A: G 欄需為空白、H 欄需為空白、I 欄需為公式、J 欄需為公式"
+                 ]), \
+                 patch("app.routers.bom.parse_bom_for_storage") as mock_parse:
+                response = self.client.post(
+                    "/api/bom/upload",
+                    files=[("files", ("upload.xlsx", b"dummy", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))],
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["saved"], [])
+        self.assertEqual(len(body["errors"]), 1)
+        self.assertIn("副檔欄位檢查失敗", body["errors"][0])
+        mock_parse.assert_not_called()
+
     def test_batch_merge_creates_merge_drafts(self):
         with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
              patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 7}, {"id": 8}]) as mock_rebuild, \

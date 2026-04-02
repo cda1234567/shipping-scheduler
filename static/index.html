@@ -786,6 +786,11 @@ init().catch(error => {
       <h3 style="margin:0;font-size:16px">補料決策</h3>
       <button id="modal-close" class="modal-close-btn">&times;</button>
     </div>
+    <div id="modal-search-wrap" class="modal-search-wrap" style="display:none">
+      <input id="modal-search-input" class="modal-search-input" type="text" placeholder="搜尋料號 / 說明 / 機種">
+      <button id="modal-search-clear" class="btn btn-secondary btn-sm" type="button">清除</button>
+      <span id="modal-search-meta" class="modal-search-meta"></span>
+    </div>
     <div id="modal-shortage-list" class="modal-body"></div>
     <div id="modal-footer" class="modal-footer">
       <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>

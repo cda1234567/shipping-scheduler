@@ -78,6 +78,18 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('saveBtn.dataset.busyText', text)
         self.assertIn('id="modal-download-progress"', text)
         self.assertNotIn("if (_postDispatchShortages.length) renderPostDispatchPanel();", text)
+        self.assertIn("function configureModalSearch(", text)
+        self.assertIn("function applyModalSearchFilter(", text)
+        self.assertIn("modal-shortage-section", text)
+        self.assertIn("modal-search-empty", text)
+
+        panel_match = re.search(
+            r"function\s+buildDraftPanelHtml\s*\(draft\)\s*\{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(panel_match)
+        self.assertNotIn("btn-draft-preview", panel_match.group("body"))
 
         preview_match = re.search(
             r"function\s+buildDraftPreviewRowHtml\s*\(row,\s*\{\s*editable\s*=\s*false\s*\}\s*=\s*\{\}\)\s*\{(?P<body>.*?)\n\}",
@@ -297,6 +309,8 @@ class FrontendAssetTests(unittest.TestCase):
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
 
         self.assertIn('id="btn-batch-dispatch">寫入主檔</button>', index_html)
+        self.assertIn('id="modal-search-input"', index_html)
+        self.assertIn('id="modal-search-clear"', index_html)
         match = re.search(
             r"async function handleBatchDispatch\(\) \{(?P<body>.*?)\n\}",
             schedule_module,

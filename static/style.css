@@ -391,6 +391,33 @@ body {
   display: flex; justify-content: space-between; align-items: center;
   padding: 16px 20px; border-bottom: 1px solid #e5e5ea;
 }
+.modal-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px 0;
+}
+.modal-search-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #111827;
+  background: #fff;
+  outline: none;
+}
+.modal-search-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+.modal-search-meta {
+  min-width: 92px;
+  text-align: right;
+  font-size: 12px;
+  color: #6b7280;
+}
 .modal-subtitle { font-size: 12px; color: #6b7280; margin-top: 4px; line-height: 1.4; }
 .modal-close-btn {
   background: none; border: none; font-size: 22px; cursor: pointer;
@@ -398,6 +425,15 @@ body {
 }
 .modal-close-btn:hover { color: #dc2626; }
 .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.modal-search-empty {
+  padding: 16px 14px;
+  border: 1px dashed rgba(148, 163, 184, 0.55);
+  border-radius: 12px;
+  text-align: center;
+  font-size: 12px;
+  color: #64748b;
+  background: rgba(248, 250, 252, 0.92);
+}
 .modal-footer {
   padding: 12px 20px; border-top: 1px solid #e5e5ea;
   display: flex; gap: 10px; justify-content: flex-end; align-items: flex-end;
@@ -1386,6 +1422,7 @@ body.desktop-dark #log-list {
 body.desktop-dark .file-status,
 body.desktop-dark .sidebar-meta,
 body.desktop-dark .modal-subtitle,
+body.desktop-dark .modal-search-meta,
 body.desktop-dark .desktop-status-meta,
 body.desktop-dark .desktop-help,
 body.desktop-dark .db-backup-hint,
@@ -1403,6 +1440,15 @@ body.desktop-dark .btn-alert {
   background: #1f2937;
   color: #e5e7eb;
   border-color: #334155;
+}
+body.desktop-dark .modal-search-input {
+  background: #0f172a;
+  color: #e5e7eb;
+  border-color: #334155;
+}
+body.desktop-dark .modal-search-input:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
 }
 body.desktop-dark .tab-btn {
   color: #94a3b8;
@@ -1495,6 +1541,11 @@ body.desktop-dark .tag-pcb {
 body.desktop-dark .shortage-item.cs-item {
   background: #2a220f;
   border-color: #a16207;
+}
+body.desktop-dark .modal-search-empty {
+  background: rgba(15, 23, 42, 0.88);
+  border-color: rgba(71, 85, 105, 0.9);
+  color: #94a3b8;
 }
 body.desktop-dark .empty-state {
   color: #94a3b8;
