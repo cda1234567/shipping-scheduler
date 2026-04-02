@@ -12,6 +12,7 @@ from app.services.bom_editor import (
     apply_bom_editor_changes,
     build_editable_filename,
     convert_xls_to_xlsx,
+    normalize_uploaded_bom_layout,
     prepare_uploaded_bom_file,
     validate_uploaded_bom_layout,
 )
@@ -164,6 +165,34 @@ class BomEditorTests(unittest.TestCase):
         self.assertIn("H 欄需為空白", problems[0])
         self.assertIn("I 欄需為公式", problems[0])
         self.assertIn("J 欄需為公式", problems[0])
+
+    def test_normalize_uploaded_bom_layout_sets_dash_rows_and_formulas(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "normalize.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "BOM"
+            ws["C5"] = "PART-A"
+            ws["G5"] = "-"
+            ws["H5"] = None
+            ws["I5"] = 1
+            ws["J5"] = None
+            wb.save(path)
+            wb.close()
+
+            fixes = normalize_uploaded_bom_layout(str(path))
+
+            wb = load_workbook(path, data_only=False)
+            ws = wb.active
+            self.assertEqual(ws["G5"].value, "-")
+            self.assertEqual(ws["H5"].value, "-")
+            self.assertEqual(ws["I5"].value, "=SUM(G5,H5)")
+            self.assertEqual(ws["J5"].value, "=I5-F5")
+            wb.close()
+
+        self.assertTrue(any("已自動標成忽略列" in item for item in fixes))
+        self.assertTrue(any("已自動補回 I 欄公式" in item for item in fixes))
+        self.assertTrue(any("已自動補回 J 欄公式" in item for item in fixes))
 
     def test_apply_bom_editor_changes_updates_workbook_cells(self):
         with tempfile.TemporaryDirectory() as temp_dir:

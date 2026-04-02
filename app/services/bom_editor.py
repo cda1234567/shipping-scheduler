@@ -16,6 +16,7 @@ from .xls_reader import open_workbook_any
 _BOM_BACKUP_DIR = BACKUP_DIR / "bom"
 _BOM_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 _DASH_MARKERS = {"-", "x", "X", "n", "N", "n/a", "N/A", "na", "NA", "?"}
+_UPLOAD_IGNORE_MARKERS = {"-", "—", "－", "–"}
 
 
 def _ps_quote(value: str) -> str:
@@ -133,6 +134,67 @@ def _is_formula_excel_cell(cell) -> bool:
     return cell.data_type == "f" or (isinstance(value, str) and value.lstrip().startswith("="))
 
 
+def _is_dash_marker(value) -> bool:
+    return str(value or "").strip() in _UPLOAD_IGNORE_MARKERS
+
+
+def _build_i_formula(row_idx: int) -> str:
+    return f"=SUM(G{row_idx},H{row_idx})"
+
+
+def _build_j_formula(row_idx: int) -> str:
+    return f"=I{row_idx}-F{row_idx}"
+
+
+def normalize_uploaded_bom_layout(path: str) -> list[str]:
+    workbook_path = Path(path)
+    is_macro = workbook_path.suffix.lower() == ".xlsm"
+    wb = openpyxl.load_workbook(str(workbook_path), data_only=False, keep_vba=is_macro)
+    ws = wb.worksheets[0]
+
+    part_col = cfg("excel.bom_part_col", 2) + 1
+    data_start = max(5, cfg("excel.bom_data_start_row", 5))
+    fixes: list[str] = []
+    changed = False
+
+    try:
+        for row_idx in range(data_start, ws.max_row + 1):
+            part_number = ws.cell(row=row_idx, column=part_col).value
+            part_key = str(part_number or "").strip()
+            if not part_key:
+                continue
+
+            g_cell = ws.cell(row=row_idx, column=7)
+            h_cell = ws.cell(row=row_idx, column=8)
+            i_cell = ws.cell(row=row_idx, column=9)
+            j_cell = ws.cell(row=row_idx, column=10)
+
+            if _is_dash_marker(g_cell.value) or _is_dash_marker(h_cell.value):
+                if str(g_cell.value or "").strip() != "-":
+                    g_cell.value = "-"
+                    changed = True
+                if str(h_cell.value or "").strip() != "-":
+                    h_cell.value = "-"
+                    changed = True
+                fixes.append(f"第 {row_idx} 列 {part_key} 已自動標成忽略列")
+
+            if not _is_formula_excel_cell(i_cell):
+                i_cell.value = _build_i_formula(row_idx)
+                changed = True
+                fixes.append(f"第 {row_idx} 列 {part_key} 已自動補回 I 欄公式")
+
+            if not _is_formula_excel_cell(j_cell):
+                j_cell.value = _build_j_formula(row_idx)
+                changed = True
+                fixes.append(f"第 {row_idx} 列 {part_key} 已自動補回 J 欄公式")
+
+        if changed:
+            wb.save(str(workbook_path))
+        return fixes
+    finally:
+        wb.close()
+
+
 def validate_uploaded_bom_layout(path: str) -> list[str]:
     workbook_path = Path(path)
     is_macro = workbook_path.suffix.lower() == ".xlsm"
@@ -149,10 +211,13 @@ def validate_uploaded_bom_layout(path: str) -> list[str]:
             if not str(part_number or "").strip():
                 continue
 
+            g_value = ws.cell(row=row_idx, column=7).value
+            h_value = ws.cell(row=row_idx, column=8).value
+            is_dash_row = _is_dash_marker(g_value) or _is_dash_marker(h_value)
             row_errors: list[str] = []
-            if not _is_empty_excel_value(ws.cell(row=row_idx, column=7).value):
+            if not is_dash_row and not _is_empty_excel_value(g_value):
                 row_errors.append("G 欄需為空白")
-            if not _is_empty_excel_value(ws.cell(row=row_idx, column=8).value):
+            if not is_dash_row and not _is_empty_excel_value(h_value):
                 row_errors.append("H 欄需為空白")
             if not _is_formula_excel_cell(ws.cell(row=row_idx, column=9)):
                 row_errors.append("I 欄需為公式")

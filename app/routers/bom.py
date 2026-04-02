@@ -22,6 +22,7 @@ from ..services.bom_editor import (
     apply_bom_editor_changes,
     backup_bom_file,
     build_bom_storage_payload,
+    normalize_uploaded_bom_layout,
     normalize_bom_record_to_editable,
     parse_bom_for_storage,
     prepare_uploaded_bom_file,
@@ -107,6 +108,7 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 upload_name=uf.filename or f"{bom_id}{ext}",
                 content=await uf.read(),
             )
+            auto_fixes = normalize_uploaded_bom_layout(str(stored["filepath"]))
             layout_errors = validate_uploaded_bom_layout(str(stored["filepath"]))
             if layout_errors:
                 detail = "；".join(layout_errors[:6])
@@ -137,6 +139,7 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 "pcb": parsed.pcb,
                 "order_qty": parsed.order_qty,
                 "components": len(parsed.components),
+                "auto_fixes": auto_fixes,
             })
         except Exception as exc:
             if stored and stored.get("filepath"):

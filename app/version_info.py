@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.02.2"
+APP_VERSION = "v2026.04.02.3"
 APP_RELEASED_AT = "2026-04-02"
 APP_HEADLINE = "這版聚焦在 modal 編輯效率、BOM 上傳檢查與副檔操作整理。"
 APP_CHANGELOG = [

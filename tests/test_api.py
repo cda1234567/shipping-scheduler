@@ -112,6 +112,7 @@ class ApiTests(unittest.TestCase):
                 "source_format": ".xlsx",
                 "is_converted": False,
             }), \
+                 patch("app.routers.bom.normalize_uploaded_bom_layout", return_value=[]), \
                  patch("app.routers.bom.validate_uploaded_bom_layout", return_value=[
                      "第 5 列 PART-A: G 欄需為空白、H 欄需為空白、I 欄需為公式、J 欄需為公式"
                  ]), \
