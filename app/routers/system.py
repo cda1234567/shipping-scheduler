@@ -132,8 +132,8 @@ async def get_missing_moq_st_packages():
     return {
         "rows": rows,
         "count": len(rows),
-        "loaded_at": db.get_setting("st_inventory_loaded_at"),
-        "filename": db.get_setting("st_inventory_filename"),
+        "loaded_at": db.get_setting("main_loaded_at"),
+        "filename": db.get_setting("main_filename"),
     }
 
 

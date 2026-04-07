@@ -623,12 +623,15 @@ def upsert_snapshot_moq(part_number: str, moq: float) -> str:
 def get_snapshot() -> dict[str, dict]:
     """取得快照 {PART: {stock_qty, moq}}"""
     with get_conn() as conn:
-        rows = conn.execute("SELECT part_number, stock_qty, moq, moq_manual FROM inventory_snapshot").fetchall()
+        rows = conn.execute(
+            "SELECT part_number, stock_qty, moq, moq_manual, description FROM inventory_snapshot"
+        ).fetchall()
     return {
         r["part_number"]: {
             "stock_qty": r["stock_qty"],
             "moq": r["moq"],
             "moq_manual": bool(r["moq_manual"]),
+            "description": str(r["description"] or ""),
         }
         for r in rows
     }

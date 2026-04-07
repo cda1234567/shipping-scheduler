@@ -43,16 +43,16 @@ def serialize_package_values(values: list[float]) -> str:
     return ",".join(_format_number(value) for value in values if float(value or 0) > _TOLERANCE)
 
 
-def summarize_package_text(package_text: str | None, st_stock_qty: float) -> dict:
+def summarize_package_text(package_text: str | None, stock_qty: float) -> dict:
     values = parse_package_text(package_text)
     package_sum = round(sum(values), 6)
-    stock_qty = float(st_stock_qty or 0)
-    diff_qty = round(package_sum - stock_qty, 6)
+    target_qty = float(stock_qty or 0)
+    diff_qty = round(package_sum - target_qty, 6)
     return {
         "package_values": values,
         "package_sum": package_sum,
         "diff_qty": diff_qty,
-        "matches_st_stock": isclose(package_sum, stock_qty, abs_tol=_TOLERANCE),
+        "matches_stock": isclose(package_sum, target_qty, abs_tol=_TOLERANCE),
     }
 
 
@@ -88,29 +88,28 @@ def deduct_package_text(package_text: str | None, used_qty: float) -> str:
 
 def build_missing_moq_package_rows() -> list[dict]:
     snapshot = db.get_snapshot()
-    st_snapshot = db.get_st_inventory_snapshot()
     saved = db.get_st_package_breakdowns()
 
     rows: list[dict] = []
-    for part_number in sorted(st_snapshot):
+    for part_number in sorted(snapshot):
         snapshot_row = snapshot.get(part_number) or {}
         moq = float(snapshot_row.get("moq") or 0)
         if moq > 0:
             continue
 
-        st_row = st_snapshot.get(part_number) or {}
         package_state = saved.get(part_number) or {}
         package_text = str(package_state.get("package_text") or "")
-        summary = summarize_package_text(package_text, float(st_row.get("stock_qty") or 0))
+        stock_qty = float(snapshot_row.get("stock_qty") or 0)
+        summary = summarize_package_text(package_text, stock_qty)
         rows.append({
             "part_number": part_number,
-            "description": str(st_row.get("description") or ""),
-            "st_stock_qty": float(st_row.get("stock_qty") or 0),
+            "description": str(snapshot_row.get("description") or ""),
+            "stock_qty": stock_qty,
             "package_text": package_text,
             "package_values": summary["package_values"],
             "package_sum": summary["package_sum"],
             "diff_qty": summary["diff_qty"],
-            "matches_st_stock": summary["matches_st_stock"],
+            "matches_stock": summary["matches_stock"],
             "updated_at": str(package_state.get("updated_at") or ""),
         })
     return rows

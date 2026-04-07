@@ -2584,18 +2584,18 @@ class ApiTests(unittest.TestCase):
             {
                 "part_number": "PART-1",
                 "description": "Capacitor",
-                "st_stock_qty": 1000,
+                "stock_qty": 1000,
                 "package_text": "200,300,500",
                 "package_values": [200, 300, 500],
                 "package_sum": 1000,
                 "diff_qty": 0,
-                "matches_st_stock": True,
+                "matches_stock": True,
                 "updated_at": "2026-04-07T10:00:00",
             },
         ]), \
              patch("app.routers.system.db.get_setting", side_effect=lambda key, default="": {
-                 "st_inventory_loaded_at": "2026-04-07T09:00:00",
-                 "st_inventory_filename": "st.xlsx",
+                 "main_loaded_at": "2026-04-07T09:00:00",
+                 "main_filename": "main.xlsx",
              }.get(key, default)):
             response = self.client.get("/api/system/st-packages/missing-moq")
 
@@ -2605,18 +2605,18 @@ class ApiTests(unittest.TestCase):
                 {
                     "part_number": "PART-1",
                     "description": "Capacitor",
-                    "st_stock_qty": 1000,
+                    "stock_qty": 1000,
                     "package_text": "200,300,500",
                     "package_values": [200, 300, 500],
                     "package_sum": 1000,
                     "diff_qty": 0,
-                    "matches_st_stock": True,
+                    "matches_stock": True,
                     "updated_at": "2026-04-07T10:00:00",
                 },
             ],
             "count": 1,
             "loaded_at": "2026-04-07T09:00:00",
-            "filename": "st.xlsx",
+            "filename": "main.xlsx",
         })
 
     def test_update_missing_moq_st_package_requires_edit_auth_and_saves(self):
@@ -2630,12 +2630,12 @@ class ApiTests(unittest.TestCase):
             with patch("app.routers.system.save_missing_moq_package_text", return_value={
                 "part_number": "PART-1",
                 "description": "Capacitor",
-                "st_stock_qty": 1000,
+                "stock_qty": 1000,
                 "package_text": "200,300,500",
                 "package_values": [200, 300, 500],
                 "package_sum": 1000,
                 "diff_qty": 0,
-                "matches_st_stock": True,
+                "matches_stock": True,
                 "updated_at": "2026-04-07T10:00:00",
             }) as mock_save, \
                  patch("app.routers.system.db.log_activity") as mock_log:
