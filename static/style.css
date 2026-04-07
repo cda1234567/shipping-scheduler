@@ -117,6 +117,7 @@ body {
 }
 
 .st-package-shell {
+  flex: 1;
   padding: 14px 16px 20px;
   display: flex;
   flex-direction: column;
@@ -422,6 +423,14 @@ body.edit-auth-readonly #bom-upload-area {
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
 .tab-content.active { display: flex; }
+
+#tab-st-packages-tab {
+  display: none;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+#tab-st-packages-tab.active { display: flex; }
 
 /* ── Schedule tab ───────────────────────── */
 #tab-schedule { display: none; flex-direction: row; overflow: hidden; }
