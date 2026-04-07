@@ -98,6 +98,7 @@
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
+      <button class="tab-btn" data-tab="st-packages-tab">無MOQ包裝</button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
@@ -188,6 +189,21 @@
       </div>
       <div id="bom-group-wrap">
         <div id="bom-group-list"></div>
+      </div>
+    </div>
+
+    <div id="tab-st-packages-tab" class="tab-content">
+      <div class="st-package-shell">
+        <div class="st-package-header">
+          <div>
+            <h3 class="st-package-title">無 MOQ 包裝管理</h3>
+            <div class="st-package-subtitle">只列出目前 MOQ 空白的料，包裝合計會直接跟 ST 庫存比對；寫入主檔後會自動扣掉實際用到的 ST 補料量。</div>
+          </div>
+          <span class="spacer"></span>
+          <button class="btn btn-secondary btn-sm" id="btn-st-packages-refresh">重新整理</button>
+        </div>
+        <div id="st-packages-status" class="file-status">切到這頁後會自動讀取目前無 MOQ 的 ST 包裝資料。</div>
+        <div id="st-packages-list" class="st-package-list"></div>
       </div>
     </div>
 
@@ -462,6 +478,7 @@ import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js
 import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/modules/desktop_bridge.js";
 import { initVersionInfo } from "/static/modules/version_info.js";
 import { initStInventory } from "/static/modules/st_inventory.js";
+import { initStPackages, refreshStPackages } from "/static/modules/st_packages.js";
 import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
 import { initEditAuth } from "/static/modules/edit_auth.js";
@@ -475,6 +492,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "main-preview") onMainPreviewTabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
+    if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") refreshDbBackupPanel();
@@ -688,7 +706,11 @@ async function init() {
 
   setBootProgress(46, "正在讀取 ST 庫存狀態...");
   await nextFrame();
-  await initStInventory({ onChanged: async () => { await refreshSchedule(); } });
+  await initStInventory({ onChanged: async () => { await refreshSchedule(); await refreshStPackages(); } });
+
+  setBootProgress(52, "正在建立無 MOQ 包裝頁...");
+  await nextFrame();
+  await initStPackages({ autoLoad: false });
 
   setBootProgress(58, "正在讀取排程摘要...");
   try {

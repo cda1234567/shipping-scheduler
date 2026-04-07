@@ -11,6 +11,7 @@ from .. import database as db
 from .bom_quantity import build_effective_components
 from .main_reader import read_moq
 from .merge_to_main import merge_row_to_main, preview_order_batches
+from .st_package_breakdowns import consume_st_package_breakdowns
 from .shortage_rules import (
     filter_main_write_blocking_shortages,
     get_shortage_resulting_stock,
@@ -545,8 +546,15 @@ def commit_dispatch_plan(
             rollback_executor(processed_sessions)
         raise
 
-    if plan.supplement_allocations is not None:
-        db.replace_order_supplements(plan.order_ids, plan.supplement_allocations)
+    effective_supplement_allocations = (
+        plan.supplement_allocations
+        if plan.supplement_allocations is not None
+        else build_context_supplement_allocations(plan.contexts)
+    )
+    if effective_supplement_allocations is not None:
+        db.replace_order_supplements(plan.order_ids, effective_supplement_allocations)
+    if effective_supplement_allocations:
+        consume_st_package_breakdowns(effective_supplement_allocations)
 
     if plan.use_drafts and committed_draft_ids:
         for draft_id in committed_draft_ids:

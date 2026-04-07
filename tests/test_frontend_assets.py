@@ -496,7 +496,10 @@ console.log(JSON.stringify(results));
         self.assertIn('id="btn-refresh-st-inventory"', index_html)
         self.assertIn('id="st-inventory-file-input"', index_html)
         self.assertIn('import { initStInventory } from "/static/modules/st_inventory.js";', index_html)
-        self.assertIn("await initStInventory({ onChanged: async () => { await refreshSchedule(); } });", index_html)
+        self.assertIn(
+            "await initStInventory({ onChanged: async () => { await refreshSchedule(); await refreshStPackages(); } });",
+            index_html,
+        )
 
         self.assertIn('apiJson("/api/system/st-inventory/info")', st_module)
         self.assertIn('apiFetch("/api/system/st-inventory/upload"', st_module)
@@ -506,6 +509,35 @@ console.log(JSON.stringify(results));
 
         self.assertIn(".sidebar-meta", stylesheet)
         self.assertIn("body.desktop-dark .sidebar-meta", stylesheet)
+
+    def test_st_package_management_assets_exist_for_missing_moq_page(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        module = (root / "static" / "modules" / "st_packages.js").read_text(encoding="utf-8")
+        stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('data-tab="st-packages-tab"', index_html)
+        self.assertIn('id="tab-st-packages-tab"', index_html)
+        self.assertIn('id="btn-st-packages-refresh"', index_html)
+        self.assertIn('id="st-packages-status"', index_html)
+        self.assertIn('id="st-packages-list"', index_html)
+        self.assertIn('import { initStPackages, refreshStPackages } from "/static/modules/st_packages.js";', index_html)
+        self.assertIn('if (btn.dataset.tab === "st-packages-tab") refreshStPackages();', index_html)
+        self.assertIn('await initStPackages({ autoLoad: false });', index_html)
+        self.assertIn('await initStInventory({ onChanged: async () => { await refreshSchedule(); await refreshStPackages(); } });', index_html)
+
+        self.assertIn('apiJson("/api/system/st-packages/missing-moq")', module)
+        self.assertIn('apiPut(`/api/system/st-packages/${encodeURIComponent(partNumber)}`', module)
+        self.assertIn("用逗號分隔包裝數量", module)
+        self.assertIn("差額", module)
+        self.assertIn("先找整包相等的數量扣除", module)
+        self.assertIn("function parsePackageInput(", module)
+        self.assertIn("function applyRowState(", module)
+
+        self.assertIn(".st-package-shell", stylesheet)
+        self.assertIn(".st-package-card.is-match", stylesheet)
+        self.assertIn(".st-package-card.is-mismatch", stylesheet)
+        self.assertIn(".st-package-input", stylesheet)
 
     def test_main_preview_supports_freeze_panes_for_row_one_and_columns_abc(self):
         root = Path(__file__).resolve().parents[1]

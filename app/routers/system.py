@@ -6,7 +6,12 @@ from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFil
 
 from .. import database as db
 from ..config import ST_INVENTORY_DIR
-from ..models import DatabaseBackupRestoreRequest, DatabaseBackupSettingsRequest, EditAuthLoginRequest
+from ..models import (
+    DatabaseBackupRestoreRequest,
+    DatabaseBackupSettingsRequest,
+    EditAuthLoginRequest,
+    StPackageUpdateRequest,
+)
 from ..services.edit_auth import (
     EDIT_AUTH_REQUIRED_MESSAGE,
     apply_edit_auth_cookie,
@@ -16,6 +21,10 @@ from ..services.edit_auth import (
 )
 from ..services import db_backup
 from ..services.local_time import local_now
+from ..services.st_package_breakdowns import (
+    build_missing_moq_package_rows,
+    save_missing_moq_package_text,
+)
 from ..services.st_inventory import parse_st_inventory_file
 from ..version_info import get_app_meta
 
@@ -115,6 +124,27 @@ async def get_st_inventory_data():
         "loaded_at": db.get_setting("st_inventory_loaded_at"),
         "filename": db.get_setting("st_inventory_filename"),
     }
+
+
+@router.get("/system/st-packages/missing-moq")
+async def get_missing_moq_st_packages():
+    rows = build_missing_moq_package_rows()
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "loaded_at": db.get_setting("st_inventory_loaded_at"),
+        "filename": db.get_setting("st_inventory_filename"),
+    }
+
+
+@router.put("/system/st-packages/{part_number}")
+async def update_missing_moq_st_package(part_number: str, req: StPackageUpdateRequest):
+    try:
+        row = save_missing_moq_package_text(part_number, req.package_text)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    db.log_activity("st_package_breakdown_update", f"{part_number} 包裝已更新")
+    return {"ok": True, "row": row}
 
 
 @router.get("/system/db-backups")

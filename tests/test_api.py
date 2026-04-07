@@ -2579,6 +2579,73 @@ class ApiTests(unittest.TestCase):
             "filename": "st_inventory.xlsx",
         })
 
+    def test_get_missing_moq_st_packages_returns_rows(self):
+        with patch("app.routers.system.build_missing_moq_package_rows", return_value=[
+            {
+                "part_number": "PART-1",
+                "description": "Capacitor",
+                "st_stock_qty": 1000,
+                "package_text": "200,300,500",
+                "package_values": [200, 300, 500],
+                "package_sum": 1000,
+                "diff_qty": 0,
+                "matches_st_stock": True,
+                "updated_at": "2026-04-07T10:00:00",
+            },
+        ]), \
+             patch("app.routers.system.db.get_setting", side_effect=lambda key, default="": {
+                 "st_inventory_loaded_at": "2026-04-07T09:00:00",
+                 "st_inventory_filename": "st.xlsx",
+             }.get(key, default)):
+            response = self.client.get("/api/system/st-packages/missing-moq")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "rows": [
+                {
+                    "part_number": "PART-1",
+                    "description": "Capacitor",
+                    "st_stock_qty": 1000,
+                    "package_text": "200,300,500",
+                    "package_values": [200, 300, 500],
+                    "package_sum": 1000,
+                    "diff_qty": 0,
+                    "matches_st_stock": True,
+                    "updated_at": "2026-04-07T10:00:00",
+                },
+            ],
+            "count": 1,
+            "loaded_at": "2026-04-07T09:00:00",
+            "filename": "st.xlsx",
+        })
+
+    def test_update_missing_moq_st_package_requires_edit_auth_and_saves(self):
+        with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False):
+            blocked = self.client.put("/api/system/st-packages/PART-1", json={"package_text": "200,300,500"})
+            self.assertEqual(blocked.status_code, 403)
+
+            login = self.client.post("/api/system/edit-auth/login", json={"password": "123"})
+            self.assertEqual(login.status_code, 200)
+
+            with patch("app.routers.system.save_missing_moq_package_text", return_value={
+                "part_number": "PART-1",
+                "description": "Capacitor",
+                "st_stock_qty": 1000,
+                "package_text": "200,300,500",
+                "package_values": [200, 300, 500],
+                "package_sum": 1000,
+                "diff_qty": 0,
+                "matches_st_stock": True,
+                "updated_at": "2026-04-07T10:00:00",
+            }) as mock_save, \
+                 patch("app.routers.system.db.log_activity") as mock_log:
+                response = self.client.put("/api/system/st-packages/PART-1", json={"package_text": "200,300,500"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["row"]["package_text"], "200,300,500")
+        mock_save.assert_called_once_with("PART-1", "200,300,500")
+        mock_log.assert_called_once()
+
     def test_update_database_backup_settings_uses_request_payload(self):
         with patch(
             "app.routers.system.db_backup.update_database_backup_settings",

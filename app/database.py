@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS st_inventory_snapshot (
     loaded_at   TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS st_package_breakdowns (
+    part_number  TEXT PRIMARY KEY,
+    package_text TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS orders (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     po_number     TEXT    NOT NULL DEFAULT '',
@@ -666,6 +672,79 @@ def get_st_inventory_snapshot() -> dict[str, dict]:
 def get_st_inventory_stock() -> dict[str, float]:
     snapshot = get_st_inventory_snapshot()
     return {part: float(item.get("stock_qty") or 0) for part, item in snapshot.items()}
+
+
+def update_st_inventory_stock(stock_updates: dict[str, float]) -> int:
+    normalized = {
+        str(part).strip().upper(): float(qty or 0)
+        for part, qty in (stock_updates or {}).items()
+        if str(part).strip()
+    }
+    if not normalized:
+        return 0
+
+    updated = 0
+    loaded_at = _now()
+    with get_conn() as conn:
+        for part, qty in normalized.items():
+            existing = conn.execute(
+                "SELECT description FROM st_inventory_snapshot WHERE part_number=?",
+                (part,),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE st_inventory_snapshot SET stock_qty=?, loaded_at=? WHERE part_number=?",
+                    (qty, loaded_at, part),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO st_inventory_snapshot(part_number, stock_qty, description, loaded_at) VALUES(?,?,?,?)",
+                    (part, qty, "", loaded_at),
+                )
+            updated += 1
+    return updated
+
+
+def get_st_package_breakdowns(part_numbers: list[str] | None = None) -> dict[str, dict]:
+    normalized_parts = [
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ]
+    normalized_parts = list(dict.fromkeys(normalized_parts))
+
+    sql = "SELECT part_number, package_text, updated_at FROM st_package_breakdowns"
+    params: list[str] = []
+    if normalized_parts:
+        placeholders = ",".join("?" * len(normalized_parts))
+        sql += f" WHERE part_number IN ({placeholders})"
+        params.extend(normalized_parts)
+    sql += " ORDER BY part_number"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    return {
+        str(row["part_number"]).strip().upper(): {
+            "package_text": str(row["package_text"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+        for row in rows
+    }
+
+
+def save_st_package_breakdown(part_number: str, package_text: str, updated_at: str | None = None) -> str:
+    part = str(part_number or "").strip().upper()
+    if not part:
+        return ""
+    now = str(updated_at or _now()).strip() or _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO st_package_breakdowns(part_number, package_text, updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(part_number) DO UPDATE SET package_text=excluded.package_text, updated_at=excluded.updated_at",
+            (part, str(package_text or ""), now),
+        )
+    return part
 
 
 def get_st_inventory_taken_at() -> str:
