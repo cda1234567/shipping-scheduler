@@ -17,6 +17,7 @@ let _orderSupplementsByOrderId = {};
 let _orderSupplementDetailsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
+let _completedDraftsByOrderId = {};
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
@@ -519,7 +520,8 @@ async function loadCompletedRows() {
     const d = await apiJson("/api/schedule/completed");
     _completedRows = d.rows || [];
     _completedFolders = d.folders || [];
-  } catch (_) { _completedRows = []; _completedFolders = []; }
+    _completedDraftsByOrderId = d.committed_merge_drafts || {};
+  } catch (_) { _completedRows = []; _completedFolders = []; _completedDraftsByOrderId = {}; }
 }
 
 // ── Calculation ───────────────────────────────────────────────────────────────
@@ -1526,7 +1528,8 @@ function applyModalSearchFilter(rawQuery = "") {
     totalRows += rowNodes.length;
 
     rowNodes.forEach(row => {
-      const visible = !query || sectionMatches || matchesModalSearchQuery(row, query);
+      const flowHidden = row.dataset.flowHidden === "1";
+      const visible = !flowHidden && (!query || sectionMatches || matchesModalSearchQuery(row, query));
       row.style.display = visible ? "" : "none";
       if (visible) {
         visibleRows += 1;
@@ -2203,17 +2206,13 @@ function modalShortageItem(s, isCS) {
     supplement_qty: defaultQty,
     resulting_stock: resultingStock,
   };
+  const amountsHtml = buildModalShortageAmountsHtml(s);
 
-  return `<div class="${shortageToneClass(s)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-search="${esc(searchText)}"${orderIdAttr}>
+  return `<div class="${shortageToneClass(s)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-base-current-stock="${esc(s.current_stock)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-moq="${esc(s.moq || 0)}" data-st-stock-qty="${esc(s.st_stock_qty || 0)}" data-order-index="${esc(s._row_order_index ?? "")}" data-flow-hidden="0" data-search="${esc(searchText)}"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
-    <div style="font-size:12px;display:flex;gap:10px;margin:4px 0">
-      <span style="color:#dc2626">缺 ${fmt(s.shortage_amount)}</span>
-      <span style="color:#16a34a">庫存 ${fmt(s.current_stock)}</span>
-      <span>需 ${fmt(s.needed)}</span>
-      ${stSupplySummaryHtml(s)}
-      ${moqBadgeHtml(s)}
-      ${moqEditTriggerHtml(s)}
+    <div class="modal-shortage-amounts" style="font-size:12px;display:flex;gap:10px;margin:4px 0">
+      ${amountsHtml}
     </div>
     ${missingMoqEditorHtml(s)}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
@@ -2222,10 +2221,40 @@ function modalShortageItem(s, isCS) {
       <input type="number" class="supplement-input" data-part="${s.part_number}"${orderIdAttr} value="${defaultQty}" min="0" ${shortageChecked ? "disabled" : ""}
              style="width:80px;padding:2px 6px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;text-align:right">
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:#dc2626;cursor:pointer;white-space:nowrap">
-        <input type="checkbox" class="shortage-mark" data-part="${s.part_number}"${orderIdAttr} ${shortageChecked ? "checked" : ""}> 缺料
+        <input type="checkbox" class="shortage-mark" data-part="${s.part_number}" data-manual="0"${orderIdAttr} ${shortageChecked ? "checked" : ""}> 缺料
       </label>
     </div>`}
   </div>`;
+}
+
+function getModalRequiredMinStock(partNumber) {
+  const normalized = normalizePartKey(partNumber);
+  if (normalized.startsWith("EC-6")) return 0;
+  return normalized.startsWith("EC-") ? 100 : 0;
+}
+
+function calculateModalShortageAmount(partNumber, endingStock) {
+  const requiredMin = getModalRequiredMinStock(partNumber);
+  return Math.max(0, requiredMin - Number(endingStock || 0));
+}
+
+function calculateModalCurrentOrderShortageAmount(partNumber, availableBefore, neededQty) {
+  if (isOrderScopedPart(partNumber)) {
+    return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
+  }
+  const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
+  return calculateModalShortageAmount(partNumber, endingStock);
+}
+
+function buildModalShortageAmountsHtml(shortage) {
+  return `
+      <span class="modal-shortage-amount modal-shortage-amount-shortage" style="color:#dc2626">缺 ${fmt(roundShortageUiValue(shortage.shortage_amount || 0))}</span>
+      <span class="modal-shortage-amount modal-shortage-amount-stock" style="color:#16a34a">庫存 ${fmt(roundShortageUiValue(shortage.current_stock || 0))}</span>
+      <span class="modal-shortage-amount modal-shortage-amount-needed">需 ${fmt(roundShortageUiValue(shortage.needed || 0))}</span>
+      ${stSupplySummaryHtml(shortage)}
+      ${moqBadgeHtml(shortage)}
+      ${moqEditTriggerHtml(shortage)}
+  `;
 }
 
 function computeModalCardResultingStock(card) {
@@ -2257,6 +2286,129 @@ function refreshDraftPartTone(list, part) {
     if (normalizePartKey(card.dataset.part) !== partKey) return;
     updateModalShortageTone(card);
   });
+}
+
+function getModalCardOrderIndex(card) {
+  const index = Number(card?.dataset.orderIndex);
+  return Number.isFinite(index) ? index : Number.MAX_SAFE_INTEGER;
+}
+
+function buildModalCardDerivedState(card, currentStock) {
+  const partKey = normalizePartKey(card?.dataset.part);
+  const prevQtyCs = Number(card?.dataset.prevQtyCs || 0);
+  const neededQty = Number(card?.dataset.needed || 0);
+  const moq = Number(card?.dataset.moq || 0);
+  const stStockQty = Math.max(0, Number(card?.dataset.stStockQty || 0) || 0);
+  const input = card?.querySelector(".supplement-input");
+  const checkbox = card?.querySelector(".shortage-mark");
+  const supplementQty = checkbox?.checked ? 0 : Math.max(0, Number(input?.value || 0) || 0);
+  const availableBefore = Number(currentStock || 0) + prevQtyCs;
+  const shortageAmount = calculateModalCurrentOrderShortageAmount(partKey, availableBefore, neededQty);
+  const isOrderScoped = isOrderScopedPart(partKey);
+  const suggestedQty = isOrderScoped
+    ? shortageAmount
+    : moq > 0
+      ? Math.ceil(shortageAmount / moq) * moq
+      : shortageAmount;
+  const stAvailableQty = isOrderScoped
+    ? Math.min(shortageAmount, stStockQty)
+    : Math.min(suggestedQty, stStockQty);
+  const purchaseNeededQty = Math.max(0, shortageAmount - stAvailableQty);
+  const purchaseSuggestedQty = isOrderScoped
+    ? purchaseNeededQty
+    : purchaseNeededQty > 0
+      ? (moq > 0 ? Math.ceil(purchaseNeededQty / moq) * moq : purchaseNeededQty)
+      : 0;
+  const resultingStock = Number(currentStock || 0) + prevQtyCs + supplementQty - neededQty;
+  return {
+    part_number: partKey,
+    current_stock: Number(currentStock || 0),
+    needed: neededQty,
+    shortage_amount: shortageAmount,
+    moq,
+    suggested_qty: suggestedQty,
+    st_stock_qty: stStockQty,
+    st_available_qty: stAvailableQty,
+    purchase_needed_qty: purchaseNeededQty,
+    purchase_suggested_qty: purchaseSuggestedQty,
+    supplement_qty: supplementQty,
+    default_supplement: supplementQty,
+    prev_qty_cs: prevQtyCs,
+    resulting_stock: resultingStock,
+  };
+}
+
+function updateModalCardComputedState(card, derived, { visible = true } = {}) {
+  if (!card || !derived) return;
+  card.dataset.currentStock = String(Number(derived.current_stock || 0));
+  card.dataset.flowHidden = visible ? "0" : "1";
+  const amounts = card.querySelector(".modal-shortage-amounts");
+  if (amounts) {
+    amounts.innerHTML = buildModalShortageAmountsHtml(derived);
+  }
+  updateModalShortageTone(card);
+}
+
+function refreshModalShortageCascadeForPart(list, part) {
+  const partKey = normalizePartKey(part);
+  if (!partKey || !list) return;
+
+  const cards = [...list.querySelectorAll(".shortage-item[data-part]")]
+    .filter(card => normalizePartKey(card.dataset.part) === partKey)
+    .sort((a, b) => getModalCardOrderIndex(a) - getModalCardOrderIndex(b));
+
+  let runningCurrent = Number(cards[0]?.dataset.baseCurrentStock);
+  cards.forEach((card, index) => {
+    const baseCurrent = Number(card.dataset.baseCurrentStock);
+    if (index === 0 || !Number.isFinite(runningCurrent)) {
+      runningCurrent = Number.isFinite(baseCurrent) ? baseCurrent : 0;
+    }
+
+    const checkbox = card.querySelector(".shortage-mark");
+    const input = card.querySelector(".supplement-input");
+    const previewState = buildModalCardDerivedState(card, runningCurrent);
+    const rawQty = Math.max(0, Number(input?.value || 0) || 0);
+
+    if (input && document.activeElement !== input && String(input.value || "") !== String(rawQty)) {
+      input.value = rawQty > 0 ? String(rawQty) : "0";
+    }
+
+    if (checkbox && checkbox.dataset.manual !== "1") {
+      const shouldAutoCheck = previewState.shortage_amount > 0 && rawQty <= 0;
+      checkbox.checked = shouldAutoCheck;
+      if (input) input.disabled = shouldAutoCheck;
+      if (shouldAutoCheck && input && document.activeElement !== input) {
+        input.value = "0";
+      }
+    } else if (input) {
+      input.disabled = Boolean(checkbox?.checked);
+    }
+
+    const derived = buildModalCardDerivedState(card, runningCurrent);
+    const shouldShow = Boolean(checkbox?.checked) || derived.supplement_qty > 0 || derived.shortage_amount > 0;
+    updateModalCardComputedState(card, derived, { visible: shouldShow });
+    runningCurrent = Number.isFinite(derived.resulting_stock) ? derived.resulting_stock : runningCurrent;
+  });
+}
+
+function refreshModalShortageCascade(list, part = null) {
+  if (!list) return;
+  const partKeys = part
+    ? [normalizePartKey(part)]
+    : [...new Set(
+      [...list.querySelectorAll(".shortage-item[data-part]")]
+        .map(card => normalizePartKey(card.dataset.part))
+        .filter(Boolean)
+    )];
+
+  partKeys.forEach(partKey => {
+    if (!partKey) return;
+    refreshModalShortageCascadeForPart(list, partKey);
+  });
+
+  bindShortageMoqBadgeEditors(list);
+  const searchInput = document.getElementById("modal-search-input");
+  applyModalSearchFilter(searchInput?.value || "");
 }
 
 function closeShortageModal() {
@@ -2641,6 +2793,7 @@ function _collectModalDecisions() {
   const decisions = {};
 
   list.querySelectorAll(".supplement-input").forEach(input => {
+    if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
     const { part } = _getModalRowMeta(input);
     if (!part || isOrderScopedPart(part)) return;
 
@@ -2666,6 +2819,7 @@ function _collectModalSupplements() {
   if (!list) return supplements;
 
   list.querySelectorAll(".supplement-input").forEach(input => {
+    if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
     const { part } = _getModalRowMeta(input);
     if (!part) return;
 
@@ -2683,6 +2837,7 @@ function _collectModalOrderDecisions() {
   const decisionsByOrder = {};
 
   list.querySelectorAll(".supplement-input").forEach(input => {
+    if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
     const { orderId, part } = _getModalRowMeta(input);
     if (!Number.isInteger(orderId) || !part) return;
     const qty = parseFloat(input.value) || 0;
@@ -2705,6 +2860,7 @@ function _collectModalOrderSupplements() {
   const supplementsByOrder = {};
 
   list.querySelectorAll(".supplement-input").forEach(input => {
+    if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
     const { orderId, part } = _getModalRowMeta(input);
     if (!Number.isInteger(orderId) || !part) return;
     const qty = parseFloat(input.value) || 0;
@@ -2990,6 +3146,7 @@ function buildFolderSection(folderName, rows, allFolders) {
 function buildCompletedCard(r, allFolders) {
   const div = document.createElement("div");
   div.className = "po-group completed-card";
+  const draft = _completedDraftsByOrderId?.[r.id] || null;
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
   const code = r.code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 4px">${esc(r.code)}</span>` : "";
@@ -3000,6 +3157,8 @@ function buildCompletedCard(r, allFolders) {
   for (const f of allFolders) {
     folderOptions += `<option value="${esc(f)}"${currentFolder === f ? " selected" : ""}>${esc(f)}</option>`;
   }
+
+  const draftHtml = draft ? buildCompletedDraftPanelHtml(draft) : "";
 
   div.innerHTML = `
     <div class="completed-card-header">
@@ -3014,7 +3173,8 @@ function buildCompletedCard(r, allFolders) {
         <button class="btn btn-secondary btn-sm btn-rollback-order" data-order-id="${r.id}" title="反悔此筆與之後的已發料訂單">反悔</button>
         <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
       </div>
-    </div>`;
+    </div>
+    ${draftHtml}`;
 
   // 移動資料夾
   div.querySelector(".folder-select").addEventListener("change", async (e) => {
@@ -3027,8 +3187,31 @@ function buildCompletedCard(r, allFolders) {
   div.querySelector(".btn-rollback-order").addEventListener("click", event => {
     void handleRollbackDispatch(r.id, event.currentTarget);
   });
+  div.querySelector(".btn-completed-draft-view")?.addEventListener("click", () => {
+    void showDraftModal(draft.id, { readOnly: true });
+  });
+  div.querySelector(".btn-completed-draft-download")?.addEventListener("click", () => {
+    void downloadDraft(draft.id);
+  });
 
   return div;
+}
+
+function buildCompletedDraftPanelHtml(draft) {
+  const files = Array.isArray(draft?.files) ? draft.files : [];
+  const committedAt = formatDraftTime(draft?.committed_at || draft?.updated_at) || "--";
+  return `
+    <div class="completed-draft-panel">
+      <div class="completed-draft-summary">
+        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
+        <span class="merge-draft-meta">存檔 ${esc(committedAt)}</span>
+      </div>
+      ${buildDraftFileListHtml(files, { label: "已發料副檔" })}
+      <div class="completed-draft-actions">
+        <button class="btn btn-secondary btn-sm btn-completed-draft-view" data-draft-id="${draft.id}">查看副檔</button>
+        <button class="btn btn-secondary btn-sm btn-completed-draft-download" data-draft-id="${draft.id}">下載副檔</button>
+      </div>
+    </div>`;
 }
 
 async function handleCreateFolder() {
@@ -3868,19 +4051,13 @@ function bindShortageEditors(list) {
     checkbox.addEventListener("change", () => {
       const partKey = normalizePartKey(checkbox.dataset.part);
       if (!partKey) return;
-
-      if (!isOrderScopedPart(partKey)) {
-        syncDraftPartControls(list, partKey, {
-          shortageChecked: checkbox.checked,
-        });
-        return;
-      }
-
+      checkbox.dataset.manual = "1";
       const input = checkbox.closest(".shortage-item")?.querySelector(".supplement-input");
-      if (!input) return;
-      input.disabled = checkbox.checked;
-      if (checkbox.checked) input.value = "0";
-      updateModalShortageTone(checkbox.closest(".shortage-item"));
+      if (input) {
+        input.disabled = checkbox.checked;
+        if (checkbox.checked) input.value = "0";
+      }
+      refreshModalShortageCascade(list, partKey);
     });
   });
 
@@ -3888,17 +4065,16 @@ function bindShortageEditors(list) {
     input.addEventListener("input", () => {
       const partKey = normalizePartKey(input.dataset.part);
       if (!partKey) return;
-      if (isOrderScopedPart(partKey)) {
-        updateModalShortageTone(input.closest(".shortage-item"));
-        return;
+      const checkbox = input.closest(".shortage-item")?.querySelector(".shortage-mark");
+      if (checkbox?.checked) {
+        checkbox.checked = false;
+        checkbox.dataset.manual = "1";
       }
-      syncDraftPartControls(list, partKey, {
-        qty: parseFloat(input.value) || 0,
-      });
+      refreshModalShortageCascade(list, partKey);
     });
   });
 
-  list.querySelectorAll(".shortage-item[data-part]").forEach(card => updateModalShortageTone(card));
+  refreshModalShortageCascade(list);
 }
 
 // ── Toolbar actions ───────────────────────────────────────────────────────────
