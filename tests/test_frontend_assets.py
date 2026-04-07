@@ -528,8 +528,9 @@ console.log(JSON.stringify(results));
 
         self.assertIn('apiJson("/api/system/st-packages/missing-moq")', module)
         self.assertIn('apiPut(`/api/system/st-packages/${encodeURIComponent(partNumber)}`', module)
-        self.assertIn("用逗號分隔包裝數量", module)
-        self.assertIn("主檔庫存", module)
+        self.assertIn("例如：200,300,500", module)
+        self.assertIn("ST 庫存", module)
+        self.assertIn("料號清單來自主檔 MOQ 空白料", module)
         self.assertIn("差額", module)
         self.assertIn("先找整包相等的數量扣除", module)
         self.assertIn("function parsePackageInput(", module)

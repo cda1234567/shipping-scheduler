@@ -47,7 +47,7 @@ class StPackageBreakdownTests(InMemoryDbTestCase):
         result = svc.deduct_package_values([200, 300, 500], 450)
         self.assertEqual(result, [50, 500])
 
-    def test_build_missing_moq_package_rows_uses_main_snapshot_as_reference(self):
+    def test_build_missing_moq_package_rows_uses_main_parts_but_st_stock_qty(self):
         db.save_snapshot({"PART-1": 10, "PART-2": 8}, {"PART-1": 0, "PART-2": 1200})
         db.save_st_inventory_snapshot({"PART-1": 1000, "PART-2": 500}, {"PART-1": "Cap", "PART-2": "IC"})
         db.save_st_package_breakdown("part-1", "200,300,500", "2026-04-07T10:00:00")
@@ -56,9 +56,9 @@ class StPackageBreakdownTests(InMemoryDbTestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["part_number"], "PART-1")
-        self.assertEqual(rows[0]["stock_qty"], 10)
+        self.assertEqual(rows[0]["stock_qty"], 1000)
         self.assertEqual(rows[0]["package_sum"], 1000)
-        self.assertFalse(rows[0]["matches_stock"])
+        self.assertTrue(rows[0]["matches_stock"])
 
     def test_consume_st_package_breakdowns_updates_stock_and_packages(self):
         db.save_snapshot({"PART-1": 10}, {"PART-1": 0})

@@ -88,6 +88,7 @@ def deduct_package_text(package_text: str | None, used_qty: float) -> str:
 
 def build_missing_moq_package_rows() -> list[dict]:
     snapshot = db.get_snapshot()
+    st_snapshot = db.get_st_inventory_snapshot()
     saved = db.get_st_package_breakdowns()
 
     rows: list[dict] = []
@@ -99,11 +100,12 @@ def build_missing_moq_package_rows() -> list[dict]:
 
         package_state = saved.get(part_number) or {}
         package_text = str(package_state.get("package_text") or "")
-        stock_qty = float(snapshot_row.get("stock_qty") or 0)
+        st_row = st_snapshot.get(part_number) or {}
+        stock_qty = float(st_row.get("stock_qty") or 0)
         summary = summarize_package_text(package_text, stock_qty)
         rows.append({
             "part_number": part_number,
-            "description": str(snapshot_row.get("description") or ""),
+            "description": str(snapshot_row.get("description") or st_row.get("description") or ""),
             "stock_qty": stock_qty,
             "package_text": package_text,
             "package_values": summary["package_values"],

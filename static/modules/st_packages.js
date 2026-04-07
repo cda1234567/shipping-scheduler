@@ -55,8 +55,8 @@ export async function refreshStPackages() {
     const mismatchCount = _rows.filter(row => !row.matches_stock).length;
     status.className = mismatchCount ? "file-status warn" : "file-status ok";
     status.innerHTML = mismatchCount
-      ? `<span>共 ${_rows.length} 筆，${mismatchCount} 筆包裝合計和主檔庫存不一致。</span>`
-      : `<span>共 ${_rows.length} 筆，目前都已和主檔庫存對齊。</span>`;
+      ? `<span>共 ${_rows.length} 筆，${mismatchCount} 筆包裝合計和 ST 庫存不一致。</span>`
+      : `<span>共 ${_rows.length} 筆，目前都已和 ST 庫存對齊。</span>`;
   } catch (error) {
     list.innerHTML = "";
     status.className = "file-status warn";
@@ -91,7 +91,7 @@ function buildRowHtml(row) {
         <div class="st-package-badge">${row.matches_stock ? "已對齊" : `差 ${esc(formatQty(row.diff_qty))}`}</div>
       </div>
       <div class="st-package-meta">
-        <span>主檔庫存 ${esc(formatQty(row.stock_qty))}</span>
+        <span>ST 庫存 ${esc(formatQty(row.stock_qty))}</span>
         <span>包裝合計 <strong class="st-package-sum">${esc(formatQty(row.package_sum))}</strong></span>
         <span class="st-package-diff">差額 ${esc(formatQty(row.diff_qty))}</span>
         <span>最後修改 ${esc(updatedAt || "尚未設定")}</span>
@@ -100,7 +100,7 @@ function buildRowHtml(row) {
         <input class="st-package-input" type="text" value="${esc(packageText)}" placeholder="例如：200,300,500">
         <button class="btn btn-primary btn-sm" type="button" data-save-st-package>保存</button>
       </div>
-      <div class="st-package-help">用逗號分隔包裝數量；目前只跟主檔庫存比對。寫入主檔後會先找整包相等的數量扣除，沒有才由左到右拆包。</div>
+      <div class="st-package-help">料號清單來自主檔 MOQ 空白料；包裝合計只跟 ST 庫存比對。寫入主檔後會先找整包相等的數量扣除，沒有才由左到右拆包。</div>
       <div class="st-package-warning"></div>
     </section>
   `;
@@ -142,8 +142,8 @@ function applyRowState(card) {
     if (diffEl) diffEl.textContent = `差額 ${formatQty(diff)}`;
     if (warning) {
       warning.textContent = matches
-        ? "包裝合計已和主檔庫存對齊。"
-        : `包裝合計 ${formatQty(total)} 與主檔庫存 ${formatQty(stockQty)} 不一致。`;
+        ? "包裝合計已和 ST 庫存對齊。"
+        : `包裝合計 ${formatQty(total)} 與 ST 庫存 ${formatQty(stockQty)} 不一致。`;
     }
     if (badge) badge.textContent = matches ? "已對齊" : `差 ${formatQty(diff)}`;
     card.classList.toggle("is-match", matches);
