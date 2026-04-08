@@ -912,6 +912,97 @@ function getRightPanelSupplementQty(item) {
   return Number(item?.supplement_qty || 0);
 }
 
+function buildShortageSupplySuggestion(partNumber, shortageAmount, moq = 0, stStockQty = 0) {
+  const normalizedShortage = Math.max(0, Number(shortageAmount || 0) || 0);
+  const normalizedMoq = Math.max(0, Number(moq || 0) || 0);
+  const normalizedStStock = Math.max(0, Number(stStockQty || 0) || 0);
+  const isOrderScoped = isOrderScopedPart(partNumber);
+  const suggestedQty = isOrderScoped
+    ? normalizedShortage
+    : normalizedMoq > 0
+      ? Math.ceil(normalizedShortage / normalizedMoq) * normalizedMoq
+      : normalizedShortage;
+  const stAvailableQty = isOrderScoped
+    ? Math.min(normalizedShortage, normalizedStStock)
+    : Math.min(suggestedQty, normalizedStStock);
+  const purchaseNeededQty = Math.max(0, normalizedShortage - stAvailableQty);
+  const purchaseSuggestedQty = isOrderScoped
+    ? purchaseNeededQty
+    : purchaseNeededQty > 0
+      ? (normalizedMoq > 0 ? Math.ceil(purchaseNeededQty / normalizedMoq) * normalizedMoq : purchaseNeededQty)
+      : 0;
+  return {
+    suggested_qty: normalizedShortage > 0 ? suggestedQty : 0,
+    st_available_qty: stAvailableQty,
+    purchase_needed_qty: purchaseNeededQty,
+    purchase_suggested_qty: purchaseSuggestedQty,
+    needs_purchase: purchaseNeededQty > 0,
+  };
+}
+
+function applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes = []) {
+  if (!shortagesByScope) return;
+
+  const partChains = new Map();
+  const seenScopes = new Set();
+  let sequence = 0;
+
+  const collectScopeItems = (scopeKey, scopeIndex) => {
+    const items = shortagesByScope?.[scopeKey] || [];
+    items.forEach(item => {
+      const partKey = normalizePartKey(item?.part_number);
+      if (!partKey || isOrderScopedPart(partKey)) return;
+      if (!partChains.has(partKey)) partChains.set(partKey, []);
+      const orderIndex = Number(item?._row_order_index);
+      partChains.get(partKey).push({
+        item,
+        scopeIndex,
+        orderIndex: Number.isFinite(orderIndex) ? orderIndex : Number.MAX_SAFE_INTEGER,
+        sequence: sequence++,
+      });
+    });
+  };
+
+  orderedScopes.forEach((scope, scopeIndex) => {
+    const scopeKey = String(scope?.key || "");
+    if (!scopeKey) return;
+    seenScopes.add(scopeKey);
+    collectScopeItems(scopeKey, scopeIndex);
+  });
+
+  Object.keys(shortagesByScope).forEach(scopeKey => {
+    if (seenScopes.has(scopeKey)) return;
+    collectScopeItems(scopeKey, Number.MAX_SAFE_INTEGER);
+  });
+
+  partChains.forEach(entries => {
+    entries.sort((a, b) => (
+      a.orderIndex - b.orderIndex
+      || a.scopeIndex - b.scopeIndex
+      || a.sequence - b.sequence
+    ));
+
+    let downstreamMaxShortage = 0;
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      downstreamMaxShortage = Math.max(
+        downstreamMaxShortage,
+        Math.max(0, Number(entry.item?.shortage_amount || 0) || 0),
+      );
+      Object.assign(
+        entry.item,
+        buildShortageSupplySuggestion(
+          entry.item?.part_number,
+          downstreamMaxShortage,
+          entry.item?.moq,
+          entry.item?.st_stock_qty,
+        ),
+        { _lookahead_shortage_amount: downstreamMaxShortage },
+      );
+    }
+  });
+}
+
 function applyRightPanelSupplementState(item) {
   const supplementQty = getRightPanelSupplementQty(item);
   const resultingStock = computeShortageResultingStock(item, supplementQty);
@@ -1029,10 +1120,10 @@ function buildRightPanelShortageData() {
 
     for (const item of (effective.shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
-      shortagesByScope[scopeKey].push(applyRightPanelSupplementState({
+      shortagesByScope[scopeKey].push({
         ...item,
         decision: _decisions[partKey] || item?.decision || "None",
-      }));
+      });
     }
     for (const item of (effective.customer_material_shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
@@ -1043,6 +1134,10 @@ function buildRightPanelShortageData() {
     }
   });
 
+  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
+  for (const [scopeKey, items] of Object.entries(shortagesByScope)) {
+    shortagesByScope[scopeKey] = items.map(applyRightPanelSupplementState);
+  }
   for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
   for (const items of Object.values(csShortagesByScope)) items.sort(compareShortageItems);
 
@@ -1099,6 +1194,7 @@ function buildRawModalShortageGroups(targets) {
     });
   });
 
+  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
   return { shortagesByScope, csShortagesByScope, orderedScopes };
 }
 
@@ -2070,6 +2166,7 @@ async function showWriteToMainModal(targets) {
       ...meta,
     });
   });
+  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
   for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
 
   const visibleScopes = orderedScopes.filter(scope => (shortagesByScope[scope.key] || []).length > 0);
@@ -2304,21 +2401,7 @@ function buildModalCardDerivedState(card, currentStock) {
   const supplementQty = checkbox?.checked ? 0 : Math.max(0, Number(input?.value || 0) || 0);
   const availableBefore = Number(currentStock || 0) + prevQtyCs;
   const shortageAmount = calculateModalCurrentOrderShortageAmount(partKey, availableBefore, neededQty);
-  const isOrderScoped = isOrderScopedPart(partKey);
-  const suggestedQty = isOrderScoped
-    ? shortageAmount
-    : moq > 0
-      ? Math.ceil(shortageAmount / moq) * moq
-      : shortageAmount;
-  const stAvailableQty = isOrderScoped
-    ? Math.min(shortageAmount, stStockQty)
-    : Math.min(suggestedQty, stStockQty);
-  const purchaseNeededQty = Math.max(0, shortageAmount - stAvailableQty);
-  const purchaseSuggestedQty = isOrderScoped
-    ? purchaseNeededQty
-    : purchaseNeededQty > 0
-      ? (moq > 0 ? Math.ceil(purchaseNeededQty / moq) * moq : purchaseNeededQty)
-      : 0;
+  const suggestion = buildShortageSupplySuggestion(partKey, shortageAmount, moq, stStockQty);
   const resultingStock = Number(currentStock || 0) + prevQtyCs + supplementQty - neededQty;
   return {
     part_number: partKey,
@@ -2326,15 +2409,12 @@ function buildModalCardDerivedState(card, currentStock) {
     needed: neededQty,
     shortage_amount: shortageAmount,
     moq,
-    suggested_qty: suggestedQty,
     st_stock_qty: stStockQty,
-    st_available_qty: stAvailableQty,
-    purchase_needed_qty: purchaseNeededQty,
-    purchase_suggested_qty: purchaseSuggestedQty,
     supplement_qty: supplementQty,
     default_supplement: supplementQty,
     prev_qty_cs: prevQtyCs,
     resulting_stock: resultingStock,
+    ...suggestion,
   };
 }
 
@@ -2358,6 +2438,7 @@ function refreshModalShortageCascadeForPart(list, part) {
     .sort((a, b) => getModalCardOrderIndex(a) - getModalCardOrderIndex(b));
 
   let runningCurrent = Number(cards[0]?.dataset.baseCurrentStock);
+  const cardStates = [];
   cards.forEach((card, index) => {
     const baseCurrent = Number(card.dataset.baseCurrentStock);
     if (index === 0 || !Number.isFinite(runningCurrent)) {
@@ -2386,9 +2467,31 @@ function refreshModalShortageCascadeForPart(list, part) {
 
     const derived = buildModalCardDerivedState(card, runningCurrent);
     const shouldShow = Boolean(checkbox?.checked) || derived.supplement_qty > 0 || derived.shortage_amount > 0;
-    updateModalCardComputedState(card, derived, { visible: shouldShow });
+    cardStates.push({ card, derived, shouldShow });
     runningCurrent = Number.isFinite(derived.resulting_stock) ? derived.resulting_stock : runningCurrent;
   });
+
+  let downstreamMaxShortage = 0;
+  for (let index = cardStates.length - 1; index >= 0; index -= 1) {
+    const state = cardStates[index];
+    downstreamMaxShortage = Math.max(
+      downstreamMaxShortage,
+      Math.max(0, Number(state.derived?.shortage_amount || 0) || 0),
+    );
+    updateModalCardComputedState(
+      state.card,
+      {
+        ...state.derived,
+        ...buildShortageSupplySuggestion(
+          state.derived?.part_number,
+          downstreamMaxShortage,
+          state.derived?.moq,
+          state.derived?.st_stock_qty,
+        ),
+      },
+      { visible: state.shouldShow },
+    );
+  }
 }
 
 function refreshModalShortageCascade(list, part = null) {
