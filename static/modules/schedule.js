@@ -1370,6 +1370,51 @@ function buildModalCarryOverOverrides() {
   return overrides;
 }
 
+function buildStoredModalDraftState(targets) {
+  const storedDecisions = {};
+  const storedSupplements = {};
+  const storedOrderScopedDecisions = {};
+  const storedOrderScopedSupplements = {};
+
+  (targets || []).forEach(target => {
+    const orderId = normalizeOrderId(target?.id);
+    const draft = Number.isInteger(orderId)
+      ? _draftsByOrderId?.[orderId]
+      : _draftsByOrderId?.[target?.id];
+    if (!draft) return;
+
+    Object.entries(draft.decisions || {}).forEach(([part, decision]) => {
+      const pk = normalizePartKey(part);
+      if (!pk || !decision) return;
+      const orderPartKey = buildOrderPartKey(orderId, pk);
+      if (orderPartKey) {
+        storedOrderScopedDecisions[orderPartKey] = decision;
+      } else {
+        storedDecisions[pk] = decision;
+      }
+    });
+
+    Object.entries(draft.supplements || {}).forEach(([part, qty]) => {
+      const pk = normalizePartKey(part);
+      const val = Number(qty) || 0;
+      if (!pk || val <= 0) return;
+      const orderPartKey = buildOrderPartKey(orderId, pk);
+      if (orderPartKey) {
+        storedOrderScopedSupplements[orderPartKey] = val;
+      } else {
+        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
+      }
+    });
+  });
+
+  return {
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  };
+}
+
 async function saveCurrentDraftFromModal({ silent = false } = {}) {
   if (!_modalDraftId) return null;
   const visibleParts = new Set((_modalDraftVisibleParts || []).map(normalizePartKey).filter(Boolean));
@@ -1819,33 +1864,12 @@ async function showShortageModal(targets) {
     items.sort(compareShortageItems);
 
   // 從已存的副檔草稿還原上次的 decisions / supplements
-  const storedDecisions = {};
-  const storedSupplements = {};
-  const storedOrderScopedDecisions = {};
-  const storedOrderScopedSupplements = {};
-  for (const t of targets) {
-    const draft = _draftsByOrderId[t.id];
-    if (!draft) continue;
-    for (const [part, decision] of Object.entries(draft.decisions || {})) {
-      const pk = normalizePartKey(part);
-      if (!pk || !decision) continue;
-      if (isOrderScopedPart(pk)) {
-        storedOrderScopedDecisions[buildOrderPartKey(t.id, pk)] = decision;
-      } else {
-        storedDecisions[pk] = decision;
-      }
-    }
-    for (const [part, qty] of Object.entries(draft.supplements || {})) {
-      const pk = normalizePartKey(part);
-      const val = Number(qty) || 0;
-      if (!pk || val <= 0) continue;
-      if (isOrderScopedPart(pk)) {
-        storedOrderScopedSupplements[buildOrderPartKey(t.id, pk)] = val;
-      } else {
-        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
-      }
-    }
-  }
+  const {
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  } = buildStoredModalDraftState(targets);
   _applyStoredToShortages(
     shortagesByScope,
     storedDecisions,
@@ -2022,33 +2046,12 @@ async function showBatchMergeDraftModal(targets) {
   for (const items of Object.values(csShortagesByScope)) items.sort(compareShortageItems);
 
   // 從已存的副檔草稿載入上次的 decisions / supplements，下次開 modal 直接還原
-  const storedDecisions = {};
-  const storedSupplements = {};
-  const storedOrderScopedDecisions = {};
-  const storedOrderScopedSupplements = {};
-  for (const t of targets) {
-    const draft = _draftsByOrderId[t.id];
-    if (!draft) continue;
-    for (const [part, decision] of Object.entries(draft.decisions || {})) {
-      const pk = normalizePartKey(part);
-      if (!pk || !decision) continue;
-      if (isOrderScopedPart(pk)) {
-        storedOrderScopedDecisions[buildOrderPartKey(t.id, pk)] = decision;
-      } else {
-        storedDecisions[pk] = decision;
-      }
-    }
-    for (const [part, qty] of Object.entries(draft.supplements || {})) {
-      const pk = normalizePartKey(part);
-      const val = Number(qty) || 0;
-      if (!pk || val <= 0) continue;
-      if (isOrderScopedPart(pk)) {
-        storedOrderScopedSupplements[buildOrderPartKey(t.id, pk)] = val;
-      } else {
-        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
-      }
-    }
-  }
+  const {
+    storedDecisions,
+    storedSupplements,
+    storedOrderScopedDecisions,
+    storedOrderScopedSupplements,
+  } = buildStoredModalDraftState(targets);
   _applyStoredToShortages(
     shortagesByScope,
     storedDecisions,
@@ -2466,7 +2469,7 @@ function refreshModalShortageCascadeForPart(list, part) {
     }
 
     const derived = buildModalCardDerivedState(card, runningCurrent);
-    const shouldShow = Boolean(checkbox?.checked) || derived.supplement_qty > 0 || derived.shortage_amount > 0;
+    const shouldShow = Boolean(checkbox?.checked) || derived.shortage_amount > 0;
     cardStates.push({ card, derived, shouldShow });
     runningCurrent = Number.isFinite(derived.resulting_stock) ? derived.resulting_stock : runningCurrent;
   });
