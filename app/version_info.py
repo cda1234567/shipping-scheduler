@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.08.3"
+APP_VERSION = "v2026.04.08.4"
 APP_RELEASED_AT = "2026-04-08"
-APP_HEADLINE = "這版補上網頁版黑暗模式，瀏覽器也能直接切換並記住目前裝置的顯示設定。"
+APP_HEADLINE = "這版把無 MOQ 包裝頁的 0 庫存料號濾掉，只保留目前真的有 ST 庫存的項目。"
 APP_CHANGELOG = [
+    {
+        "title": "無 MOQ 包裝",
+        "items": [
+            "無 MOQ 包裝頁現在會直接略過 ST 庫存為 0 的料號，不再把一整串 0 庫存料顯示出來。",
+            "畫面只會保留目前還有 ST 庫存、需要對照包裝拆分的項目，清單會更乾淨。",
+        ],
+    },
     {
         "title": "網頁版黑暗模式",
         "items": [

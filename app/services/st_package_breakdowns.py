@@ -102,6 +102,8 @@ def build_missing_moq_package_rows() -> list[dict]:
         package_text = str(package_state.get("package_text") or "")
         st_row = st_snapshot.get(part_number) or {}
         stock_qty = float(st_row.get("stock_qty") or 0)
+        if stock_qty <= _TOLERANCE:
+            continue
         summary = summarize_package_text(package_text, stock_qty)
         rows.append({
             "part_number": part_number,
