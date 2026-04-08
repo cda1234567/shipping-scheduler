@@ -577,6 +577,48 @@ function formatDraftTime(value) {
   return text.slice(5, 16).replace("T", " ");
 }
 
+function hasUsableDraftFiles(draft) {
+  return Array.isArray(draft?.files) && draft.files.some(file => (
+    String(file?.id || "").trim() || String(file?.filename || "").trim()
+  ));
+}
+
+function formatOrderAlertLabel(row) {
+  const scopeLabel = formatShortageScopeLabel(row?.model, row?.code);
+  const poNumber = String(row?.po_number || "").trim();
+  return poNumber ? `${scopeLabel}（PO ${poNumber}）` : scopeLabel;
+}
+
+function summarizeOrderAlertLabels(rows = [], limit = 3) {
+  const labels = (rows || [])
+    .map(formatOrderAlertLabel)
+    .filter(Boolean);
+  if (!labels.length) return "";
+  if (labels.length <= limit) return labels.join("、");
+  return `${labels.slice(0, limit).join("、")}，另 ${labels.length - limit} 筆`;
+}
+
+function syncRowBadge(div, badgeState = { cls: "", text: "" }) {
+  if (!div) return;
+  const header = div.querySelector(".po-group-header");
+  const actions = div.querySelector(".row-actions");
+  if (!header || !actions) return;
+
+  let badge = div.querySelector(".po-status-badge");
+  if (!badgeState?.text) {
+    badge?.remove();
+    return;
+  }
+
+  if (!badge) {
+    badge = document.createElement("span");
+    header.insertBefore(badge, actions);
+  }
+
+  badge.className = `po-status-badge ${badgeState.cls || ""}`.trim();
+  badge.textContent = badgeState.text;
+}
+
 function buildDraftPanelHtmlLegacyBase(draft) {
   const files = draft?.files || [];
   const shortages = draft?.shortages || [];
@@ -609,7 +651,8 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
   div.dataset.orderId = r.id;
 
   const res = resultMap[r.id];
-  const draft = _draftsByOrderId?.[r.id] || null;
+  const rawDraft = _draftsByOrderId?.[r.id] || null;
+  const draft = hasUsableDraftFiles(rawDraft) ? rawDraft : null;
   const badge = buildOrderBadge(r, res, visibleShortageTotals);
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
@@ -815,7 +858,7 @@ function handleDraftPanelToggleClick(event) {
 function cardBadge(res, orderId) {
   if (!res && orderId !== undefined && !_checkedIds.has(orderId)) return { cls: "", text: "" };
   if (!res) return { cls: "badge-no-bom", text: "BOM未上傳" };
-  if (res.status === "ok") return { cls: "badge-ok", text: "OK" };
+  if (res.status === "ok") return { cls: "", text: "" };
   if (res.status === "shortage") {
     const total = [...(res.shortages || []), ...(res.customer_material_shortages || [])]
       .reduce((s, x) => s + (x.shortage_amount || 0), 0);
@@ -1061,7 +1104,8 @@ function removeRightPanelShortageRowIfResolved(row) {
 }
 
 function getEffectiveShortageState(row, res = null) {
-  const draft = row ? _draftsByOrderId?.[row.id] || null : null;
+  const rawDraft = row ? _draftsByOrderId?.[row.id] || null : null;
+  const draft = hasUsableDraftFiles(rawDraft) ? rawDraft : null;
   if (draft) {
     return {
       hasDraft: true,
@@ -1092,7 +1136,7 @@ function buildOrderBadge(row, res, visibleShortageTotals = null) {
       ? { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` }
       : effective.status === "no_bom"
         ? { cls: "badge-no-bom", text: "BOM未上傳" }
-        : { cls: "badge-ok", text: "OK" };
+        : { cls: "", text: "" };
   }
 
   if (effective.hasDraft) {
@@ -1100,7 +1144,7 @@ function buildOrderBadge(row, res, visibleShortageTotals = null) {
       .reduce((sum, item) => sum + (item.shortage_amount || 0), 0);
     return total > 0
       ? { cls: "badge-shortage", text: `缺 ${fmt(roundShortageUiValue(total))}` }
-      : { cls: "badge-ok", text: "OK" };
+      : { cls: "", text: "" };
   }
 
   return cardBadge(res, row?.id);
@@ -3610,12 +3654,8 @@ function updateStatusOnly() {
     const orderId = parseInt(div.dataset.orderId);
     const row = _rows.find(item => item.id === orderId) || null;
     const res = resultMap[orderId];
-    const badge = div.querySelector(".po-status-badge");
-    if (badge) {
-      const b = buildOrderBadge(row, res, visibleShortageTotals);
-      badge.className = `po-status-badge ${b.cls}`;
-      badge.textContent = b.text;
-    }
+    const badgeState = buildOrderBadge(row, res, visibleShortageTotals);
+    syncRowBadge(div, badgeState);
   });
 
   const { shortages, csShortages } = buildRightPanelShortageData();
@@ -4238,6 +4278,27 @@ async function handleBatchMerge() {
     return;
   }
 
+  const resultMap = new Map();
+  _calcResults.forEach((result, index) => {
+    const orderId = normalizeOrderId(_rows[index]?.id);
+    if (Number.isInteger(orderId)) resultMap.set(orderId, result);
+  });
+
+  const missingBomTargets = targets.filter(row => {
+    const result = resultMap.get(row.id);
+    return !result || result.status === "no_bom";
+  });
+  const missingBomIds = new Set(missingBomTargets.map(row => row.id));
+  const mergeableTargets = targets.filter(row => !missingBomIds.has(row.id));
+
+  if (missingBomTargets.length && !mergeableTargets.length) {
+    showToast(`以下訂單尚未上傳 BOM，這次不會建立副檔：${summarizeOrderAlertLabels(missingBomTargets)}`, {
+      sticky: true,
+      tone: "error",
+    });
+    return;
+  }
+
   const button = document.getElementById("btn-batch-merge");
   const originalText = button?.textContent || "批次 Merge";
   _batchMergeInFlight = true;
@@ -4246,7 +4307,7 @@ async function handleBatchMerge() {
       button.disabled = true;
       button.textContent = "建立中...";
     }
-    const targetIds = targets.map(row => row.id);
+    const targetIds = mergeableTargets.map(row => row.id);
     const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);
 
     // 先把目前畫面順序寫回後端，再依這個順序重建副檔
@@ -4259,16 +4320,23 @@ async function handleBatchMerge() {
       },
       {
         title: "正在批次建立副檔",
-        detail: `共 ${targets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
+        detail: `共 ${mergeableTargets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
       },
     );
 
     // overlay 已關閉，背景刷新資料
     await refresh();
 
-    showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
+    if (missingBomTargets.length) {
+      showToast(`已建立 ${result.draft_count || 0} 份副檔；以下訂單尚未上傳 BOM，這次已跳過：${summarizeOrderAlertLabels(missingBomTargets)}`, {
+        sticky: true,
+        tone: "error",
+      });
+    } else {
+      showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
+    }
     try {
-      await openBatchMergeDraftModalStable(targetIds, targets);
+      await openBatchMergeDraftModalStable(targetIds, mergeableTargets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
       showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
