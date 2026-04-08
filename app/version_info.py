@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.08.8"
+APP_VERSION = "v2026.04.08.9"
 APP_RELEASED_AT = "2026-04-08"
-APP_HEADLINE = "這版讓已發料區也能保留並查看當時提交的副檔，反悔後也能接續用回原本那份。"
+APP_HEADLINE = "這版讓已發料區的副檔也能用箭頭收起來，版面會和排程區保持一致。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料列表",
+        "items": [
+            "已發料卡片上的副檔面板現在也有和排程區一樣的箭頭切換，可以直接展開或收起。",
+            "收合狀態會記住這台裝置的操作，下次重新整理後仍會沿用。",
+        ],
+    },
     {
         "title": "已發料副檔",
         "items": [

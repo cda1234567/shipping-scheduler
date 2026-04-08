@@ -26,6 +26,7 @@ let _batchMergeInFlight = false;
 let _modalProgressTimer = null;
 let _modalProgressValue = 0;
 let _completedFolderCollapsedState = loadCompletedFolderCollapsedState();
+let _completedDraftPanelCollapsedState = loadCompletedDraftPanelCollapsedState();
 let _draftPanelCollapsedState = loadDraftPanelCollapsedState();
 let _draftFileSelectionState = loadDraftFileSelectionState();
 let _modalDraftId = null;
@@ -143,6 +144,41 @@ function isCompletedFolderCollapsed(folderName) {
 function setCompletedFolderCollapsed(folderName, collapsed) {
   _completedFolderCollapsedState[completedFolderStateKey(folderName)] = Boolean(collapsed);
   saveCompletedFolderCollapsedState();
+}
+
+function loadCompletedDraftPanelCollapsedState() {
+  try {
+    const raw = window.localStorage?.getItem("completed-draft-panel-collapsed-state");
+    const parsed = raw ? JSON.parse(raw) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveCompletedDraftPanelCollapsedState() {
+  try {
+    window.localStorage?.setItem(
+      "completed-draft-panel-collapsed-state",
+      JSON.stringify(_completedDraftPanelCollapsedState || {}),
+    );
+  } catch (_) {}
+}
+
+function isCompletedDraftPanelCollapsed(orderId) {
+  const key = String(orderId || "");
+  if (!key) return true;
+  if (Object.prototype.hasOwnProperty.call(_completedDraftPanelCollapsedState, key)) {
+    return Boolean(_completedDraftPanelCollapsedState[key]);
+  }
+  return true;
+}
+
+function setCompletedDraftPanelCollapsed(orderId, collapsed) {
+  const key = String(orderId || "");
+  if (!key) return;
+  _completedDraftPanelCollapsedState[key] = Boolean(collapsed);
+  saveCompletedDraftPanelCollapsedState();
 }
 
 function loadDraftPanelCollapsedState() {
@@ -3300,6 +3336,7 @@ function buildCompletedCard(r, allFolders) {
   const div = document.createElement("div");
   div.className = "po-group completed-card";
   const draft = _completedDraftsByOrderId?.[r.id] || null;
+  const draftCollapsed = draft ? isCompletedDraftPanelCollapsed(r.id) : true;
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
   const code = r.code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 4px">${esc(r.code)}</span>` : "";
@@ -3311,11 +3348,22 @@ function buildCompletedCard(r, allFolders) {
     folderOptions += `<option value="${esc(f)}"${currentFolder === f ? " selected" : ""}>${esc(f)}</option>`;
   }
 
-  const draftHtml = draft ? buildCompletedDraftPanelHtml(draft) : "";
+  const draftToggleHtml = draft
+    ? `<button
+        class="btn-draft-toggle row-draft-toggle btn-completed-draft-toggle ${draftCollapsed ? "" : "is-expanded"}"
+        type="button"
+        data-order-id="${r.id}"
+        aria-expanded="${draftCollapsed ? "false" : "true"}"
+        title="${draftCollapsed ? "展開已發料副檔" : "收起已發料副檔"}"
+      >${draftCollapsed ? "▶" : "▼"}</button>`
+    : "";
+  const draftHtml = draft ? buildCompletedDraftPanelHtml(draft, { collapsed: draftCollapsed }) : "";
 
   div.innerHTML = `
     <div class="completed-card-header">
-      <span class="po-number">${esc(r.model)}</span>
+      <span class="po-model-wrap">
+        <span class="po-number">${esc(r.model)}</span>${draftToggleHtml}
+      </span>
       <span style="color:#c7c7cc;font-size:13px">|</span>
       <span style="color:#6b7280;font-weight:500;font-size:14px;font-family:monospace">${r.po_number}</span>
       <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
@@ -3346,15 +3394,27 @@ function buildCompletedCard(r, allFolders) {
   div.querySelector(".btn-completed-draft-download")?.addEventListener("click", () => {
     void downloadDraft(draft.id);
   });
+  div.querySelector(".btn-completed-draft-toggle")?.addEventListener("click", event => {
+    const button = event.currentTarget;
+    const panel = div.querySelector(".completed-draft-panel");
+    if (!button || !panel) return;
+    const nextCollapsed = !panel.classList.contains("is-collapsed");
+    panel.classList.toggle("is-collapsed", nextCollapsed);
+    button.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
+    button.textContent = nextCollapsed ? "▶" : "▼";
+    button.classList.toggle("is-expanded", !nextCollapsed);
+    button.title = nextCollapsed ? "展開已發料副檔" : "收起已發料副檔";
+    setCompletedDraftPanelCollapsed(r.id, nextCollapsed);
+  });
 
   return div;
 }
 
-function buildCompletedDraftPanelHtml(draft) {
+function buildCompletedDraftPanelHtml(draft, { collapsed = false } = {}) {
   const files = Array.isArray(draft?.files) ? draft.files : [];
   const committedAt = formatDraftTime(draft?.committed_at || draft?.updated_at) || "--";
   return `
-    <div class="completed-draft-panel">
+    <div class="completed-draft-panel ${collapsed ? "is-collapsed" : ""}">
       <div class="completed-draft-summary">
         <span class="merge-draft-pill">副檔 ${files.length} 份</span>
         <span class="merge-draft-meta">存檔 ${esc(committedAt)}</span>

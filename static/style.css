@@ -1621,6 +1621,9 @@ body.desktop-dark .main-preview-cell-input {
   border-top: 1px solid #dcfce7;
   background: linear-gradient(180deg, #f7fff9 0%, #eefbf3 100%);
 }
+.completed-draft-panel.is-collapsed {
+  display: none;
+}
 .completed-draft-summary {
   display: flex;
   align-items: center;
