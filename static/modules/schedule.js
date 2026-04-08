@@ -638,6 +638,9 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
         title="${isDraftPanelCollapsed(r.id) ? "展開副檔工作台" : "收起副檔工作台"}"
       >${isDraftPanelCollapsed(r.id) ? "▶" : "▼"}</button>`
     : "";
+  const badgeHtml = badge?.text
+    ? `<span class="po-status-badge ${badge.cls}">${badge.text}</span>`
+    : "";
 
   div.innerHTML = `
     <div class="po-group-header">
@@ -656,7 +659,7 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
              data-order-id="${r.id}" placeholder="編號"
              style="width:100%;box-sizing:border-box;border:1px solid #e5e5ea;border-radius:4px;padding:2px 6px;font-size:12px;text-align:center;background:transparent">
       ${remarkSpan}
-      <span class="po-status-badge ${badge.cls}">${badge.text}</span>
+      ${badgeHtml}
       <div class="row-actions">
         <button class="btn-edit-date" data-order-id="${r.id}" title="改交期">📅</button>
         <button class="btn-cancel-order" data-order-id="${r.id}" title="取消訂單">✕</button>
@@ -810,7 +813,7 @@ function handleDraftPanelToggleClick(event) {
 }
 
 function cardBadge(res, orderId) {
-  if (!res && orderId !== undefined && !_checkedIds.has(orderId)) return { cls: "badge-unchecked", text: "—" };
+  if (!res && orderId !== undefined && !_checkedIds.has(orderId)) return { cls: "", text: "" };
   if (!res) return { cls: "badge-no-bom", text: "BOM未上傳" };
   if (res.status === "ok") return { cls: "badge-ok", text: "OK" };
   if (res.status === "shortage") {
@@ -1078,7 +1081,7 @@ function getEffectiveShortageState(row, res = null) {
 
 function buildOrderBadge(row, res, visibleShortageTotals = null) {
   if (!res && row?.id !== undefined && !_checkedIds.has(row.id)) {
-    return { cls: "badge-unchecked", text: "—" };
+    return { cls: "", text: "" };
   }
 
   const orderId = normalizeOrderId(row?.id);

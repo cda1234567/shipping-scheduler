@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.08.5"
+APP_VERSION = "v2026.04.08.6"
 APP_RELEASED_AT = "2026-04-08"
-APP_HEADLINE = "這版把首頁與各清單區的 scrollbar 改成深色一致，不會再在右邊看到突兀的白條。"
+APP_HEADLINE = "這版把首頁排程列右邊沒資訊的狀態膠囊拿掉，不再看到一排白色短條。"
 APP_CHANGELOG = [
+    {
+        "title": "首頁排程列",
+        "items": [
+            "未勾選且沒有實際狀態的訂單，不再顯示只有一個橫線的白色狀態膠囊。",
+            "保留真正有意義的狀態顯示，例如 OK、缺料、BOM 未上傳。",
+        ],
+    },
     {
         "title": "捲軸樣式",
         "items": [
