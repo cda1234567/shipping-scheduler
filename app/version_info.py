@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.08.4"
+APP_VERSION = "v2026.04.08.5"
 APP_RELEASED_AT = "2026-04-08"
-APP_HEADLINE = "這版把無 MOQ 包裝頁的 0 庫存料號濾掉，只保留目前真的有 ST 庫存的項目。"
+APP_HEADLINE = "這版把首頁與各清單區的 scrollbar 改成深色一致，不會再在右邊看到突兀的白條。"
 APP_CHANGELOG = [
+    {
+        "title": "捲軸樣式",
+        "items": [
+            "首頁排程、已發料、右側補料與其他清單區的 scrollbar 都改成一致的細版樣式。",
+            "深色模式下右邊不會再出現突兀的白色 scrollbar 軌道，看起來像多一條白條。",
+        ],
+    },
     {
         "title": "無 MOQ 包裝",
         "items": [
