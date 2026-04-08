@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.08.2"
+APP_VERSION = "v2026.04.08.3"
 APP_RELEASED_AT = "2026-04-08"
-APP_HEADLINE = "這版修正缺料 modal 的舊補料還原邏輯，後面訂單不會再把自己以前存過的補料值硬帶回來。"
+APP_HEADLINE = "這版補上網頁版黑暗模式，瀏覽器也能直接切換並記住目前裝置的顯示設定。"
 APP_CHANGELOG = [
+    {
+        "title": "網頁版黑暗模式",
+        "items": [
+            "黑暗模式不再只限桌面版，改成網頁版也可以直接切換。",
+            "瀏覽器會記住你這台裝置的黑暗模式偏好，重新整理後會自動套用。",
+            "原本的深色樣式沿用同一套 body class，所以畫面切換後會和桌面版保持一致。",
+        ],
+    },
     {
         "title": "補料還原",
         "items": [

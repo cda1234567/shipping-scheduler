@@ -10,6 +10,32 @@ const BROWSER_DOWNLOAD_DB_NAME = "shipping-scheduler-browser-downloads";
 const BROWSER_DOWNLOAD_DB_VERSION = 1;
 const BROWSER_DOWNLOAD_STORE = "handles";
 const BROWSER_DOWNLOAD_KEY = "preferred-download-directory";
+const BROWSER_THEME_STORAGE_KEY = "shipping-scheduler-browser-theme";
+
+function getDefaultBrowserDarkModeEnabled() {
+  try {
+    return Boolean(window.matchMedia?.("(prefers-color-scheme: dark)")?.matches);
+  } catch (_) {
+    return false;
+  }
+}
+
+function loadBrowserDarkModePreference() {
+  try {
+    const stored = String(window.localStorage?.getItem(BROWSER_THEME_STORAGE_KEY) || "").trim().toLowerCase();
+    if (stored === "dark") return true;
+    if (stored === "light") return false;
+  } catch (_) {}
+  return getDefaultBrowserDarkModeEnabled();
+}
+
+function persistBrowserDarkModePreference(enabled) {
+  try {
+    window.localStorage?.setItem(BROWSER_THEME_STORAGE_KEY, enabled ? "dark" : "light");
+  } catch (_) {}
+}
+
+let _browserDarkModeEnabled = loadBrowserDarkModePreference();
 
 function getDesktopApi() {
   const api = window.pywebview?.api;
@@ -315,8 +341,13 @@ async function saveBlobWithConfiguredBrowserDirectory(blob, filename) {
   };
 }
 
+function getEffectiveDarkModeEnabled() {
+  if (_desktopState) return Boolean(_desktopState.dark_mode_enabled);
+  return Boolean(_browserDarkModeEnabled);
+}
+
 function applyDesktopTheme() {
-  document.body.classList.toggle("desktop-dark", Boolean(_desktopState?.dark_mode_enabled));
+  document.body.classList.toggle("desktop-dark", getEffectiveDarkModeEnabled());
 }
 
 async function readDesktopState() {
@@ -357,10 +388,11 @@ function renderDesktopState() {
   const desktopMinimizeBtn = document.getElementById("desktop-minimize");
   const desktopOpenBrowserBtn = document.getElementById("desktop-open-browser");
   const desktopQuitBtn = document.getElementById("desktop-quit");
+  const darkModeNoteEl = document.getElementById("desktop-dark-mode-note");
   const modalTitle = document.getElementById("desktop-modal-title");
   const modalSubtitle = document.getElementById("desktop-modal-subtitle");
   const controlBtn = document.getElementById("btn-desktop-controls");
-  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn) return;
+  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn || !darkModeNoteEl) return;
 
   const desktopAvailable = hasDesktopApi();
   controlBtn.style.display = "inline-flex";
@@ -390,8 +422,8 @@ function renderDesktopState() {
       : "目前會依瀏覽器能力決定下載方式。";
     checkbox.checked = false;
     checkbox.disabled = true;
-    darkModeEl.checked = false;
-    darkModeEl.disabled = true;
+    darkModeEl.checked = desktopAvailable ? false : Boolean(_browserDarkModeEnabled);
+    darkModeEl.disabled = desktopAvailable;
   } else {
     statusEl.textContent = _desktopState.remote_server
       ? "桌面版已連到遠端服務"
@@ -422,9 +454,13 @@ function renderDesktopState() {
   if (!desktopAvailable) {
     folderEl.textContent = "使用瀏覽器預設下載位置";
     folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
+    darkModeEl.checked = Boolean(_browserDarkModeEnabled);
+    darkModeEl.disabled = false;
+    darkModeNoteEl.textContent = "網頁版也會直接套用，並記住這台裝置的顯示設定，不會改原始 Excel。";
   } else {
     desktopChooseBtn.disabled = false;
     desktopClearBtn.disabled = true;
+    darkModeNoteEl.textContent = "只影響桌面版視窗，不會改原始 Excel。";
   }
 
   applyDesktopTheme();
@@ -543,6 +579,13 @@ async function handleDarkModeChange(event) {
   const enabled = checkbox.checked;
   checkbox.disabled = true;
   try {
+    if (!hasDesktopApi()) {
+      _browserDarkModeEnabled = enabled;
+      persistBrowserDarkModePreference(enabled);
+      renderDesktopState();
+      showToast(enabled ? "已切換為黑暗模式" : "已切換為淺色模式");
+      return;
+    }
     const api = await waitForDesktopApi();
     if (!api) throw new Error("桌面版尚未連線完成");
     const nextState = await api.set_dark_mode(enabled);
@@ -678,6 +721,7 @@ export async function desktopDownload({ path, method = "GET", body = null, filen
 }
 
 async function bootDesktopBridge() {
+  applyDesktopTheme();
   bindDesktopEvents();
   if (!_browserDownloadState) {
     _browserDownloadState = createDefaultBrowserDownloadState();
