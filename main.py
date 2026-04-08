@@ -11,7 +11,6 @@ from app.database import init_db
 from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main_file, schedule, system
 from app.services.edit_auth import EDIT_AUTH_REQUIRED_MESSAGE, get_edit_auth_status, request_requires_edit_auth
 from app.services.db_backup import database_backup_scheduler
-from app.services.merge_drafts import cleanup_expired_committed_merge_drafts
 from app.services.backup_cleanup import cleanup_old_backups
 from app.snapshot_sync import refresh_snapshot_from_main
 from app.version_info import APP_VERSION
@@ -50,7 +49,6 @@ def _sync_snapshot_on_startup():
 async def lifespan(_: FastAPI):
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         _sync_snapshot_on_startup()
-        cleanup_expired_committed_merge_drafts()
         cleanup_old_backups()
         database_backup_scheduler.start()
     try:

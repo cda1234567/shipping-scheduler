@@ -45,6 +45,7 @@ from ..services.merge_drafts import (
     rebuild_merge_drafts,
     delete_merge_draft_and_refresh,
     get_schedule_draft_map,
+    get_committed_schedule_draft_map,
     get_draft_detail,
     download_merge_draft,
     download_selected_merge_drafts,
@@ -533,7 +534,12 @@ async def get_completed_rows():
     """回傳已發料/已完成的訂單 + 資料夾清單。"""
     orders = db.get_orders(["dispatched", "completed"])
     folders = db.get_dispatch_folders()
-    return {"rows": orders, "folders": folders}
+    order_ids = [int(order["id"]) for order in orders if order.get("id") is not None]
+    return {
+        "rows": orders,
+        "folders": folders,
+        "committed_merge_drafts": get_committed_schedule_draft_map(order_ids),
+    }
 
 
 @router.post("/schedule/orders/move-folder")

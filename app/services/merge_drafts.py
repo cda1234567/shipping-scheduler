@@ -797,42 +797,85 @@ def get_schedule_draft_map() -> dict[int, dict]:
     order_ids = [int(draft["order_id"]) for draft in drafts]
     decisions_by_order = _get_persisted_decision_map(order_ids)
     supplements_by_order = _get_persisted_supplement_map(order_ids)
+    return {
+        int(draft["order_id"]): _serialize_draft_summary(
+            draft,
+            decisions=decisions_by_order.get(int(draft["order_id"]), {}),
+            supplements=supplements_by_order.get(int(draft["order_id"]), {}),
+        )
+        for draft in drafts
+    }
+
+
+def _serialize_draft_summary(
+    draft: dict,
+    *,
+    decisions: dict[str, str] | None = None,
+    supplements: dict[str, float] | None = None,
+) -> dict:
+    order_id = int(draft["order_id"])
+    return {
+        "id": int(draft["id"]),
+        "order_id": order_id,
+        "status": draft.get("status", "active"),
+        "model": draft.get("model", ""),
+        "po_number": draft.get("po_number", ""),
+        "main_loaded_at": draft.get("main_loaded_at", ""),
+        "updated_at": draft.get("updated_at", ""),
+        "committed_at": draft.get("committed_at", ""),
+        "supplements": _normalize_supplements(supplements or {}),
+        "decisions": _normalize_decisions(decisions or {}),
+        "shortages": draft.get("shortages", []),
+        "files": [
+            {
+                "id": int(file_item["id"]),
+                "bom_file_id": file_item.get("bom_file_id", ""),
+                "filename": file_item.get("filename", ""),
+                "filepath": file_item.get("filepath", ""),
+                "source_filename": file_item.get("source_filename", ""),
+            }
+            for file_item in draft.get("files", [])
+        ],
+    }
+
+
+def get_committed_schedule_draft_map(order_ids: list[int]) -> dict[int, dict]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return {}
+
     result: dict[int, dict] = {}
-    for draft in drafts:
-        order_id = int(draft["order_id"])
-        result[order_id] = {
-            "id": int(draft["id"]),
-            "order_id": order_id,
-            "status": draft.get("status", "active"),
-            "model": draft.get("model", ""),
-            "po_number": draft.get("po_number", ""),
-            "main_loaded_at": draft.get("main_loaded_at", ""),
-            "updated_at": draft.get("updated_at", ""),
-            "supplements": supplements_by_order.get(order_id, {}),
-            "decisions": decisions_by_order.get(order_id, {}),
-            "shortages": draft.get("shortages", []),
-            "files": [
-                {
-                    "id": int(file_item["id"]),
-                    "bom_file_id": file_item.get("bom_file_id", ""),
-                    "filename": file_item.get("filename", ""),
-                    "filepath": file_item.get("filepath", ""),
-                    "source_filename": file_item.get("source_filename", ""),
-                }
-                for file_item in draft.get("files", [])
-            ],
-        }
+    for order_id in normalized_ids:
+        draft = db.get_latest_committed_merge_draft_for_order(order_id)
+        if not draft:
+            continue
+        draft["files"] = db.get_merge_draft_files(int(draft["id"]))
+        result[order_id] = _serialize_draft_summary(
+            draft,
+            decisions=draft.get("decisions", {}),
+            supplements=draft.get("supplements", {}),
+        )
     return result
 
 
 def get_draft_detail(draft_id: int) -> dict:
     draft = db.get_merge_draft(draft_id)
-    if not draft or draft.get("status") != "active":
+    if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
     order_id = int(draft["order_id"])
     order = db.get_order(order_id)
-    decisions = _get_persisted_decision_map([order_id]).get(order_id, {})
-    supplements = _get_persisted_supplement_map([order_id]).get(order_id, {})
+    if draft.get("status") == "committed":
+        decisions = _normalize_decisions(draft.get("decisions") or {})
+        supplements = _normalize_supplements(draft.get("supplements") or {})
+    else:
+        decisions = _get_persisted_decision_map([order_id]).get(order_id, {})
+        supplements = _get_persisted_supplement_map([order_id]).get(order_id, {})
     shortages_by_part = {
         normalize_part_key(item.get("part_number")): item
         for item in (draft.get("shortages") or [])
@@ -855,6 +898,7 @@ def get_draft_detail(draft_id: int) -> dict:
             "status": draft.get("status", "active"),
             "main_loaded_at": draft.get("main_loaded_at", ""),
             "updated_at": draft.get("updated_at", ""),
+            "committed_at": draft.get("committed_at", ""),
             "supplements": supplements,
             "decisions": decisions,
             "shortages": draft.get("shortages", []),
@@ -872,7 +916,7 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
 
 def download_merge_draft(draft_id: int, *, file_id: int | None = None):
     draft = db.get_merge_draft(draft_id)
-    if not draft or draft.get("status") != "active":
+    if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
     order = db.get_order(int(draft["order_id"])) or {}
     po = order.get("po_number", "")

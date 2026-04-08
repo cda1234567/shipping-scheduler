@@ -1616,6 +1616,28 @@ body.desktop-dark .main-preview-cell-input {
   align-items: center;
   gap: 8px;
 }
+.completed-draft-panel {
+  padding: 12px 14px 14px;
+  border-top: 1px solid #dcfce7;
+  background: linear-gradient(180deg, #f7fff9 0%, #eefbf3 100%);
+}
+.completed-draft-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.completed-draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.completed-draft-actions .btn {
+  min-width: 88px;
+}
 .btn-rollback-order {
   min-width: 58px;
   background: #fff7ed;
@@ -1657,6 +1679,10 @@ body.desktop-dark .bom-model-header,
 body.desktop-dark .completed-folder-header,
 body.desktop-dark .completed-card-header {
   border-color: #243041;
+}
+body.desktop-dark .completed-draft-panel {
+  border-top-color: #1f3b2b;
+  background: linear-gradient(180deg, rgba(6, 78, 59, 0.18), rgba(17, 24, 39, 0.9));
 }
 body.desktop-dark #main-content,
 body.desktop-dark #layout,
