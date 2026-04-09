@@ -26,11 +26,13 @@ from .shortage_rules import (
     summarize_st_supply,
 )
 
-PART_COL = 1
+PART_COL = cfg("excel.main_part_col", 0) + 1
+MOQ_COL = cfg("excel.main_moq_col", 2) + 1
+DESC_COL = cfg("excel.main_desc_col", 3) + 1
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 CLEAR_FILL = PatternFill(fill_type=None)
-STOCK_SEARCH_START_COL = cfg("excel.main_moq_col", 2) + 2
+STOCK_SEARCH_START_COL = MOQ_COL + 1
 
 
 def _try_float(value) -> float | None:
@@ -94,6 +96,85 @@ def _read_latest_stock(ws, row_idx: int, max_col: int) -> float:
     return current_stock
 
 
+def _copy_main_row_style(ws, source_row_idx: int, target_row_idx: int, max_col: int) -> None:
+    if source_row_idx <= 0 or target_row_idx <= 0 or source_row_idx == target_row_idx:
+        return
+
+    source_dimension = ws.row_dimensions[source_row_idx]
+    target_dimension = ws.row_dimensions[target_row_idx]
+    for attr in ("height", "hidden", "outlineLevel", "collapsed", "ht", "customHeight"):
+        try:
+            setattr(target_dimension, attr, copy(getattr(source_dimension, attr)))
+        except Exception:
+            continue
+
+    for col_idx in range(1, max_col + 1):
+        source_cell = ws.cell(row=source_row_idx, column=col_idx)
+        target_cell = ws.cell(row=target_row_idx, column=col_idx)
+        target_cell._style = copy(source_cell._style)
+        target_cell.number_format = source_cell.number_format
+        target_cell.protection = copy(source_cell.protection)
+        target_cell.alignment = copy(source_cell.alignment)
+        target_cell.font = copy(source_cell.font)
+        target_cell.fill = copy(source_cell.fill)
+        target_cell.border = copy(source_cell.border)
+
+
+def _find_insert_row_for_part(part_row_map: dict[str, int], part_key: str) -> int | None:
+    ordered_rows = sorted(part_row_map.items(), key=lambda item: item[1])
+    for existing_part, row_idx in ordered_rows:
+        if existing_part > part_key:
+            return row_idx
+    return None
+
+
+def _ensure_main_part_row(
+    ws,
+    part_row_map: dict[str, int],
+    part_number: str,
+    *,
+    description: str = "",
+    moq: float = 0.0,
+) -> tuple[int, bool]:
+    part_text = str(part_number or "").strip()
+    part_key = part_text.upper()
+    if not part_key:
+        raise ValueError("part_number cannot be empty")
+
+    existing_row_idx = part_row_map.get(part_key)
+    if existing_row_idx is not None:
+        return existing_row_idx, False
+
+    insert_row_idx = _find_insert_row_for_part(part_row_map, part_key)
+    if insert_row_idx is None:
+        target_row_idx = max(ws.max_row + 1, 2)
+        source_row_idx = target_row_idx - 1 if target_row_idx > 2 else 0
+    else:
+        target_row_idx = insert_row_idx
+        ws.insert_rows(target_row_idx, 1)
+        source_row_idx = target_row_idx + 1 if target_row_idx + 1 <= ws.max_row else target_row_idx - 1
+
+    if source_row_idx >= 2:
+        _copy_main_row_style(ws, source_row_idx, target_row_idx, ws.max_column)
+
+    ws.cell(row=target_row_idx, column=PART_COL).value = part_text or part_key
+    ws.cell(row=target_row_idx, column=MOQ_COL).value = _try_float(moq) or 0.0
+    if DESC_COL > 0:
+        ws.cell(row=target_row_idx, column=DESC_COL).value = str(description or "").strip()
+
+    part_row_map.clear()
+    part_row_map.update(_build_part_row_map(ws))
+    return int(part_row_map[part_key]), True
+
+
+def _find_sheet_latest_stock_col(ws, max_col: int) -> int | None:
+    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
+        for row_idx in range(2, ws.max_row + 1):
+            if _try_float(ws.cell(row=row_idx, column=col_idx).value) is not None:
+                return col_idx
+    return None
+
+
 def clear_cell_fill(cell) -> None:
     cell.fill = CLEAR_FILL
 
@@ -137,6 +218,39 @@ def _build_preview_for_batches(
         for part, qty in (moq_map or {}).items()
         if str(part or "").strip()
     }
+    created_main_parts: set[str] = set()
+    missing_part_rows: dict[str, dict] = {}
+
+    for batch in batches:
+        for group in batch.get("groups", []):
+            for comp in group.get("components", []) or []:
+                needed_qty = float(comp.get("needed_qty") or 0)
+                if comp.get("is_dash") or needed_qty <= 0:
+                    continue
+
+                part_number = str(comp.get("part_number") or "").strip()
+                part_upper = part_number.upper()
+                if not part_upper or part_upper in part_row_map:
+                    continue
+
+                entry = missing_part_rows.setdefault(part_upper, {
+                    "part_number": part_number or part_upper,
+                    "description": str(comp.get("description") or "").strip(),
+                    "moq": float(effective_moq.get(part_upper, 0) or 0),
+                })
+                if not entry["description"] and str(comp.get("description") or "").strip():
+                    entry["description"] = str(comp.get("description") or "").strip()
+
+    for part_upper in sorted(missing_part_rows):
+        payload = missing_part_rows[part_upper]
+        _ensure_main_part_row(
+            ws,
+            part_row_map,
+            payload["part_number"],
+            description=payload["description"],
+            moq=payload["moq"],
+        )
+        created_main_parts.add(part_upper)
 
     for batch in batches:
         remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
@@ -169,7 +283,7 @@ def _build_preview_for_batches(
                 if current_stock is None:
                     current_stock = _read_latest_stock(ws, row_idx, max_col)
 
-                prev_qty_cs = float(comp.get("prev_qty_cs") or 0)
+                prev_qty_cs = 0.0 if part_upper in created_main_parts else float(comp.get("prev_qty_cs") or 0)
                 decision = _resolve_decision(part_number, batch_decisions)
 
                 available_before = current_stock + prev_qty_cs
@@ -402,14 +516,12 @@ def supplement_part_in_main(
         part_row_map = _build_part_row_map(ws)
         row_idx = part_row_map.get(part_key)
         if row_idx is None:
-            workbook.close()
-            return {"ok": False, "message": f"主檔中找不到料號 {part_key}"}
+            row_idx, _ = _ensure_main_part_row(ws, part_row_map, part_key)
 
         max_col = ws.max_column
         stock_col = _find_latest_stock_col(ws, row_idx, max_col)
         if stock_col is None:
-            workbook.close()
-            return {"ok": False, "message": f"找不到 {part_key} 的庫存欄位"}
+            stock_col = _find_sheet_latest_stock_col(ws, max_col) or max(STOCK_SEARCH_START_COL, max_col)
 
         current_stock = _try_float(ws.cell(row=row_idx, column=stock_col).value) or 0.0
         new_stock = current_stock + supplement_qty
