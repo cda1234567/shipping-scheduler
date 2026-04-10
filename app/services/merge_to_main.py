@@ -14,6 +14,7 @@ from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.formula.translate import Translator
 
 from ..config import cfg
 from ..models import calc_suggested_qty
@@ -120,6 +121,40 @@ def _copy_main_row_style(ws, source_row_idx: int, target_row_idx: int, max_col: 
         target_cell.border = copy(source_cell.border)
 
 
+def _copy_main_row_seed_values(ws, source_row_idx: int, target_row_idx: int, max_col: int) -> None:
+    if source_row_idx <= 0 or target_row_idx <= 0 or source_row_idx == target_row_idx:
+        return
+
+    for col_idx in range(1, max_col + 1):
+        if col_idx in (PART_COL, MOQ_COL, DESC_COL):
+            continue
+
+        source_cell = ws.cell(row=source_row_idx, column=col_idx)
+        target_cell = ws.cell(row=target_row_idx, column=col_idx)
+        value = source_cell.value
+
+        if isinstance(value, str) and value.startswith("="):
+            try:
+                target_cell.value = Translator(value, origin=source_cell.coordinate).translate_formula(target_cell.coordinate)
+            except Exception:
+                target_cell.value = value
+            continue
+
+        number_format = str(source_cell.number_format or "")
+        if isinstance(value, (int, float)) and "%" in number_format:
+            target_cell.value = value
+
+
+def _component_description(component: dict) -> str:
+    return str(component.get("description") or component.get("part_name") or "").strip()
+
+
+def _component_moq(part_upper: str, component: dict, effective_moq: dict[str, float]) -> float:
+    if part_upper in effective_moq:
+        return float(effective_moq.get(part_upper) or 0)
+    return float(component.get("moq") or 0)
+
+
 def _find_insert_row_for_part(part_row_map: dict[str, int], part_key: str) -> int | None:
     ordered_rows = sorted(part_row_map.items(), key=lambda item: item[1])
     for existing_part, row_idx in ordered_rows:
@@ -152,10 +187,13 @@ def _ensure_main_part_row(
     else:
         target_row_idx = insert_row_idx
         ws.insert_rows(target_row_idx, 1)
-        source_row_idx = target_row_idx + 1 if target_row_idx + 1 <= ws.max_row else target_row_idx - 1
+        source_row_idx = target_row_idx - 1 if target_row_idx > 2 else (
+            target_row_idx + 1 if target_row_idx + 1 <= ws.max_row else 0
+        )
 
     if source_row_idx >= 2:
         _copy_main_row_style(ws, source_row_idx, target_row_idx, ws.max_column)
+        _copy_main_row_seed_values(ws, source_row_idx, target_row_idx, ws.max_column)
 
     ws.cell(row=target_row_idx, column=PART_COL).value = part_text or part_key
     ws.cell(row=target_row_idx, column=MOQ_COL).value = _try_float(moq) or 0.0
@@ -233,13 +271,17 @@ def _build_preview_for_batches(
                 if not part_upper or part_upper in part_row_map:
                     continue
 
+                description = _component_description(comp)
+                component_moq = _component_moq(part_upper, comp, effective_moq)
                 entry = missing_part_rows.setdefault(part_upper, {
                     "part_number": part_number or part_upper,
-                    "description": str(comp.get("description") or "").strip(),
-                    "moq": float(effective_moq.get(part_upper, 0) or 0),
+                    "description": description,
+                    "moq": component_moq,
                 })
-                if not entry["description"] and str(comp.get("description") or "").strip():
-                    entry["description"] = str(comp.get("description") or "").strip()
+                if not entry["description"] and description:
+                    entry["description"] = description
+                if entry["moq"] <= 0 and component_moq > 0:
+                    entry["moq"] = component_moq
 
     for part_upper in sorted(missing_part_rows):
         payload = missing_part_rows[part_upper]
@@ -281,7 +323,7 @@ def _build_preview_for_batches(
 
                 current_stock = running_stock.get(part_upper)
                 if current_stock is None:
-                    current_stock = _read_latest_stock(ws, row_idx, max_col)
+                    current_stock = 0.0 if part_upper in created_main_parts else _read_latest_stock(ws, row_idx, max_col)
 
                 prev_qty_cs = 0.0 if part_upper in created_main_parts else float(comp.get("prev_qty_cs") or 0)
                 decision = _resolve_decision(part_number, batch_decisions)
@@ -324,7 +366,7 @@ def _build_preview_for_batches(
                 group_rows.append(row_plan)
 
                 if shortage_after > 0:
-                    item_moq = float(effective_moq.get(part_upper, 0) or 0)
+                    item_moq = _component_moq(part_upper, comp, effective_moq)
                     st_stock_qty = (st_inventory_stock or {}).get(part_upper, 0.0)
                     if is_order_scoped_shortage_part(part_upper):
                         st_context = summarize_requested_supply(shortage_after, st_stock_qty)
