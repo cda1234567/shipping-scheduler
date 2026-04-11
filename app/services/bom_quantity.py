@@ -27,13 +27,15 @@ def calculate_effective_needed_qty(
     if schedule_qty <= 0:
         return original_needed_qty
 
+    original_order_qty = coerce_qty(bom_order_qty)
+    if original_order_qty > 0 and original_needed_qty > 0:
+        # F 欄本來就包含 BOM 內建的拋料量，優先按原始訂單數量等比縮放，
+        # 才不會被單純 qty_per_board * 排程數量 把拋料吃掉。
+        return original_needed_qty * schedule_qty / original_order_qty
+
     per_board_qty = coerce_qty(qty_per_board)
     if per_board_qty > 0:
         return per_board_qty * schedule_qty
-
-    original_order_qty = coerce_qty(bom_order_qty)
-    if original_order_qty > 0 and original_needed_qty > 0:
-        return original_needed_qty * schedule_qty / original_order_qty
 
     return original_needed_qty
 

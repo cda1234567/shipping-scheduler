@@ -238,6 +238,31 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["needed"], 10)
         self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 2)
 
+    def test_scales_component_need_with_bom_scrap_rate_preserved(self):
+        results = run(
+            orders=[{"id": 1, "po_number": 3002, "pcb": "H", "model": "MODEL-H-SCRAP", "order_qty": 5}],
+            bom_map={
+                "MODEL-H-SCRAP": [
+                    {
+                        "part_number": "PART-SCRAP",
+                        "description": "Scaled with scrap",
+                        "qty_per_board": 2,
+                        "bom_order_qty": 10,
+                        "needed_qty": 21.2,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"PART-SCRAP": 8},
+            moq={"PART-SCRAP": 0},
+        )
+
+        self.assertEqual(results[0]["status"], "shortage")
+        self.assertAlmostEqual(results[0]["shortages"][0]["needed"], 10.6)
+        self.assertAlmostEqual(results[0]["shortages"][0]["shortage_amount"], 2.6)
+
 
 if __name__ == "__main__":
     unittest.main()
