@@ -41,6 +41,7 @@ from .shortage_rules import (
     summarize_st_supply,
 )
 from .workbook_recalc import save_workbook_with_recalc
+from .workbook_recalc import cell_has_formula
 
 COMMITTED_DRAFT_RETENTION_DAYS = 30
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
@@ -216,8 +217,11 @@ def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_ord
         h_text = str(ws.cell(row=row_idx, column=h_col).value or "").strip()
         if g_text in dash_markers or h_text in dash_markers:
             continue
+        target_needed_cell = _resolve_cell_for_write(ws, row_idx, needed_col)
+        if cell_has_formula(target_needed_cell):
+            continue
         needed_qty = calculate_effective_needed_qty(
-            needed_qty=ws.cell(row=row_idx, column=needed_col).value,
+            needed_qty=target_needed_cell.value,
             qty_per_board=ws.cell(row=row_idx, column=qty_col).value,
             schedule_order_qty=effective_order_qty,
             bom_order_qty=base_order_qty,

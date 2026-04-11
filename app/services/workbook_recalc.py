@@ -19,10 +19,17 @@ def workbook_has_formulas(workbook) -> bool:
     for ws in getattr(workbook, "worksheets", []) or []:
         for row in ws.iter_rows():
             for cell in row:
-                value = cell.value
-                if cell.data_type == "f" or (isinstance(value, str) and value.lstrip().startswith("=")):
+                if cell_has_formula(cell):
                     return True
     return False
+
+
+def cell_has_formula(cell) -> bool:
+    value = getattr(cell, "value", None)
+    return bool(
+        getattr(cell, "data_type", "") == "f"
+        or (isinstance(value, str) and value.lstrip().startswith("="))
+    )
 
 
 def mark_workbook_for_recalc(workbook) -> None:

@@ -332,6 +332,30 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(worksheet.cell(row=2, column=7).value, 5)
         self.assertAlmostEqual(float(worksheet.cell(row=5, column=6).value), 10.6)
 
+    def test_write_dispatch_values_to_ws_keeps_needed_formula(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.cell(row=1, column=11, value=10)
+        worksheet.cell(row=2, column=7, value=10)
+        worksheet.cell(row=5, column=2, value=2)
+        worksheet.cell(row=5, column=3, value="PART-S")
+        worksheet.cell(row=5, column=6, value="=B5*$K$1*1.06")
+        worksheet.cell(row=5, column=7, value=0)
+        worksheet.cell(row=5, column=8, value=0)
+
+        merge_drafts._write_bom_header_values(worksheet, "4500059234", 5)
+        merge_drafts._write_dispatch_values_to_ws(
+            worksheet,
+            supplements={},
+            carry_overs={},
+            target_order_qty=5,
+            source_order_qty=10,
+        )
+
+        self.assertEqual(worksheet.cell(row=1, column=11).value, 5)
+        self.assertEqual(worksheet.cell(row=2, column=7).value, 5)
+        self.assertEqual(worksheet.cell(row=5, column=6).value, "=B5*$K$1*1.06")
+
     def test_write_draft_files_uses_first_worksheet_and_sets_it_active(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)

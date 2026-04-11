@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.11.1"
+APP_VERSION = "v2026.04.11.2"
 APP_RELEASED_AT = "2026-04-11"
-APP_HEADLINE = "這版把 BOM 內建的拋料量正式帶回扣帳與副檔重算，不會再被每板用量覆蓋掉。"
+APP_HEADLINE = "這版把 BOM 拋料率與副檔公式一起保留下來，下載後不會再被改寫成純數字。"
 APP_CHANGELOG = [
+    {
+        "title": "副檔公式",
+        "items": [
+            "下載副檔或重建工作台時，如果 BOM 的 F 欄本來就是公式，現在會保留原公式，不再直接改寫成數字。",
+            "系統只會更新 BOM 表頭的訂單數量，讓 Excel 依原本公式自行重算，所以含拋料或其他自訂算法都能一起留下。",
+            "只有本來就不是公式的 F 欄，才會維持用系統計算後的數字寫回去。",
+        ],
+    },
     {
         "title": "BOM 拋料率",
         "items": [
