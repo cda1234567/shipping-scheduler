@@ -1118,7 +1118,9 @@ function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {}) 
   const shortageAmount = Number(item?.shortage_amount || 0);
   if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
   const resultingStock = getRightPanelResultingStock(item, storedSupplementsByPart);
-  return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;
+  return Number.isFinite(resultingStock)
+    ? hasRemainingShortageForResultingStock(item?.part_number, resultingStock)
+    : shortageAmount > 0;
 }
 
 function removeRightPanelShortageRowIfResolved(row) {
@@ -2356,9 +2358,14 @@ function computeShortageResultingStock(shortage, supplementQty = undefined) {
   return Number.isFinite(explicitResulting) ? explicitResulting : NaN;
 }
 
+function hasRemainingShortageForResultingStock(partNumber, resultingStock) {
+  return Number.isFinite(resultingStock)
+    && calculateModalShortageAmount(partNumber, resultingStock) > 0;
+}
+
 function isShortageStillNegative(shortage) {
   const resultingStock = computeShortageResultingStock(shortage);
-  return Number.isFinite(resultingStock) && resultingStock < 0;
+  return hasRemainingShortageForResultingStock(shortage?.part_number, resultingStock);
 }
 
 function shortageToneClass(shortage) {
@@ -2496,7 +2503,7 @@ function computeModalCardResultingStock(card) {
 function updateModalShortageTone(card) {
   if (!card) return;
   const resultingStock = computeModalCardResultingStock(card);
-  const isNegative = Number.isFinite(resultingStock) && resultingStock < 0;
+  const isNegative = hasRemainingShortageForResultingStock(card?.dataset.part, resultingStock);
   card.classList.toggle("is-negative-after-supplement", isNegative);
   card.classList.toggle("is-resolved-after-supplement", !isNegative);
 }
@@ -4052,7 +4059,7 @@ async function saveRightPanelSupplement(button) {
     const prevQtyCs = Number(input?.dataset.prevQtyCs || row?.dataset.prevQtyCs || 0);
     const neededQty = Number(input?.dataset.needed || row?.dataset.needed || 0);
     const nextResultingStock = currentStock + prevQtyCs + qty - neededQty;
-    if (Number.isFinite(nextResultingStock) && nextResultingStock >= 0) {
+    if (!hasRemainingShortageForResultingStock(part, nextResultingStock)) {
       removeRightPanelShortageRowIfResolved(row);
     }
     showToast(qty > 0 ? `已保存 ${part} 補料 ${fmt(qty)}` : `已清除 ${part} 補料`);
