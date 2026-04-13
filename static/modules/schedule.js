@@ -989,11 +989,6 @@ function buildShortageItemsForRow(row, items = []) {
   });
 }
 
-function getRightPanelSupplementQty(item) {
-  if (Number(item?.default_supplement || 0) > 0) return Number(item?.default_supplement || 0);
-  return Number(item?.supplement_qty || 0);
-}
-
 function buildShortageSupplySuggestion(partNumber, shortageAmount, moq = 0, stStockQty = 0) {
   const normalizedShortage = Math.max(0, Number(shortageAmount || 0) || 0);
   const normalizedMoq = Math.max(0, Number(moq || 0) || 0);
@@ -1071,22 +1066,40 @@ function applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes = []
         downstreamMaxShortage,
         Math.max(0, Number(entry.item?.shortage_amount || 0) || 0),
       );
+      const lookaheadSuggestion = buildShortageSupplySuggestion(
+        entry.item?.part_number,
+        downstreamMaxShortage,
+        entry.item?.moq,
+        entry.item?.st_stock_qty,
+      );
       Object.assign(
         entry.item,
-        buildShortageSupplySuggestion(
-          entry.item?.part_number,
-          downstreamMaxShortage,
-          entry.item?.moq,
-          entry.item?.st_stock_qty,
-        ),
-        { _lookahead_shortage_amount: downstreamMaxShortage },
+        {
+          _lookahead_shortage_amount: downstreamMaxShortage,
+          _lookahead_suggested_qty: lookaheadSuggestion.suggested_qty,
+          _lookahead_st_available_qty: lookaheadSuggestion.st_available_qty,
+          _lookahead_purchase_needed_qty: lookaheadSuggestion.purchase_needed_qty,
+          _lookahead_purchase_suggested_qty: lookaheadSuggestion.purchase_suggested_qty,
+          _lookahead_needs_purchase: lookaheadSuggestion.needs_purchase,
+        },
       );
     }
   });
 }
 
-function applyRightPanelSupplementState(item) {
-  const supplementQty = getRightPanelSupplementQty(item);
+function getRightPanelSupplementQty(item, storedSupplementsByPart = {}) {
+  if (Number(item?.default_supplement || 0) > 0) return Number(item?.default_supplement || 0);
+  if (Number(item?.supplement_qty || 0) > 0) return Number(item?.supplement_qty || 0);
+  const partKey = normalizePartKey(item?.part_number);
+  const storedQty = Number(storedSupplementsByPart?.[partKey] || 0) || 0;
+  if (storedQty > 0) return storedQty;
+  const lookaheadSuggestedQty = Number(item?._lookahead_suggested_qty || 0) || 0;
+  if (lookaheadSuggestedQty > 0) return lookaheadSuggestedQty;
+  return Number(item?.suggested_qty || 0) || 0;
+}
+
+function applyRightPanelSupplementState(item, storedSupplementsByPart = {}) {
+  const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);
   const resultingStock = computeShortageResultingStock(item, supplementQty);
   return {
     ...item,
@@ -1096,15 +1109,15 @@ function applyRightPanelSupplementState(item) {
   };
 }
 
-function getRightPanelResultingStock(item) {
-  const enriched = applyRightPanelSupplementState(item);
+function getRightPanelResultingStock(item, storedSupplementsByPart = {}) {
+  const enriched = applyRightPanelSupplementState(item, storedSupplementsByPart);
   return Number(enriched?.resulting_stock);
 }
 
-function shouldRenderRightPanelShortageItem(item) {
+function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {}) {
   const shortageAmount = Number(item?.shortage_amount || 0);
   if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
-  const resultingStock = getRightPanelResultingStock(item);
+  const resultingStock = getRightPanelResultingStock(item, storedSupplementsByPart);
   return Number.isFinite(resultingStock) ? resultingStock < 0 : shortageAmount > 0;
 }
 
@@ -1187,48 +1200,70 @@ function buildOrderBadge(row, res, visibleShortageTotals = null) {
 }
 
 function buildRightPanelShortageData() {
-  const shortagesByScope = {};
-  const csShortagesByScope = {};
+  const shortagesByModel = {};
+  const csShortagesByModel = {};
   const checkedRows = _rows.filter(row => _checkedIds.has(row.id));
   const orderedScopes = buildShortageScopeList(checkedRows);
+  const allModels = orderedScopes.map(scope => scope.key);
+  const storedSupplementsByPart = {};
+
+  checkedRows.forEach(row => {
+    const orderId = normalizeOrderId(row?.id);
+    if (!Number.isInteger(orderId)) return;
+    Object.entries(_orderSupplementsByOrderId?.[orderId] || {}).forEach(([rawPart, rawQty]) => {
+      const partKey = normalizePartKey(rawPart);
+      const qty = Number(rawQty || 0) || 0;
+      if (!partKey || qty <= 0) return;
+      storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;
+    });
+  });
 
   checkedRows.forEach(row => {
     const index = _rows.findIndex(item => item.id === row.id);
     if (index < 0) return;
 
-    const scopeKey = buildShortageGroupMeta(row)._row_group_key;
+    const model = buildShortageGroupMeta(row)._row_group_key;
     const effective = getEffectiveShortageState(row, _calcResults[index]);
-    if (!shortagesByScope[scopeKey]) shortagesByScope[scopeKey] = [];
-    if (!csShortagesByScope[scopeKey]) csShortagesByScope[scopeKey] = [];
+    if (!shortagesByModel[model]) shortagesByModel[model] = [];
+    if (!csShortagesByModel[model]) csShortagesByModel[model] = [];
+    if (!allModels.includes(model)) allModels.push(model);
 
     for (const item of (effective.shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
-      shortagesByScope[scopeKey].push({
+      shortagesByModel[model].push(applyRightPanelSupplementState({
         ...item,
         decision: _decisions[partKey] || item?.decision || "None",
-      });
+      }, storedSupplementsByPart));
     }
     for (const item of (effective.customer_material_shortages || [])) {
       const partKey = normalizePartKey(item?.part_number);
-      csShortagesByScope[scopeKey].push(applyRightPanelSupplementState({
+      csShortagesByModel[model].push(applyRightPanelSupplementState({
         ...item,
         decision: _decisions[partKey] || item?.decision || "None",
-      }));
+      }, storedSupplementsByPart));
     }
   });
 
-  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
-  for (const [scopeKey, items] of Object.entries(shortagesByScope)) {
-    shortagesByScope[scopeKey] = items.map(applyRightPanelSupplementState);
+  _consolidateShortagesAcrossModels(shortagesByModel, allModels, {
+    preserveOrderScopedParts: true,
+    preserveShortageDecisions: true,
+  });
+
+  for (const [model, items] of Object.entries(shortagesByModel)) {
+    shortagesByModel[model] = items.map(item => applyRightPanelSupplementState({
+      ...item,
+      default_supplement: 0,
+      supplement_qty: 0,
+    }, storedSupplementsByPart));
   }
-  for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
-  for (const items of Object.values(csShortagesByScope)) items.sort(compareShortageItems);
+  for (const items of Object.values(shortagesByModel)) items.sort(compareShortageItems);
+  for (const items of Object.values(csShortagesByModel)) items.sort(compareShortageItems);
 
   const shortages = [];
   const csShortages = [];
-  for (const scope of orderedScopes) {
-    shortages.push(...(shortagesByScope[scope.key] || []).filter(item => shouldRenderRightPanelShortageItem(item)));
-    csShortages.push(...(csShortagesByScope[scope.key] || []).filter(item => shouldRenderRightPanelShortageItem(item)));
+  for (const model of allModels) {
+    shortages.push(...(shortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));
+    csShortages.push(...(csShortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));
   }
 
   return { shortages, csShortages };
@@ -1953,6 +1988,7 @@ async function showShortageModal(targets) {
     storedOrderScopedDecisions,
     storedOrderScopedSupplements,
   } = buildStoredModalDraftState(targets);
+  // preserveShortageDecisions: true
   _applyStoredToShortages(
     shortagesByScope,
     storedDecisions,
@@ -2135,6 +2171,7 @@ async function showBatchMergeDraftModal(targets) {
     storedOrderScopedDecisions,
     storedOrderScopedSupplements,
   } = buildStoredModalDraftState(targets);
+  // preserveShortageDecisions: true
   _applyStoredToShortages(
     shortagesByScope,
     storedDecisions,
@@ -2368,6 +2405,8 @@ function modalShortageItem(s, isCS) {
         ? s.default_supplement
         : Number(s.supplement_qty) > 0
           ? s.supplement_qty
+          : Number(s._lookahead_suggested_qty) > 0
+            ? s._lookahead_suggested_qty
           : Number(s.suggested_qty) > 0
             ? s.suggested_qty
             : s.shortage_amount ?? 0
@@ -2564,16 +2603,22 @@ function refreshModalShortageCascadeForPart(list, part) {
       downstreamMaxShortage,
       Math.max(0, Number(state.derived?.shortage_amount || 0) || 0),
     );
+    const lookaheadSuggestion = buildShortageSupplySuggestion(
+      state.derived?.part_number,
+      downstreamMaxShortage,
+      state.derived?.moq,
+      state.derived?.st_stock_qty,
+    );
     updateModalCardComputedState(
       state.card,
       {
         ...state.derived,
-        ...buildShortageSupplySuggestion(
-          state.derived?.part_number,
-          downstreamMaxShortage,
-          state.derived?.moq,
-          state.derived?.st_stock_qty,
-        ),
+        _lookahead_shortage_amount: downstreamMaxShortage,
+        _lookahead_suggested_qty: lookaheadSuggestion.suggested_qty,
+        _lookahead_st_available_qty: lookaheadSuggestion.st_available_qty,
+        _lookahead_purchase_needed_qty: lookaheadSuggestion.purchase_needed_qty,
+        _lookahead_purchase_suggested_qty: lookaheadSuggestion.purchase_suggested_qty,
+        _lookahead_needs_purchase: lookaheadSuggestion.needs_purchase,
       },
       { visible: state.shouldShow },
     );
@@ -2649,9 +2694,11 @@ function moqEditTriggerHtml(shortage) {
 
 function suggestedQtyHtml(shortage) {
   shortage = { ...shortage, moq: roundShortageUiValue(shortage.moq) };
-  const suggested = roundShortageUiValue(shortage.suggested_qty || shortage.shortage_amount || 0);
+  const suggested = roundShortageUiValue(
+    shortage._lookahead_suggested_qty || shortage.suggested_qty || shortage.shortage_amount || 0
+  );
   const purchaseNeeded = roundShortageUiValue(
-    shortage.purchase_suggested_qty || shortage.purchase_needed_qty || 0
+    shortage._lookahead_purchase_suggested_qty || shortage.purchase_suggested_qty || shortage.purchase_needed_qty || 0
   );
   if (purchaseNeeded > 0) {
     if (hasMoqValue(shortage)) {
@@ -3371,7 +3418,7 @@ function buildCompletedCard(r, allFolders) {
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
       <div class="completed-card-actions">
-        <button class="btn btn-secondary btn-sm btn-rollback-order" data-order-id="${r.id}" title="反悔此筆與之後的已發料訂單">反悔</button>
+        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="刪除此筆已發料並退回重扣；若後面還有已發料，會一起往後還原">刪除重扣</button>
         <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
       </div>
     </div>
@@ -3446,30 +3493,33 @@ async function handleRollbackDispatch(orderId, trigger) {
   if (!Number.isInteger(orderId)) return;
 
   const button = trigger || document.querySelector(`.btn-rollback-order[data-order-id="${orderId}"]`);
-  const originalText = button?.textContent || "反悔";
+  const originalText = button?.textContent || "刪除重扣";
 
   try {
     if (button) {
       button.disabled = true;
-      button.textContent = "讀取中...";
+      button.textContent = "確認中...";
     }
     const preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview`);
     const orderLines = (preview.orders || []).map((item, index) => `${index + 1}. ${item.po_number} ${item.model}`).join("\n");
+    const affectedHint = Number(preview.count || 0) > 1
+      ? "\n\n因為主檔是照順序連續扣帳，後面已發料的訂單也會一起退回。"
+      : "";
     const confirmed = confirm(
-      `這會從所選訂單開始反悔，共 ${preview.count} 筆已發料訂單：\n${orderLines}\n\n主檔會一併還原到當時備份。確定繼續嗎？`
+      `這會把所選訂單從已發料刪掉，退回可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
     );
     if (!confirmed) return;
 
-    if (button) button.textContent = "反悔中...";
+    if (button) button.textContent = "刪除中...";
     const result = await apiPost(`/api/schedule/orders/${orderId}/rollback`);
     const draftNote = Number(result.restored_draft_count || 0) > 0
       ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
       : "";
-    showToast(`已反悔 ${result.count} 筆訂單\n主檔已同步還原${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
+    showToast(`已刪除 ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
-    showToast("反悔失敗：" + error.message, { tone: "error" });
+    showToast("刪除重扣失敗：" + error.message, { tone: "error" });
   } finally {
     if (button) {
       button.disabled = false;
@@ -4261,6 +4311,9 @@ function bindShortageEditors(list) {
       const partKey = normalizePartKey(checkbox.dataset.part);
       if (!partKey) return;
       checkbox.dataset.manual = "1";
+      syncDraftPartControls(list, partKey, {
+        shortageChecked: checkbox.checked,
+      });
       const input = checkbox.closest(".shortage-item")?.querySelector(".supplement-input");
       if (input) {
         input.disabled = checkbox.checked;
@@ -4279,6 +4332,10 @@ function bindShortageEditors(list) {
         checkbox.checked = false;
         checkbox.dataset.manual = "1";
       }
+      syncDraftPartControls(list, partKey, {
+        qty: parseFloat(input.value) || 0,
+        shortageChecked: false,
+      });
       refreshModalShortageCascade(list, partKey);
     });
   });
@@ -4396,7 +4453,7 @@ async function handleBatchMerge() {
       showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
     }
     try {
-      await openBatchMergeDraftModalStable(targetIds, mergeableTargets);
+      await openBatchMergeDraftModalStable(targetIds, targets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
       showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
