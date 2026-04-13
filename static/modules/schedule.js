@@ -2713,9 +2713,11 @@ function suggestedQtyHtml(shortage) {
 }
 
 function stSupplySummaryHtml(shortage) {
-  const stAvailable = roundShortageUiValue(shortage?.st_available_qty || 0);
+  const stAvailable = roundShortageUiValue(
+    shortage?._lookahead_st_available_qty || shortage?.st_available_qty || 0
+  );
   const purchaseNeeded = roundShortageUiValue(
-    shortage?.purchase_suggested_qty || shortage?.purchase_needed_qty || 0
+    shortage?._lookahead_purchase_suggested_qty || shortage?.purchase_suggested_qty || shortage?.purchase_needed_qty || 0
   );
   const summary = [];
   if (stAvailable > 0) {
