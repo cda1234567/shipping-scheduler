@@ -53,6 +53,7 @@ from ..services.workbook_recalc import cell_has_formula
 router = APIRouter()
 
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
+_BOM_STORAGE_SUFFIXES = (".xlsx", ".xls", ".xlsm")
 
 
 def _get_required_bom(bom_id: str) -> dict:
@@ -68,6 +69,117 @@ def _build_revision_download_name(revision: dict) -> str:
     suffix = Path(filename).suffix or ".xlsx"
     revision_number = int(revision.get("revision_number") or 0)
     return append_minute_timestamp(f"{stem}_v{revision_number:03d}{suffix}")
+
+
+def _normalize_bom_identity_value(value: object) -> str:
+    return " ".join(str(value or "").strip().upper().split())
+
+
+def _build_bom_identity(source) -> dict[str, str]:
+    getter = source.get if isinstance(source, dict) else lambda key, default="": getattr(source, key, default)
+    filename = str(getter("filename", "") or "").strip()
+    source_filename = str(getter("source_filename", "") or filename).strip()
+    model = str(getter("model", "") or "").strip()
+    group_model = str(getter("group_model", "") or model).strip()
+    pcb = str(getter("pcb", "") or "").strip()
+    return {
+        "group_model": _normalize_bom_identity_value(group_model),
+        "model": _normalize_bom_identity_value(model),
+        "pcb": _normalize_bom_identity_value(pcb),
+        "source_filename": _normalize_bom_identity_value(Path(source_filename).name),
+        "filename": _normalize_bom_identity_value(Path(filename).name),
+    }
+
+
+def _is_same_bom_upload_target(uploaded, existing: dict) -> bool:
+    uploaded_identity = _build_bom_identity(uploaded)
+    existing_identity = _build_bom_identity(existing)
+
+    if uploaded_identity["group_model"] and existing_identity["group_model"]:
+        if uploaded_identity["group_model"] != existing_identity["group_model"]:
+            return False
+
+    shared_specific_identity = False
+    for key in ("model", "pcb"):
+        uploaded_value = uploaded_identity[key]
+        existing_value = existing_identity[key]
+        if uploaded_value and existing_value:
+            shared_specific_identity = True
+            if uploaded_value != existing_value:
+                return False
+
+    if shared_specific_identity:
+        return True
+
+    for key in ("source_filename", "filename"):
+        uploaded_value = uploaded_identity[key]
+        existing_value = existing_identity[key]
+        if uploaded_value and existing_value and uploaded_value == existing_value:
+            return True
+
+    return False
+
+
+def _find_matching_uploaded_boms(parsed) -> list[dict]:
+    return [bom for bom in db.get_bom_files() if _is_same_bom_upload_target(parsed, bom)]
+
+
+def _pick_overwrite_keeper(matches: list[dict], uploaded) -> tuple[dict | None, list[dict]]:
+    if not matches:
+        return None, []
+
+    uploaded_identity = _build_bom_identity(uploaded)
+
+    def _score(bom: dict) -> tuple:
+        identity = _build_bom_identity(bom)
+        return (
+            0 if uploaded_identity["source_filename"] and identity["source_filename"] == uploaded_identity["source_filename"] else 1,
+            0 if uploaded_identity["filename"] and identity["filename"] == uploaded_identity["filename"] else 1,
+            0 if uploaded_identity["pcb"] and identity["pcb"] == uploaded_identity["pcb"] else 1,
+            0 if uploaded_identity["model"] and identity["model"] == uploaded_identity["model"] else 1,
+            int(bom.get("sort_order") or 0),
+            str(bom.get("uploaded_at") or ""),
+            str(bom.get("filename") or ""),
+        )
+
+    ordered = sorted(matches, key=_score)
+    return ordered[0], ordered[1:]
+
+
+def _cleanup_bom_storage_variants(bom_id: str, keep_path: str = ""):
+    keep = str(Path(keep_path)) if keep_path else ""
+    for suffix in _BOM_STORAGE_SUFFIXES:
+        candidate = BOM_DIR / f"{bom_id}{suffix}"
+        if keep and str(candidate) == keep:
+            continue
+        candidate.unlink(missing_ok=True)
+
+
+def _copy_uploaded_bom_to_target_id(stored: dict, target_bom_id: str) -> dict[str, object]:
+    source_path = Path(str(stored.get("filepath") or ""))
+    if not source_path.exists():
+        raise FileNotFoundError("上傳後的 BOM 暫存檔不存在")
+
+    target_path = BOM_DIR / f"{target_bom_id}{source_path.suffix.lower()}"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    _cleanup_bom_storage_variants(target_bom_id, keep_path=str(target_path))
+    shutil.copy2(source_path, target_path)
+    return {
+        **stored,
+        "filepath": str(target_path),
+    }
+
+
+def _delete_bom_record_with_files(bom: dict):
+    bom_id = str(bom.get("id") or "").strip()
+    if not bom_id:
+        return
+
+    filepath = Path(str(bom.get("filepath") or ""))
+    filepath.unlink(missing_ok=True)
+    _cleanup_bom_storage_variants(bom_id)
+    delete_bom_revision_files(bom_id)
+    db.delete_bom_file(bom_id)
 
 
 def _ensure_editable_bom_record(bom: dict) -> dict:
@@ -104,6 +216,7 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
 
         bom_id = uuid4().hex
         stored = None
+        keep_uploaded_file_on_error = False
         try:
             stored = prepare_uploaded_bom_file(
                 bom_id=bom_id,
@@ -127,37 +240,87 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 source_format=str(stored["source_format"]),
                 is_converted=bool(stored["is_converted"]),
             )
+            overwrite_matches = _find_matching_uploaded_boms(parsed)
+            overwrite_target, duplicate_targets = _pick_overwrite_keeper(overwrite_matches, parsed)
+            replaced_existing = overwrite_target is not None
+            removed_duplicates = len(duplicate_targets)
+
             payload = build_bom_storage_payload(parsed)
-            db.save_bom_file(payload)
-            snapshot_bom_revision(payload, "upload", "上傳 BOM")
+            snapshot_action = "upload"
+            snapshot_note = "上傳 BOM"
+
+            if overwrite_target:
+                ensure_bom_revision_history(overwrite_target)
+
+                payload = {
+                    **payload,
+                    "id": overwrite_target["id"],
+                }
+                db.save_bom_file(payload)
+                keep_uploaded_file_on_error = True
+
+                stored = _copy_uploaded_bom_to_target_id(stored, str(overwrite_target["id"]))
+                payload = {
+                    **payload,
+                    "filepath": str(stored["filepath"]),
+                }
+                db.save_bom_file(payload)
+
+                old_path = Path(str(overwrite_target.get("filepath") or ""))
+                new_path = Path(str(stored["filepath"] or ""))
+                if old_path != new_path:
+                    old_path.unlink(missing_ok=True)
+
+                temp_path = Path(str(parsed.path or ""))
+                if temp_path != new_path:
+                    temp_path.unlink(missing_ok=True)
+
+                snapshot_action = "overwrite"
+                snapshot_note = "重新上傳覆蓋 BOM"
+
+                for duplicate_bom in duplicate_targets:
+                    _delete_bom_record_with_files(duplicate_bom)
+            else:
+                db.save_bom_file(payload)
+
+            snapshot_bom_revision(payload, snapshot_action, snapshot_note)
             saved.append({
-                "id": parsed.id,
-                "filename": parsed.filename,
-                "source_filename": parsed.source_filename,
-                "source_format": parsed.source_format,
-                "is_converted": parsed.is_converted,
-                "po_number": parsed.po_number,
-                "model": parsed.model,
-                "pcb": parsed.pcb,
-                "order_qty": parsed.order_qty,
-                "components": len(parsed.components),
+                "id": payload["id"],
+                "filename": payload["filename"],
+                "source_filename": payload.get("source_filename") or payload["filename"],
+                "source_format": payload.get("source_format") or Path(str(payload["filename"])).suffix.lower(),
+                "is_converted": bool(payload.get("is_converted")),
+                "po_number": payload.get("po_number", 0),
+                "model": payload.get("model", ""),
+                "pcb": payload.get("pcb", ""),
+                "order_qty": payload.get("order_qty", 0),
+                "components": len(payload.get("components", [])),
                 "auto_fixes": auto_fixes,
+                "replaced_existing": replaced_existing,
+                "removed_duplicates": removed_duplicates,
             })
         except Exception as exc:
-            if stored and stored.get("filepath"):
+            if stored and stored.get("filepath") and not keep_uploaded_file_on_error:
                 Path(str(stored["filepath"])).unlink(missing_ok=True)
-            for suffix in (".xlsx", ".xls", ".xlsm"):
-                (BOM_DIR / f"{bom_id}{suffix}").unlink(missing_ok=True)
+            if not keep_uploaded_file_on_error:
+                for suffix in _BOM_STORAGE_SUFFIXES:
+                    (BOM_DIR / f"{bom_id}{suffix}").unlink(missing_ok=True)
             errors.append(f"{uf.filename}: {exc}")
             continue
 
     if saved:
         converted_count = sum(1 for item in saved if item["is_converted"])
+        replaced_count = sum(1 for item in saved if item.get("replaced_existing"))
+        deduped_count = sum(int(item.get("removed_duplicates") or 0) for item in saved)
         detail = f"上傳 {len(saved)} 份 BOM"
         if group_model:
             detail += f"（group_model: {group_model}）"
         if converted_count:
             detail += f"，其中 {converted_count} 份 xls 已轉為 xlsx"
+        if replaced_count:
+            detail += f"，覆蓋 {replaced_count} 份舊版"
+        if deduped_count:
+            detail += f"，清理 {deduped_count} 份重複舊檔"
         db.log_activity("bom_upload", detail)
 
     return {"saved": saved, "errors": errors}

@@ -150,7 +150,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('const classNames = ["shortage-item", "modal-shortage-item"];', schedule_module)
         self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
         self.assertIn("ST 可補", schedule_module)
-        self.assertIn("需買", schedule_module)
+        self.assertIn("這串需要買", schedule_module)
         self.assertIn("shortage?._lookahead_purchase_suggested_qty", schedule_module)
         self.assertIn("shortage?._lookahead_st_available_qty", schedule_module)
         self.assertNotIn("s.purchase_needed_qty ?? s.shortage_amount ?? 0", schedule_module)

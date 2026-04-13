@@ -2702,9 +2702,9 @@ function suggestedQtyHtml(shortage) {
   );
   if (purchaseNeeded > 0) {
     if (hasMoqValue(shortage)) {
-      return `<span class="amber">建議補 ${fmt(suggested)}（其中需買 ${fmt(purchaseNeeded)}，MOQ ${fmt(shortage.moq)}）</span>`;
+      return `<span class="amber">建議補 ${fmt(suggested)}（其中這串需要買 ${fmt(purchaseNeeded)}，MOQ ${fmt(shortage.moq)}）</span>`;
     }
-    return `<span class="amber">建議補 ${fmt(suggested)}（其中需買 ${fmt(purchaseNeeded)}，未寫 MOQ）</span>`;
+    return `<span class="amber">建議補 ${fmt(suggested)}（其中這串需要買 ${fmt(purchaseNeeded)}，未寫 MOQ）</span>`;
   }
   if (hasMoqValue(shortage)) {
     return `<span class="blue">建議補 ${fmt(suggested)}（MOQ ${fmt(shortage.moq)}）</span>`;
@@ -2724,7 +2724,7 @@ function stSupplySummaryHtml(shortage) {
     summary.push(`<span class="blue">ST 可補 ${fmt(stAvailable)}</span>`);
   }
   if (purchaseNeeded > 0) {
-    summary.push(`<span class="amber">需買 ${fmt(purchaseNeeded)}</span>`);
+    summary.push(`<span class="amber">這串需要買 ${fmt(purchaseNeeded)}</span>`);
   }
   return summary.join("");
 }

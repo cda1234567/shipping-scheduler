@@ -168,6 +168,104 @@ class ApiTests(unittest.TestCase):
         self.assertIn("副檔欄位檢查失敗", body["errors"][0])
         mock_parse.assert_not_called()
 
+    def test_bom_upload_overwrites_matching_existing_bom(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            incoming_path = temp_root / "temp-upload.xlsx"
+            existing_path = temp_root / "bom-existing.xlsx"
+            duplicate_path = temp_root / "bom-duplicate.xlsx"
+            incoming_path.write_bytes(b"new")
+            existing_path.write_bytes(b"old")
+            duplicate_path.write_bytes(b"dup")
+
+            parsed = BomFile(
+                id="temp-upload",
+                filename="upload.xlsx",
+                path=str(incoming_path),
+                po_number=123,
+                model="MODEL-A-MAIN",
+                pcb="PCB-A",
+                group_model="MODEL-A",
+                order_qty=10,
+                uploaded_at="2026-04-13T10:00:00",
+                source_filename="upload.xlsx",
+                source_format=".xlsx",
+                is_converted=False,
+                components=[BomComponent(part_number="PART-1", description="Cap")],
+            )
+            existing_bom = {
+                "id": "bom-existing",
+                "filename": "old.xlsx",
+                "filepath": str(existing_path),
+                "source_filename": "upload.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "group_model": "MODEL-A",
+                "model": "MODEL-A-MAIN",
+                "pcb": "PCB-A",
+                "uploaded_at": "2026-04-12T08:00:00",
+                "sort_order": 2,
+            }
+            duplicate_bom = {
+                "id": "bom-duplicate",
+                "filename": "old-dup.xlsx",
+                "filepath": str(duplicate_path),
+                "source_filename": "upload.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+                "group_model": "MODEL-A",
+                "model": "MODEL-A-MAIN",
+                "pcb": "PCB-A",
+                "uploaded_at": "2026-04-12T09:00:00",
+                "sort_order": 3,
+            }
+
+            with patch("app.routers.bom.BOM_DIR", temp_root), \
+                 patch("app.routers.bom.prepare_uploaded_bom_file", return_value={
+                     "filepath": str(incoming_path),
+                     "filename": "upload.xlsx",
+                     "source_filename": "upload.xlsx",
+                     "source_format": ".xlsx",
+                     "is_converted": False,
+                 }), \
+                 patch("app.routers.bom.normalize_uploaded_bom_layout", return_value=[]), \
+                 patch("app.routers.bom.validate_uploaded_bom_layout", return_value=[]), \
+                 patch("app.routers.bom.parse_bom_for_storage", return_value=parsed), \
+                 patch("app.routers.bom.db.get_bom_files", return_value=[existing_bom, duplicate_bom]), \
+                 patch("app.routers.bom.ensure_bom_revision_history") as mock_ensure_history, \
+                 patch("app.routers.bom.db.save_bom_file") as mock_save_bom, \
+                 patch("app.routers.bom.snapshot_bom_revision") as mock_snapshot_revision, \
+                 patch("app.routers.bom.delete_bom_revision_files") as mock_delete_revision_files, \
+                 patch("app.routers.bom.db.delete_bom_file") as mock_delete_bom_file, \
+                 patch("app.routers.bom.db.log_activity"):
+                response = self.client.post(
+                    "/api/bom/upload",
+                    data={"group_model": "MODEL-A"},
+                    files=[("files", ("upload.xlsx", b"dummy", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))],
+                )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["errors"], [])
+        self.assertEqual(len(body["saved"]), 1)
+        saved = body["saved"][0]
+        self.assertEqual(saved["id"], "bom-existing")
+        self.assertTrue(saved["replaced_existing"])
+        self.assertEqual(saved["removed_duplicates"], 1)
+        self.assertEqual(saved["components"], 1)
+
+        self.assertEqual(mock_save_bom.call_count, 2)
+        first_payload = mock_save_bom.call_args_list[0].args[0]
+        second_payload = mock_save_bom.call_args_list[1].args[0]
+        self.assertEqual(first_payload["id"], "bom-existing")
+        self.assertEqual(first_payload["filepath"], str(incoming_path))
+        self.assertEqual(second_payload["id"], "bom-existing")
+        self.assertEqual(Path(second_payload["filepath"]).name, "bom-existing.xlsx")
+        mock_ensure_history.assert_called_once_with(existing_bom)
+        mock_snapshot_revision.assert_called_once()
+        mock_delete_revision_files.assert_called_once_with("bom-duplicate")
+        mock_delete_bom_file.assert_called_once_with("bom-duplicate")
+
     def test_batch_merge_creates_merge_drafts(self):
         with patch("app.routers.schedule.db.batch_merge_orders") as mock_batch_merge, \
              patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 7}, {"id": 8}]) as mock_rebuild, \

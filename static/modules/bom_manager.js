@@ -106,8 +106,12 @@ async function uploadBom(files) {
     const saved = data.saved || [];
     const errors = data.errors || [];
     const converted = saved.filter(item => item.is_converted).length;
+    const replaced = saved.filter(item => item.replaced_existing).length;
+    const deduped = saved.reduce((sum, item) => sum + Number(item.removed_duplicates || 0), 0);
     let message = `已上傳 ${saved.length} 份 BOM`;
     if (converted) message += `，${converted} 份 xls 已轉成 xlsx`;
+    if (replaced) message += `，覆蓋 ${replaced} 份舊版`;
+    if (deduped) message += `，清掉 ${deduped} 份重複舊檔`;
     if (errors.length) {
       message += `，${errors.length} 份失敗`;
       alert(`BOM 上傳失敗：\n${errors.join("\n")}`);
