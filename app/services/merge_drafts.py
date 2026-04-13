@@ -768,6 +768,7 @@ def _build_draft_file_preview_rows(
             "supplement_qty": float(supplements.get(part_key, 0)),
             "decision": decisions.get(part_key, "None"),
             "shortage_amount": 0.0,
+            "resulting_stock": None,
             "suggested_qty": 0.0,
             "moq": 0.0,
             "st_stock_qty": 0.0,
@@ -785,6 +786,7 @@ def _build_draft_file_preview_rows(
         if part_key not in grouped:
             continue
         grouped[part_key]["shortage_amount"] = float(shortage.get("shortage_amount") or 0)
+        grouped[part_key]["resulting_stock"] = shortage.get("resulting_stock")
         grouped[part_key]["suggested_qty"] = float(shortage.get("suggested_qty") or 0)
         grouped[part_key]["moq"] = float(shortage.get("moq") or 0)
         grouped[part_key]["st_stock_qty"] = float(shortage.get("st_stock_qty") or 0)

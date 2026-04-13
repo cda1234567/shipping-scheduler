@@ -121,6 +121,53 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(draft_map[12]["decisions"], {"PART-NEW": "Shortage"})
         self.assertEqual(draft_map[12]["supplements"], {"PART-NEW": 2200.0})
 
+    def test_get_draft_detail_preview_rows_include_resulting_stock_for_shortage(self):
+        draft = {
+            "id": 6,
+            "order_id": 18,
+            "status": "committed",
+            "main_loaded_at": "2026-04-13T12:00:00",
+            "updated_at": "2026-04-13T12:05:00",
+            "committed_at": "2026-04-13T12:05:00",
+            "supplements": {},
+            "decisions": {},
+            "shortages": [{
+                "part_number": "EC-20121A",
+                "shortage_amount": 107.72,
+                "resulting_stock": -7.72,
+            }],
+        }
+        file_item = {
+            "id": 10,
+            "bom_file_id": "bom-ec",
+            "filename": "draft-ec.xlsx",
+            "filepath": "C:/draft-ec.xlsx",
+            "source_filename": "source-ec.xlsx",
+            "source_format": ".xlsx",
+            "model": "T8U",
+            "group_model": "T8U",
+            "carry_overs": {"EC-20121A": 1131},
+            "supplements": {"EC-20121A": 2000},
+        }
+        components = [{
+            "part_number": "EC-20121A",
+            "description": "Capacitor",
+            "needed_qty": 3138.72,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+            "is_customer_supplied": 0,
+        }]
+
+        with patch("app.services.merge_drafts.db.get_merge_draft", return_value=draft), \
+             patch("app.services.merge_drafts.db.get_order", return_value={"id": 18, "model": "T8U"}), \
+             patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[file_item]), \
+             patch("app.services.merge_drafts.db.get_bom_components", return_value=components):
+            detail = merge_drafts.get_draft_detail(6)
+
+        preview_row = detail["draft"]["files"][0]["preview_rows"][0]
+        self.assertAlmostEqual(preview_row["shortage_amount"], 107.72)
+        self.assertAlmostEqual(preview_row["resulting_stock"], -7.72)
+
     def test_plan_order_draft_treats_ec_below_100_as_shortage(self):
         order = {"id": 18, "code": "2-1", "model": "MODEL-EC"}
         draft = {"decisions": {}, "supplements": {"EC-001": 15}}

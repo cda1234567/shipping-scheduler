@@ -1,10 +1,18 @@
 @echo off
-echo Restarting dispatch scheduler server...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8765 "') do (
-    taskkill /F /PID %%a >nul 2>&1
-)
-timeout /t 1 /nobreak >nul
+setlocal
 pushd "%~dp0"
-start /b py -3 -m uvicorn main:app --host 0.0.0.0 --port 8765
-timeout /t 3 /nobreak >nul
-echo Server restarted on port 8765
+
+echo Restarting Docker dispatch scheduler...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\docker_localserver.ps1" -Action restart
+if errorlevel 1 goto :error
+
+popd
+endlocal
+exit /b 0
+
+:error
+echo Docker restart failed. Please make sure Docker Desktop is running.
+popd
+endlocal
+pause
+exit /b 1

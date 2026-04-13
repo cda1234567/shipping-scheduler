@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.13.4"
+APP_VERSION = "v2026.04.13.5"
 APP_RELEASED_AT = "2026-04-13"
-APP_HEADLINE = "這版修正了 EC 缺料卡的綠紅判斷，現在會照實際缺料規則上色，不會再把還沒補平的卡片誤顯示成綠色。"
+APP_HEADLINE = "這版把已發料缺料改成直接對齊 Docker live 主檔，右側不會再殘留舊缺料，副檔預覽也會直接顯示結存。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料缺料同步",
+        "items": [
+            "右側「寫入主檔後仍缺料」改成直接用已發料副檔加上目前主檔 live 庫存重算，不再靠瀏覽器自己記舊資料。",
+            "像已經補平的料號，現在重新整理或再操作後會正確消失，不會再把舊的缺料殘留在右側。",
+            "已發料副檔的預覽列新增結存欄位，像 EC-20121A 這種扣到負數的料，在 modal 裡可以直接看出來。",
+        ],
+    },
+    {
+        "title": "Docker 啟動",
+        "items": [
+            "專案內的 `run.bat`、`restart.bat`、`run_gui.vbs` 改成只啟動 Docker 版服務，不再自己開本地 uvicorn。",
+            "桌面殼會直接連到本機 Docker 服務，重開機後只要從專案啟動入口開，就不會再誤連到 repo 內的舊資料。",
+        ],
+    },
     {
         "title": "EC 缺料顏色",
         "items": [

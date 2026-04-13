@@ -61,6 +61,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("btn-draft-commit", text)
         self.assertIn("getEffectiveShortageState", text)
         self.assertIn("buildRightPanelShortageData", text)
+        self.assertIn('draftInlineStatHtml("結存"', text)
         self.assertIn("draft.shortages || []", text)
         self.assertIn("withGlobalBusy(", text)
         self.assertIn("showMainWriteBlockedNotice", text)
@@ -178,7 +179,12 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("right-panel-supplement-input", schedule_module)
         self.assertIn('const isMainSupplement = String(button?.dataset.mainSupplement || input?.dataset.mainSupplement || "").trim() === "true";', schedule_module)
         self.assertIn('await apiPost("/api/schedule/supplement-part"', schedule_module)
-        self.assertIn('_postDispatchShortages = _postDispatchShortages.filter(item => normalizePartKey(item?.part_number) !== part);', schedule_module)
+        self.assertIn("function buildPostDispatchShortagesFromCompletedDrafts()", schedule_module)
+        self.assertIn("syncPostDispatchShortagesFromCompletedDrafts();", schedule_module)
+        self.assertIn("await refreshCompleted();", schedule_module)
+        self.assertIn("showPostDispatchShortages();", schedule_module)
+        self.assertNotIn("POST_DISPATCH_STORAGE_KEY", schedule_module)
+        self.assertNotIn("post-dispatch-shortages", schedule_module)
 
     def test_schedule_module_auto_checks_shortage_for_negative_carry_over(self):
         root = Path(__file__).resolve().parents[1]
