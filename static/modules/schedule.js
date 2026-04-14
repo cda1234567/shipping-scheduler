@@ -4116,6 +4116,11 @@ async function saveRightPanelSupplement(button) {
 
     const response = await apiPut("/api/schedule/shortage-settings", {
       order_ids: [orderId],
+      order_decisions: {
+        [String(orderId)]: {
+          [part]: qty > 0 ? "CreateRequirement" : "None",
+        },
+      },
       order_supplements: {
         [String(orderId)]: {
           [part]: qty,

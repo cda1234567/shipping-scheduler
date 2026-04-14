@@ -279,6 +279,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("function normalizeOrderSupplementDetailState(orderSupplementDetails = {})", schedule_module)
         self.assertIn("function getStoredOrderSupplementDetail(orderId, partNumber)", schedule_module)
         self.assertIn('const noteInput = row?.querySelector(".right-panel-supplement-note-input");', schedule_module)
+        self.assertIn("order_decisions", schedule_module)
+        self.assertIn('[part]: qty > 0 ? "CreateRequirement" : "None"', schedule_module)
         self.assertIn("order_supplement_notes", schedule_module)
         self.assertIn('_orderSupplementDetailsByOrderId[orderId][part] = {', schedule_module)
         self.assertIn('class="right-panel-supplement-note-input"', schedule_module)
