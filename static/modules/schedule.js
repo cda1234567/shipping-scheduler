@@ -3492,7 +3492,7 @@ function buildCompletedCard(r, allFolders) {
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
       <div class="completed-card-actions">
-        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="刪除此筆已發料並退回可重扣；若後面還有已發料，會一起往後還原">刪除已發料</button>
+        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="退回此筆已發料並恢復可重扣；若後面還有已發料，會一起往後還原">退回已發料</button>
         <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
       </div>
     </div>
@@ -3571,7 +3571,7 @@ async function handleRollbackDispatch(orderId, trigger) {
   if (!Number.isInteger(orderId)) return;
 
   const button = trigger || document.querySelector(`.btn-rollback-order[data-order-id="${orderId}"]`);
-  const originalText = button?.textContent || "刪除已發料";
+  const originalText = button?.textContent || "退回已發料";
 
   try {
     if (button) {
@@ -3588,10 +3588,10 @@ async function handleRollbackDispatch(orderId, trigger) {
       preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview?force=1`);
       const forceOrderLines = (preview.orders || []).map((item, index) => `${index + 1}. ${item.po_number} ${item.model}`).join("\n");
       const forceAffectedHint = Number(preview.count || 0) > 1
-        ? "\n\n這次硬刪會連同後面已發料的訂單一起退回。"
+        ? "\n\n這次強制退回會連同後面已發料的訂單一起退回。"
         : "";
       const forcedConfirmed = confirm(
-        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要硬刪，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要硬刪嗎？`
+        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要強制退回，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要強制退回嗎？`
       );
       if (!forcedConfirmed) return;
       forceDelete = true;
@@ -3604,22 +3604,22 @@ async function handleRollbackDispatch(orderId, trigger) {
 
     if (!forceDelete) {
       const confirmed = confirm(
-        `這會把所選訂單從已發料刪掉，退回可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
+        `這會把所選訂單從已發料退回，恢復可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
       );
       if (!confirmed) return;
     }
 
-    if (button) button.textContent = forceDelete ? "硬刪中..." : "刪除中...";
+    if (button) button.textContent = forceDelete ? "強制退回中..." : "退回中...";
     const result = await apiPost(`/api/schedule/orders/${orderId}/rollback${forceDelete ? "?force=1" : ""}`);
     const draftNote = Number(result.restored_draft_count || 0) > 0
       ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
       : "";
-    const actionLabel = result.forced ? "已強制刪除" : "已刪除";
+    const actionLabel = result.forced ? "已強制退回" : "已退回";
     showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
-    showToast("刪除已發料失敗：" + error.message, { tone: "error" });
+    showToast("退回已發料失敗：" + error.message, { tone: "error" });
   } finally {
     if (button) {
       button.disabled = false;

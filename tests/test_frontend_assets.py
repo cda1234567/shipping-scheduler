@@ -191,12 +191,12 @@ class FrontendAssetTests(unittest.TestCase):
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         self.assertIn("btn-rollback-order", schedule_module)
-        self.assertIn("刪除已發料", schedule_module)
-        self.assertIn("仍要硬刪", schedule_module)
+        self.assertIn("退回已發料", schedule_module)
+        self.assertIn("仍要強制退回", schedule_module)
         self.assertIn("force=1", schedule_module)
         self.assertIn("/rollback-preview", schedule_module)
         self.assertIn('/rollback${forceDelete ? "?force=1" : ""}', schedule_module)
-        self.assertIn("已刪除", schedule_module)
+        self.assertIn("已退回", schedule_module)
 
     def test_schedule_module_auto_checks_shortage_for_negative_carry_over(self):
         root = Path(__file__).resolve().parents[1]
