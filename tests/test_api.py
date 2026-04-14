@@ -1676,6 +1676,33 @@ class ApiTests(unittest.TestCase):
         )
         mock_tail.assert_not_called()
 
+    def test_rollback_preview_allows_prior_order_rollback_log(self):
+        orders = {
+            5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
+            6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
+        }
+        session = {
+            "id": 9,
+            "order_id": 5,
+            "backup_path": "C:/backup.xlsx",
+            "main_file_path": "C:/main.xlsx",
+            "dispatched_at": "2026-03-20T09:00:00",
+        }
+        tail = [
+            {"id": 9, "order_id": 5, "previous_status": "merged"},
+            {"id": 10, "order_id": 6, "previous_status": "pending"},
+        ]
+
+        with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[]), \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]) as mock_logs, \
+             patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
+            response = self.client.get("/api/schedule/orders/5/rollback-preview")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("order_rollback", mock_logs.call_args.kwargs["actions"])
+
     def test_rollback_preview_force_bypasses_later_inventory_mutation_guard(self):
         orders = {
             5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},

@@ -14,13 +14,12 @@ _ROLLBACK_BLOCKING_LOG_ACTIONS = (
     "main_file_upload",
     "主檔編輯",
     "supplement_part",
-    "order_rollback",
     "刪除不良品批次",
     "刪除加工多打批次",
     "追加不良品",
 )
 
-_BATCH_DELETE_BLOCKING_LOG_ACTIONS = _ROLLBACK_BLOCKING_LOG_ACTIONS
+_BATCH_DELETE_BLOCKING_LOG_ACTIONS = _ROLLBACK_BLOCKING_LOG_ACTIONS + ("order_rollback",)
 
 
 def ensure_dispatch_rollback_allowed(session: dict | None) -> None:
