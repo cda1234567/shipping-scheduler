@@ -83,7 +83,7 @@ def _get_st_inventory_stock() -> dict[str, float]:
     return db.get_st_inventory_stock()
 
 
-def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
+def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict, dict, list[dict]]:
     order = db.get_order(order_id)
     if not order:
         raise HTTPException(404, "找不到此訂單")
@@ -93,7 +93,8 @@ def _build_rollback_preview(order_id: int) -> tuple[dict, dict, list[dict]]:
     session = db.get_active_dispatch_session(order_id)
     if not session:
         raise HTTPException(400, "找不到這筆訂單的發料歷史，無法反悔")
-    ensure_dispatch_rollback_allowed(session)
+    if not force:
+        ensure_dispatch_rollback_allowed(session)
 
     tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
     if not tail_sessions:
@@ -925,26 +926,30 @@ def commit_schedule_draft(draft_id: int):
 
 
 @router.get("/schedule/orders/{order_id}/rollback-preview")
-async def rollback_order_preview(order_id: int):
-    _, session, affected_orders = _build_rollback_preview(order_id)
+async def rollback_order_preview(order_id: int, force: bool = False):
+    _, session, affected_orders = _build_rollback_preview(order_id, force=force)
     return {
         "ok": True,
         "count": len(affected_orders),
         "backup_path": session.get("backup_path", ""),
         "orders": affected_orders,
+        "forced": force,
     }
 
 
 @router.post("/schedule/orders/{order_id}/rollback")
-async def rollback_order(order_id: int):
-    order, session, affected_orders = _build_rollback_preview(order_id)
+async def rollback_order(order_id: int, force: bool = False):
+    order, session, affected_orders = _build_rollback_preview(order_id, force=force)
     tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
     result = _rollback_dispatch_sessions(tail_sessions)
     db.log_activity(
         "order_rollback",
-        f"從訂單 {order['po_number']} ({order['model']}) 開始反悔，共 {len(affected_orders)} 筆，主檔已還原",
+        (
+            f"從訂單 {order['po_number']} ({order['model']}) 開始"
+            f"{'強制' if force else ''}反悔，共 {len(affected_orders)} 筆，主檔已還原"
+        ),
     )
-    return {"ok": True, **result}
+    return {"ok": True, "forced": force, **result}
 
 
 # ── Reorder / Sort ────────────────────────────────────────────────────────────

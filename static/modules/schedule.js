@@ -3563,6 +3563,10 @@ async function handleCreateFolder() {
   renderCompletedTab();
 }
 
+function isRollbackBlockedMessage(message) {
+  return String(message || "").includes("後面已有其他庫存異動");
+}
+
 async function handleRollbackDispatch(orderId, trigger) {
   if (!Number.isInteger(orderId)) return;
 
@@ -3574,22 +3578,44 @@ async function handleRollbackDispatch(orderId, trigger) {
       button.disabled = true;
       button.textContent = "確認中...";
     }
-    const preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview`);
+    let preview = null;
+    let forceDelete = false;
+
+    try {
+      preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview`);
+    } catch (error) {
+      if (!isRollbackBlockedMessage(error.message)) throw error;
+      preview = await apiJson(`/api/schedule/orders/${orderId}/rollback-preview?force=1`);
+      const forceOrderLines = (preview.orders || []).map((item, index) => `${index + 1}. ${item.po_number} ${item.model}`).join("\n");
+      const forceAffectedHint = Number(preview.count || 0) > 1
+        ? "\n\n這次硬刪會連同後面已發料的訂單一起退回。"
+        : "";
+      const forcedConfirmed = confirm(
+        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要硬刪，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要硬刪嗎？`
+      );
+      if (!forcedConfirmed) return;
+      forceDelete = true;
+    }
+
     const orderLines = (preview.orders || []).map((item, index) => `${index + 1}. ${item.po_number} ${item.model}`).join("\n");
     const affectedHint = Number(preview.count || 0) > 1
       ? "\n\n因為主檔是照順序連續扣帳，後面已發料的訂單也會一起退回。"
       : "";
-    const confirmed = confirm(
-      `這會把所選訂單從已發料刪掉，退回可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
-    );
-    if (!confirmed) return;
 
-    if (button) button.textContent = "刪除中...";
-    const result = await apiPost(`/api/schedule/orders/${orderId}/rollback`);
+    if (!forceDelete) {
+      const confirmed = confirm(
+        `這會把所選訂單從已發料刪掉，退回可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
+      );
+      if (!confirmed) return;
+    }
+
+    if (button) button.textContent = forceDelete ? "硬刪中..." : "刪除中...";
+    const result = await apiPost(`/api/schedule/orders/${orderId}/rollback${forceDelete ? "?force=1" : ""}`);
     const draftNote = Number(result.restored_draft_count || 0) > 0
       ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
       : "";
-    showToast(`已刪除 ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
+    const actionLabel = result.forced ? "已強制刪除" : "已刪除";
+    showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {

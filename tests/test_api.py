@@ -1676,6 +1676,36 @@ class ApiTests(unittest.TestCase):
         )
         mock_tail.assert_not_called()
 
+    def test_rollback_preview_force_bypasses_later_inventory_mutation_guard(self):
+        orders = {
+            5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
+            6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
+        }
+        session = {
+            "id": 9,
+            "order_id": 5,
+            "backup_path": "C:/backup.xlsx",
+            "main_file_path": "C:/main.xlsx",
+            "dispatched_at": "2026-03-20T09:00:00",
+        }
+        tail = [
+            {"id": 9, "order_id": 5, "previous_status": "merged"},
+            {"id": 10, "order_id": 6, "previous_status": "pending"},
+        ]
+
+        with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after") as mock_defective, \
+             patch("app.services.inventory_restore_guard.db.get_activity_logs_after") as mock_logs, \
+             patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
+            response = self.client.get("/api/schedule/orders/5/rollback-preview?force=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["forced"])
+        self.assertEqual(response.json()["count"], 2)
+        mock_defective.assert_not_called()
+        mock_logs.assert_not_called()
+
     def test_rollback_restores_backup_and_reverts_tail_orders(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
@@ -1726,6 +1756,60 @@ class ApiTests(unittest.TestCase):
             call(5, status="merged", folder=""),
             call(6, status="pending", folder=""),
         ])
+
+    def test_rollback_force_restores_backup_even_when_guard_would_block(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            backup_path = Path(temp_dir) / "backup.xlsx"
+            main_path.write_text("after-dispatch", encoding="utf-8")
+            backup_path.write_text("before-dispatch", encoding="utf-8")
+
+            orders = {
+                5: {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"},
+                6: {"id": 6, "po_number": "4500059235", "model": "MODEL-F", "status": "completed"},
+            }
+            session = {
+                "id": 9,
+                "order_id": 5,
+                "backup_path": str(backup_path),
+                "main_file_path": str(main_path),
+                "dispatched_at": "2026-03-20T09:00:00",
+            }
+            tail = [
+                {"id": 9, "order_id": 5, "previous_status": "merged", "backup_path": str(backup_path), "main_file_path": str(main_path)},
+                {"id": 10, "order_id": 6, "previous_status": "pending", "backup_path": str(backup_path), "main_file_path": str(main_path)},
+            ]
+
+            with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+                 patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+                 patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail), \
+                 patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.delete_dispatch_records_for_orders") as mock_delete_records, \
+                 patch("app.routers.schedule.db.mark_dispatch_sessions_rolled_back") as mock_mark_rolled_back, \
+                 patch("app.routers.schedule.restore_recent_committed_merge_drafts", return_value=[5, 6]) as mock_restore_drafts, \
+                 patch("app.routers.schedule.db.update_order") as mock_update_order, \
+                 patch("app.routers.schedule.db.log_activity") as mock_log_activity, \
+                 patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after") as mock_defective, \
+                 patch("app.services.inventory_restore_guard.db.get_activity_logs_after") as mock_logs:
+                response = self.client.post("/api/schedule/orders/5/rollback?force=1")
+                restored_text = main_path.read_text(encoding="utf-8")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["forced"])
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(restored_text, "before-dispatch")
+        mock_delete_records.assert_called_once_with([5, 6])
+        mock_mark_rolled_back.assert_called_once_with([9, 10])
+        mock_restore_drafts.assert_called_once_with([5, 6])
+        mock_update_order.assert_has_calls([
+            call(5, status="merged", folder=""),
+            call(6, status="pending", folder=""),
+        ])
+        mock_log_activity.assert_called_once()
+        self.assertIn("強制反悔", mock_log_activity.call_args.args[1])
+        mock_defective.assert_not_called()
+        mock_logs.assert_not_called()
 
     def test_main_file_data_backfills_missing_moq_from_live_main_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
