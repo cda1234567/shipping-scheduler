@@ -3492,7 +3492,7 @@ function buildCompletedCard(r, allFolders) {
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
       <div class="completed-card-actions">
-        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="刪除此筆已發料並退回重扣；若後面還有已發料，會一起往後還原">刪除重扣</button>
+        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="刪除此筆已發料並退回可重扣；若後面還有已發料，會一起往後還原">刪除已發料</button>
         <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
       </div>
     </div>
@@ -3567,7 +3567,7 @@ async function handleRollbackDispatch(orderId, trigger) {
   if (!Number.isInteger(orderId)) return;
 
   const button = trigger || document.querySelector(`.btn-rollback-order[data-order-id="${orderId}"]`);
-  const originalText = button?.textContent || "刪除重扣";
+  const originalText = button?.textContent || "刪除已發料";
 
   try {
     if (button) {
@@ -3593,7 +3593,7 @@ async function handleRollbackDispatch(orderId, trigger) {
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
-    showToast("刪除重扣失敗：" + error.message, { tone: "error" });
+    showToast("刪除已發料失敗：" + error.message, { tone: "error" });
   } finally {
     if (button) {
       button.disabled = false;

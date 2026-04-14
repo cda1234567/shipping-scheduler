@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.13.5"
-APP_RELEASED_AT = "2026-04-13"
-APP_HEADLINE = "這版把已發料缺料改成直接對齊 Docker live 主檔，右側不會再殘留舊缺料，副檔預覽也會直接顯示結存。"
+APP_VERSION = "v2026.04.14.1"
+APP_RELEASED_AT = "2026-04-14"
+APP_HEADLINE = "這版把已發料刪除入口直接寫清楚，也補強了 Docker 啟動時的自動更新器檢查。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料刪除",
+        "items": [
+            "已發料列表的刪除按鈕改成直接寫「刪除已發料」，不用再自己猜哪個按鈕可以退回重扣。",
+            "按下後仍然會沿用原本的安全還原流程，把訂單退回可重扣，必要時也會連帶把後面已發料一起往後還原。",
+        ],
+    },
     {
         "title": "已發料缺料同步",
         "items": [
