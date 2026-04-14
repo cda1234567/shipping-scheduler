@@ -407,3 +407,66 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=5).value, 3000)
         self.assertIsNone(ws.cell(row=4, column=1).value)
         wb.close()
+
+    def test_dispatch_generate_respects_reviewed_draft_parts_cleared_back_to_none(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059319",
+                "model": "OT35C",
+                "code": "2-8",
+                "delivery_date": "2026-05-08",
+            },
+        }
+        bom_map = {
+            "OT35C": [
+                {"part_number": "EC-50004A", "description": "Diode", "needed_qty": 1, "is_dash": 0},
+                {"part_number": "EC-50005A", "description": "Cap", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {"part_number": "EC-50004A", "description": "Diode", "suggested_qty": 1800, "shortage_amount": 6},
+                    {"part_number": "EC-50005A", "description": "Cap", "suggested_qty": 2000, "shortage_amount": 2000},
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+        reviewed_draft = {
+            "order_id": 1,
+            "decisions": {"EC-50005A": "CreateRequirement"},
+            "supplements": {},
+            "shortages": [
+                {"part_number": "EC-50004A", "description": "Diode", "suggested_qty": 1800, "shortage_amount": 6, "decision": "None"},
+                {"part_number": "EC-50005A", "description": "Cap", "suggested_qty": 2000, "shortage_amount": 2000, "decision": "CreateRequirement"},
+            ],
+        }
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={1: {}}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={"EC-50005A": "CreateRequirement"}), \
+             patch("app.routers.dispatch.db.get_active_merge_drafts", return_value=[reviewed_draft]), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        parts = [
+            str(ws.cell(row=row_idx, column=3).value or "").strip()
+            for row_idx in range(1, ws.max_row + 1)
+        ]
+        self.assertNotIn("EC-50004A", parts)
+        self.assertIn("EC-50005A", parts)
+        wb.close()

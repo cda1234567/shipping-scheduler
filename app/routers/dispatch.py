@@ -115,12 +115,32 @@ def _build_component_description_map(components: list[dict]) -> dict[str, str]:
     return descriptions
 
 
+def _get_active_reviewed_drafts_by_order(order_ids: list[int]) -> dict[int, dict]:
+    drafts_by_order: dict[int, dict] = {}
+    for draft in db.get_active_merge_drafts(order_ids):
+        try:
+            order_id = int(draft.get("order_id"))
+        except (TypeError, ValueError):
+            continue
+        if order_id in drafts_by_order:
+            continue
+        drafts_by_order[order_id] = draft
+    return drafts_by_order
+
+
+def _is_reviewed_active_draft(draft: dict | None) -> bool:
+    if not draft:
+        return False
+    return bool((draft.get("decisions") or {}) or (draft.get("supplements") or {}))
+
+
 def _build_order_dispatch_context(
     order: dict,
     result_by_order: dict[int, dict],
     saved_supplements: dict[int, dict[str, float]],
     decision_overrides: dict[str, str],
     bom_map: dict[str, list[dict]],
+    active_draft: dict | None = None,
 ) -> dict | None:
     order_id = int(order["id"])
     model_key = _normalize_part_key(order.get("model"))
@@ -134,11 +154,15 @@ def _build_order_dispatch_context(
     decisions = {**saved_decisions, **decision_overrides}
     stored_order_supplements = saved_supplements.get(order_id, {})
 
-    result = result_by_order.get(order_id) or {}
-    shortage_items = [
-        *(result.get("shortages") or []),
-        *(result.get("customer_material_shortages") or []),
-    ]
+    reviewed_draft = _is_reviewed_active_draft(active_draft)
+    if reviewed_draft:
+        shortage_items = list(active_draft.get("shortages") or [])
+    else:
+        result = result_by_order.get(order_id) or {}
+        shortage_items = [
+            *(result.get("shortages") or []),
+            *(result.get("customer_material_shortages") or []),
+        ]
     shortages_by_part = {
         _normalize_part_key(item.get("part_number")): item
         for item in shortage_items
@@ -161,16 +185,25 @@ def _build_order_dispatch_context(
         "stored_supplements": stored_order_supplements,
         "shortages_by_part": shortages_by_part,
         "candidate_parts": sorted(candidate_parts),
+        "reviewed_draft": reviewed_draft,
     }
 
 
-def _should_render_dispatch_item(decision: str, supplement_qty: float, shortage_item: dict | None) -> bool:
+def _should_render_dispatch_item(
+    decision: str,
+    supplement_qty: float,
+    shortage_item: dict | None,
+    *,
+    reviewed_draft: bool = False,
+) -> bool:
     if decision in {"MarkHasPO", "IgnoreOnce"}:
         return False
     if decision == "Shortage":
         return True
     if supplement_qty > 0:
         return True
+    if reviewed_draft:
+        return decision == "CreateRequirement"
     suggested_qty = float((shortage_item or {}).get("suggested_qty") or (shortage_item or {}).get("shortage_amount") or 0)
     return bool(shortage_item) and suggested_qty > 0
 
@@ -205,6 +238,7 @@ async def generate(req: DispatchRequest):
     result_by_order = {int(result.get("order_id")): result for result in calc_results if result.get("order_id") is not None}
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
+    active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
     st_inventory_stock = {
         _normalize_part_key(part): float(qty or 0)
         for part, qty in db.get_st_inventory_stock().items()
@@ -216,7 +250,14 @@ async def generate(req: DispatchRequest):
     order_contexts = [
         context
         for order in orders
-        for context in [_build_order_dispatch_context(order, result_by_order, saved_supplements, decision_overrides, bom_map)]
+        for context in [_build_order_dispatch_context(
+            order,
+            result_by_order,
+            saved_supplements,
+            decision_overrides,
+            bom_map,
+            active_draft=active_drafts_by_order.get(int(order["id"])),
+        )]
         if context
     ]
 
@@ -228,7 +269,12 @@ async def generate(req: DispatchRequest):
             decision = context["decisions"].get(part, "None")
             supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
             shortage_item = context["shortages_by_part"].get(part)
-            if not _should_render_dispatch_item(decision, supplement_qty, shortage_item):
+            if not _should_render_dispatch_item(
+                decision,
+                supplement_qty,
+                shortage_item,
+                reviewed_draft=bool(context.get("reviewed_draft")),
+            ):
                 continue
             if is_order_scoped_shortage_part(part):
                 continue
@@ -248,7 +294,12 @@ async def generate(req: DispatchRequest):
             shortage_item = context["shortages_by_part"].get(part)
             use_order_scoped = is_order_scoped_shortage_part(part)
             final_shortage = shortage_item if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
-            if not _should_render_dispatch_item(decision, supplement_qty, shortage_item):
+            if not _should_render_dispatch_item(
+                decision,
+                supplement_qty,
+                shortage_item,
+                reviewed_draft=bool(context.get("reviewed_draft")),
+            ):
                 continue
             if not use_order_scoped and first_order_by_part.get(part) != context["order_id"]:
                 continue
