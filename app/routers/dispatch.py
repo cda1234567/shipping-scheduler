@@ -202,9 +202,9 @@ def _should_render_dispatch_item(
         return True
     if supplement_qty > 0:
         return True
-    if reviewed_draft:
-        return decision == "CreateRequirement"
     suggested_qty = float((shortage_item or {}).get("suggested_qty") or (shortage_item or {}).get("shortage_amount") or 0)
+    if reviewed_draft:
+        return decision == "CreateRequirement" and suggested_qty > 0
     return bool(shortage_item) and suggested_qty > 0
 
 
@@ -293,7 +293,7 @@ async def generate(req: DispatchRequest):
             supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
             shortage_item = context["shortages_by_part"].get(part)
             use_order_scoped = is_order_scoped_shortage_part(part)
-            final_shortage = shortage_item if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
+            final_shortage = (shortage_item or {}) if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
             if not _should_render_dispatch_item(
                 decision,
                 supplement_qty,

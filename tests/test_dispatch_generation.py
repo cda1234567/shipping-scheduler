@@ -470,3 +470,67 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertNotIn("EC-50004A", parts)
         self.assertIn("EC-50005A", parts)
         wb.close()
+
+    def test_dispatch_generate_skips_reviewed_draft_create_requirement_without_qty_source(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059291",
+                "model": "TA7-2",
+                "code": "2-5",
+                "delivery_date": "2026-06-05",
+            },
+        }
+        bom_map = {
+            "TA7-2": [
+                {"part_number": "EC-10032A", "description": "Cap A", "needed_qty": 1, "is_dash": 0},
+                {"part_number": "EC-20117A", "description": "Cap B", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {"part_number": "EC-20117A", "description": "Cap B", "suggested_qty": 40000, "shortage_amount": 38829},
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+        reviewed_draft = {
+            "order_id": 1,
+            "decisions": {
+                "EC-10032A": "CreateRequirement",
+                "EC-20117A": "CreateRequirement",
+            },
+            "supplements": {},
+            "shortages": [
+                {"part_number": "EC-20117A", "description": "Cap B", "suggested_qty": 40000, "shortage_amount": 38829},
+            ],
+        }
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={1: {}}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value=reviewed_draft["decisions"]), \
+             patch("app.routers.dispatch.db.get_active_merge_drafts", return_value=[reviewed_draft]), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        parts = [
+            str(ws.cell(row=row_idx, column=3).value or "").strip()
+            for row_idx in range(1, ws.max_row + 1)
+        ]
+        self.assertNotIn("EC-10032A", parts)
+        self.assertIn("EC-20117A", parts)
+        wb.close()
