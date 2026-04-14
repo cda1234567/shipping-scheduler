@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.14.6"
+APP_VERSION = "v2026.04.14.7"
 APP_RELEASED_AT = "2026-04-14"
-APP_HEADLINE = "這版把右側補料與發料單正式拉回同一套副檔決策，清成 0 後不會再被系統自己補回來。"
+APP_HEADLINE = "這版補上發料單 reviewed draft 的空缺判斷，避免工作台殘留決策把生成直接炸成 500。"
 APP_CHANGELOG = [
+    {
+        "title": "發料單 500 修正",
+        "items": [
+            "生成發料單時，如果副檔裡有殘留的建立需求，但那顆料其實沒有 shortage 也沒有補料來源，現在會直接略過，不會再炸成 HTTP 500。",
+            "像 order-scoped 料只剩補料、或先前工作台遺留的空決策，這次也一起補上空值保護，不會再因為 final_shortage 為空把整張發料單卡死。",
+        ],
+    },
     {
         "title": "發料單同步",
         "items": [
