@@ -7,19 +7,29 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $containerName = "dispatch-scheduler-localserver"
+$watchtowerName = "dispatch-watchtower-localserver"
 Push-Location $repoRoot
 
 try {
-    $containerExists = $false
-    $isRunning = $false
-    $stateOutput = docker inspect -f "{{.State.Running}}" $containerName 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        $containerExists = $true
-        $isRunning = (("$stateOutput" | Select-Object -First 1).Trim().ToLower() -eq "true")
+    function Get-ContainerRunningState([string]$name) {
+        $stateOutput = docker inspect -f "{{.State.Running}}" $name 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return @{
+                Exists = $false
+                Running = $false
+            }
+        }
+        return @{
+            Exists = $true
+            Running = (("$stateOutput" | Select-Object -First 1).Trim().ToLower() -eq "true")
+        }
     }
 
+    $schedulerState = Get-ContainerRunningState $containerName
+    $watchtowerState = Get-ContainerRunningState $watchtowerName
+
     if ($Action -eq "restart") {
-        if ($containerExists) {
+        if ($schedulerState.Exists) {
             docker restart $containerName
         }
         else {
@@ -27,15 +37,27 @@ try {
         }
     }
     else {
-        if (-not $containerExists) {
+        if (-not $schedulerState.Exists) {
             docker compose --env-file ".env.localserver" -f "docker-compose.localserver.yml" up -d
         }
-        elseif (-not $isRunning) {
+        elseif (-not $schedulerState.Running) {
             docker start $containerName
         }
         else {
             Write-Host "Container already running: $containerName"
         }
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "Docker Compose command failed."
+    }
+
+    $watchtowerState = Get-ContainerRunningState $watchtowerName
+    if (-not $watchtowerState.Exists) {
+        docker compose --env-file ".env.localserver" -f "docker-compose.localserver.yml" up -d watchtower
+    }
+    elseif (-not $watchtowerState.Running) {
+        docker start $watchtowerName
     }
 
     if ($LASTEXITCODE -ne 0) {
