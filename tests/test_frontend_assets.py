@@ -289,6 +289,20 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}"', schedule_module)
         self.assertIn('data-needed="${esc(s.needed)}"', schedule_module)
 
+    def test_desktop_download_settings_support_prompting_for_location(self):
+        root = Path(__file__).resolve().parents[1]
+        desktop_bridge = (root / "static" / "modules" / "desktop_bridge.js").read_text(encoding="utf-8")
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("desktop-download-ask-each-time", index_html)
+        self.assertIn("每次下載前詢問位置", index_html)
+        self.assertIn("set_download_mode", desktop_bridge)
+        self.assertIn("handleDownloadModeChange", desktop_bridge)
+        self.assertIn("choose_location", desktop_bridge)
+        self.assertIn("saveBlobWithBrowserPicker", desktop_bridge)
+        self.assertIn("每次下載前都會先跳出另存新檔", desktop_bridge)
+        self.assertIn("之後每次下載都會先詢問位置", desktop_bridge)
+
     def test_batch_merge_modal_rebuilds_raw_shortages_before_reapplying_stored_inputs(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

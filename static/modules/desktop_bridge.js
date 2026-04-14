@@ -11,6 +11,9 @@ const BROWSER_DOWNLOAD_DB_VERSION = 1;
 const BROWSER_DOWNLOAD_STORE = "handles";
 const BROWSER_DOWNLOAD_KEY = "preferred-download-directory";
 const BROWSER_THEME_STORAGE_KEY = "shipping-scheduler-browser-theme";
+const BROWSER_DOWNLOAD_MODE_STORAGE_KEY = "shipping-scheduler-browser-download-mode";
+const DOWNLOAD_MODE_FIXED = "fixed";
+const DOWNLOAD_MODE_ASK_EACH_TIME = "ask_each_time";
 
 function getDefaultBrowserDarkModeEnabled() {
   try {
@@ -36,6 +39,7 @@ function persistBrowserDarkModePreference(enabled) {
 }
 
 let _browserDarkModeEnabled = loadBrowserDarkModePreference();
+let _browserDownloadMode = loadBrowserDownloadModePreference();
 
 function getDesktopApi() {
   const api = window.pywebview?.api;
@@ -44,6 +48,7 @@ function getDesktopApi() {
     "get_state",
     "set_autostart",
     "set_dark_mode",
+    "set_download_mode",
     "choose_download_directory",
     "minimize_window",
     "open_in_browser",
@@ -80,6 +85,26 @@ function normalizeDownloadText(value) {
   return String(value || "").trim();
 }
 
+function normalizeDownloadMode(value) {
+  return String(value || "").trim().toLowerCase() === DOWNLOAD_MODE_ASK_EACH_TIME
+    ? DOWNLOAD_MODE_ASK_EACH_TIME
+    : DOWNLOAD_MODE_FIXED;
+}
+
+function loadBrowserDownloadModePreference() {
+  try {
+    return normalizeDownloadMode(window.localStorage?.getItem(BROWSER_DOWNLOAD_MODE_STORAGE_KEY));
+  } catch (_) {
+    return DOWNLOAD_MODE_FIXED;
+  }
+}
+
+function persistBrowserDownloadModePreference(mode) {
+  try {
+    window.localStorage?.setItem(BROWSER_DOWNLOAD_MODE_STORAGE_KEY, normalizeDownloadMode(mode));
+  } catch (_) {}
+}
+
 function supportsBrowserSavePicker() {
   return typeof window.showSaveFilePicker === "function" && window.isSecureContext;
 }
@@ -97,6 +122,7 @@ function createDefaultBrowserDownloadState() {
     download_directory: "",
     permission_state: "prompt",
     handle: null,
+    download_mode: _browserDownloadMode,
   };
 }
 
@@ -382,6 +408,8 @@ function renderDesktopState() {
   const checkbox = document.getElementById("desktop-autostart");
   const folderEl = document.getElementById("desktop-download-folder");
   const folderNoteEl = document.getElementById("desktop-download-note");
+  const downloadModeEl = document.getElementById("desktop-download-ask-each-time");
+  const downloadModeNoteEl = document.getElementById("desktop-download-mode-note");
   const darkModeEl = document.getElementById("desktop-dark-mode");
   const desktopChooseBtn = document.getElementById("desktop-choose-download-dir");
   const desktopClearBtn = document.getElementById("desktop-clear-download-dir");
@@ -392,7 +420,7 @@ function renderDesktopState() {
   const modalTitle = document.getElementById("desktop-modal-title");
   const modalSubtitle = document.getElementById("desktop-modal-subtitle");
   const controlBtn = document.getElementById("btn-desktop-controls");
-  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn || !darkModeNoteEl) return;
+  if (!statusEl || !urlEl || !startupEl || !checkbox || !folderEl || !folderNoteEl || !downloadModeEl || !downloadModeNoteEl || !darkModeEl || !desktopChooseBtn || !desktopClearBtn || !desktopMinimizeBtn || !desktopOpenBrowserBtn || !desktopQuitBtn || !modalTitle || !modalSubtitle || !controlBtn || !darkModeNoteEl) return;
 
   const desktopAvailable = hasDesktopApi();
   controlBtn.style.display = "inline-flex";
@@ -422,9 +450,12 @@ function renderDesktopState() {
       : "目前會依瀏覽器能力決定下載方式。";
     checkbox.checked = false;
     checkbox.disabled = true;
+    downloadModeEl.checked = !desktopAvailable && normalizeDownloadMode(_browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
+    downloadModeEl.disabled = desktopAvailable;
     darkModeEl.checked = desktopAvailable ? false : Boolean(_browserDarkModeEnabled);
     darkModeEl.disabled = desktopAvailable;
   } else {
+    const currentDownloadMode = normalizeDownloadMode(_desktopState.download_mode);
     statusEl.textContent = _desktopState.remote_server
       ? "桌面版已連到遠端服務"
       : _desktopState.server_started_here
@@ -433,10 +464,16 @@ function renderDesktopState() {
     urlEl.textContent = _desktopState.app_url || "";
     folderEl.textContent = _desktopState.download_directory_set
       ? (_desktopState.download_directory || "尚未指定下載資料夾")
-      : "尚未指定，首次下載時會詢問資料夾";
-    folderNoteEl.textContent = _desktopState.download_directory_set
-      ? "桌面版下載會直接存進這個資料夾。"
-      : "桌面版下載時，若還沒設定資料夾，會先詢問一次。";
+      : currentDownloadMode === DOWNLOAD_MODE_ASK_EACH_TIME
+        ? "尚未指定，另存新檔會從系統預設下載資料夾開始"
+        : "尚未指定，首次下載時會詢問資料夾";
+    folderNoteEl.textContent = currentDownloadMode === DOWNLOAD_MODE_ASK_EACH_TIME
+      ? "每次下載都會先跳出另存新檔；這裡只拿來當預設開啟資料夾。"
+      : _desktopState.download_directory_set
+        ? "桌面版下載會直接存進這個資料夾。"
+        : "桌面版下載時，若還沒設定資料夾，會先詢問一次。";
+    downloadModeEl.checked = currentDownloadMode === DOWNLOAD_MODE_ASK_EACH_TIME;
+    downloadModeEl.disabled = false;
     darkModeEl.checked = Boolean(_desktopState.dark_mode_enabled);
     darkModeEl.disabled = false;
     if (_desktopState.autostart_managed) {
@@ -454,12 +491,22 @@ function renderDesktopState() {
   if (!desktopAvailable) {
     folderEl.textContent = "使用瀏覽器預設下載位置";
     folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
+    downloadModeEl.checked = normalizeDownloadMode(_browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
+    downloadModeEl.disabled = !supportsBrowserSavePicker();
+    downloadModeNoteEl.textContent = supportsBrowserSavePicker()
+      ? (downloadModeEl.checked
+        ? "每次下載都會先跳出另存新檔，讓你自己決定儲存位置。"
+        : "目前會交給瀏覽器預設下載；如果想每次自己選位置，可以打開這個選項。")
+      : "目前瀏覽器不支援網站直接叫出另存新檔；請改用瀏覽器本身的下載設定。";
     darkModeEl.checked = Boolean(_browserDarkModeEnabled);
     darkModeEl.disabled = false;
     darkModeNoteEl.textContent = "網頁版也會直接套用，並記住這台裝置的顯示設定，不會改原始 Excel。";
   } else {
     desktopChooseBtn.disabled = false;
     desktopClearBtn.disabled = true;
+    downloadModeNoteEl.textContent = downloadModeEl.checked
+      ? "每次下載前都會先跳出另存新檔，讓你自己選位置。"
+      : "目前會直接下載到上面設定的資料夾。";
     darkModeNoteEl.textContent = "只影響桌面版視窗，不會改原始 Excel。";
   }
 
@@ -574,6 +621,43 @@ async function handleChooseDesktopDownloadDirectory() {
   }
 }
 
+async function handleDownloadModeChange(event) {
+  const checkbox = event.currentTarget;
+  const enabled = checkbox.checked;
+  const nextMode = enabled ? DOWNLOAD_MODE_ASK_EACH_TIME : DOWNLOAD_MODE_FIXED;
+  checkbox.disabled = true;
+  try {
+    if (!hasDesktopApi()) {
+      if (enabled && !supportsBrowserSavePicker()) {
+        throw new Error("目前瀏覽器不支援網站直接選擇儲存位置");
+      }
+      _browserDownloadMode = nextMode;
+      persistBrowserDownloadModePreference(nextMode);
+      _browserDownloadState = {
+        ...(_browserDownloadState || createDefaultBrowserDownloadState()),
+        download_mode: nextMode,
+      };
+      renderDesktopState();
+      showToast(enabled ? "之後每次下載都會先詢問位置" : "已改回瀏覽器預設下載方式");
+      return;
+    }
+
+    const api = await waitForDesktopApi();
+    if (!api) throw new Error("桌面版尚未連線完成");
+    const nextState = await api.set_download_mode(nextMode);
+    if (!nextState?.ok && nextState?.message) {
+      throw new Error(nextState.message);
+    }
+    _desktopState = nextState;
+    renderDesktopState();
+    showToast(enabled ? "之後每次下載都會先詢問位置" : "已改回固定資料夾下載");
+  } catch (error) {
+    checkbox.checked = !enabled;
+    checkbox.disabled = false;
+    showToast("下載位置設定失敗: " + error.message);
+  }
+}
+
 async function handleDarkModeChange(event) {
   const checkbox = event.currentTarget;
   const enabled = checkbox.checked;
@@ -636,13 +720,14 @@ function bindDesktopEvents() {
   document.getElementById("desktop-autostart").addEventListener("change", handleAutostartChange);
   document.getElementById("desktop-choose-download-dir").addEventListener("click", handleChooseDownloadDirectory);
   document.getElementById("desktop-clear-download-dir").addEventListener("click", handleClearDownloadDirectory);
+  document.getElementById("desktop-download-ask-each-time").addEventListener("change", handleDownloadModeChange);
   document.getElementById("desktop-dark-mode").addEventListener("change", handleDarkModeChange);
   document.getElementById("desktop-modal").addEventListener("click", event => {
     if (event.target.id === "desktop-modal") closeDesktopModal();
   });
 }
 
-async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "" }) {
+async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
   const response = await fetch(path, {
     method,
     headers: body == null ? undefined : { "Content-Type": "application/json" },
@@ -658,6 +743,16 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const blob = await response.blob();
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
+  const contentType = response.headers.get("content-type") || blob.type || "";
+  const shouldAskEachTime = Boolean(saveAs)
+    || normalizeDownloadMode(_browserDownloadState?.download_mode || _browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
+  if (shouldAskEachTime && supportsBrowserSavePicker()) {
+    return saveBlobWithBrowserPicker(blob, outputName, contentType);
+  }
+  const configuredDirectoryResult = await saveBlobWithConfiguredBrowserDirectory(blob, outputName);
+  if (configuredDirectoryResult) {
+    return configuredDirectoryResult;
+  }
   const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = blobUrl;
@@ -701,18 +796,24 @@ export function showDownloadToast(result, noun = "檔案") {
   showToast(buildDownloadToastMessage(result, noun));
 }
 
-export async function desktopDownload({ path, method = "GET", body = null, filename = "" }) {
+export async function desktopDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
   if (!hasDesktopApi()) {
-    return fallbackBrowserDownload({ path, method, body, filename });
+    return fallbackBrowserDownload({ path, method, body, filename, saveAs });
   }
 
   const api = await waitForDesktopApi();
   if (!api) {
     throw new Error("桌面版尚未連線完成");
   }
-  const result = await api.download_from_app({ path, method, body, filename });
+  const result = await api.download_from_app({
+    path,
+    method,
+    body,
+    filename,
+    choose_location: Boolean(saveAs) || normalizeDownloadMode(_desktopState?.download_mode) === DOWNLOAD_MODE_ASK_EACH_TIME,
+  });
   if (result?.cancelled) {
-    throw new Error("已取消選擇下載資料夾");
+    throw new Error("已取消選擇下載位置");
   }
   if (!result?.ok) {
     throw new Error(result?.message || "桌面版下載失敗");

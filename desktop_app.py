@@ -22,11 +22,14 @@ from app.services.desktop_connection import resolve_remote_server_url
 from app.services.desktop_launcher import (
     DARK_MODE_SETTING,
     DOWNLOAD_DIR_SETTING,
+    DOWNLOAD_MODE_ASK_EACH_TIME,
+    DOWNLOAD_MODE_SETTING,
     build_unique_download_path,
     format_bool_setting,
     get_default_download_directory,
     get_desktop_app_icon_path,
     is_autostart_enabled,
+    normalize_download_mode,
     normalize_download_directory,
     parse_bool_setting,
     parse_content_disposition_filename,
@@ -239,6 +242,9 @@ class DesktopBridge:
     def _get_dark_mode(self) -> bool:
         return parse_bool_setting(db.get_setting(DARK_MODE_SETTING, "0"))
 
+    def _get_download_mode(self) -> str:
+        return normalize_download_mode(db.get_setting(DOWNLOAD_MODE_SETTING, ""))
+
     def _build_state(self) -> dict:
         directory = self._get_download_directory()
         stored_value = db.get_setting(DOWNLOAD_DIR_SETTING, "")
@@ -251,6 +257,7 @@ class DesktopBridge:
             "remote_server": self.server.is_remote,
             "download_directory": str(directory),
             "download_directory_set": bool(stored_value),
+            "download_mode": self._get_download_mode(),
             "dark_mode_enabled": self._get_dark_mode(),
         }
 
@@ -273,6 +280,12 @@ class DesktopBridge:
 
     def set_dark_mode(self, enabled: bool):
         db.set_setting(DARK_MODE_SETTING, format_bool_setting(bool(enabled)))
+        state = self._build_state()
+        state["ok"] = True
+        return state
+
+    def set_download_mode(self, mode: str):
+        db.set_setting(DOWNLOAD_MODE_SETTING, normalize_download_mode(mode))
         state = self._build_state()
         state["ok"] = True
         return state
@@ -312,6 +325,31 @@ class DesktopBridge:
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
+    def _choose_download_file_path(self, filename: str) -> Path | None:
+        if not self.window:
+            return None
+
+        initial_directory = str(self._get_download_directory())
+        selection = self.window.create_file_dialog(
+            webview.SAVE_DIALOG,
+            directory=initial_directory,
+            save_filename=filename or "download.bin",
+        )
+        if not selection:
+            return None
+
+        if isinstance(selection, (list, tuple)):
+            selected_path = selection[0] if selection else ""
+        else:
+            selected_path = selection
+        selected_path = str(selected_path or "").strip()
+        if not selected_path:
+            return None
+
+        target_path = Path(selected_path).expanduser()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        return target_path
+
     @staticmethod
     def _read_http_error(error: urllib.error.HTTPError) -> str:
         try:
@@ -322,10 +360,6 @@ class DesktopBridge:
 
     def download_from_app(self, payload: dict | None = None):
         payload = payload or {}
-        directory = self._ensure_download_directory()
-        if directory is None:
-            return {"ok": False, "cancelled": True, "message": "Download folder selection was cancelled."}
-
         path = str(payload.get("path") or "").strip()
         if not path:
             return {"ok": False, "message": "Download path is required."}
@@ -357,7 +391,17 @@ class DesktopBridge:
         except urllib.error.HTTPError as error:
             return {"ok": False, "message": self._read_http_error(error)}
 
-        target_path = build_unique_download_path(directory, filename)
+        choose_location = bool(payload.get("choose_location")) or self._get_download_mode() == DOWNLOAD_MODE_ASK_EACH_TIME
+        if choose_location:
+            target_path = self._choose_download_file_path(filename)
+            if target_path is None:
+                return {"ok": False, "cancelled": True, "message": "Download location selection was cancelled."}
+        else:
+            directory = self._ensure_download_directory()
+            if directory is None:
+                return {"ok": False, "cancelled": True, "message": "Download folder selection was cancelled."}
+            target_path = build_unique_download_path(directory, filename)
+
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(content)
         return {

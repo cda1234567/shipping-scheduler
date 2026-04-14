@@ -9,6 +9,9 @@ from pathlib import Path
 SHORTCUT_NAME = "Dispatch Scheduler.lnk"
 DOWNLOAD_DIR_SETTING = "desktop_download_dir"
 DARK_MODE_SETTING = "desktop_dark_mode"
+DOWNLOAD_MODE_SETTING = "desktop_download_mode"
+DOWNLOAD_MODE_FIXED = "fixed"
+DOWNLOAD_MODE_ASK_EACH_TIME = "ask_each_time"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
@@ -29,6 +32,13 @@ def parse_bool_setting(value: str | bool | None) -> bool:
 
 def format_bool_setting(value: bool) -> str:
     return "1" if value else "0"
+
+
+def normalize_download_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    if mode == DOWNLOAD_MODE_ASK_EACH_TIME:
+        return DOWNLOAD_MODE_ASK_EACH_TIME
+    return DOWNLOAD_MODE_FIXED
 
 
 def get_startup_folder(appdata: str | None = None) -> Path:

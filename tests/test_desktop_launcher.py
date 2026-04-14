@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.services.desktop_launcher import (
+    DOWNLOAD_MODE_ASK_EACH_TIME,
+    DOWNLOAD_MODE_FIXED,
     build_autostart_command,
     build_unique_download_path,
     format_bool_setting,
@@ -14,6 +16,7 @@ from app.services.desktop_launcher import (
     get_startup_shortcut_path,
     is_autostart_enabled,
     normalize_download_directory,
+    normalize_download_mode,
     parse_bool_setting,
     parse_content_disposition_filename,
     resolve_pythonw_executable,
@@ -193,6 +196,15 @@ class DesktopLauncherTests(unittest.TestCase):
             shortcut_path.parent.mkdir(parents=True, exist_ok=True)
             shortcut_path.write_text("", encoding="utf-8")
             self.assertTrue(is_autostart_enabled(temp_dir))
+
+    def test_normalize_download_mode_defaults_to_fixed(self):
+        self.assertEqual(normalize_download_mode(None), DOWNLOAD_MODE_FIXED)
+        self.assertEqual(normalize_download_mode(""), DOWNLOAD_MODE_FIXED)
+        self.assertEqual(normalize_download_mode("something-else"), DOWNLOAD_MODE_FIXED)
+
+    def test_normalize_download_mode_accepts_prompt_mode(self):
+        self.assertEqual(normalize_download_mode("ask_each_time"), DOWNLOAD_MODE_ASK_EACH_TIME)
+        self.assertEqual(normalize_download_mode("ASK_EACH_TIME"), DOWNLOAD_MODE_ASK_EACH_TIME)
 
 
 if __name__ == "__main__":
