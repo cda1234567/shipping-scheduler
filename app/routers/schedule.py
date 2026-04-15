@@ -22,6 +22,7 @@ from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
 from ..services.order_decisions import build_order_decision_allocations
 from ..services.order_supplements import build_order_supplement_allocations
+from ..services.shortage_rules import is_order_scoped_shortage_part
 from ..services.dispatch_pipeline import (
     DispatchContext,
     build_context_supplement_allocations,
@@ -152,7 +153,13 @@ def _merge_order_supplement_allocations(
             merged.setdefault(order_id, {})
             continue
         current = dict(merged.get(order_id, {}))
-        current.update(scoped)
+        for part, qty in scoped.items():
+            if is_order_scoped_shortage_part(part):
+                current[part] = qty
+            else:
+                # 非 order-scoped 料號由全域分配決定，per-order 只在全域沒分配時才補上
+                if part not in current:
+                    current[part] = qty
         merged[order_id] = current
     return merged
 

@@ -2645,7 +2645,15 @@ function refreshModalShortageCascadeForPart(list, part) {
     const checkbox = card.querySelector(".shortage-mark");
     const input = card.querySelector(".supplement-input");
     const previewState = buildModalCardDerivedState(card, runningCurrent);
-    const rawQty = Math.max(0, Number(input?.value || 0) || 0);
+    let rawQty = Math.max(0, Number(input?.value || 0) || 0);
+
+    // 非 order-scoped 料號：上游補料已覆蓋時，自動清零下游的補料 input
+    if (index > 0 && !isOrderScopedPart(partKey) && previewState.shortage_amount <= 0 && rawQty > 0) {
+      if (input && document.activeElement !== input) {
+        input.value = "0";
+        rawQty = 0;
+      }
+    }
 
     if (input && document.activeElement !== input && String(input.value || "") !== String(rawQty)) {
       input.value = rawQty > 0 ? String(rawQty) : "0";

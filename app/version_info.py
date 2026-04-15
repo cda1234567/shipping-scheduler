@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.15.1"
+APP_VERSION = "v2026.04.15.2"
 APP_RELEASED_AT = "2026-04-15"
 APP_HEADLINE = "這版把下載位置做成可切換模式，桌面版與支援的瀏覽器都能改成每次下載前先選儲存位置。"
 APP_CHANGELOG = [
