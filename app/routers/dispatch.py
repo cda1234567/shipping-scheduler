@@ -151,13 +151,15 @@ def _build_order_dispatch_context(
     descriptions = _build_component_description_map(components)
     bom_parts = set(descriptions)
     saved_decisions = db.get_decisions_for_order(order_id)
-    decisions = {**saved_decisions, **decision_overrides}
     stored_order_supplements = saved_supplements.get(order_id, {})
 
     reviewed_draft = _is_reviewed_active_draft(active_draft)
     if reviewed_draft:
+        # 已審閱的 draft 以 per-order DB decisions 為準，不被全域 override 覆蓋
+        decisions = dict(saved_decisions)
         shortage_items = list(active_draft.get("shortages") or [])
     else:
+        decisions = {**saved_decisions, **decision_overrides}
         result = result_by_order.get(order_id) or {}
         shortage_items = [
             *(result.get("shortages") or []),
