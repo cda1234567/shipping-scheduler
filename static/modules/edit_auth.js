@@ -31,9 +31,15 @@ function setLockedElementState(element, locked) {
   }
 }
 
+let _loginResolve = null;
+
 function closeEditAuthModal() {
   const modal = document.getElementById("edit-auth-modal");
   if (modal) modal.style.display = "none";
+  if (_loginResolve) {
+    _loginResolve(false);
+    _loginResolve = null;
+  }
 }
 
 export function openEditAuthModal() {
@@ -115,8 +121,12 @@ export async function initEditAuth() {
     try {
       await apiPost("/api/system/edit-auth/login", { password });
       await refreshEditAuthStatus();
-      closeEditAuthModal();
+      const resolve = _loginResolve;
+      _loginResolve = null;
+      const modal = document.getElementById("edit-auth-modal");
+      if (modal) modal.style.display = "none";
       showToast("已登入編輯模式", { tone: "success" });
+      if (resolve) resolve(true);
     } catch (error) {
       note.textContent = error.message || "登入失敗，請稍後再試。";
       passwordInput?.focus();
@@ -130,8 +140,11 @@ export async function initEditAuth() {
     }
   });
   setApiAuthRequiredHandler(() => {
-    openEditAuthModal();
-    showToast("目前為唯讀模式，請先登入編輯。");
+    return new Promise(resolve => {
+      _loginResolve = resolve;
+      openEditAuthModal();
+      showToast("目前為唯讀模式，請先登入編輯。");
+    });
   });
   await refreshEditAuthStatus();
 }

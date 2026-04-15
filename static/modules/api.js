@@ -16,7 +16,10 @@ export async function apiFetch(path, opts = {}) {
       msg = payload?.detail || msg;
     } catch (_) {}
     if (res.status === 403 && payload?.code === "edit_auth_required" && _apiAuthRequiredHandler) {
-      try { _apiAuthRequiredHandler(payload); } catch (_) {}
+      try {
+        const loggedIn = await _apiAuthRequiredHandler(payload);
+        if (loggedIn) return apiFetch(path, opts);
+      } catch (_) {}
     }
     throw new Error(msg);
   }
