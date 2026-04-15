@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from pydantic import BaseModel
 
 from .. import database as db
 from ..config import ST_INVENTORY_DIR
@@ -21,6 +22,7 @@ from ..services.edit_auth import (
 )
 from ..services import db_backup
 from ..services.local_time import local_now
+from ..services.server_downloads import is_server_download_available
 from ..services.st_package_breakdowns import (
     build_missing_moq_package_rows,
     save_missing_moq_package_text,
@@ -181,3 +183,25 @@ async def restore_database_backup(req: DatabaseBackupRestoreRequest):
     except Exception as error:
         raise HTTPException(500, f"還原資料庫備份失敗：{error}") from error
     return {"ok": True, "requires_reload": True, **result}
+
+
+class ServerDownloadDirUpdateRequest(BaseModel):
+    enabled: bool
+
+
+@router.get("/system/server-download-dir")
+async def get_server_download_dir():
+    available = is_server_download_available()
+    enabled_setting = db.get_setting("server_download_enabled")
+    if enabled_setting is None:
+        enabled = available
+    else:
+        enabled = enabled_setting == "1"
+    display_path = db.get_setting("server_download_display_path") or "D:\\Download\\excel"
+    return {"available": available, "enabled": enabled, "display_path": display_path}
+
+
+@router.put("/system/server-download-dir")
+async def update_server_download_dir(req: ServerDownloadDirUpdateRequest):
+    db.set_setting("server_download_enabled", "1" if req.enabled else "0")
+    return {"ok": True, "enabled": req.enabled}

@@ -14,11 +14,12 @@ log = logging.getLogger(__name__)
 
 import openpyxl
 from openpyxl.styles import PatternFill
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import database as db
 from ..config import MERGE_DRAFT_DIR, cfg
+from .server_downloads import maybe_server_save_response
 from .download_names import append_minute_timestamp, build_generated_filename
 from .bom_editor import (
     build_bom_storage_payload,
@@ -374,12 +375,19 @@ def restore_recent_committed_merge_drafts(
     return restored_order_ids
 
 
-def _build_download_response(file_entries: list[dict], archive_label: str = "副檔草稿"):
+def _build_download_response(file_entries: list[dict], archive_label: str = "副檔草稿", request: Request | None = None):
     if not file_entries:
         raise HTTPException(404, "副檔檔案不存在")
 
     if len(file_entries) == 1:
         entry = file_entries[0]
+        if request is not None:
+            return maybe_server_save_response(
+                request,
+                str(entry["path"]),
+                entry["download_name"],
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         return FileResponse(
             path=str(entry["path"]),
             filename=entry["download_name"],
@@ -920,7 +928,7 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
     return re.sub(r"PO#\S+", safe_po, filename, count=1)
 
 
-def download_merge_draft(draft_id: int, *, file_id: int | None = None):
+def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
@@ -938,10 +946,10 @@ def download_merge_draft(draft_id: int, *, file_id: int | None = None):
         for file_path in [Path(str(item.get("filepath") or ""))]
         if file_path.exists()
     ]
-    return _build_download_response(valid_files)
+    return _build_download_response(valid_files, request=request)
 
 
-def download_selected_merge_drafts(order_ids: list[int]):
+def download_selected_merge_drafts(order_ids: list[int], request: Request | None = None):
     normalized_ids: list[int] = []
     for order_id in order_ids or []:
         try:

@@ -4,7 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,7 @@ from ..services.download_names import build_generated_filename
 from ..services.local_time import local_now
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.shortage_rules import is_order_scoped_shortage_part, summarize_requested_supply
+from ..services.server_downloads import maybe_server_save_response
 
 router = APIRouter()
 
@@ -206,7 +207,8 @@ def _should_render_dispatch_item(
         return True
     suggested_qty = float((shortage_item or {}).get("suggested_qty") or (shortage_item or {}).get("shortage_amount") or 0)
     if reviewed_draft:
-        return decision == "CreateRequirement" and suggested_qty > 0
+        # 已審閱的 draft，supplement=0 代表使用者明確不補，不再 fallback 到 suggested_qty
+        return False
     return bool(shortage_item) and suggested_qty > 0
 
 
@@ -222,7 +224,7 @@ def _should_highlight_dispatch_qty(part: str, qty: float, shortage_item: dict | 
 
 
 @router.post("/dispatch/generate")
-async def generate(req: DispatchRequest):
+async def generate(req: DispatchRequest, request: Request):
     bom_map = db.get_all_bom_components_by_model()
     if not bom_map:
         raise HTTPException(400, "請先上傳 BOM 檔案")
@@ -377,8 +379,9 @@ async def generate(req: DispatchRequest):
     generate_dispatch_form(groups, out_path)
     db.log_activity("dispatch_generated", f"生成發料單，{len(groups)} 筆訂單")
 
-    return FileResponse(
+    return maybe_server_save_response(
+        request,
         out_path,
-        filename=filename,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

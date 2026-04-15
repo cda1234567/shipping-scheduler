@@ -11,12 +11,13 @@ from uuid import uuid4
 
 import openpyxl
 from openpyxl.styles import PatternFill
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import database as db
 from ..config import BOM_DIR, cfg
+from ..services.server_downloads import maybe_server_save_response
 from ..models import BomEditorSaveRequest
 from ..services.bom_editor import (
     apply_bom_editor_changes,
@@ -388,15 +389,16 @@ async def get_bom_data():
 
 
 @router.get("/bom/{bom_id}/file")
-async def get_bom_file(bom_id: str):
+async def get_bom_file(bom_id: str, request: Request):
     bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
     file_path = Path(bom["filepath"])
     if not file_path.exists():
         raise HTTPException(404, "BOM 檔案不存在")
-    return FileResponse(
-        path=str(file_path),
-        filename=append_minute_timestamp(bom["filename"] or file_path.name),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    return maybe_server_save_response(
+        request,
+        str(file_path),
+        append_minute_timestamp(bom["filename"] or file_path.name),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
@@ -426,7 +428,7 @@ class BomDownloadRequest(BaseModel):
 
 
 @router.post("/bom/download")
-async def download_bom_files(req: BomDownloadRequest):
+async def download_bom_files(req: BomDownloadRequest, request: Request):
     if not req.models:
         raise HTTPException(400, "請提供要下載的機種")
 
@@ -440,10 +442,11 @@ async def download_bom_files(req: BomDownloadRequest):
 
     if len(valid) == 1:
         bom, file_path = valid[0]
-        return FileResponse(
-            path=str(file_path),
-            filename=append_minute_timestamp(bom["filename"] or file_path.name),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        return maybe_server_save_response(
+            request,
+            str(file_path),
+            append_minute_timestamp(bom["filename"] or file_path.name),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
     zip_buffer = io.BytesIO()
@@ -498,7 +501,7 @@ async def list_bom_revisions(bom_id: str):
 
 
 @router.get("/bom/{bom_id}/revisions/{revision_id}/file")
-async def download_bom_revision(bom_id: str, revision_id: int):
+async def download_bom_revision(bom_id: str, revision_id: int, request: Request):
     revision = db.get_bom_revision(int(revision_id))
     if not revision or str(revision.get("bom_file_id")) != str(bom_id):
         raise HTTPException(404, "找不到 BOM 歷史版本")
@@ -507,10 +510,11 @@ async def download_bom_revision(bom_id: str, revision_id: int):
     if not file_path.exists():
         raise HTTPException(404, "BOM 歷史檔案不存在")
 
-    return FileResponse(
-        path=str(file_path),
-        filename=_build_revision_download_name(revision),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    return maybe_server_save_response(
+        request,
+        str(file_path),
+        _build_revision_download_name(revision),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 

@@ -1642,13 +1642,13 @@ body.desktop-dark .main-preview-cell-input {
   min-width: 88px;
 }
 .btn-rollback-order {
-  min-width: 58px;
-  background: #fff7ed;
-  color: #c2410c;
-  border: 1px solid #fdba74;
+  min-width: 86px;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fca5a5;
 }
 .btn-rollback-order:hover {
-  background: #ffedd5;
+  background: #fee2e2;
   opacity: 1;
 }
 
@@ -1834,9 +1834,9 @@ body.desktop-dark .bom-model-header {
   background: #0f172a;
 }
 body.desktop-dark .btn-rollback-order {
-  background: #3a1f14;
-  color: #fdba74;
-  border-color: #7c2d12;
+  background: #3b0f16;
+  color: #fca5a5;
+  border-color: #7f1d1d;
 }
 body.desktop-dark .shortage-item {
   background: #241313;

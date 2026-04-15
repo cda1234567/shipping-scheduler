@@ -11,3 +11,4 @@ services:
       - "8765:8765"
     volumes:
       - ./data:/app/data
+      - D:/Download/excel:/app/user_downloads

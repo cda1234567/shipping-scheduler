@@ -2,6 +2,7 @@ import { showToast } from "./api.js";
 
 let _desktopState = null;
 let _browserDownloadState = null;
+let _serverDownloadState = null;
 let _initialized = false;
 let _stateHydrationStarted = false;
 let _stateHydrationStatus = "idle";
@@ -309,6 +310,37 @@ async function hydrateBrowserDownloadState(force = false) {
   renderDesktopState();
 }
 
+async function hydrateServerDownloadState(force = false) {
+  if (_serverDownloadState && !force) return;
+  try {
+    const res = await fetch("/api/system/server-download-dir");
+    if (res.ok) {
+      _serverDownloadState = await res.json();
+    }
+  } catch (_) {}
+  renderDesktopState();
+}
+
+function isServerDownloadEnabled() {
+  return Boolean(_serverDownloadState?.available && _serverDownloadState?.enabled);
+}
+
+async function handleServerDownloadToggle(event) {
+  const enabled = event.target.checked;
+  try {
+    const res = await fetch("/api/system/server-download-dir", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error("failed");
+    if (_serverDownloadState) _serverDownloadState.enabled = enabled;
+  } catch (_) {
+    event.target.checked = !enabled;
+  }
+  renderDesktopState();
+}
+
 async function findAvailableFilenameInDirectory(directoryHandle, filename) {
   const safeName = normalizeDownloadText(filename) || "download.bin";
   const dotIndex = safeName.lastIndexOf(".");
@@ -488,9 +520,31 @@ function renderDesktopState() {
     checkbox.checked = Boolean(_desktopState.autostart_enabled);
   }
 
+  const serverToggleRow = document.getElementById("desktop-server-download-row");
+  const serverToggleEl = document.getElementById("desktop-server-download");
+  const serverNoteEl = document.getElementById("desktop-server-download-note");
+  if (serverToggleRow) {
+    const showServer = !desktopAvailable && _serverDownloadState?.available;
+    serverToggleRow.style.display = showServer ? "flex" : "none";
+    if (showServer && serverToggleEl) {
+      serverToggleEl.checked = Boolean(_serverDownloadState?.enabled);
+      serverToggleEl.disabled = false;
+    }
+    if (showServer && serverNoteEl) {
+      const dir = _serverDownloadState?.display_path || "";
+      serverNoteEl.textContent = _serverDownloadState?.enabled
+        ? `下載檔案會自動儲存到：${dir}`
+        : `開啟後，下載會自動存到伺服器指定的資料夾（${dir}）`;
+    }
+  }
+
   if (!desktopAvailable) {
-    folderEl.textContent = "使用瀏覽器預設下載位置";
-    folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
+    folderEl.textContent = isServerDownloadEnabled()
+      ? (_serverDownloadState?.display_path || "伺服器儲存資料夾")
+      : "使用瀏覽器預設下載位置";
+    folderNoteEl.textContent = isServerDownloadEnabled()
+      ? "下載時會自動存到伺服器設定的資料夾，不經過瀏覽器。"
+      : "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
     downloadModeEl.checked = normalizeDownloadMode(_browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
     downloadModeEl.disabled = !supportsBrowserSavePicker();
     downloadModeNoteEl.textContent = supportsBrowserSavePicker()
@@ -516,6 +570,7 @@ function renderDesktopState() {
 function openDesktopModal() {
   document.getElementById("desktop-modal").style.display = "flex";
   void hydrateBrowserDownloadState(true);
+  void hydrateServerDownloadState(true);
   void hydrateDesktopState(true);
 }
 
@@ -721,6 +776,8 @@ function bindDesktopEvents() {
   document.getElementById("desktop-choose-download-dir").addEventListener("click", handleChooseDownloadDirectory);
   document.getElementById("desktop-clear-download-dir").addEventListener("click", handleClearDownloadDirectory);
   document.getElementById("desktop-download-ask-each-time").addEventListener("change", handleDownloadModeChange);
+  const serverToggle = document.getElementById("desktop-server-download");
+  if (serverToggle) serverToggle.addEventListener("change", handleServerDownloadToggle);
   document.getElementById("desktop-dark-mode").addEventListener("change", handleDarkModeChange);
   document.getElementById("desktop-modal").addEventListener("click", event => {
     if (event.target.id === "desktop-modal") closeDesktopModal();
@@ -728,6 +785,22 @@ function bindDesktopEvents() {
 }
 
 async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
+  if (isServerDownloadEnabled() && !saveAs) {
+    const sep = path.includes("?") ? "&" : "?";
+    const sRes = await fetch(`${path}${sep}server_save=1`, {
+      method,
+      headers: body == null ? undefined : { "Content-Type": "application/json" },
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    if (sRes.ok) {
+      const ct = sRes.headers.get("content-type") || "";
+      if (ct.includes("application/json")) {
+        const result = await sRes.json();
+        if (result?.ok) return result;
+      }
+    }
+  }
+
   const response = await fetch(path, {
     method,
     headers: body == null ? undefined : { "Content-Type": "application/json" },
@@ -829,6 +902,7 @@ async function bootDesktopBridge() {
     renderDesktopState();
     void hydrateBrowserDownloadState();
   }
+  void hydrateServerDownloadState();
   if (!hasDesktopApi()) {
     renderDesktopState();
     return;

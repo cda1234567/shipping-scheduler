@@ -3,12 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import openpyxl
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .. import database as db
 from ..config import BACKUP_DIR, MAIN_FILE_DIR
+from ..services.server_downloads import maybe_server_save_response
 from ..models import UpdateMoqRequest
 from ..services.main_preview import read_live_main_preview
 from ..services.main_reader import (
@@ -124,12 +125,17 @@ async def update_snapshot_moq(req: UpdateMoqRequest):
 
 
 @router.get("/main-file/download")
-async def download_main_file():
+async def download_main_file(request: Request):
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
     filename = db.get_setting("main_filename") or Path(main_path).name
-    return FileResponse(main_path, filename=filename)
+    return maybe_server_save_response(
+        request,
+        main_path,
+        filename,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @router.get("/main-file/preview")
