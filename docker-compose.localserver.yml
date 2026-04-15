@@ -9,6 +9,7 @@ services:
       - "${APP_PORT:-18765}:8765"
     volumes:
       - scheduler-data:/app/data
+      - D:/Download/excel:/app/user_downloads
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
       - "com.centurylinklabs.watchtower.scope=${WATCHTOWER_SCOPE:-dispatch-local}"
