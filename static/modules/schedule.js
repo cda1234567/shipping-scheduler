@@ -2663,7 +2663,7 @@ function refreshModalShortageCascadeForPart(list, part) {
     }
 
     const derived = buildModalCardDerivedState(card, runningCurrent);
-    const shouldShow = Boolean(checkbox?.checked) || derived.shortage_amount > 0;
+    const shouldShow = Boolean(checkbox?.checked) || derived.shortage_amount > 0 || rawQty > 0;
     cardStates.push({ card, derived, shouldShow });
     runningCurrent = Number.isFinite(derived.resulting_stock) ? derived.resulting_stock : runningCurrent;
   });
