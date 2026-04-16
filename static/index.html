@@ -158,6 +158,7 @@
             <input type="text" id="main-preview-search" placeholder="搜尋料號 / 關鍵字">
             <button class="btn btn-secondary btn-sm" id="btn-main-preview-search">搜尋</button>
             <button class="btn btn-secondary btn-sm" id="btn-main-preview-clear">清除</button>
+            <button class="btn btn-secondary btn-sm" id="btn-main-preview-scroll-right">跳到最右 →</button>
             <button class="btn btn-primary btn-sm" id="btn-main-preview-refresh">重新讀取</button>
           </div>
         </div>
@@ -490,6 +491,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview");
     if (btn.dataset.tab === "main-preview") onMainPreviewTabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();

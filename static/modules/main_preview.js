@@ -10,7 +10,7 @@ let _currentQuery = "";
 let _initialized = false;
 const MAIN_PREVIEW_ROW_HEADER_WIDTH = 56;
 const MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30;
-const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3;
+const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 1;
 
 export async function initMainPreview() {
   if (_initialized) return;
@@ -21,6 +21,7 @@ export async function initMainPreview() {
   document.getElementById("btn-main-preview-refresh")?.addEventListener("click", () => {
     void refreshMainPreview({ force: true, eager: true });
   });
+  document.getElementById("btn-main-preview-scroll-right")?.addEventListener("click", scrollToRight);
   document.getElementById("btn-main-preview-search")?.addEventListener("click", runSheetSearch);
   document.getElementById("btn-main-preview-clear")?.addEventListener("click", clearSheetSearch);
   document.getElementById("main-preview-search")?.addEventListener("keydown", event => {
@@ -434,6 +435,11 @@ function scrollToCurrentMatch() {
   if (!current) return;
   const selector = `.main-preview-cell[data-row-index="${current.row}"][data-col-index="${current.col}"]`;
   document.querySelector(selector)?.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+}
+
+function scrollToRight() {
+  const wrap = document.querySelector(".main-preview-grid-wrap");
+  if (wrap) wrap.scrollLeft = wrap.scrollWidth;
 }
 
 function buildSearchStatusText() {

@@ -2722,6 +2722,8 @@ body.desktop-dark .defective-skipped {
   accent-color: #1d4ed8;
 }
 
+#sidebar.sidebar-hidden { display: none; }
+
 @media (max-width: 1100px) {
   #sidebar { display: none; }
   #right-panel { display: none; }
