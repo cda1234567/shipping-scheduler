@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.16.1"
-APP_RELEASED_AT = "2026-04-15"
-APP_HEADLINE = "這版把下載位置做成可切換模式，桌面版與支援的瀏覽器都能改成每次下載前先選儲存位置。"
+APP_VERSION = "v2026.04.17.1"
+APP_RELEASED_AT = "2026-04-17"
+APP_HEADLINE = "手動補料改成可以直接從清單挑料號，主檔預覽與 API 回應加 gzip 壓縮並加上 304 快取，載入速度明顯變快。"
 APP_CHANGELOG = [
+    {
+        "title": "手動補料選料號",
+        "items": [
+            "手動補料 modal 的料號欄位改成 datalist，點進去就能從目前主檔的料號清單選，也還是可以自己輸入搜尋過濾。",
+            "選到或輸入料號後，下方會即時顯示「目前主檔庫存：xxx」，避免補錯料號；打到不存在的料號會紅字提示。",
+        ],
+    },
+    {
+        "title": "主檔預覽加速",
+        "items": [
+            "所有 API 回應全域套上 gzip 壓縮，主檔預覽那包從 4.1 MB 縮到 ~130 KB，透過 Cloudflare tunnel 打開會明顯順很多。",
+            "主檔預覽加上 ETag / 304 快取：主檔沒被編輯過時，瀏覽器重新整理或關閉再打開都不會重新下載整包 JSON。",
+            "/main-file/data 依 mtime 做 in-memory 快取，高頻動作（退回、模型編輯、副檔操作）不會再每次都重新解析 xlsx。",
+        ],
+    },
     {
         "title": "下載位置選擇",
         "items": [

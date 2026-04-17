@@ -34,4 +34,12 @@ def refresh_snapshot_from_main(main_path: str) -> int:
     moq.update(manual_moq)
 
     db.save_snapshot(stock, moq, manual_moq_parts=set(manual_moq))
+
+    # 主檔或快照變了，清掉 main-file/data 的回應快取
+    try:
+        from .routers.main_file import invalidate_main_data_cache
+        invalidate_main_data_cache()
+    except ImportError:
+        pass
+
     return len(stock)

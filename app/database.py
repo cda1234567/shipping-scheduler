@@ -2059,6 +2059,15 @@ def get_activity_logs(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def get_activity_logs_by_action(action: str, limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM activity_logs WHERE action=? ORDER BY id DESC LIMIT ?",
+            (action, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_activity_logs_after(
     created_after: str,
     *,

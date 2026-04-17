@@ -47,6 +47,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
     document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
+    document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
     _scheduleInitialized = true;
@@ -56,6 +57,12 @@ export async function initSchedule(onRefreshMain) {
 
 export async function refresh() {
   await Promise.all([loadMainData(), loadStInventoryData(), loadScheduleRows(), loadBomData()]);
+  recalculate();
+  renderSchedule();
+}
+
+export async function refreshScheduleOnly() {
+  await loadScheduleRows();
   recalculate();
   renderSchedule();
 }
@@ -776,7 +783,7 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
         try {
           await apiPatch(`/api/schedule/orders/${r.id}/model`, { model: newModel });
           showToast("機種已更新");
-          await refresh();
+          await refreshScheduleOnly();
           return;
         } catch (err) { showToast("失敗：" + err.message); }
       }
@@ -1443,7 +1450,7 @@ async function handleEditDelivery(orderId, currentDate) {
     } else {
       showToast("交期已更新");
     }
-    await refresh();
+    await refreshScheduleOnly();
   } catch (e) { showToast("失敗：" + e.message); }
 }
 
@@ -1456,7 +1463,7 @@ async function handleCancel(orderId, model) {
     } else {
       showToast("訂單已取消");
     }
-    await refresh();
+    await refreshScheduleOnly();
   } catch (e) { showToast("失敗：" + e.message); }
 }
 
@@ -1614,7 +1621,7 @@ async function saveCurrentDraftFromModal({ silent = false } = {}) {
   });
   const response = await apiPut(`/api/schedule/drafts/${_modalDraftId}`, { decisions, supplements });
   if (!silent) showToast("副檔已更新");
-  await refresh();
+  await refreshScheduleOnly();
   return response?.draft || null;
 }
 
@@ -2147,7 +2154,7 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
     order_decisions: orderDecisions,
     order_supplements: orderSupplements,
   });
-  await refresh();
+  await refreshScheduleOnly();
   if (!silent) showToast("補料已寫入副檔");
   return response?.drafts || null;
 }
@@ -2893,7 +2900,7 @@ async function handleDeleteDraftLegacyBroken(draftId, model) {
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
     showToast("副檔已刪除");
-    await refresh();
+    await refreshScheduleOnly();
     showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
   } catch (error) {
     showToast("副檔刪除失敗: " + error.message);
@@ -2930,7 +2937,7 @@ async function handleDeleteDraftLegacyV2(draftId, model) {
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
     showToast("副檔已刪除");
-    await refresh();
+    await refreshScheduleOnly();
   } catch (error) {
     showToast("副檔刪除失敗: " + error.message);
   }
@@ -3708,7 +3715,7 @@ function buildRowCardLegacyBase(r, resultMap) {
         try {
           await apiPatch(`/api/schedule/orders/${r.id}/model`, { model: newModel });
           showToast("機種已更新");
-          await refresh();
+          await refreshScheduleOnly();
           return;
         } catch (err) {
           showToast("機種更新失敗: " + err.message);
@@ -3780,7 +3787,7 @@ async function handleBatchMergeLegacyFlow() {
   if (!targets.length) { showToast("目前勾選的訂單不能 merge"); return; }
   try {
     const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
-    await refresh();
+    await refreshScheduleOnly();
     showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
   } catch (error) {
     showToast("批次 merge 失敗: " + error.message);
@@ -3839,7 +3846,7 @@ async function handleDeleteDraftLegacyV3(draftId, model) {
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
     showToast("副檔已刪除");
-    await refresh();
+    await refreshScheduleOnly();
   } catch (error) {
     showToast("副檔刪除失敗: " + error.message);
   }
@@ -4168,7 +4175,7 @@ async function saveRightPanelSupplement(button) {
       removeRightPanelShortageRowIfResolved(row);
     }
     showToast(qty > 0 ? `已保存 ${part} 補料 ${fmt(qty)}` : `已清除 ${part} 補料`);
-    await refresh();
+    await refreshScheduleOnly();
   } catch (e) {
     showToast("補料儲存失敗：" + e.message);
     if (button?.isConnected) {
@@ -4468,6 +4475,138 @@ async function handleDedupSchedule() {
   }
 }
 
+// ── Manual supplement modal ──────────────────────────────────────────────────
+
+function populateManualSupplementPartOptions() {
+  const datalist = document.getElementById("manual-supplement-parts");
+  if (!datalist) return;
+  const parts = Object.keys(_stock || {}).sort((a, b) => a.localeCompare(b));
+  datalist.innerHTML = parts.map(part => {
+    const qty = _stock[part];
+    const label = `庫存 ${fmt(qty)}`;
+    return `<option value="${esc(part)}" label="${esc(label)}"></option>`;
+  }).join("");
+}
+
+function updateManualSupplementPartHint() {
+  const input = document.getElementById("manual-supplement-part");
+  const hint = document.getElementById("manual-supplement-part-hint");
+  if (!input || !hint) return;
+  const part = (input.value || "").trim().toUpperCase();
+  if (!part) { hint.textContent = ""; return; }
+  if (_stock && Object.prototype.hasOwnProperty.call(_stock, part)) {
+    hint.textContent = `目前主檔庫存：${fmt(_stock[part])}`;
+    hint.style.color = "#6b7280";
+  } else {
+    hint.textContent = "主檔中找不到此料號";
+    hint.style.color = "#dc2626";
+  }
+}
+
+async function openManualSupplementModal() {
+  const modal = document.getElementById("manual-supplement-modal");
+  if (!modal) return;
+
+  document.getElementById("manual-supplement-part").value = "";
+  document.getElementById("manual-supplement-qty").value = "";
+  document.getElementById("manual-supplement-note").value = "";
+  const hintEl = document.getElementById("manual-supplement-part-hint");
+  if (hintEl) hintEl.textContent = "";
+  document.getElementById("manual-supplement-logs").innerHTML = "<div style='text-align:center;color:#9ca3af;font-size:12px;padding:8px'>載入紀錄中...</div>";
+
+  populateManualSupplementPartOptions();
+
+  modal.style.display = "flex";
+  modal.setAttribute("aria-hidden", "false");
+  document.getElementById("manual-supplement-part").focus();
+
+  document.getElementById("manual-supplement-close").onclick = closeManualSupplementModal;
+  document.getElementById("manual-supplement-cancel").onclick = closeManualSupplementModal;
+  document.getElementById("manual-supplement-submit").onclick = submitManualSupplement;
+  const partInput = document.getElementById("manual-supplement-part");
+  if (partInput) partInput.oninput = updateManualSupplementPartHint;
+
+  try {
+    const data = await apiJson("/api/schedule/supplement-logs?limit=30");
+    renderSupplementLogs(data.logs || []);
+  } catch (_) {
+    document.getElementById("manual-supplement-logs").innerHTML = "";
+  }
+}
+
+function closeManualSupplementModal() {
+  const modal = document.getElementById("manual-supplement-modal");
+  if (modal) {
+    modal.style.display = "none";
+    modal.setAttribute("aria-hidden", "true");
+  }
+}
+
+function renderSupplementLogs(logs) {
+  const container = document.getElementById("manual-supplement-logs");
+  if (!container) return;
+  if (!logs.length) {
+    container.innerHTML = "<div style='text-align:center;color:#9ca3af;font-size:12px;padding:8px'>尚無補料紀錄</div>";
+    return;
+  }
+  const rows = logs.map(log => {
+    const time = (log.created_at || "").replace("T", " ").slice(0, 16);
+    return `<div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:12px">
+      <span style="color:#374151;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(log.detail || "")}</span>
+      <span style="color:#9ca3af;white-space:nowrap;margin-left:8px">${esc(time)}</span>
+    </div>`;
+  }).join("");
+  container.innerHTML = `
+    <div style="margin-bottom:6px;font-size:13px;font-weight:600;color:#374151">補料紀錄</div>
+    <div style="max-height:200px;overflow-y:auto">${rows}</div>`;
+}
+
+async function submitManualSupplement() {
+  const partInput = document.getElementById("manual-supplement-part");
+  const qtyInput = document.getElementById("manual-supplement-qty");
+  const noteInput = document.getElementById("manual-supplement-note");
+  const part = (partInput?.value || "").trim();
+  const qty = Number(qtyInput?.value || 0);
+  const note = (noteInput?.value || "").trim();
+
+  if (!part) { showToast("請輸入料號"); partInput?.focus(); return; }
+  if (!qty || qty <= 0) { showToast("補料數量必須大於 0"); qtyInput?.focus(); return; }
+
+  const btn = document.getElementById("manual-supplement-submit");
+  const originalText = btn?.textContent || "確認補料";
+  if (btn) { btn.disabled = true; btn.textContent = "補料中..."; }
+
+  try {
+    const result = await apiPost("/api/schedule/supplement-part", {
+      part_number: part,
+      supplement_qty: qty,
+      note,
+    });
+    showToast(
+      `${result.part_number} 已補料 ${fmt(qty)}，庫存 ${fmt(result.stock_before)} → ${fmt(result.stock_after)}`,
+      { tone: "success", duration: 4000 },
+    );
+    partInput.value = "";
+    qtyInput.value = "";
+    noteInput.value = "";
+    partInput.focus();
+
+    // refresh logs in modal
+    try {
+      const data = await apiJson("/api/schedule/supplement-logs?limit=30");
+      renderSupplementLogs(data.logs || []);
+    } catch (_) {}
+
+    // refresh main data
+    await refresh();
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (e) {
+    showToast("補料失敗: " + e.message, { tone: "error" });
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+  }
+}
+
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
   if (_batchMergeInFlight) {
@@ -4534,7 +4673,7 @@ async function handleBatchMerge() {
     );
 
     // overlay 已關閉，背景刷新資料
-    await refresh();
+    await refreshScheduleOnly();
 
     if (missingBomTargets.length) {
       showToast(`已建立 ${result.draft_count || 0} 份副檔；以下訂單尚未上傳 BOM，這次已跳過：${summarizeOrderAlertLabels(missingBomTargets)}`, {
@@ -4637,7 +4776,7 @@ async function handleDeleteDraft(draftId, model) {
   try {
     await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
     showToast("副檔已刪除");
-    await refresh();
+    await refreshScheduleOnly();
   } catch (error) {
     showToast("副檔刪除失敗: " + error.message);
   }
@@ -4710,7 +4849,7 @@ function buildRowCardLegacyOriginal(r, resultMap) {
         try {
           await apiPatch(`/api/schedule/orders/${r.id}/model`, { model: newModel });
           showToast("機種已更新");
-          await refresh();
+          await refreshScheduleOnly();
           return;
         } catch (err) {
           showToast("機種更新失敗: " + err.message);

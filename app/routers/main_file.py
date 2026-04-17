@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import hashlib
+
 import openpyxl
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .. import database as db
@@ -22,6 +24,17 @@ from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
 
 router = APIRouter()
+
+
+# ── In-memory cache for main-file/data (avoids re-reading xlsx every request) ─
+_main_data_cache: dict | None = None
+_main_data_cache_mtime: float = 0.0
+
+
+def invalidate_main_data_cache():
+    global _main_data_cache, _main_data_cache_mtime
+    _main_data_cache = None
+    _main_data_cache_mtime = 0.0
 
 
 def _repair_legacy_snapshot_if_needed(main_path: str, snapshot: dict[str, dict]) -> dict[str, dict]:
@@ -79,10 +92,20 @@ async def set_snapshot():
 
 @router.get("/main-file/data")
 async def get_main_data():
-    """回傳主檔庫存與 MOQ。"""
+    """回傳主檔庫存與 MOQ（帶 mtime 快取，主檔未變時直接回傳）。"""
+    global _main_data_cache, _main_data_cache_mtime
+
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
+
+    try:
+        current_mtime = Path(main_path).stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+
+    if _main_data_cache is not None and current_mtime == _main_data_cache_mtime:
+        return _main_data_cache
 
     snapshot = db.get_snapshot()
     if snapshot:
@@ -102,7 +125,7 @@ async def get_main_data():
     except Exception:
         live_stock = dict(stock)
 
-    return {
+    result = {
         "stock": stock,
         "moq": moq,
         "live_stock": live_stock,
@@ -111,6 +134,9 @@ async def get_main_data():
         "filename": db.get_setting("main_filename") or Path(main_path).name,
         "has_snapshot": bool(snapshot),
     }
+    _main_data_cache = result
+    _main_data_cache_mtime = current_mtime
+    return result
 
 
 @router.patch("/main-file/moq")
@@ -139,17 +165,28 @@ async def download_main_file(request: Request):
 
 
 @router.get("/main-file/preview")
-async def get_main_preview(sheet: str | None = None):
+async def get_main_preview(request: Request, sheet: str | None = None):
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
+
+    # ETag based on file mtime + sheet → 檔案沒變時回 304，瀏覽器跳過整個 download
+    try:
+        mtime_ns = Path(main_path).stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}"
+    etag = 'W/"' + hashlib.md5(etag_raw.encode("utf-8")).hexdigest() + '"'
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
     preview = read_live_main_preview(main_path, sheet_name=sheet)
     preview.update({
         "filename": db.get_setting("main_filename") or Path(main_path).name,
         "loaded_at": db.get_setting("main_loaded_at"),
     })
-    return preview
+    return JSONResponse(content=preview, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
 
 @router.get("/main-file/info")

@@ -1030,8 +1030,16 @@ def supplement_part(req: SupplementPartRequest):
     if not result.get("ok"):
         raise HTTPException(400, result.get("message", "補料失敗"))
     refresh_snapshot_from_main(main_path)
-    db.log_activity(
-        "supplement_part",
-        f"補料 {result['part_number']}: {result['supplement_qty']:g} → 庫存 {result['stock_before']:g} → {result['stock_after']:g}",
-    )
+    note = str(req.note or "").strip()
+    detail = f"補料 {result['part_number']}: {result['supplement_qty']:g} → 庫存 {result['stock_before']:g} → {result['stock_after']:g}"
+    if note:
+        detail += f"（{note}）"
+    db.log_activity("supplement_part", detail)
     return result
+
+
+@router.get("/schedule/supplement-logs")
+def get_supplement_logs(limit: int = 50):
+    """查詢手動補料紀錄。"""
+    logs = db.get_activity_logs_by_action("supplement_part", limit=limit)
+    return {"logs": logs}

@@ -214,6 +214,7 @@ class UpdateDefectiveRequest(BaseModel):
 class SupplementPartRequest(BaseModel):
     part_number: str
     supplement_qty: float
+    note: str = ""
 
 
 class OverrunDeductionRequest(BaseModel):

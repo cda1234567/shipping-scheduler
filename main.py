@@ -3,6 +3,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -58,6 +59,9 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="出貨排程系統", version=APP_VERSION, lifespan=lifespan)
+
+# Gzip 大 JSON 回應（主檔預覽等 4MB+ 回應會壓到 ~10% 大小）
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 
 
 @app.middleware("http")

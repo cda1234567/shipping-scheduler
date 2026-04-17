@@ -115,6 +115,7 @@
           <button class="btn btn-success btn-sm" id="btn-batch-merge">批次 Merge</button>
           <button class="btn btn-danger btn-sm" id="btn-batch-dispatch">寫入主檔</button>
           <button class="btn btn-secondary btn-sm" id="btn-dedup-schedule" title="移除已發料重複PO">清理重複</button>
+          <button class="btn btn-secondary btn-sm" id="btn-manual-supplement" title="手動補料到主檔">手動補料</button>
           <span class="spacer"></span>
           <span class="info-text" id="schedule-info"></span>
         </div>
@@ -861,6 +862,39 @@ init().catch(error => {
     <div id="modal-footer" class="modal-footer">
       <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>
       <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 手動補料 Modal -->
+<div id="manual-supplement-modal" class="modal-overlay" style="display:none" aria-hidden="true">
+  <div class="modal-box" style="max-width:520px">
+    <div class="modal-header">
+      <h3 style="margin:0;font-size:16px">手動補料</h3>
+      <button id="manual-supplement-close" class="modal-close" type="button">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:16px">
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div>
+          <label style="font-size:13px;font-weight:600;color:#374151">料號</label>
+          <input type="text" id="manual-supplement-part" list="manual-supplement-parts" placeholder="輸入或選擇料號" autocomplete="off" style="width:100%;margin-top:4px;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+          <datalist id="manual-supplement-parts"></datalist>
+          <div id="manual-supplement-part-hint" style="margin-top:4px;font-size:12px;color:#9ca3af;min-height:16px"></div>
+        </div>
+        <div>
+          <label style="font-size:13px;font-weight:600;color:#374151">數量</label>
+          <input type="number" id="manual-supplement-qty" placeholder="補料數量" min="1" step="any" style="width:100%;margin-top:4px;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+        </div>
+        <div>
+          <label style="font-size:13px;font-weight:600;color:#374151">備註 <span style="font-weight:400;color:#9ca3af">(選填)</span></label>
+          <input type="text" id="manual-supplement-note" placeholder="例：客戶退回、倉庫找到..." style="width:100%;margin-top:4px;padding:8px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:13px">
+        </div>
+      </div>
+      <div id="manual-supplement-logs" style="margin-top:16px"></div>
+    </div>
+    <div class="modal-footer">
+      <button id="manual-supplement-cancel" class="btn btn-secondary btn-sm">關閉</button>
+      <button id="manual-supplement-submit" class="btn btn-primary btn-sm">確認補料</button>
     </div>
   </div>
 </div>
