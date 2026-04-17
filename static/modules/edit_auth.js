@@ -94,6 +94,7 @@ export async function initEditAuth() {
   document.getElementById("btn-edit-auth")?.addEventListener("click", async () => {
     try {
       if (isEditAuthenticated()) {
+        if (!window.confirm("確定要登出編輯模式？")) return;
         await apiPost("/api/system/edit-auth/logout");
         await refreshEditAuthStatus();
         showToast("已切回唯讀模式");

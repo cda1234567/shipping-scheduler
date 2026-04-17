@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.17.1"
+APP_VERSION = "v2026.04.17.2"
 APP_RELEASED_AT = "2026-04-17"
-APP_HEADLINE = "手動補料改成可以直接從清單挑料號，主檔預覽與 API 回應加 gzip 壓縮並加上 304 快取，載入速度明顯變快。"
+APP_HEADLINE = "登出編輯模式加上確認對話框，避免誤點「登出編輯」按鈕導致整個編輯狀態中斷。"
 APP_CHANGELOG = [
+    {
+        "title": "登出編輯確認",
+        "items": [
+            "點「登出編輯」按鈕時會先跳出「確定要登出編輯模式？」確認對話框，避免誤點直接把編輯狀態登出。",
+            "因為登出後所有需要編輯權限的 API 會立刻變 403，再登入 modal 會擋住 tab 切換，中間那段體驗很糟糕，加個 confirm 可以把意外觸發擋掉。",
+        ],
+    },
     {
         "title": "手動補料選料號",
         "items": [
