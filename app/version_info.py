@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.6"
+APP_VERSION = "v2026.04.22.7"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "修正 BOM 編輯畫面正常但批次副檔/扣帳仍可能吃到舊資料庫需求量的問題。"
+APP_HEADLINE = "調整 EC 料安全水位提醒只出現在批次 merge 補料流程，不再列入右側補料明細。"
 APP_CHANGELOG = [
+    {
+        "title": "EC 料右側明細",
+        "items": [
+            "批次 merge 仍會照規則把非 EC-6 的 EC 料結存低於 100 視為要補料，補料 modal 不變。",
+            "右側補料明細改成只列真正負庫存或仍不可寫入主檔的項目，不再顯示結存 0 到 99 的 EC 安全水位提醒。",
+            "像 EC-50004A 寫入後結存 94，批次 merge 會提醒補料；寫入主檔後右側不會再把它列成待補明細。",
+        ],
+    },
     {
         "title": "BOM 同步",
         "items": [

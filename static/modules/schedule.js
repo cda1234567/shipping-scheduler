@@ -1127,9 +1127,21 @@ function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {}) 
   const shortageAmount = Number(item?.shortage_amount || 0);
   if (!Number.isFinite(shortageAmount) || shortageAmount <= 0) return false;
   const resultingStock = getRightPanelResultingStock(item, storedSupplementsByPart);
-  return Number.isFinite(resultingStock)
-    ? hasRemainingShortageForResultingStock(item?.part_number, resultingStock)
-    : shortageAmount > 0;
+  return shouldRenderRightPanelActionableShortage(item?.part_number, resultingStock, shortageAmount);
+}
+
+function shouldRenderRightPanelActionableShortage(partNumber, resultingStock, shortageAmount = 0) {
+  const amount = Number(shortageAmount || 0);
+  if (!Number.isFinite(amount) || amount <= 0) return false;
+
+  const stock = Number(resultingStock);
+  if (isEcPart(partNumber) && Number.isFinite(stock)) {
+    return stock < 0;
+  }
+
+  return Number.isFinite(stock)
+    ? hasRemainingShortageForResultingStock(partNumber, stock)
+    : amount > 0;
 }
 
 function removeRightPanelShortageRowIfResolved(row) {
@@ -1389,7 +1401,7 @@ function buildPostDispatchShortagesFromCompletedDrafts() {
       const shortageAmount = useLiveStock
         ? calculateModalShortageAmount(partKey, currentStock)
         : fallbackShortageAmount;
-      if (!(shortageAmount > 0)) continue;
+      if (!shouldRenderRightPanelActionableShortage(partKey, currentStock, shortageAmount)) continue;
 
       const moq = Math.max(0, Number(_moq?.[partKey] || shortage?.moq || 0) || 0);
       const stStockQty = Math.max(0, Number(_stStock?.[partKey] ?? shortage?.st_stock_qty ?? 0) || 0);

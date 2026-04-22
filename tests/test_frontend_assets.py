@@ -247,12 +247,16 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("function applyRightPanelSupplementState(item, storedSupplementsByPart = {})", schedule_module)
         self.assertIn("function getRightPanelResultingStock(item, storedSupplementsByPart = {})", schedule_module)
         self.assertIn("function shouldRenderRightPanelShortageItem(item, storedSupplementsByPart = {})", schedule_module)
-        self.assertIn("return Number.isFinite(resultingStock)", schedule_module)
-        self.assertIn("? hasRemainingShortageForResultingStock(item?.part_number, resultingStock)", schedule_module)
-        self.assertIn(": shortageAmount > 0;", schedule_module)
+        self.assertIn("function shouldRenderRightPanelActionableShortage(partNumber, resultingStock, shortageAmount = 0)", schedule_module)
+        self.assertIn("if (isEcPart(partNumber) && Number.isFinite(stock)) {", schedule_module)
+        self.assertIn("return stock < 0;", schedule_module)
+        self.assertIn("return shouldRenderRightPanelActionableShortage(item?.part_number, resultingStock, shortageAmount);", schedule_module)
+        self.assertIn("? hasRemainingShortageForResultingStock(partNumber, stock)", schedule_module)
+        self.assertIn(": amount > 0;", schedule_module)
         self.assertIn("const supplementQty = getRightPanelSupplementQty(item, storedSupplementsByPart);", schedule_module)
         self.assertIn("supplement_qty: supplementQty,", schedule_module)
         self.assertIn("default_supplement: supplementQty,", schedule_module)
+        self.assertIn("if (!shouldRenderRightPanelActionableShortage(partKey, currentStock, shortageAmount)) continue;", schedule_module)
 
     def test_order_badge_reuses_visible_right_panel_shortages_for_checked_rows(self):
         root = Path(__file__).resolve().parents[1]
