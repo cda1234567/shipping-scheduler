@@ -69,19 +69,21 @@ class DesktopLauncherTests(unittest.TestCase):
         self.assertEqual(working_directory, str(Path("C:/DispatchScheduler").resolve()))
 
     def test_get_startup_shortcut_path_uses_appdata(self):
+        appdata = r"C:\Users\Andy\AppData\Roaming"
         shortcut_path = get_startup_shortcut_path(
-            appdata=r"C:\Users\Andy\AppData\Roaming",
+            appdata=appdata,
             shortcut_name="App.lnk",
         )
 
         self.assertEqual(
             shortcut_path,
-            Path(r"C:\Users\Andy\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\App.lnk"),
+            Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "App.lnk",
         )
 
     def test_get_desktop_app_icon_path_points_to_static_asset(self):
-        icon_path = get_desktop_app_icon_path(r"C:\DispatchScheduler")
-        self.assertEqual(icon_path, Path(r"C:\DispatchScheduler\static\assets\dispatch_app_icon.ico"))
+        base_dir = r"C:\DispatchScheduler"
+        icon_path = get_desktop_app_icon_path(base_dir)
+        self.assertEqual(icon_path, Path(base_dir).resolve() / "static" / "assets" / "dispatch_app_icon.ico")
 
     def test_parse_bool_setting(self):
         self.assertTrue(parse_bool_setting("1"))
