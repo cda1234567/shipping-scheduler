@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.1"
+APP_VERSION = "v2026.04.22.2"
 APP_RELEASED_AT = "2026-04-22"
 APP_HEADLINE = "登出編輯模式加上確認對話框，避免誤點「登出編輯」按鈕導致整個編輯狀態中斷。"
 APP_CHANGELOG = [
