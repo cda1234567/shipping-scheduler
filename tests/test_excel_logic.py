@@ -8,6 +8,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from app.services.bom_parser import parse_bom
+from app.services.bom_quantity import coerce_scrap_factor
 from app.services.merge_to_main import merge_row_to_main, preview_order_batches
 
 
@@ -70,6 +71,60 @@ class ExcelLogicTests(unittest.TestCase):
         self.assertEqual(len(parsed.components), 1)
         self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
         self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
+
+    def test_parse_bom_detects_scrap_factor_column_from_header(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=10)
+            ws.cell(row=2, column=3, value="MODEL-S")
+            ws.cell(row=2, column=4, value="PCB-S")
+            ws.cell(row=4, column=12, value="拋料率")
+            ws.cell(row=5, column=2, value=2)
+            ws.cell(row=5, column=3, value="PART-S")
+            ws.cell(row=5, column=4, value="Cap")
+            ws.cell(row=5, column=12, value="6%")
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+L5)")
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
+
+    def test_parse_bom_reads_literal_formula_scrap_factor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=10)
+            ws.cell(row=2, column=3, value="MODEL-S")
+            ws.cell(row=2, column=4, value="PCB-S")
+            ws.cell(row=5, column=2, value=2)
+            ws.cell(row=5, column=3, value="PART-S")
+            ws.cell(row=5, column=4, value="Cap")
+            ws.cell(row=5, column=5, value="=6%")
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+E5)")
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
+
+    def test_coerce_scrap_factor_extracts_labeled_percentage_but_ignores_cell_refs(self):
+        self.assertAlmostEqual(coerce_scrap_factor("拋料率 6%"), 0.06)
+        self.assertAlmostEqual(coerce_scrap_factor("E5: 6%"), 0.06)
+        self.assertAlmostEqual(coerce_scrap_factor("=6%"), 0.06)
+        self.assertEqual(coerce_scrap_factor("=E5"), 0.0)
+        self.assertEqual(coerce_scrap_factor("E5"), 0.0)
 
     def test_merge_to_main_uses_zero_stock_when_only_moq_exists(self):
         with tempfile.TemporaryDirectory() as temp_dir:

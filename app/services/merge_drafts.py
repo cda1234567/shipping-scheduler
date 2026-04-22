@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .. import database as db
 from ..config import MERGE_DRAFT_DIR, cfg
 from .server_downloads import maybe_server_save_response
-from .download_names import append_minute_timestamp, build_generated_filename
+from .download_names import build_bom_dispatch_filename, build_generated_filename
 from .bom_editor import (
     build_bom_storage_payload,
     normalize_bom_record_to_editable,
@@ -59,6 +59,34 @@ def _sanitize_filename_piece(value: str, fallback: str = "draft") -> str:
     text = re.sub(r'[\\/:*?"<>|]+', "-", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     return text or fallback
+
+
+def _first_filename_model(*values) -> str:
+    for value in values:
+        for part in str(value or "").split(","):
+            model = part.strip()
+            if model:
+                return model
+    return ""
+
+
+def _safe_optional_filename_piece(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _sanitize_filename_piece(text, "")
+
+
+def _build_draft_display_filename(plan: dict, source_path: Path, now=None) -> str:
+    """Build the user-visible draft BOM filename from the target order, not the source BOM name."""
+    po_number = _safe_optional_filename_piece(plan.get("po_number"))
+    model = _safe_optional_filename_piece(_first_filename_model(
+        plan.get("model"),
+        plan.get("group_model"),
+        source_path.stem,
+    ))
+    suffix = source_path.suffix or ".xlsx"
+    return build_bom_dispatch_filename(po_number, model, suffix, now=now)
 
 
 def _normalize_decisions(decisions: dict[str, str] | None = None) -> dict[str, str]:
@@ -573,7 +601,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         if not source_path.exists():
             continue
 
-        display_name = append_minute_timestamp(bom.get("filename") or source_path.name)
+        display_name = _build_draft_display_filename(plan, source_path)
         internal_name = f"{index:02d}_{display_name}"
         output_path = draft_dir / internal_name
 
@@ -924,8 +952,12 @@ def get_draft_detail(draft_id: int) -> dict:
 
 def _replace_po_in_filename(filename: str, po_number: str) -> str:
     """將檔名中的 PO#xxxx 換成訂單實際的 PO 號。"""
+    if not po_number:
+        return filename
     safe_po = _sanitize_filename_piece(po_number, "PO")
-    return re.sub(r"PO#\S+", safe_po, filename, count=1)
+    path = Path(filename or "副檔.xlsx")
+    updated_stem = re.sub(r"PO#\s*[^_\s]+", safe_po, path.stem, count=1)
+    return f"{updated_stem}{path.suffix}" if updated_stem != path.stem else filename
 
 
 def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):

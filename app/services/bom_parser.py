@@ -1,11 +1,54 @@
 from __future__ import annotations
 from pathlib import Path
+import re
+
+from openpyxl.utils.cell import column_index_from_string
+
 from ..config import cfg
 from .xls_reader import open_workbook_any
 from .bom_quantity import calculate_effective_needed_qty, coerce_scrap_factor
 from ..models import BomFile, BomComponent
 
 _DASH_LIKE = {"-", "—", "－", "–", "x", "X", "n", "N", "?", "N/A", "n/a", "無"}
+_SCRAP_HEADER_STRONG_TERMS = (
+    "拋料率",
+    "抛料率",
+    "損耗率",
+    "损耗率",
+    "耗損率",
+    "耗损率",
+    "不良率",
+    "報廢率",
+    "报废率",
+    "scraprate",
+    "lossrate",
+    "attritionrate",
+    "wastagerate",
+)
+_SCRAP_HEADER_WEAK_TERMS = (
+    "拋料",
+    "抛料",
+    "損耗",
+    "损耗",
+    "耗損",
+    "耗损",
+    "報廢",
+    "报废",
+    "scrap",
+    "attrition",
+    "wastage",
+)
+_SCRAP_HEADER_NEGATIVE_TERMS = (
+    "用量",
+    "需求",
+    "數量",
+    "数量",
+    "生產",
+    "生产",
+    "qty",
+    "quantity",
+    "needed",
+)
 
 
 def _try_float(v) -> float | None:
@@ -27,6 +70,83 @@ def _is_formula(v) -> bool:
 
 def _row_value(row_vals, col_idx: int):
     return row_vals[col_idx] if len(row_vals) > col_idx else None
+
+
+def _is_blank(value) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _normalize_header_text(value) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[\s_:\-：／/\\()\[\]{}（）【】「」『』%％]+", "", text)
+
+
+def _looks_like_scrap_header(value) -> bool:
+    normalized = _normalize_header_text(value)
+    if not normalized:
+        return False
+    if any(term in normalized for term in _SCRAP_HEADER_STRONG_TERMS):
+        return True
+    if any(term in normalized for term in _SCRAP_HEADER_WEAK_TERMS):
+        return not any(term in normalized for term in _SCRAP_HEADER_NEGATIVE_TERMS)
+    return False
+
+
+def _detect_scrap_column(rows_list: list[tuple], data_start: int, default_col: int) -> int:
+    header_row_count = max(0, data_start - 1)
+    for row_vals in rows_list[:header_row_count]:
+        for col_idx, value in enumerate(row_vals or ()):
+            if _looks_like_scrap_header(value):
+                return col_idx
+    return default_col
+
+
+def _coerce_scrap_cell_value(data_value, formula_value) -> float:
+    if not _is_blank(data_value):
+        return coerce_scrap_factor(data_value)
+    return coerce_scrap_factor(formula_value)
+
+
+def _cell_ref_to_col_idx(cell_ref: str) -> int | None:
+    letters = re.sub(r"[^A-Za-z]", "", cell_ref or "")
+    if not letters:
+        return None
+    try:
+        return column_index_from_string(letters.upper()) - 1
+    except ValueError:
+        return None
+
+
+def _scrap_factor_from_needed_formula(
+    row_vals,
+    formula_row_vals,
+    formula_needed_raw,
+    row_number: int,
+    excluded_cols: set[int],
+) -> float:
+    if not _is_formula(formula_needed_raw):
+        return 0.0
+
+    formula = str(formula_needed_raw).upper()
+    row_pattern = rf"\$?([A-Z]{{1,3}})\$?{row_number}\b"
+    patterns = (
+        rf"1\s*\+\s*{row_pattern}",
+        rf"{row_pattern}\s*\+\s*1",
+    )
+    seen_cols: set[int] = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, formula):
+            col_idx = _cell_ref_to_col_idx(match.group(1))
+            if col_idx is None or col_idx in excluded_cols or col_idx in seen_cols:
+                continue
+            seen_cols.add(col_idx)
+            factor = _coerce_scrap_cell_value(
+                _row_value(row_vals, col_idx),
+                _row_value(formula_row_vals, col_idx),
+            )
+            if factor > 0:
+                return factor
+    return 0.0
 
 
 def _extract_number(v) -> float | None:
@@ -85,6 +205,8 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
     if len(all_rows) < 2:
         raise ValueError("BOM 檔案格式錯誤：行數不足")
 
+    scrap_col = _detect_scrap_column(formula_rows, data_start, scrap_col)
+
     # Row 1（index 0）
     row1 = all_rows[0]
     po_raw = row1[po_col] if len(row1) > po_col else None
@@ -117,13 +239,20 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
         is_dash_flag = _is_dash(g_raw) or _is_dash(h_raw)
 
         qty_per = _try_float(_row_value(row_vals, qty_col)) or 0.0
-        scrap_factor = coerce_scrap_factor(
-            _row_value(formula_row_vals, scrap_col)
-            if _row_value(formula_row_vals, scrap_col) not in (None, "")
-            else _row_value(row_vals, scrap_col)
+        scrap_factor = _coerce_scrap_cell_value(
+            _row_value(row_vals, scrap_col),
+            _row_value(formula_row_vals, scrap_col),
         )
         needed_raw = _row_value(row_vals, f_col)
         formula_needed_raw = _row_value(formula_row_vals, f_col)
+        if scrap_factor <= 0:
+            scrap_factor = _scrap_factor_from_needed_formula(
+                row_vals,
+                formula_row_vals,
+                formula_needed_raw,
+                row_number,
+                {part_col, desc_col, qty_col, f_col},
+            )
         needed_qty = _try_float(needed_raw)
         if _is_formula(formula_needed_raw) and qty_per > 0 and order_qty > 0 and scrap_factor > 0:
             needed_qty = calculate_effective_needed_qty(
