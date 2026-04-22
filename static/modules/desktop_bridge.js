@@ -539,12 +539,12 @@ function renderDesktopState() {
   }
 
   if (!desktopAvailable) {
-    folderEl.textContent = isServerDownloadEnabled()
-      ? (_serverDownloadState?.display_path || "伺服器儲存資料夾")
-      : "使用瀏覽器預設下載位置";
-    folderNoteEl.textContent = isServerDownloadEnabled()
-      ? "下載時會自動存到伺服器設定的資料夾，不經過瀏覽器。"
-      : "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
+    folderEl.textContent = "使用瀏覽器預設下載位置";
+    folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
+    if (isServerDownloadEnabled()) {
+      folderEl.textContent = _serverDownloadState?.display_path || "伺服器儲存資料夾";
+      folderNoteEl.textContent = "下載時會自動存到伺服器設定的資料夾，不經過瀏覽器。";
+    }
     downloadModeEl.checked = normalizeDownloadMode(_browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
     downloadModeEl.disabled = !supportsBrowserSavePicker();
     downloadModeNoteEl.textContent = supportsBrowserSavePicker()

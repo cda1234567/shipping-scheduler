@@ -8,6 +8,26 @@ def coerce_qty(value) -> float:
         return 0.0
 
 
+def coerce_scrap_factor(value) -> float:
+    if value is None:
+        return 0.0
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    try:
+        if text.endswith("%"):
+            amount = float(text[:-1].strip() or 0) / 100
+        else:
+            amount = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if amount < 0:
+        return 0.0
+    if amount > 1:
+        return amount / 100
+    return amount
+
+
 def resolve_effective_order_qty(schedule_order_qty, bom_order_qty=0.0) -> float:
     schedule_qty = coerce_qty(schedule_order_qty)
     if schedule_qty > 0:
@@ -19,6 +39,7 @@ def calculate_effective_needed_qty(
     *,
     needed_qty,
     qty_per_board=0.0,
+    scrap_factor=0.0,
     schedule_order_qty=0.0,
     bom_order_qty=0.0,
 ) -> float:
@@ -35,7 +56,7 @@ def calculate_effective_needed_qty(
 
     per_board_qty = coerce_qty(qty_per_board)
     if per_board_qty > 0:
-        return per_board_qty * schedule_qty
+        return per_board_qty * schedule_qty * (1 + coerce_scrap_factor(scrap_factor))
 
     return original_needed_qty
 
@@ -45,6 +66,7 @@ def get_component_effective_needed_qty(component: dict, schedule_order_qty=0.0, 
     return calculate_effective_needed_qty(
         needed_qty=component.get("needed_qty"),
         qty_per_board=component.get("qty_per_board"),
+        scrap_factor=component.get("scrap_factor"),
         schedule_order_qty=schedule_order_qty,
         bom_order_qty=source_bom_order_qty,
     )

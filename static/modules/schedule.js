@@ -1640,12 +1640,13 @@ function draftInlineStatHtml(label, value, cls = "") {
   return `<span class="draft-preview-inline-stat ${cls}"><span>${esc(label)}</span><strong>${fmt(roundShortageUiValue(value))}</strong></span>`;
 }
 
-function syncDraftPartControls(list, part, { qty = null, shortageChecked = null } = {}) {
+function syncDraftPartControls(list, part, { qty = null, shortageChecked = null, orderId = null } = {}) {
   const partKey = normalizePartKey(part);
   if (!partKey || !list) return;
 
   list.querySelectorAll(".supplement-input").forEach(input => {
     if (normalizePartKey(input.dataset.part) !== partKey) return;
+    if (orderId !== null && normalizeOrderId(input.dataset.orderId) !== orderId) return;
     if (qty !== null && document.activeElement !== input) {
       input.value = String(qty);
     }
@@ -1657,6 +1658,7 @@ function syncDraftPartControls(list, part, { qty = null, shortageChecked = null 
 
   list.querySelectorAll(".shortage-mark").forEach(checkbox => {
     if (normalizePartKey(checkbox.dataset.part) !== partKey) return;
+    if (orderId !== null && normalizeOrderId(checkbox.dataset.orderId) !== orderId) return;
     if (shortageChecked !== null && document.activeElement !== checkbox) {
       checkbox.checked = Boolean(shortageChecked);
     }
@@ -4409,9 +4411,11 @@ function bindShortageEditors(list) {
     checkbox.addEventListener("change", () => {
       const partKey = normalizePartKey(checkbox.dataset.part);
       if (!partKey) return;
+      const orderId = normalizeOrderId(checkbox.dataset.orderId);
       checkbox.dataset.manual = "1";
       syncDraftPartControls(list, partKey, {
         shortageChecked: checkbox.checked,
+        orderId,
       });
       const input = checkbox.closest(".shortage-item")?.querySelector(".supplement-input");
       if (input) {
@@ -4426,6 +4430,7 @@ function bindShortageEditors(list) {
     input.addEventListener("input", () => {
       const partKey = normalizePartKey(input.dataset.part);
       if (!partKey) return;
+      const orderId = normalizeOrderId(input.dataset.orderId);
       const checkbox = input.closest(".shortage-item")?.querySelector(".shortage-mark");
       if (checkbox?.checked) {
         checkbox.checked = false;
@@ -4434,6 +4439,7 @@ function bindShortageEditors(list) {
       syncDraftPartControls(list, partKey, {
         qty: parseFloat(input.value) || 0,
         shortageChecked: false,
+        orderId,
       });
       refreshModalShortageCascade(list, partKey);
     });

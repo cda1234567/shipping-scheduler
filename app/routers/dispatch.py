@@ -205,9 +205,13 @@ def _should_render_dispatch_item(
         return True
     if supplement_qty > 0:
         return True
+
     suggested_qty = float((shortage_item or {}).get("suggested_qty") or (shortage_item or {}).get("shortage_amount") or 0)
+    if decision == "CreateRequirement":
+        return bool(shortage_item) and suggested_qty > 0
+
     if reviewed_draft:
-        # 已審閱的 draft，supplement=0 代表使用者明確不補，不再 fallback 到 suggested_qty
+        # 已審閱的 draft，supplement=0 且非 CreateRequirement，代表使用者明確不補，不再 fallback 到 suggested_qty
         return False
     return bool(shortage_item) and suggested_qty > 0
 

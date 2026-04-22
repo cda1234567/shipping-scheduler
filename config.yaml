@@ -13,6 +13,7 @@ excel:
   # BOM 副檔
   bom_part_col: 2       # C 欄：料號
   bom_desc_col: 3       # D 欄：說明
+  bom_scrap_col: 4      # E 欄：拋料率
   bom_qty_per_board: 1  # B 欄：每板用量
   bom_needed_col: 5     # F 欄：生產用量含拋料
   bom_g_col: 6          # G 欄：上批餘料庚霖（dash-check）

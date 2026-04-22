@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS bom_components (
     part_number          TEXT    NOT NULL DEFAULT '',
     description          TEXT    NOT NULL DEFAULT '',
     qty_per_board        REAL    NOT NULL DEFAULT 0,
+    scrap_factor         REAL    NOT NULL DEFAULT 0,
     needed_qty           REAL    NOT NULL DEFAULT 0,
     prev_qty_cs          REAL    NOT NULL DEFAULT 0,
     is_dash              INTEGER NOT NULL DEFAULT 0,
@@ -372,6 +373,9 @@ def init_db():
             conn.execute("ALTER TABLE bom_files ADD COLUMN is_converted INTEGER NOT NULL DEFAULT 0")
         if "sort_order" not in bom_cols:
             conn.execute("ALTER TABLE bom_files ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        bom_component_cols = [r[1] for r in conn.execute("PRAGMA table_info(bom_components)").fetchall()]
+        if bom_component_cols and "scrap_factor" not in bom_component_cols:
+            conn.execute("ALTER TABLE bom_components ADD COLUMN scrap_factor REAL NOT NULL DEFAULT 0")
         draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
         if draft_cols and "main_file_mtime_ns" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
@@ -1150,9 +1154,9 @@ def save_bom_file(bom: dict):
         for c in bom.get("components", []):
             conn.execute(
                 "INSERT INTO bom_components(bom_file_id, part_number, description, qty_per_board, "
-                "needed_qty, prev_qty_cs, is_dash, is_customer_supplied) VALUES(?,?,?,?,?,?,?,?)",
+                "scrap_factor, needed_qty, prev_qty_cs, is_dash, is_customer_supplied) VALUES(?,?,?,?,?,?,?,?,?)",
                 (bom["id"], c["part_number"], c.get("description", ""),
-                 c.get("qty_per_board", 0), c.get("needed_qty", 0),
+                 c.get("qty_per_board", 0), c.get("scrap_factor", 0), c.get("needed_qty", 0),
                  c.get("prev_qty_cs", 0), int(c.get("is_dash", False)),
                  int(c.get("is_customer_supplied", False))),
             )
@@ -1248,7 +1252,7 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
         rows = conn.execute(
             "SELECT bf.group_model, bf.model, "
             "bc.part_number, bc.description, bc.qty_per_board, "
-            "bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied, "
+            "bc.scrap_factor, bc.needed_qty, bc.prev_qty_cs, bc.is_dash, bc.is_customer_supplied, "
             "bf.order_qty AS bom_order_qty "
             "FROM bom_files bf JOIN bom_components bc ON bc.bom_file_id = bf.id "
             "ORDER BY bf.sort_order, bf.uploaded_at, bf.filename, bc.id"
@@ -1258,6 +1262,7 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
         comp = {
             "part_number": r["part_number"], "description": r["description"],
             "qty_per_board": r["qty_per_board"], "needed_qty": r["needed_qty"],
+            "scrap_factor": r["scrap_factor"],
             "bom_order_qty": r["bom_order_qty"],
             "prev_qty_cs": r["prev_qty_cs"], "is_dash": bool(r["is_dash"]),
             "is_customer_supplied": bool(r["is_customer_supplied"]),
@@ -1551,6 +1556,18 @@ def get_all_decisions() -> dict[str, str]:
     return decisions
 
 
+def _filter_existing_order_ids(conn, order_ids: list[int]) -> list[int]:
+    if not order_ids:
+        return []
+    placeholders = ",".join("?" * len(order_ids))
+    rows = conn.execute(
+        f"SELECT id FROM orders WHERE id IN ({placeholders})",
+        order_ids,
+    ).fetchall()
+    existing = {int(row["id"]) for row in rows}
+    return [order_id for order_id in order_ids if order_id in existing]
+
+
 def replace_order_decisions(order_ids: list[int], allocations: dict[int, dict[str, str]] | None = None):
     normalized_ids: list[int] = []
     for order_id in order_ids or []:
@@ -1564,6 +1581,9 @@ def replace_order_decisions(order_ids: list[int], allocations: dict[int, dict[st
 
     now = _now()
     with get_conn() as conn:
+        normalized_ids = _filter_existing_order_ids(conn, normalized_ids)
+        if not normalized_ids:
+            return
         placeholders = ",".join("?" * len(normalized_ids))
         conn.execute(
             f"DELETE FROM decisions WHERE order_id IN ({placeholders})",
@@ -1667,8 +1687,11 @@ def replace_order_supplements(
         return
 
     now = _now()
-    existing_details = get_order_supplement_details(normalized_ids)
     with get_conn() as conn:
+        normalized_ids = _filter_existing_order_ids(conn, normalized_ids)
+        if not normalized_ids:
+            return
+        existing_details = get_order_supplement_details(normalized_ids)
         placeholders = ",".join("?" * len(normalized_ids))
         conn.execute(
             f"DELETE FROM order_supplements WHERE order_id IN ({placeholders})",

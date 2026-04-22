@@ -10,7 +10,7 @@ let _currentQuery = "";
 let _initialized = false;
 const MAIN_PREVIEW_ROW_HEADER_WIDTH = 56;
 const MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30;
-const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 1;
+const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3;
 
 export async function initMainPreview() {
   if (_initialized) return;

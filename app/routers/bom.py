@@ -40,7 +40,7 @@ from ..services.bom_revision import (
     ensure_bom_revision_history,
     snapshot_bom_revision,
 )
-from ..services.download_names import append_minute_timestamp, build_generated_filename
+from ..services.download_names import append_minute_timestamp, build_bom_dispatch_filename, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from ..services.order_supplements import build_order_supplement_allocations
 from ..services.shortage_rules import (
@@ -607,9 +607,9 @@ def _build_order_based_export_values(
     order_ids: list[int],
     supplements: dict[str, float],
     order_supplements: dict[int, dict[str, float]] | None = None,
-) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]], dict[str, float]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]], dict[str, float], dict[str, dict]]:
     if not order_ids or not target_boms:
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}
 
     running = _build_dispatch_running_stock()
     st_inventory_stock = db.get_st_inventory_stock()
@@ -618,6 +618,7 @@ def _build_order_based_export_values(
     supplement_allocations: dict[str, dict[str, float]] = {}
     purchase_highlights: dict[str, set[str]] = {}
     order_qty_by_bom: dict[str, float] = {}
+    order_info_by_bom: dict[str, dict] = {}
     remaining_supplements = {
         _normalize_lookup_key(part): float(qty or 0)
         for part, qty in (supplements or {}).items()
@@ -713,8 +714,9 @@ def _build_order_based_export_values(
             supplement_allocations[bom_id] = supplement_map
             purchase_highlights[bom_id] = purchase_parts
             order_qty_by_bom[bom_id] = target_order_qty
+            order_info_by_bom[bom_id] = {"po_number": order.get("po_number"), "model": order.get("model")}
 
-    return carry_overs, supplement_allocations, purchase_highlights, order_qty_by_bom
+    return carry_overs, supplement_allocations, purchase_highlights, order_qty_by_bom, order_info_by_bom
 
 
 def _build_direct_purchase_highlights(supplements: dict[str, float]) -> set[str]:
@@ -896,7 +898,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         current.update(part_map)
         effective_order_supplements[order_id] = current
     direct_purchase_highlights = _build_direct_purchase_highlights(supplements)
-    computed_carry_overs, computed_supplements, computed_purchase_highlights, computed_order_qtys = _build_order_based_export_values(
+    computed_carry_overs, computed_supplements, computed_purchase_highlights, computed_order_qtys, computed_order_info = _build_order_based_export_values(
         target_boms,
         req.order_ids,
         supplements,
@@ -915,7 +917,10 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             continue
 
         ext = src.suffix.lower()
-        output_name = append_minute_timestamp(bom["filename"] or src.name)
+        _order_info = computed_order_info.get(bom["id"], {})
+        _po = _order_info.get("po_number") or bom.get("po_number")
+        _model = bom.get("model") or bom.get("group_model")
+        output_name = build_bom_dispatch_filename(_po, _model, ext)
         wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
         override = req.header_overrides.get(bom["id"], {})

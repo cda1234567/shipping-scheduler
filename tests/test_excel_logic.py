@@ -7,6 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
+from app.services.bom_parser import parse_bom
 from app.services.merge_to_main import merge_row_to_main, preview_order_batches
 
 
@@ -45,6 +46,30 @@ class ExcelLogicTests(unittest.TestCase):
             )
 
         self.assertEqual(fixes, {"PART-A": 0.0})
+
+    def test_parse_bom_calculates_formula_needed_qty_from_scrap_factor_without_cached_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=10)
+            ws.cell(row=2, column=3, value="MODEL-S")
+            ws.cell(row=2, column=4, value="PCB-S")
+            ws.cell(row=5, column=2, value=2)
+            ws.cell(row=5, column=3, value="PART-S")
+            ws.cell(row=5, column=4, value="Cap")
+            ws.cell(row=5, column=5, value=0.06)
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+E5)")
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(parsed.order_qty, 10)
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
 
     def test_merge_to_main_uses_zero_stock_when_only_moq_exists(self):
         with tempfile.TemporaryDirectory() as temp_dir:

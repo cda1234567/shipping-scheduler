@@ -22,6 +22,7 @@ from main import app
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
         cls.client = TestClient(app)
 
     def _build_main_workbook(self, path: Path, rows: list[tuple[str, float, float]]) -> None:
@@ -2422,7 +2423,7 @@ class ApiTests(unittest.TestCase):
             }
 
             with patch("app.routers.bom.db.get_bom_files", return_value=[bom_record]), \
-                 patch("app.routers.bom._build_order_based_export_values", return_value=({}, {}, {}, {})), \
+                 patch("app.routers.bom._build_order_based_export_values", return_value=({}, {}, {}, {}, {})), \
                  patch("app.routers.bom.build_order_supplement_allocations", return_value={5: {"PART-1": 3000}}) as mock_allocations, \
                  patch("app.routers.bom.db.replace_order_supplements") as mock_replace:
                 response = self.client.post("/api/bom/dispatch-download", json={
@@ -2518,18 +2519,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         archive = zipfile.ZipFile(io.BytesIO(response.content))
-        archive_names = sorted(archive.namelist())
-        self.assertEqual(len(archive_names), 2)
-        self.assertTrue(archive_names[0].startswith("board-a_"))
-        self.assertTrue(archive_names[1].startswith("board-c_"))
+        self.assertEqual(len(archive.namelist()), 2)
+        bom_a_name = next(n for n in archive.namelist() if "T356789IU_MAIN_BOARD_A" in n)
+        bom_c_name = next(n for n in archive.namelist() if "T356789IU_DISPLAY_C" in n)
 
-        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[0])), data_only=False)
+        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(bom_a_name)), data_only=False)
         ws_a = wb_a.active
         self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
         self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
         wb_a.close()
 
-        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[1])), data_only=False)
+        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(bom_c_name)), data_only=False)
         ws_c = wb_c.active
         self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
         self.assertEqual(ws_c.cell(row=5, column=8).value, 0)
@@ -2607,16 +2607,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         archive = zipfile.ZipFile(io.BytesIO(response.content))
-        archive_names = sorted(archive.namelist())
-        self.assertEqual(len(archive_names), 2)
+        self.assertEqual(len(archive.namelist()), 2)
+        bom_a_name = next(n for n in archive.namelist() if "T356789IU_MAIN_BOARD_A" in n)
+        bom_c_name = next(n for n in archive.namelist() if "T356789IU_DISPLAY_C" in n)
 
-        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[0])), data_only=False)
+        wb_a = openpyxl.load_workbook(io.BytesIO(archive.read(bom_a_name)), data_only=False)
         ws_a = wb_a.active
         self.assertEqual(ws_a.cell(row=5, column=7).value, 5625)
         self.assertEqual(ws_a.cell(row=5, column=8).value, 0)
         wb_a.close()
 
-        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(archive_names[1])), data_only=False)
+        wb_c = openpyxl.load_workbook(io.BytesIO(archive.read(bom_c_name)), data_only=False)
         ws_c = wb_c.active
         self.assertEqual(ws_c.cell(row=5, column=7).value, 120)
         self.assertEqual(ws_c.cell(row=5, column=8).value, 3000)

@@ -140,10 +140,6 @@ def _copy_main_row_seed_values(ws, source_row_idx: int, target_row_idx: int, max
                 target_cell.value = value
             continue
 
-        number_format = str(source_cell.number_format or "")
-        if isinstance(value, (int, float)) and "%" in number_format:
-            target_cell.value = value
-
 
 def _component_description(component: dict) -> str:
     return str(component.get("description") or component.get("part_name") or "").strip()

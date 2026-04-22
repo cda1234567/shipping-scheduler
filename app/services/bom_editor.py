@@ -360,6 +360,7 @@ def _set_cell_value(ws: Worksheet, row_idx: int, col_idx: int, value):
 def _write_component_row(ws, row_idx: int, component):
     part_col = cfg("excel.bom_part_col", 2) + 1
     desc_col = cfg("excel.bom_desc_col", 3) + 1
+    scrap_col = cfg("excel.bom_scrap_col", 4) + 1
     qty_col = cfg("excel.bom_qty_per_board", 1) + 1
     needed_col = cfg("excel.bom_needed_col", 5) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
@@ -367,8 +368,12 @@ def _write_component_row(ws, row_idx: int, component):
 
     _set_cell_value(ws, row_idx, part_col, component.part_number.strip())
     _set_cell_value(ws, row_idx, desc_col, component.description)
+    if float(component.scrap_factor or 0) > 0 or _is_empty_excel_value(_get_cell_value(ws, row_idx, scrap_col)):
+        _set_cell_value(ws, row_idx, scrap_col, component.scrap_factor)
     _set_cell_value(ws, row_idx, qty_col, component.qty_per_board)
-    _set_cell_value(ws, row_idx, needed_col, component.needed_qty)
+    needed_cell = _resolve_cell_for_write(ws, row_idx, needed_col)
+    if not _is_formula_excel_cell(needed_cell):
+        needed_cell.value = component.needed_qty
 
     if component.is_dash:
         _set_cell_value(ws, row_idx, g_col, "-")

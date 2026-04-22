@@ -38,23 +38,25 @@ def build_order_decision_allocations(
 
     bom_map = db.get_all_bom_components_by_model()
     allocations: dict[int, dict[str, str]] = {}
+    fallback_order_id = normalized_ids[0]
 
     for order_id in normalized_ids:
         order = db.get_order(order_id)
         if not order:
-            allocations[order_id] = {
-                original_key: value
-                for original_key, value in normalized_decisions.values()
-            }
+            allocations[order_id] = (
+                {
+                    original_key: value
+                    for original_key, value in normalized_decisions.values()
+                }
+                if order_id == fallback_order_id
+                else {}
+            )
             continue
 
         model_key = normalize_part_key(order.get("model"))
         components = bom_map.get(model_key, [])
         if not components:
-            allocations[order_id] = {
-                original_key: value
-                for original_key, value in normalized_decisions.values()
-            }
+            allocations[order_id] = {}
             continue
 
         order_parts = {

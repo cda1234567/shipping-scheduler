@@ -40,6 +40,7 @@ class BomComponent(BaseModel):
     part_number: str
     description: str = ""
     qty_per_board: float = 0.0
+    scrap_factor: float = 0.0
     needed_qty: float = 0.0
     prev_qty_cs: float = 0.0
     is_dash: bool = False
@@ -69,6 +70,7 @@ class BomEditorComponentUpdate(BaseModel):
     part_number: str
     description: str = ""
     qty_per_board: float = 0.0
+    scrap_factor: float = 0.0
     needed_qty: float = 0.0
     prev_qty_cs: float = 0.0
     is_dash: bool = False
