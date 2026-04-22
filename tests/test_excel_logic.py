@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -13,6 +15,31 @@ from app.services.merge_to_main import merge_row_to_main, preview_order_batches
 
 
 class ExcelLogicTests(unittest.TestCase):
+    def _inject_cached_formula_value(self, path: Path, cell_ref: str, formula: str, cached_value: float) -> None:
+        worksheet_path = "xl/worksheets/sheet1.xml"
+        namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        ET.register_namespace("", namespace)
+
+        replacement_path = path.with_suffix(".patched.xlsx")
+        with zipfile.ZipFile(path, "r") as source_zip, zipfile.ZipFile(replacement_path, "w", zipfile.ZIP_DEFLATED) as target_zip:
+            for item in source_zip.infolist():
+                data = source_zip.read(item.filename)
+                if item.filename == worksheet_path:
+                    root = ET.fromstring(data)
+                    cell = root.find(f".//{{{namespace}}}c[@r='{cell_ref}']")
+                    if cell is None:
+                        raise AssertionError(f"cell {cell_ref} not found")
+                    for child in list(cell):
+                        if child.tag in {f"{{{namespace}}}f", f"{{{namespace}}}v"}:
+                            cell.remove(child)
+                    formula_el = ET.SubElement(cell, f"{{{namespace}}}f")
+                    formula_el.text = formula.lstrip("=")
+                    value_el = ET.SubElement(cell, f"{{{namespace}}}v")
+                    value_el.text = str(cached_value)
+                    data = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+                target_zip.writestr(item, data)
+        replacement_path.replace(path)
+
     def _build_main_workbook(self, path: Path) -> None:
         wb = Workbook()
         ws = wb.active
@@ -71,6 +98,54 @@ class ExcelLogicTests(unittest.TestCase):
         self.assertEqual(len(parsed.components), 1)
         self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
         self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
+
+    def test_parse_bom_evaluates_simple_formula_needed_qty_instead_of_stale_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=300)
+            ws.cell(row=2, column=3, value="MODEL-S")
+            ws.cell(row=2, column=4, value="PCB-S")
+            ws.cell(row=5, column=2, value=1)
+            ws.cell(row=5, column=3, value="PB-20111A-TAB")
+            ws.cell(row=5, column=4, value="TX1-S1 bare PCB")
+            ws.cell(row=5, column=5, value=0)
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+E5)")
+            wb.save(path)
+            wb.close()
+            self._inject_cached_formula_value(path, "F5", "=B5*$K$1*(1+E5)", 600)
+
+            parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 300)
+
+    def test_parse_bom_uses_cached_formula_value_when_formula_is_not_supported(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=300)
+            ws.cell(row=2, column=3, value="MODEL-S")
+            ws.cell(row=2, column=4, value="PCB-S")
+            ws.cell(row=5, column=2, value=1)
+            ws.cell(row=5, column=3, value="OC-10849B")
+            ws.cell(row=5, column=4, value="TX1-S1 spring")
+            ws.cell(row=5, column=5, value=0.04)
+            ws.cell(row=5, column=6, value='=IF("X"="X",306,999)')
+            wb.save(path)
+            wb.close()
+            self._inject_cached_formula_value(path, "F5", '=IF("X"="X",306,999)', 306)
+
+            parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.04)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 306)
 
     def test_parse_bom_detects_scrap_factor_column_from_header(self):
         with tempfile.TemporaryDirectory() as temp_dir:

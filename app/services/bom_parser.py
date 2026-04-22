@@ -1,8 +1,10 @@
 from __future__ import annotations
+import ast
+import math
 from pathlib import Path
 import re
 
-from openpyxl.utils.cell import column_index_from_string
+from openpyxl.utils.cell import column_index_from_string, coordinate_to_tuple
 
 from ..config import cfg
 from .xls_reader import open_workbook_any
@@ -149,6 +151,153 @@ def _scrap_factor_from_needed_formula(
     return 0.0
 
 
+def _excel_round(value, digits=0):
+    factor = 10 ** int(digits or 0)
+    scaled = abs(float(value)) * factor
+    rounded = math.floor(scaled + 0.5) / factor
+    return math.copysign(rounded, float(value))
+
+
+def _excel_roundup(value, digits=0):
+    factor = 10 ** int(digits or 0)
+    return math.copysign(math.ceil(abs(float(value)) * factor) / factor, float(value))
+
+
+def _excel_rounddown(value, digits=0):
+    factor = 10 ** int(digits or 0)
+    return math.copysign(math.floor(abs(float(value)) * factor) / factor, float(value))
+
+
+def _excel_ceiling(value, significance=1):
+    amount = float(value)
+    step = abs(float(significance or 1))
+    if step <= 0:
+        return amount
+    return math.ceil(amount / step) * step
+
+
+def _excel_floor(value, significance=1):
+    amount = float(value)
+    step = abs(float(significance or 1))
+    if step <= 0:
+        return amount
+    return math.floor(amount / step) * step
+
+
+_FORMULA_FUNCTIONS = {
+    "ABS": abs,
+    "CEILING": _excel_ceiling,
+    "CEILING_MATH": _excel_ceiling,
+    "FLOOR": _excel_floor,
+    "INT": lambda value: math.floor(float(value)),
+    "MAX": max,
+    "MIN": min,
+    "ROUND": _excel_round,
+    "ROUNDDOWN": _excel_rounddown,
+    "ROUNDUP": _excel_roundup,
+    "SUM": lambda *values: sum(float(value or 0) for value in values),
+}
+_ALLOWED_FORMULA_AST_NODES = (
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Call,
+    ast.Name,
+    ast.Load,
+    ast.Constant,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.Pow,
+    ast.Mod,
+    ast.UAdd,
+    ast.USub,
+)
+
+
+def _cell_formula_ref_value(data_rows, formula_rows, cell_ref: str) -> float | None:
+    try:
+        row_idx, col_idx = coordinate_to_tuple(cell_ref.replace("$", ""))
+    except ValueError:
+        return None
+
+    data_row = data_rows[row_idx - 1] if len(data_rows) >= row_idx else ()
+    formula_row = formula_rows[row_idx - 1] if len(formula_rows) >= row_idx else ()
+    data_value = _row_value(data_row, col_idx - 1)
+    formula_value = _row_value(formula_row, col_idx - 1)
+
+    if _is_blank(data_value):
+        if _is_blank(formula_value):
+            return 0.0
+        factor = coerce_scrap_factor(formula_value)
+        if factor > 0:
+            return factor
+        return _try_float(formula_value)
+
+    if isinstance(data_value, str) and ("%" in data_value or "％" in data_value):
+        return coerce_scrap_factor(data_value)
+    return _try_float(data_value)
+
+
+def _validate_formula_ast(node) -> bool:
+    for child in ast.walk(node):
+        if not isinstance(child, _ALLOWED_FORMULA_AST_NODES):
+            return False
+        if isinstance(child, ast.Constant) and not isinstance(child.value, (int, float)):
+            return False
+        if isinstance(child, ast.Name) and child.id not in _FORMULA_FUNCTIONS:
+            return False
+        if isinstance(child, ast.Call):
+            if not isinstance(child.func, ast.Name) or child.func.id not in _FORMULA_FUNCTIONS:
+                return False
+    return True
+
+
+def _evaluate_numeric_formula(formula, data_rows, formula_rows) -> float | None:
+    if not _is_formula(formula):
+        return None
+
+    expr = str(formula).strip()[1:].strip()
+    if not expr or ":" in expr or "!" in expr or '"' in expr or "'" in expr:
+        return None
+
+    expr = re.sub(r"\bCEILING\.MATH\s*\(", "CEILING_MATH(", expr, flags=re.IGNORECASE)
+    expr = re.sub(r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*%", lambda m: str(float(m.group(1)) / 100), expr)
+
+    cell_pattern = re.compile(r"(?<![A-Za-z_])\$?[A-Za-z]{1,3}\$?\d+(?![A-Za-z_])")
+
+    def replace_cell(match):
+        cell_ref = match.group(0)
+        value = _cell_formula_ref_value(data_rows, formula_rows, cell_ref)
+        if value is None:
+            raise ValueError(f"unsupported formula cell value: {cell_ref}")
+        return str(float(value))
+
+    try:
+        expr = cell_pattern.sub(replace_cell, expr)
+        expr = expr.replace("^", "**")
+        parsed = ast.parse(expr, mode="eval")
+    except Exception:
+        return None
+
+    if not _validate_formula_ast(parsed):
+        return None
+
+    try:
+        value = eval(compile(parsed, "<bom_formula>", "eval"), {"__builtins__": {}}, _FORMULA_FUNCTIONS)
+    except Exception:
+        return None
+
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(amount):
+        return None
+    return amount
+
+
 def _extract_number(v) -> float | None:
     if v is None:
         return None
@@ -171,6 +320,38 @@ def _extract_number(v) -> float | None:
         except (ValueError, TypeError):
             pass
     return None
+
+
+def read_formula_needed_qty_cache(path: str) -> dict[tuple[str, int, str], float]:
+    part_col = cfg("excel.bom_part_col", 2)
+    f_col = cfg("excel.bom_needed_col", 5)
+    data_start = cfg("excel.bom_data_start_row", 5)
+
+    wb = open_workbook_any(path, read_only=True, data_only=True)
+    formula_wb = open_workbook_any(path, read_only=True, data_only=False)
+    ws = wb.worksheets[0]
+    formula_ws = formula_wb.worksheets[0]
+    all_rows = list(ws.iter_rows(min_row=1, values_only=True))
+    formula_rows = list(formula_ws.iter_rows(min_row=1, values_only=True))
+    title = ws.title
+    wb.close()
+    formula_wb.close()
+
+    cache: dict[tuple[str, int, str], float] = {}
+    for row_number, row_vals in enumerate(all_rows[data_start - 1:], start=data_start):
+        if not row_vals:
+            continue
+        part = str(_row_value(row_vals, part_col) or "").strip().upper()
+        if not part:
+            continue
+        formula_row_vals = formula_rows[row_number - 1] if len(formula_rows) >= row_number else row_vals
+        formula_needed_raw = _row_value(formula_row_vals, f_col)
+        if not _is_formula(formula_needed_raw):
+            continue
+        needed_qty = _try_float(_row_value(row_vals, f_col))
+        if needed_qty is not None and needed_qty > 0:
+            cache[(title, row_number, part)] = needed_qty
+    return cache
 
 
 def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFile:
@@ -253,15 +434,10 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
                 row_number,
                 {part_col, desc_col, qty_col, f_col},
             )
-        needed_qty = _try_float(needed_raw)
-        if _is_formula(formula_needed_raw) and qty_per > 0 and order_qty > 0 and scrap_factor > 0:
-            needed_qty = calculate_effective_needed_qty(
-                needed_qty=0,
-                qty_per_board=qty_per,
-                scrap_factor=scrap_factor,
-                schedule_order_qty=order_qty,
-            )
-        elif needed_qty is None:
+        needed_qty = _evaluate_numeric_formula(formula_needed_raw, all_rows, formula_rows)
+        if needed_qty is None:
+            needed_qty = _try_float(needed_raw)
+        if needed_qty is None:
             needed_qty = calculate_effective_needed_qty(
                 needed_qty=0,
                 qty_per_board=qty_per,

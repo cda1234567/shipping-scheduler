@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from openpyxl.styles import Font, PatternFill
 
 import app.routers.schedule as schedule_router
+import app.routers.bom as bom_router
 from app.models import BomComponent, BomFile
 from main import app
 
@@ -34,6 +35,40 @@ class ApiTests(unittest.TestCase):
             ws.append([part_number, "Vendor", moq, None, None, None, 0, stock_qty])
         wb.save(path)
         wb.close()
+
+    def test_restore_pre_normalize_needed_quantities_keeps_cached_formula_values(self):
+        pre_normalize = BomFile(
+            id="bom-1",
+            filename="bom.xlsx",
+            path="bom.xlsx",
+            po_number=4500059234,
+            components=[
+                BomComponent(
+                    part_number="OC-10849B",
+                    needed_qty=306,
+                    source_row=5,
+                    source_sheet="Sheet",
+                )
+            ],
+        )
+        parsed = BomFile(
+            id="bom-1",
+            filename="bom.xlsx",
+            path="bom.xlsx",
+            po_number=4500059234,
+            components=[
+                BomComponent(
+                    part_number="OC-10849B",
+                    needed_qty=312,
+                    source_row=5,
+                    source_sheet="Sheet",
+                )
+            ],
+        )
+
+        restored = bom_router._restore_pre_normalize_needed_quantities(parsed, pre_normalize)
+
+        self.assertEqual(restored.components[0].needed_qty, 306)
 
     def test_schedule_rows_include_decisions_and_dispatched_consumption(self):
         pending_rows = [{"id": 1, "model": "MODEL-A"}]

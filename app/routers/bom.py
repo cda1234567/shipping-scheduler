@@ -29,6 +29,7 @@ from ..services.bom_editor import (
     prepare_uploaded_bom_file,
     validate_uploaded_bom_layout,
 )
+from ..services.bom_parser import read_formula_needed_qty_cache
 from ..services.bom_quantity import (
     calculate_effective_needed_qty,
     coerce_qty,
@@ -171,6 +172,46 @@ def _copy_uploaded_bom_to_target_id(stored: dict, target_bom_id: str) -> dict[st
     }
 
 
+def _component_cache_key(component) -> tuple[str, int, str] | None:
+    row = getattr(component, "source_row", None)
+    if row is None:
+        return None
+    part = str(getattr(component, "part_number", "") or "").strip().upper()
+    if not part:
+        return None
+    return (str(getattr(component, "source_sheet", "") or ""), int(row), part)
+
+
+def _restore_pre_normalize_needed_quantities(parsed, pre_normalize_parsed):
+    if not pre_normalize_parsed:
+        return parsed
+
+    cached_needed: dict[tuple[str, int, str], float] = {}
+    if isinstance(pre_normalize_parsed, dict):
+        cached_needed = {
+            key: coerce_qty(value)
+            for key, value in pre_normalize_parsed.items()
+            if coerce_qty(value) > 0
+        }
+    else:
+        for component in pre_normalize_parsed.components:
+            key = _component_cache_key(component)
+            if key is None:
+                continue
+            value = coerce_qty(component.needed_qty)
+            if value > 0:
+                cached_needed[key] = value
+
+    if not cached_needed:
+        return parsed
+
+    for component in parsed.components:
+        key = _component_cache_key(component)
+        if key in cached_needed:
+            component.needed_qty = cached_needed[key]
+    return parsed
+
+
 def _delete_bom_record_with_files(bom: dict):
     bom_id = str(bom.get("id") or "").strip()
     if not bom_id:
@@ -224,6 +265,12 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 upload_name=uf.filename or f"{bom_id}{ext}",
                 content=await uf.read(),
             )
+            uploaded_at = datetime.now().isoformat()
+            pre_normalize_needed_cache = {}
+            try:
+                pre_normalize_needed_cache = read_formula_needed_qty_cache(str(stored["filepath"]))
+            except Exception:
+                pre_normalize_needed_cache = {}
             auto_fixes = normalize_uploaded_bom_layout(str(stored["filepath"]))
             layout_errors = validate_uploaded_bom_layout(str(stored["filepath"]))
             if layout_errors:
@@ -235,12 +282,13 @@ async def upload_bom_files(files: List[UploadFile] = File(...), group_model: str
                 path=str(stored["filepath"]),
                 bom_id=bom_id,
                 filename=str(stored["filename"]),
-                uploaded_at=datetime.now().isoformat(),
+                uploaded_at=uploaded_at,
                 group_model=group_model,
                 source_filename=str(stored["source_filename"]),
                 source_format=str(stored["source_format"]),
                 is_converted=bool(stored["is_converted"]),
             )
+            parsed = _restore_pre_normalize_needed_quantities(parsed, pre_normalize_needed_cache)
             overwrite_matches = _find_matching_uploaded_boms(parsed)
             overwrite_target, duplicate_targets = _pick_overwrite_keeper(overwrite_matches, parsed)
             replaced_existing = overwrite_target is not None

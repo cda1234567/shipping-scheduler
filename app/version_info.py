@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.4"
+APP_VERSION = "v2026.04.22.5"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "批次 merge 副檔下載會跟著下載設定走，包含伺服器下載資料夾。"
+APP_HEADLINE = "修正系統扣帳需求量會和 Excel 副檔公式結果不一致的問題。"
 APP_CHANGELOG = [
+    {
+        "title": "扣帳需求量",
+        "items": [
+            "BOM 的 F 欄如果是公式，系統現在會先嘗試依 Excel 公式直接算出需求量，不會只依舊的快取值或簡化拋料公式扣帳。",
+            "像 2-9 的 PB-20111A-TAB，BOM 使用量 1、生產數量 300 時，系統扣帳會跟副檔公式一樣是 300，不會再變成 600。",
+            "如果 F 欄公式太複雜無法安全解析，系統仍會退回使用 Excel 原本保存的 cached value，避免任意猜公式。",
+        ],
+    },
     {
         "title": "批次副檔下載位置",
         "items": [
