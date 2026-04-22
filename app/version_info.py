@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.2"
+APP_VERSION = "v2026.04.22.3"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "登出編輯模式加上確認對話框，避免誤點「登出編輯」按鈕導致整個編輯狀態中斷。"
+APP_HEADLINE = "修正批次 merge 副檔命名與新 BOM 拋料率讀取，讓副檔輸出與缺料計算更穩定。"
 APP_CHANGELOG = [
+    {
+        "title": "副檔命名與拋料率",
+        "items": [
+            "批次 merge 產出的副檔檔名現在會直接依目標訂單的 PO、機種與時間戳產生，最後一筆也會照同一套規則命名。",
+            "新 BOM 如果把「拋料率／損耗率／scrap rate」欄位放在不同位置，系統會先依表頭偵測，不再只固定讀 E 欄。",
+            "拋料率也能讀取 `6%`、`拋料率 6%`、`=6%` 這類格式，避免上傳後缺料計算少算拋料。",
+        ],
+    },
     {
         "title": "登出編輯確認",
         "items": [
