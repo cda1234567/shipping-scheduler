@@ -2069,13 +2069,14 @@ class ApiTests(unittest.TestCase):
             source_format=".xls",
             is_converted=True,
             components=[
-                BomComponent(part_number="PART-1", source_row=5),
+                BomComponent(part_number="PART-1", qty_per_board=1, needed_qty=300, source_row=5),
             ],
         )
 
         with patch("app.routers.bom._get_required_bom", return_value=bom_record), \
              patch("app.routers.bom._ensure_editable_bom_record", return_value=bom_record), \
-             patch("app.routers.bom.parse_bom_for_storage", return_value=parsed):
+             patch("app.routers.bom.parse_bom_for_storage", return_value=parsed), \
+             patch("app.routers.bom.db.save_bom_file") as mock_save_bom:
             response = self.client.get("/api/bom/bom-1/editor")
 
         self.assertEqual(response.status_code, 200)
@@ -2085,6 +2086,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["source_format"], ".xls")
         self.assertTrue(data["is_converted"])
         self.assertEqual(data["component_count"], 1)
+        mock_save_bom.assert_called_once()
+        saved_payload = mock_save_bom.call_args.args[0]
+        self.assertEqual(saved_payload["components"][0]["part_number"], "PART-1")
+        self.assertEqual(saved_payload["components"][0]["needed_qty"], 300)
 
     def test_root_and_static_disable_cache(self):
         root_response = self.client.get("/")

@@ -224,22 +224,32 @@ def _delete_bom_record_with_files(bom: dict):
     db.delete_bom_file(bom_id)
 
 
+def _parse_bom_record_for_storage(bom: dict):
+    return parse_bom_for_storage(
+        path=bom["filepath"],
+        bom_id=bom["id"],
+        filename=bom["filename"],
+        uploaded_at=bom["uploaded_at"],
+        group_model=bom.get("group_model", ""),
+        source_filename=bom.get("source_filename", ""),
+        source_format=bom.get("source_format", ""),
+        is_converted=bool(bom.get("is_converted")),
+    )
+
+
+def _sync_bom_components_from_file(bom: dict) -> dict:
+    parsed = _parse_bom_record_for_storage(bom)
+    payload = build_bom_storage_payload(parsed)
+    db.save_bom_file(payload)
+    return payload
+
+
 def _ensure_editable_bom_record(bom: dict) -> dict:
     normalized = normalize_bom_record_to_editable(bom)
     if normalized == bom:
         return normalized
 
-    parsed = parse_bom_for_storage(
-        path=normalized["filepath"],
-        bom_id=normalized["id"],
-        filename=normalized["filename"],
-        uploaded_at=normalized["uploaded_at"],
-        group_model=normalized.get("group_model", ""),
-        source_filename=normalized.get("source_filename", ""),
-        source_format=normalized.get("source_format", ""),
-        is_converted=bool(normalized.get("is_converted")),
-    )
-    db.save_bom_file(build_bom_storage_payload(parsed))
+    _sync_bom_components_from_file(normalized)
     db.log_activity("bom_convert", f"{bom.get('filename') or bom['id']} 已轉為可編輯 xlsx")
     return db.get_bom_file(bom["id"]) or normalized
 
@@ -519,18 +529,8 @@ async def download_bom_files(req: BomDownloadRequest, request: Request):
 @router.get("/bom/{bom_id}/editor")
 async def get_bom_editor(bom_id: str):
     bom = _ensure_editable_bom_record(_get_required_bom(bom_id))
-    parsed = parse_bom_for_storage(
-        path=bom["filepath"],
-        bom_id=bom["id"],
-        filename=bom["filename"],
-        uploaded_at=bom["uploaded_at"],
-        group_model=bom.get("group_model", ""),
-        source_filename=bom.get("source_filename", ""),
-        source_format=bom.get("source_format", ""),
-        is_converted=bool(bom.get("is_converted")),
-    )
-    payload = build_bom_storage_payload(parsed)
-    payload["component_count"] = len(parsed.components)
+    payload = _sync_bom_components_from_file(bom)
+    payload["component_count"] = len(payload.get("components", []))
     return payload
 
 

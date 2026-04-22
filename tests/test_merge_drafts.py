@@ -544,6 +544,7 @@ class MergeDraftDetailTests(unittest.TestCase):
             "source_format": ".xls",
             "is_converted": True,
         }) as mock_normalize, \
+             patch("app.services.merge_drafts.Path.exists", return_value=True), \
              patch("app.services.merge_drafts.parse_bom_for_storage", return_value=type("ParsedBom", (), {"id": "bom-legacy", "filename": "legacy.xlsx", "path": "C:/bom-legacy.xlsx", "source_filename": "legacy.xls", "source_format": ".xls", "is_converted": True, "po_number": 0, "model": "", "pcb": "", "group_model": "MODEL-X", "order_qty": 0.0, "uploaded_at": "2026-04-01T12:00:00", "components": []})()) as mock_parse, \
              patch("app.services.merge_drafts.build_bom_storage_payload", return_value={"id": "bom-legacy"}) as mock_payload, \
              patch("app.services.merge_drafts.db.save_bom_file") as mock_save, \
@@ -557,6 +558,54 @@ class MergeDraftDetailTests(unittest.TestCase):
         mock_payload.assert_called_once()
         mock_save.assert_called_once_with({"id": "bom-legacy"})
         mock_log.assert_called_once()
+
+    def test_ensure_editable_bom_for_draft_syncs_existing_xlsx_components(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "bom.xlsx"
+            source_path.write_bytes(b"dummy")
+            bom = {
+                "id": "bom-sync",
+                "filename": "bom.xlsx",
+                "filepath": str(source_path),
+                "uploaded_at": "2026-04-22T10:00:00",
+                "group_model": "PB-20111A-TAB",
+                "source_filename": "bom.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": 0,
+            }
+            parsed = type("ParsedBom", (), {
+                "id": "bom-sync",
+                "filename": "bom.xlsx",
+                "path": str(source_path),
+                "source_filename": "bom.xlsx",
+                "source_format": ".xlsx",
+                "is_converted": False,
+                "po_number": 0,
+                "model": "",
+                "pcb": "",
+                "group_model": "PB-20111A-TAB",
+                "order_qty": 300.0,
+                "uploaded_at": "2026-04-22T10:00:00",
+                "components": [],
+            })()
+            payload = {
+                "id": "bom-sync",
+                "components": [{"part_number": "PART-1", "qty_per_board": 1, "needed_qty": 300}],
+            }
+
+            with patch("app.services.merge_drafts.normalize_bom_record_to_editable", return_value=dict(bom)) as mock_normalize, \
+                 patch("app.services.merge_drafts.parse_bom_for_storage", return_value=parsed) as mock_parse, \
+                 patch("app.services.merge_drafts.build_bom_storage_payload", return_value=payload), \
+                 patch("app.services.merge_drafts.db.save_bom_file") as mock_save, \
+                 patch("app.services.merge_drafts.db.log_activity") as mock_log, \
+                 patch("app.services.merge_drafts.db.get_bom_file", return_value={**bom, "synced": True}):
+                result = merge_drafts._ensure_editable_bom_for_draft(bom)
+
+        self.assertTrue(result["synced"])
+        mock_normalize.assert_called_once_with(bom)
+        mock_parse.assert_called_once()
+        mock_save.assert_called_once_with(payload)
+        mock_log.assert_not_called()
 
     def test_restore_recent_committed_merge_drafts_reactivates_and_rebuilds(self):
         active_drafts = [{"id": 7, "order_id": 21}]
@@ -650,6 +699,60 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(len(plan_calls), 1)
         self.assertEqual(plan_calls[0]["decisions"], {"PART-NEW": "Shortage"})
         self.assertEqual(plan_calls[0]["supplements"], {"PART-NEW": 2200.0})
+
+    def test_rebuild_merge_drafts_syncs_bom_files_before_planning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"test")
+            raw_bom = {"id": "bom-1", "filename": "old.xlsx", "filepath": str(Path(temp_dir) / "old.xlsx")}
+            synced_bom = {**raw_bom, "filename": "synced.xlsx"}
+            planned_bom_files = []
+
+            def capture_plan(order, draft, bom_files, *args, **kwargs):
+                planned_bom_files.extend(bom_files)
+                return {
+                    "running_stock": {},
+                    "file_plans": [],
+                    "shortages": [],
+                    "decisions": kwargs["decisions"],
+                }
+
+            with patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
+                "main_file_path": str(main_path),
+                "main_loaded_at": "2026-04-22T10:00:00",
+            }.get(key, default)), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 12, "status": "merged", "model": "MODEL-A"}), \
+                 patch("app.services.merge_drafts.db.get_active_merge_draft_for_order", return_value={
+                     "id": 5,
+                     "order_id": 12,
+                     "decisions": {},
+                     "supplements": {},
+                     "shortages": [],
+                 }), \
+                 patch("app.services.merge_drafts.db.get_order_decisions", return_value={12: {}}), \
+                 patch("app.services.merge_drafts.db.get_order_supplements", return_value={12: {}}), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft"), \
+                 patch("app.services.merge_drafts.db.get_active_merge_drafts", return_value=[{
+                     "id": 5,
+                     "order_id": 12,
+                     "decisions": {},
+                     "supplements": {},
+                     "shortages": [],
+                 }]), \
+                 patch("app.services.merge_drafts.db.get_bom_files_by_models", return_value=[raw_bom]), \
+                 patch("app.services.merge_drafts._ensure_editable_bom_for_draft", return_value=synced_bom) as mock_sync, \
+                 patch("app.services.merge_drafts._build_running_stock", return_value={}), \
+                 patch("app.services.merge_drafts._load_effective_moq", return_value={}), \
+                 patch("app.services.merge_drafts.db.get_st_inventory_stock", return_value={}), \
+                 patch("app.services.merge_drafts.db.replace_order_decisions"), \
+                 patch("app.services.merge_drafts._cleanup_draft_files"), \
+                 patch("app.services.merge_drafts._write_draft_files", return_value=[]), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft_files"), \
+                 patch("app.services.merge_drafts._plan_order_draft", side_effect=capture_plan):
+                merge_drafts.rebuild_merge_drafts([12])
+
+        mock_sync.assert_called_once_with(raw_bom)
+        self.assertEqual(planned_bom_files, [synced_bom])
 
     def test_rebuild_merge_drafts_persists_cleaned_shortage_decisions(self):
         with tempfile.TemporaryDirectory() as temp_dir:

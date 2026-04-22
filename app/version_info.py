@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.5"
+APP_VERSION = "v2026.04.22.6"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "修正系統扣帳需求量會和 Excel 副檔公式結果不一致的問題。"
+APP_HEADLINE = "修正 BOM 編輯畫面正常但批次副檔/扣帳仍可能吃到舊資料庫需求量的問題。"
 APP_CHANGELOG = [
+    {
+        "title": "BOM 同步",
+        "items": [
+            "打開 BOM 編輯畫面時，系統會把 Excel 重新解析出的元件與需求量同步回正式 bom_components，不會只更新畫面資料。",
+            "重建批次副檔前也會先同步對應 BOM，避免批次 merge、缺料與扣帳繼續沿用舊的資料庫需求量。",
+            "像 PB-20111A-TAB 顯示 BOM 使用量 1、生產數量 300 時，系統計算會跟編輯畫面看到的 Excel 結果一致。",
+        ],
+    },
     {
         "title": "扣帳需求量",
         "items": [

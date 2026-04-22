@@ -324,9 +324,14 @@ def _write_dispatch_values_to_ws(
             target_h_cell.fill = ORANGE_FILL
 
 
-def _ensure_editable_bom_for_draft(bom: dict) -> dict:
+def _ensure_editable_bom_for_draft(bom: dict, *, sync_components: bool = True) -> dict:
     normalized = normalize_bom_record_to_editable(bom or {})
-    if normalized == bom:
+    converted = normalized != (bom or {})
+    if not converted and not sync_components:
+        return normalized
+
+    file_path = Path(str(normalized.get("filepath") or ""))
+    if not file_path.exists():
         return normalized
 
     parsed = parse_bom_for_storage(
@@ -340,8 +345,9 @@ def _ensure_editable_bom_for_draft(bom: dict) -> dict:
         is_converted=bool(normalized.get("is_converted")),
     )
     db.save_bom_file(build_bom_storage_payload(parsed))
-    db.log_activity("bom_convert", f"{bom.get('filename') or bom['id']} 已在副檔生成前轉為可編輯 xlsx")
-    return db.get_bom_file(bom["id"]) or normalized
+    if converted:
+        db.log_activity("bom_convert", f"{bom.get('filename') or bom['id']} 已在副檔生成前轉為可編輯 xlsx")
+    return db.get_bom_file(normalized["id"]) or normalized
 
 
 def _cleanup_draft_files(draft_id: int):
@@ -601,7 +607,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
         bom = db.get_bom_file(plan["bom_file_id"])
         if not bom:
             continue
-        bom = _ensure_editable_bom_for_draft(bom)
+        bom = _ensure_editable_bom_for_draft(bom, sync_components=False)
 
         source_path = Path(str(bom.get("filepath") or ""))
         if not source_path.exists():
@@ -716,7 +722,10 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             continue
 
         td0 = time.monotonic()
-        bom_files = db.get_bom_files_by_models([str(order.get("model") or "")])
+        bom_files = [
+            _ensure_editable_bom_for_draft(bom)
+            for bom in db.get_bom_files_by_models([str(order.get("model") or "")])
+        ]
         effective_decisions = dict(active_decisions_by_order.get(order_id, {}))
         original_decisions = dict(effective_decisions)
         effective_supplements = active_supplements_by_order.get(order_id, {})
