@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from openpyxl import Workbook, load_workbook
 from unittest.mock import patch
 
@@ -30,6 +33,39 @@ class MergeDraftDetailTests(unittest.TestCase):
         )
 
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
+
+    def test_build_download_response_saves_zip_to_server_download_dir_when_requested(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = root / "downloads"
+            download_dir.mkdir()
+            first = root / "first.xlsx"
+            second = root / "second.xlsx"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            request = SimpleNamespace(query_params={"server_save": "1"})
+
+            with patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir), \
+                 patch("app.services.server_downloads.db.get_setting", side_effect=lambda key, default="": {
+                     "server_download_enabled": "1",
+                     "server_download_display_path": "D:\\Download\\excel",
+                 }.get(key, default)):
+                response = merge_drafts._build_download_response(
+                    [
+                        {"path": first, "download_name": "first.xlsx"},
+                        {"path": second, "download_name": "second.xlsx"},
+                    ],
+                    request=request,
+                )
+
+            payload = json.loads(response.body.decode("utf-8"))
+            saved_path = download_dir / payload["filename"]
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["directory"], "D:\\Download\\excel")
+            self.assertTrue(saved_path.exists())
+            with zipfile.ZipFile(saved_path) as zf:
+                self.assertEqual(set(zf.namelist()), {"first.xlsx", "second.xlsx"})
 
     def test_plan_order_draft_keeps_manual_supplement_even_without_shortage(self):
         order = {"id": 12, "code": "1-1", "model": "MODEL-A"}

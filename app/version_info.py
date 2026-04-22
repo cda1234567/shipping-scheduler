@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.3"
+APP_VERSION = "v2026.04.22.4"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "修正批次 merge 副檔命名與新 BOM 拋料率讀取，讓副檔輸出與缺料計算更穩定。"
+APP_HEADLINE = "批次 merge 副檔下載會跟著下載設定走，包含伺服器下載資料夾。"
 APP_CHANGELOG = [
+    {
+        "title": "批次副檔下載位置",
+        "items": [
+            "批次 merge 後按「確認補料並下載副檔」時，會套用下載設定，不再只走瀏覽器預設下載位置。",
+            "網頁版如果啟用伺服器下載資料夾，多份副檔打包成 zip 時也會直接存到同一個設定位置。",
+            "單筆副檔下載也會一起走同樣的 server_save 流程，和主檔、BOM、發料單下載行為一致。",
+        ],
+    },
     {
         "title": "副檔命名與拋料率",
         "items": [

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 import openpyxl
 from fastapi import HTTPException
@@ -337,7 +337,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"ok")
-        mock_download.assert_called_once_with([1, 2])
+        mock_download.assert_called_once_with([1, 2], request=ANY)
 
     def test_dispatch_order_saves_dispatch_session(self):
         with tempfile.TemporaryDirectory() as temp_dir:

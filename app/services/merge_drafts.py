@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from .. import database as db
 from ..config import MERGE_DRAFT_DIR, cfg
-from .server_downloads import maybe_server_save_response
+from .server_downloads import maybe_server_save_bytes_response, maybe_server_save_response
 from .download_names import build_bom_dispatch_filename, build_generated_filename
 from .bom_editor import (
     build_bom_storage_payload,
@@ -436,10 +436,16 @@ def _build_download_response(file_entries: list[dict], archive_label: str = "副
             used_names.add(target_name)
             zf.write(str(entry["path"]), target_name)
     zip_buffer.seek(0)
+    archive_name = build_generated_filename(archive_label, ".zip")
+    if request is not None:
+        server_response = maybe_server_save_bytes_response(request, zip_buffer.getvalue(), archive_name)
+        if server_response is not None:
+            return server_response
+        zip_buffer.seek(0)
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(build_generated_filename(archive_label, '.zip'))}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(archive_name)}"},
     )
 
 

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 from dateutil.relativedelta import relativedelta
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
@@ -866,13 +866,13 @@ async def get_schedule_draft_detail(draft_id: int):
 
 
 @router.post("/schedule/drafts/download")
-async def download_selected_schedule_drafts(req: BatchMergeRequest):
-    return download_selected_merge_drafts(req.order_ids)
+async def download_selected_schedule_drafts(req: BatchMergeRequest, request: Request):
+    return download_selected_merge_drafts(req.order_ids, request=request)
 
 
 @router.get("/schedule/drafts/{draft_id}/download")
-async def download_schedule_draft(draft_id: int, file_id: int | None = None):
-    return download_merge_draft(draft_id, file_id=file_id)
+async def download_schedule_draft(draft_id: int, request: Request, file_id: int | None = None):
+    return download_merge_draft(draft_id, file_id=file_id, request=request)
 
 
 @router.put("/schedule/drafts/{draft_id}")
