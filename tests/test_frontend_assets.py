@@ -153,6 +153,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('data-current-stock="${esc(s.current_stock)}"', schedule_module)
         self.assertIn("ST 可補", schedule_module)
         self.assertIn("這串需要買", schedule_module)
+        self.assertIn('aria-label="儲存 MOQ">存</button>', schedule_module)
+        self.assertNotIn('aria-label="編輯 MOQ">編</button>', schedule_module)
         self.assertIn("shortage?._lookahead_purchase_suggested_qty", schedule_module)
         self.assertIn("shortage?._lookahead_st_available_qty", schedule_module)
         self.assertIn("calculateModalShortageAmount(partNumber, resultingStock) > 0", schedule_module)

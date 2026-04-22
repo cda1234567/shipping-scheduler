@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.7"
+APP_VERSION = "v2026.04.22.8"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "調整 EC 料安全水位提醒只出現在批次 merge 補料流程，不再列入右側補料明細。"
+APP_HEADLINE = "補料 modal 的 MOQ 快捷按鈕由「編」改成「存」，和雙擊數字編輯後的保存動作一致。"
 APP_CHANGELOG = [
+    {
+        "title": "MOQ 按鈕文案",
+        "items": [
+            "補料 modal 裡 MOQ 數字已可雙擊進入編輯，旁邊的小按鈕改顯示「存」。",
+            "按鈕提示也從「編輯 MOQ」改成「儲存 MOQ」，避免和雙擊編輯的互動語意打架。",
+        ],
+    },
     {
         "title": "EC 料右側明細",
         "items": [

@@ -2790,7 +2790,7 @@ function moqBadgeHtml(shortage) {
 function moqEditTriggerHtml(shortage) {
   const partNumber = esc(shortage?.part_number || "");
   const rawMoq = Number(shortage?.moq || 0);
-  return `<button type="button" class="moq-edit-trigger" data-part="${partNumber}" data-moq="${rawMoq}" title="編輯 MOQ" aria-label="編輯 MOQ">編</button>`;
+  return `<button type="button" class="moq-edit-trigger" data-part="${partNumber}" data-moq="${rawMoq}" title="儲存 MOQ" aria-label="儲存 MOQ">存</button>`;
 }
 
 function suggestedQtyHtml(shortage) {
