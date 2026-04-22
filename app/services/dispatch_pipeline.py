@@ -17,7 +17,11 @@ from .shortage_rules import (
     get_shortage_resulting_stock,
     is_ec_part,
 )
-from .merge_drafts import rebuild_merge_drafts, restore_recent_committed_merge_drafts
+from .merge_drafts import (
+    _ensure_editable_bom_for_draft,
+    rebuild_merge_drafts,
+    restore_recent_committed_merge_drafts,
+)
 from ..snapshot_sync import refresh_snapshot_from_main
 
 
@@ -267,6 +271,15 @@ def require_existing_main_path(main_path: str | None = None) -> str:
     return resolved
 
 
+def _sync_bom_for_dispatch(raw_bom: dict) -> dict:
+    if not raw_bom.get("filepath"):
+        return raw_bom
+    try:
+        return _ensure_editable_bom_for_draft(raw_bom)
+    except Exception:
+        return raw_bom
+
+
 def prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[dict], list[dict]]:
     order = db.get_order(order_id)
     if not order:
@@ -286,7 +299,8 @@ def prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[
 
     groups = []
     all_components = []
-    for bf in bom_files:
+    for raw_bom in bom_files:
+        bf = _sync_bom_for_dispatch(raw_bom)
         comps = build_effective_components(
             db.get_bom_components(bf["id"]),
             schedule_order_qty=order.get("order_qty"),

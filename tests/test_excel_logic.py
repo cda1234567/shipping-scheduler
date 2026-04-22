@@ -9,7 +9,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
-from app.services.bom_parser import parse_bom
+from app.services.bom_parser import parse_bom, read_formula_needed_qty_cache
 from app.services.bom_quantity import coerce_scrap_factor
 from app.services.merge_to_main import merge_row_to_main, preview_order_batches
 
@@ -122,6 +122,52 @@ class ExcelLogicTests(unittest.TestCase):
         self.assertEqual(len(parsed.components), 1)
         self.assertAlmostEqual(parsed.components[0].scrap_factor, 0)
         self.assertAlmostEqual(parsed.components[0].needed_qty, 300)
+
+    def test_parse_bom_formula_reads_text_order_quantity_cell(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value="生產數量: 300")
+            ws.cell(row=2, column=3, value="MODEL-M24C")
+            ws.cell(row=2, column=4, value="PCB-M24C")
+            ws.cell(row=5, column=2, value=1)
+            ws.cell(row=5, column=3, value="IC-M24C")
+            ws.cell(row=5, column=4, value="EEPROM")
+            ws.cell(row=5, column=5, value=0)
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+E5)")
+            wb.save(path)
+            wb.close()
+            self._inject_cached_formula_value(path, "F5", "=B5*$K$1*(1+E5)", 600)
+
+            parsed = parse_bom(str(path), "bom-m24c", "bom.xlsx", "2026-04-22T10:00:00")
+
+        self.assertEqual(parsed.order_qty, 300)
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].qty_per_board, 1)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 300)
+
+    def test_formula_needed_cache_prefers_evaluated_formula_over_stale_cache(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value="生產數量: 300")
+            ws.cell(row=2, column=3, value="MODEL-M24C")
+            ws.cell(row=2, column=4, value="PCB-M24C")
+            ws.cell(row=5, column=2, value=1)
+            ws.cell(row=5, column=3, value="IC-M24C")
+            ws.cell(row=5, column=5, value=0)
+            ws.cell(row=5, column=6, value="=B5*$K$1*(1+E5)")
+            wb.save(path)
+            wb.close()
+            self._inject_cached_formula_value(path, "F5", "=B5*$K$1*(1+E5)", 600)
+
+            cache = read_formula_needed_qty_cache(str(path))
+
+        self.assertEqual(cache[("Sheet", 5, "IC-M24C")], 300)
 
     def test_parse_bom_uses_cached_formula_value_when_formula_is_not_supported(self):
         with tempfile.TemporaryDirectory() as temp_dir:

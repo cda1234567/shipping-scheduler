@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.8"
+APP_VERSION = "v2026.04.22.9"
 APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "補料 modal 的 MOQ 快捷按鈕由「編」改成「存」，和雙擊數字編輯後的保存動作一致。"
+APP_HEADLINE = "修正 BOM 公式引用文字生產數量時可能沿用舊快取，導致系統扣帳變兩倍的問題。"
 APP_CHANGELOG = [
+    {
+        "title": "扣帳數量修正",
+        "items": [
+            "BOM F 欄公式如果引用「生產數量: 300」這種文字儲存格，系統現在會抽出 300 重新計算，不再退回 Excel 舊快取值。",
+            "發料前會再同步一次 BOM 元件資料，避免既有資料庫裡已存過的舊需求量繼續被扣帳流程沿用。",
+            "像 4-4 的 M24C 類料，使用量 1、生產 300 時，系統扣帳會跟副檔公式一致是 300，不會再沿用 600。",
+        ],
+    },
     {
         "title": "MOQ 按鈕文案",
         "items": [

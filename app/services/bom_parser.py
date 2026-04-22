@@ -74,6 +74,33 @@ def _row_value(row_vals, col_idx: int):
     return row_vals[col_idx] if len(row_vals) > col_idx else None
 
 
+def _looks_like_order_quantity_cell(row_idx: int, col_idx: int, value) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+
+    order_qty_col = cfg("excel.bom_order_qty_col", 10) + 1
+    data_start = cfg("excel.bom_data_start_row", 5)
+    if row_idx < data_start and col_idx == order_qty_col:
+        return True
+    if row_idx == 2 and col_idx == 7:
+        return True
+
+    normalized = re.sub(r"[\s_:\-：／/\\()\[\]{}（）【】「」『』]+", "", text)
+    quantity_terms = (
+        "生產數量",
+        "生产数量",
+        "訂單數量",
+        "订单数量",
+        "數量",
+        "数量",
+        "orderqty",
+        "quantity",
+        "qty",
+    )
+    return row_idx < data_start and any(term in normalized for term in quantity_terms)
+
+
 def _is_blank(value) -> bool:
     return value is None or str(value).strip() == ""
 
@@ -237,7 +264,12 @@ def _cell_formula_ref_value(data_rows, formula_rows, cell_ref: str) -> float | N
 
     if isinstance(data_value, str) and ("%" in data_value or "％" in data_value):
         return coerce_scrap_factor(data_value)
-    return _try_float(data_value)
+    number = _try_float(data_value)
+    if number is not None:
+        return number
+    if isinstance(data_value, str) and _looks_like_order_quantity_cell(row_idx, col_idx, data_value):
+        return _extract_number(data_value)
+    return None
 
 
 def _validate_formula_ast(node) -> bool:
@@ -347,6 +379,10 @@ def read_formula_needed_qty_cache(path: str) -> dict[tuple[str, int, str], float
         formula_row_vals = formula_rows[row_number - 1] if len(formula_rows) >= row_number else row_vals
         formula_needed_raw = _row_value(formula_row_vals, f_col)
         if not _is_formula(formula_needed_raw):
+            continue
+        evaluated_needed_qty = _evaluate_numeric_formula(formula_needed_raw, all_rows, formula_rows)
+        if evaluated_needed_qty is not None and evaluated_needed_qty > 0:
+            cache[(title, row_number, part)] = evaluated_needed_qty
             continue
         needed_qty = _try_float(_row_value(row_vals, f_col))
         if needed_qty is not None and needed_qty > 0:
