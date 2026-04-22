@@ -919,7 +919,8 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         ext = src.suffix.lower()
         _order_info = computed_order_info.get(bom["id"], {})
         _po = _order_info.get("po_number") or bom.get("po_number")
-        _model = bom.get("model") or bom.get("group_model")
+        _raw_model = str(bom.get("model") or bom.get("group_model") or "")
+        _model = _raw_model.split(",")[0].strip()
         output_name = build_bom_dispatch_filename(_po, _model, ext)
         wb = openpyxl.load_workbook(str(src), keep_vba=(ext == ".xlsm"))
 
