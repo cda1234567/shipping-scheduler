@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 
 def coerce_qty(value) -> float:
     try:
@@ -11,8 +13,18 @@ def coerce_qty(value) -> float:
 def coerce_scrap_factor(value) -> float:
     if value is None:
         return 0.0
-    text = str(value).strip()
+    text = str(value).strip().replace("％", "%").replace(",", "")
     if not text:
+        return 0.0
+    percent_value = "%" in text
+    if text.startswith("="):
+        formula_body = text[1:].strip()
+        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?\s*%?", formula_body):
+            text = formula_body
+            percent_value = percent_value or text.endswith("%")
+        else:
+            return 0.0
+    elif re.fullmatch(r"\$?[A-Za-z]{1,3}\$?\d+", text):
         return 0.0
     try:
         if text.endswith("%"):
@@ -20,7 +32,17 @@ def coerce_scrap_factor(value) -> float:
         else:
             amount = float(value)
     except (TypeError, ValueError):
-        return 0.0
+        match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", text) if percent_value else None
+        if not match:
+            match = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%?", text)
+        if not match:
+            return 0.0
+        try:
+            amount = float(match.group(1))
+        except (TypeError, ValueError):
+            return 0.0
+        if percent_value or match.group(0).strip().endswith("%"):
+            amount /= 100
     if amount < 0:
         return 0.0
     if amount > 1:

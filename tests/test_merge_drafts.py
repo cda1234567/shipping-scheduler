@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,26 @@ from app.services import merge_drafts
 
 
 class MergeDraftDetailTests(unittest.TestCase):
+    def test_build_draft_display_filename_uses_order_po_and_sanitized_model(self):
+        filename = merge_drafts._build_draft_display_filename(
+            {
+                "po_number": "4500059234",
+                "model": "T356789IU-U/A,T356789IU-ALT",
+            },
+            Path("source.xlsm"),
+            now=datetime(2026, 4, 22, 10, 30),
+        )
+
+        self.assertEqual(filename, "4500059234_T356789IU-U-A_20260422.xlsm")
+
+    def test_replace_po_in_legacy_filename_preserves_suffix_and_timestamp(self):
+        filename = merge_drafts._replace_po_in_filename(
+            "BOM_PO#OLD_20260422_1030.xlsx",
+            "4500059234",
+        )
+
+        self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
+
     def test_plan_order_draft_keeps_manual_supplement_even_without_shortage(self):
         order = {"id": 12, "code": "1-1", "model": "MODEL-A"}
         draft = {"decisions": {}, "supplements": {"PART-1": 25}}
@@ -450,9 +471,12 @@ class MergeDraftDetailTests(unittest.TestCase):
                 }])
 
             self.assertEqual(len(written), 1)
+            self.assertTrue(written[0]["filename"].startswith("4500059234_MODEL-A_"))
+            self.assertTrue(written[0]["filename"].endswith(".xlsx"))
             mock_save.assert_called_once()
             output_path = Path(written[0]["filepath"])
             self.assertTrue(output_path.exists())
+            self.assertTrue(output_path.name.startswith("01_4500059234_MODEL-A_"))
 
             saved = load_workbook(output_path)
             try:
