@@ -11,6 +11,7 @@ let _moq = {};
 let _vendors = {};
 let _purchaseReminderStatuses = {};
 let _stStock = {};
+let _stDescriptions = {};
 let _dispatchedConsumption = {};
 let _calcResults = [];
 let _decisions = {};
@@ -530,7 +531,8 @@ async function loadStInventoryData() {
   try {
     const d = await apiJson("/api/system/st-inventory/data");
     _stStock = d.stock || {};
-  } catch (_) { _stStock = {}; }
+    _stDescriptions = d.descriptions || {};
+  } catch (_) { _stStock = {}; _stDescriptions = {}; }
 }
 
 async function loadScheduleRows() {
@@ -1399,11 +1401,11 @@ function normalizeVendorName(value) {
 }
 
 function buildPurchaseReminderItems() {
-  if (!_liveStock || !Object.keys(_liveStock).length) return [];
+  if (!_stStock || !Object.keys(_stStock).length) return [];
 
   const descLookup = buildPartDescriptionLookup();
   const items = [];
-  for (const [part, stockQty] of Object.entries(_liveStock)) {
+  for (const [part, stockQty] of Object.entries(_stStock)) {
     const key = normalizePartKey(part);
     if (!key || !isPurchaseReminderPart(key)) continue;
 
@@ -1422,12 +1424,12 @@ function buildPurchaseReminderItems() {
     items.push({
       part_number: key,
       vendor: normalizeVendorName(_vendors?.[key]),
-      description: descLookup[key] || "",
+      description: _stDescriptions?.[key] || descLookup[key] || "",
       current_stock: currentStock,
       threshold,
       moq,
       suggested_qty: suggestedQty,
-      status: currentStock <= 0 ? "已見底" : "低於安全線",
+      status: currentStock <= 0 ? "ST 已見底" : "ST 低於安全線",
       notified: Boolean(_purchaseReminderStatuses?.[key]?.notified),
       notified_at: _purchaseReminderStatuses?.[key]?.notified_at || "",
       notification_note: _purchaseReminderStatuses?.[key]?.note || "",
@@ -4245,7 +4247,7 @@ function renderPurchaseReminderPanel() {
 
   if (!scroll) return;
   if (!items.length) {
-    scroll.innerHTML = '<div class="no-shortage-msg">目前沒有 IC / OC / UC 買料提醒</div>';
+    scroll.innerHTML = '<div class="no-shortage-msg">目前沒有 IC / OC / UC ST 買料提醒</div>';
     return;
   }
 
@@ -4253,7 +4255,7 @@ function renderPurchaseReminderPanel() {
   const notifiedItems = items.filter(item => item.notified);
   let html = `<div class="purchase-reminder-toolbar">
     <div>
-      <div class="purchase-reminder-toolbar-title">IC / OC / UC 庫存見底</div>
+      <div class="purchase-reminder-toolbar-title">IC / OC / UC ST 庫存見底</div>
       <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}</div>
     </div>
     <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
@@ -4307,7 +4309,7 @@ function purchaseReminderItemHtml(item) {
       <button class="btn btn-secondary btn-xs purchase-reminder-vendor-edit" type="button" data-part="${esc(item.part_number)}">改廠商</button>
     </div>
     <div class="amounts">
-      <span class="amber">庫存 ${fmt(currentStock)}</span>
+      <span class="amber">ST 庫存 ${fmt(currentStock)}</span>
       <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
       ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
       <span class="blue">建議買 ${fmt(suggestedQty)}</span>

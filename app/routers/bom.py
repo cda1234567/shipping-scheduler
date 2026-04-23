@@ -43,7 +43,7 @@ from ..services.bom_revision import (
 )
 from ..services.download_names import append_minute_timestamp, build_bom_dispatch_filename, build_generated_filename
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
-from ..services.order_supplements import build_order_supplement_allocations
+from ..services.order_supplements import build_order_supplement_allocations, merge_order_supplement_allocations
 from ..services.shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -937,14 +937,12 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
 
     supplements = {part.strip().upper(): qty for part, qty in req.supplements.items()}
     order_supplements = _normalize_order_supplement_map(req.order_supplements)
-    effective_order_supplements = (
-        build_order_supplement_allocations(req.order_ids, supplements)
-        if req.order_ids else {}
+    effective_order_supplements = merge_order_supplement_allocations(
+        req.order_ids,
+        supplements,
+        order_supplements,
+        allocator=build_order_supplement_allocations,
     )
-    for order_id, part_map in order_supplements.items():
-        current = dict(effective_order_supplements.get(order_id, {}))
-        current.update(part_map)
-        effective_order_supplements[order_id] = current
     direct_purchase_highlights = _build_direct_purchase_highlights(supplements)
     computed_carry_overs, computed_supplements, computed_purchase_highlights, computed_order_qtys, computed_order_info = _build_order_based_export_values(
         target_boms,

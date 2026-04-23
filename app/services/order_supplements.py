@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from .. import database as db
 from .bom_quantity import coerce_qty, get_component_effective_needed_qty
@@ -10,6 +11,39 @@ from .shortage_rules import calculate_current_order_shortage_amount, calculate_s
 
 def normalize_part_key(value) -> str:
     return str(value or "").strip().upper()
+
+
+def normalize_order_id_list(order_ids: list[int] | None) -> list[int]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    return list(dict.fromkeys(normalized_ids))
+
+
+def _normalize_explicit_order_supplements(
+    order_supplements: dict[int, dict[str, float]] | None = None,
+) -> dict[int, dict[str, float]]:
+    normalized: dict[int, dict[str, float]] = {}
+    for raw_order_id, part_map in (order_supplements or {}).items():
+        try:
+            order_id = int(raw_order_id)
+        except (TypeError, ValueError):
+            continue
+
+        parts: dict[str, float] = {}
+        for part, qty in (part_map or {}).items():
+            key = normalize_part_key(part)
+            try:
+                amount = float(qty or 0)
+            except (TypeError, ValueError):
+                amount = 0.0
+            if key and amount > 0:
+                parts[key] = amount
+        normalized[order_id] = parts
+    return normalized
 
 
 def build_dispatch_running_stock() -> dict[str, float]:
@@ -32,13 +66,7 @@ def build_dispatch_running_stock() -> dict[str, float]:
 
 
 def build_order_supplement_allocations(order_ids: list[int], supplements: dict[str, float]) -> dict[int, dict[str, float]]:
-    normalized_ids: list[int] = []
-    for order_id in order_ids or []:
-        try:
-            normalized_ids.append(int(order_id))
-        except (TypeError, ValueError):
-            continue
-    normalized_ids = list(dict.fromkeys(normalized_ids))
+    normalized_ids = normalize_order_id_list(order_ids)
     if not normalized_ids:
         return {}
 
@@ -108,3 +136,39 @@ def build_order_supplement_allocations(order_ids: list[int], supplements: dict[s
         allocations[order_id] = order_allocations
 
     return allocations
+
+
+def merge_order_supplement_allocations(
+    order_ids: list[int],
+    supplements: dict[str, float] | None = None,
+    order_supplements: dict[int, dict[str, float]] | None = None,
+    *,
+    allocator: Callable[[list[int], dict[str, float]], dict[int, dict[str, float]]] | None = None,
+) -> dict[int, dict[str, float]]:
+    normalized_ids = normalize_order_id_list(order_ids)
+    if not normalized_ids:
+        return {}
+
+    build_allocations = allocator or build_order_supplement_allocations
+    merged = (
+        build_allocations(normalized_ids, supplements or {})
+        if supplements
+        else {order_id: {} for order_id in normalized_ids}
+    )
+
+    explicit = _normalize_explicit_order_supplements(order_supplements)
+    for order_id in normalized_ids:
+        if order_id in explicit:
+            # 有訂單別資料時以該列輸入為準；全域補料只留給舊呼叫相容。
+            merged[order_id] = dict(explicit.get(order_id) or {})
+        else:
+            merged.setdefault(order_id, {})
+
+    return {
+        order_id: {
+            normalize_part_key(part): float(qty or 0)
+            for part, qty in (merged.get(order_id) or {}).items()
+            if normalize_part_key(part) and float(qty or 0) > 0
+        }
+        for order_id in normalized_ids
+    }

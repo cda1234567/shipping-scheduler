@@ -21,8 +21,10 @@ from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
 from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
 from ..services.order_decisions import build_order_decision_allocations
-from ..services.order_supplements import build_order_supplement_allocations
-from ..services.shortage_rules import is_order_scoped_shortage_part
+from ..services.order_supplements import (
+    build_order_supplement_allocations,
+    merge_order_supplement_allocations as _merge_order_supplement_allocations_service,
+)
 from ..services.dispatch_pipeline import (
     DispatchContext,
     build_context_supplement_allocations,
@@ -146,22 +148,12 @@ def _merge_order_supplement_allocations(
     supplements: dict[str, float] | None = None,
     order_supplements: dict[int, dict[str, float]] | None = None,
 ) -> dict[int, dict[str, float]]:
-    merged = build_order_supplement_allocations(order_ids, supplements or {})
-    for order_id in order_ids:
-        scoped = _normalize_supplements((order_supplements or {}).get(order_id) or {})
-        if not scoped:
-            merged.setdefault(order_id, {})
-            continue
-        current = dict(merged.get(order_id, {}))
-        for part, qty in scoped.items():
-            if is_order_scoped_shortage_part(part):
-                current[part] = qty
-            else:
-                # 非 order-scoped 料號由全域分配決定，per-order 只在全域沒分配時才補上
-                if part not in current:
-                    current[part] = qty
-        merged[order_id] = current
-    return merged
+    return _merge_order_supplement_allocations_service(
+        order_ids,
+        supplements,
+        order_supplements,
+        allocator=build_order_supplement_allocations,
+    )
 
 
 def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None) -> dict[str, str]:

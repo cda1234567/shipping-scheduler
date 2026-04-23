@@ -363,6 +363,38 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_rebuild.assert_called_once_with([1, 2])
 
+    def test_update_selected_schedule_drafts_prefers_explicit_repeated_normal_part_supplements(self):
+        with patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
+             patch("app.routers.schedule.build_order_supplement_allocations", return_value={
+                 1: {"EC-30059A": 750},
+                 2: {"EC-30059A": 750},
+             }), \
+             patch("app.routers.schedule.db.replace_order_decisions") as mock_replace_decisions, \
+             patch("app.routers.schedule.db.replace_order_supplements") as mock_replace_supplements, \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]) as mock_rebuild, \
+             patch("app.routers.schedule.get_schedule_draft_map", return_value={
+                 1: {"id": 11, "order_id": 1},
+                 2: {"id": 12, "order_id": 2},
+             }), \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.put("/api/schedule/drafts", json={
+                "order_ids": [1, 2],
+                "decisions": {},
+                "supplements": {"EC-30059A": 1500},
+                "order_supplements": {
+                    "1": {"EC-30059A": 1500},
+                    "2": {},
+                },
+            })
+
+        self.assertEqual(response.status_code, 200)
+        mock_replace_decisions.assert_called_once()
+        mock_replace_supplements.assert_called_once_with([1, 2], {
+            1: {"EC-30059A": 1500.0},
+            2: {},
+        })
+        mock_rebuild.assert_called_once_with([1, 2])
+
     def test_download_selected_schedule_drafts_proxies_to_bundle_service(self):
         with patch(
             "app.routers.schedule.download_selected_merge_drafts",

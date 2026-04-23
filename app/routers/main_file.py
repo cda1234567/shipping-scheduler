@@ -293,7 +293,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
 
     ws.merge_cells("A1:J1")
     title = ws["A1"]
-    title.value = "IC / OC / UC 買料提醒"
+    title.value = "IC / OC / UC ST 買料提醒"
     title.font = Font(bold=True, color="FFFFFF", size=14)
     title.fill = title_fill
     title.alignment = Alignment(horizontal="center")
@@ -301,7 +301,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
     ws["A2"] = f"匯出時間：{local_now().isoformat(timespec='minutes').replace('T', ' ')}"
     ws["A2"].font = Font(color="666666")
 
-    headers = ["廠商", "通知狀態", "料號", "說明", "目前庫存", "安全線", "MOQ", "建議購買量", "通知時間", "備註"]
+    headers = ["廠商", "通知狀態", "料號", "說明", "ST 庫存", "安全線", "MOQ", "建議購買量", "通知時間", "備註"]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=4, column=col, value=header)
         cell.font = Font(bold=True)
@@ -427,7 +427,7 @@ async def update_purchase_reminder_status(req: PurchaseReminderStatusRequest):
 @router.post("/main-file/purchase-reminders/export")
 async def export_purchase_reminders(request: Request, req: PurchaseReminderExportRequest):
     content = _build_purchase_reminder_export(req.items)
-    filename = f"買料提醒_{local_now().strftime('%Y%m%d_%H%M')}.xlsx"
+    filename = f"ST買料提醒_{local_now().strftime('%Y%m%d_%H%M')}.xlsx"
     server_response = maybe_server_save_bytes_response(request, content, filename)
     if server_response:
         return server_response
