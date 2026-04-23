@@ -1429,8 +1429,96 @@ function buildPostDispatchShortagesFromCompletedDrafts() {
   return [...merged.values()];
 }
 
+function findPostDispatchShortageOrderRow(shortage = {}) {
+  const orderId = normalizeOrderId(shortage?._order_id ?? shortage?.order_id);
+  if (!Number.isInteger(orderId)) return {};
+
+  const completedRows = Array.isArray(_completedRows) ? _completedRows : [];
+  const activeRows = Array.isArray(_rows) ? _rows : [];
+  return completedRows.find(row => normalizeOrderId(row?.id) === orderId)
+    || activeRows.find(row => normalizeOrderId(row?.id) === orderId)
+    || {};
+}
+
+function normalizePostDispatchShortageForPanel(shortage = {}, row = {}) {
+  const partKey = normalizePartKey(shortage?.part_number);
+  if (!partKey) return null;
+
+  const fallbackShortageAmount = Math.max(0, Number(shortage?.shortage_amount || 0) || 0);
+  const liveStock = Number(_liveStock?.[partKey]);
+  const useLiveStock = Number.isFinite(liveStock) && !isOrderScopedPart(partKey);
+  const fallbackStock = Number(shortage?.resulting_stock ?? shortage?.current_stock);
+  const currentStock = useLiveStock
+    ? liveStock
+    : (Number.isFinite(fallbackStock) ? fallbackStock : -fallbackShortageAmount);
+  const shortageAmount = useLiveStock
+    ? calculateModalShortageAmount(partKey, currentStock)
+    : fallbackShortageAmount;
+  if (!shouldRenderRightPanelActionableShortage(partKey, currentStock, shortageAmount)) return null;
+
+  const moq = Math.max(0, Number(_moq?.[partKey] || shortage?.moq || 0) || 0);
+  const stStockQty = Math.max(0, Number(_stStock?.[partKey] ?? shortage?.st_stock_qty ?? 0) || 0);
+  const suggestedQty = Math.max(0, Number(shortage?.suggested_qty || 0) || 0);
+  const stAvailableQty = Math.max(0, Number(shortage?.st_available_qty || 0) || 0);
+  const purchaseNeededQty = Math.max(0, Number(shortage?.purchase_needed_qty || 0) || 0);
+  const purchaseSuggestedQty = Math.max(0, Number(shortage?.purchase_suggested_qty || 0) || 0);
+  const suggestion = buildShortageSupplySuggestion(partKey, shortageAmount, moq, stStockQty);
+  const meta = buildShortageGroupMeta(row, shortage);
+
+  return {
+    ...shortage,
+    ...meta,
+    part_number: partKey,
+    model: meta._row_model || shortage?.model || shortage?.bom_model || row?.model || "未指定機種",
+    current_stock: currentStock,
+    resulting_stock: currentStock,
+    shortage_amount: shortageAmount,
+    moq,
+    st_stock_qty: stStockQty,
+    suggested_qty: suggestedQty || suggestion.suggested_qty,
+    st_available_qty: stAvailableQty || suggestion.st_available_qty,
+    purchase_needed_qty: purchaseNeededQty || suggestion.purchase_needed_qty,
+    purchase_suggested_qty: purchaseSuggestedQty || suggestion.purchase_suggested_qty,
+    needs_purchase: Boolean(shortage?.needs_purchase || suggestion.needs_purchase),
+  };
+}
+
+function buildPostDispatchShortagesFromResponse(shortages = []) {
+  if (!Array.isArray(shortages) || !shortages.length) return [];
+  return shortages
+    .map(shortage => normalizePostDispatchShortageForPanel(
+      shortage,
+      findPostDispatchShortageOrderRow(shortage),
+    ))
+    .filter(Boolean);
+}
+
+function getPostDispatchShortageKey(shortage = {}) {
+  const partKey = normalizePartKey(shortage?.part_number);
+  if (!partKey) return "";
+  const orderId = normalizeOrderId(shortage?._order_id ?? shortage?.order_id);
+  if (isOrderScopedPart(partKey) && Number.isInteger(orderId)) {
+    return buildOrderPartKey(orderId, partKey);
+  }
+  return partKey;
+}
+
+function mergePostDispatchShortageLists(...lists) {
+  const merged = new Map();
+  for (const list of lists) {
+    for (const shortage of (Array.isArray(list) ? list : [])) {
+      const key = getPostDispatchShortageKey(shortage);
+      if (!key || merged.has(key)) continue;
+      merged.set(key, shortage);
+    }
+  }
+  return [...merged.values()];
+}
+
 function syncPostDispatchShortagesFromCompletedDrafts() {
-  _postDispatchShortages = buildPostDispatchShortagesFromCompletedDrafts();
+  _postDispatchShortages = mergePostDispatchShortageLists(
+    buildPostDispatchShortagesFromCompletedDrafts(),
+  );
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -4341,8 +4429,10 @@ function shortageItemHtml(s, isCS) {
 let _postDispatchShortages = [];
 
 function showPostDispatchShortages(shortages) {
-  void shortages;
-  syncPostDispatchShortagesFromCompletedDrafts();
+  _postDispatchShortages = mergePostDispatchShortageLists(
+    buildPostDispatchShortagesFromResponse(shortages),
+    buildPostDispatchShortagesFromCompletedDrafts(),
+  );
   renderPostDispatchPanel();
 }
 
