@@ -1935,6 +1935,106 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["stock"]["AAA"], 0.0)
         self.assertEqual(data["stock"]["BBB"], 5)
 
+    def test_update_main_vendor_writes_main_file_b_column(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.append(["料號", "廠商", "MOQ", "庫存"])
+            sheet.append(["IC-100", "舊廠商", 100, 5])
+            workbook.save(main_path)
+            workbook.close()
+
+            with patch("app.routers.main_file.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.main_file.backup_main_file", return_value=Path(temp_dir) / "backup.xlsx"), \
+                 patch("app.routers.main_file.db.log_activity"):
+                response = self.client.patch(
+                    "/api/main-file/vendor",
+                    json={"part_number": "ic-100", "vendor": "新廠商"},
+                )
+
+            saved = openpyxl.load_workbook(main_path)
+            vendor = saved.active.cell(row=2, column=2).value
+            saved.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+        self.assertEqual(response.json()["old_vendor"], "舊廠商")
+        self.assertEqual(response.json()["vendor"], "新廠商")
+        self.assertEqual(vendor, "新廠商")
+
+    def test_purchase_reminder_status_endpoint_persists_status(self):
+        expected = {
+            "part_number": "IC-100",
+            "notified": True,
+            "notified_at": "2026-04-23T10:00:00",
+            "note": "通知完成",
+            "updated_at": "2026-04-23T10:00:00",
+        }
+
+        with patch("app.routers.main_file.db.set_purchase_reminder_status", return_value=expected) as mock_set, \
+             patch("app.routers.main_file.db.log_activity"):
+            response = self.client.patch(
+                "/api/main-file/purchase-reminder-status",
+                json={"part_number": " ic-100 ", "notified": True, "note": "通知完成"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], expected)
+        mock_set.assert_called_once_with("IC-100", True, "通知完成")
+
+    def test_purchase_reminder_export_groups_by_vendor(self):
+        response = self.client.post(
+            "/api/main-file/purchase-reminders/export",
+            json={
+                "items": [
+                    {
+                        "vendor": "Vendor-B",
+                        "part_number": "OC-200",
+                        "description": "Spring",
+                        "current_stock": 0,
+                        "threshold": 100,
+                        "moq": 100,
+                        "suggested_qty": 100,
+                        "notified": True,
+                        "notified_at": "2026-04-23T09:00:00",
+                        "note": "已寄信",
+                    },
+                    {
+                        "vendor": "Vendor-A",
+                        "part_number": "IC-100",
+                        "description": "MCU",
+                        "current_stock": 5,
+                        "threshold": 100,
+                        "moq": 100,
+                        "suggested_qty": 100,
+                        "notified": False,
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            response.headers["content-type"],
+        )
+
+        workbook = openpyxl.load_workbook(io.BytesIO(response.content))
+        detail = workbook["買料提醒"]
+        summary = workbook["廠商彙總"]
+
+        self.assertEqual(detail["A5"].value, "Vendor-A")
+        self.assertEqual(detail["B5"].value, "待通知")
+        self.assertEqual(detail["C5"].value, "IC-100")
+        self.assertEqual(detail["A6"].value, "Vendor-B")
+        self.assertEqual(detail["B6"].value, "已通知採購")
+        self.assertEqual(summary["A2"].value, "Vendor-A")
+        self.assertEqual(summary["B2"].value, 1)
+        self.assertEqual(summary["A3"].value, "Vendor-B")
+        self.assertEqual(summary["C3"].value, 1)
+        workbook.close()
+
     def test_main_file_preview_returns_live_sheet_structure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"

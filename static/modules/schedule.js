@@ -8,6 +8,8 @@ let _bomData = {};
 let _stock = {};
 let _liveStock = {};
 let _moq = {};
+let _vendors = {};
+let _purchaseReminderStatuses = {};
 let _stStock = {};
 let _dispatchedConsumption = {};
 let _calcResults = [];
@@ -519,7 +521,9 @@ async function loadMainData() {
     _stock = d.stock || {};
     _liveStock = d.live_stock || {};
     _moq = d.moq || {};
-  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; }
+    _vendors = d.vendors || {};
+    _purchaseReminderStatuses = d.purchase_reminder_statuses || {};
+  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; _vendors = {}; _purchaseReminderStatuses = {}; }
 }
 
 async function loadStInventoryData() {
@@ -1390,6 +1394,10 @@ function getPurchaseReminderThreshold(partNumber) {
   return moq > 0 ? moq : PURCHASE_REMINDER_FALLBACK_THRESHOLD;
 }
 
+function normalizeVendorName(value) {
+  return String(value || "").trim() || "未分類廠商";
+}
+
 function buildPurchaseReminderItems() {
   if (!_liveStock || !Object.keys(_liveStock).length) return [];
 
@@ -1413,17 +1421,23 @@ function buildPurchaseReminderItems() {
 
     items.push({
       part_number: key,
+      vendor: normalizeVendorName(_vendors?.[key]),
       description: descLookup[key] || "",
       current_stock: currentStock,
       threshold,
       moq,
       suggested_qty: suggestedQty,
       status: currentStock <= 0 ? "已見底" : "低於安全線",
+      notified: Boolean(_purchaseReminderStatuses?.[key]?.notified),
+      notified_at: _purchaseReminderStatuses?.[key]?.notified_at || "",
+      notification_note: _purchaseReminderStatuses?.[key]?.note || "",
     });
   }
 
   items.sort((a, b) => (
-    Number(a.current_stock || 0) - Number(b.current_stock || 0)
+    compareText(a.vendor, b.vendor, "zh-Hant")
+    || Number(a.notified) - Number(b.notified)
+    || Number(a.current_stock || 0) - Number(b.current_stock || 0)
     || compareText(a.part_number, b.part_number)
   ));
   return items;
@@ -4182,7 +4196,11 @@ function setRightPanelTabCount(id, count) {
   badge.classList.toggle("has-items", count > 0);
 }
 
-function updateRightPanelTabs(shortageCount = 0, purchaseCount = buildPurchaseReminderItems().length) {
+function getActivePurchaseReminderCount(items = buildPurchaseReminderItems()) {
+  return (Array.isArray(items) ? items : []).filter(item => !item.notified).length;
+}
+
+function updateRightPanelTabs(shortageCount = 0, purchaseCount = getActivePurchaseReminderCount()) {
   document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.rightPanelTab === _rightPanelActiveTab);
   });
@@ -4215,13 +4233,15 @@ function renderPurchaseReminderPanel() {
   _rightPanelActiveTab = "purchase";
   const scroll = document.getElementById("right-scroll");
   const items = buildPurchaseReminderItems();
+  const activeCount = getActivePurchaseReminderCount(items);
+  const notifiedCount = items.length - activeCount;
   const shortageCount = _rightPanelMode === "postDispatch"
     ? _postDispatchShortages.length
     : (_lastShortagePanelData.shortages.length
       + _lastShortagePanelData.csShortages.length
       + _lastShortagePanelData.mainDeficits.length);
-  updateRightPanelTabs(shortageCount, items.length);
-  setRightPanelBadge(items.length, { purchase: true });
+  updateRightPanelTabs(shortageCount, activeCount);
+  setRightPanelBadge(activeCount, { purchase: true });
 
   if (!scroll) return;
   if (!items.length) {
@@ -4229,37 +4249,203 @@ function renderPurchaseReminderPanel() {
     return;
   }
 
-  let html = '<div style="padding:6px 10px;font-size:12px;font-weight:600;color:#b45309;border-bottom:1px solid #fde68a;margin-bottom:8px">IC / OC / UC 庫存見底</div>';
-  for (const item of items) {
-    const currentStock = roundShortageUiValue(item.current_stock);
-    const threshold = roundShortageUiValue(item.threshold);
-    const moq = roundShortageUiValue(item.moq || 0);
-    const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
-    html += `<div class="shortage-item purchase-reminder-item" data-part="${esc(item.part_number)}">
-      <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span></div>
-      <div class="desc">${esc(item.description || "—")}</div>
-      <div class="amounts">
-        <span class="amber">庫存 ${fmt(currentStock)}</span>
-        <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
-        ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
-        <span class="blue">建議買 ${fmt(suggestedQty)}</span>
-      </div>
-      <button class="btn btn-secondary btn-xs purchase-reminder-copy" type="button" data-part="${esc(item.part_number)}">複製料號</button>
-    </div>`;
+  const pendingItems = items.filter(item => !item.notified);
+  const notifiedItems = items.filter(item => item.notified);
+  let html = `<div class="purchase-reminder-toolbar">
+    <div>
+      <div class="purchase-reminder-toolbar-title">IC / OC / UC 庫存見底</div>
+      <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}</div>
+    </div>
+    <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
+  </div>`;
+  if (pendingItems.length) {
+    html += renderPurchaseReminderSection("待通知採購", pendingItems);
+  }
+  if (notifiedItems.length) {
+    html += renderPurchaseReminderSection("已通知採購", notifiedItems);
   }
   scroll.innerHTML = html;
+  bindPurchaseReminderPanelActions(scroll, items);
+}
+
+function renderPurchaseReminderSection(title, items) {
+  const grouped = {};
+  for (const item of items) {
+    const vendor = normalizeVendorName(item.vendor);
+    if (!grouped[vendor]) grouped[vendor] = [];
+    grouped[vendor].push(item);
+  }
+
+  let html = `<h4 class="purchase-reminder-section-title">${esc(title)}</h4>`;
+  for (const [vendor, vendorItems] of Object.entries(grouped).sort((a, b) => compareText(a[0], b[0], "zh-Hant"))) {
+    html += `<div class="purchase-reminder-vendor-heading">${esc(vendor)} <span>${vendorItems.length}</span></div>`;
+    for (const item of vendorItems) {
+      html += purchaseReminderItemHtml(item);
+    }
+  }
+  return html;
+}
+
+function purchaseReminderItemHtml(item) {
+  const currentStock = roundShortageUiValue(item.current_stock);
+  const threshold = roundShortageUiValue(item.threshold);
+  const moq = roundShortageUiValue(item.moq || 0);
+  const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
+  const notifiedTag = item.notified ? '<span class="purchase-reminder-tag is-notified">已通知採購</span>' : "";
+  const noteHtml = item.notification_note
+    ? `<div class="purchase-reminder-note">備註：${esc(item.notification_note)}</div>`
+    : "";
+  const notifiedAtHtml = item.notified_at
+    ? `<span style="color:#6b7280">通知 ${esc(String(item.notified_at).replace("T", " ").slice(0, 16))}</span>`
+    : "";
+
+  return `<div class="shortage-item purchase-reminder-item ${item.notified ? "is-notified" : ""}" data-part="${esc(item.part_number)}">
+    <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${notifiedTag}</div>
+    <div class="desc">${esc(item.description || "—")}</div>
+    <div class="purchase-reminder-vendor-line">
+      <span>廠商：<strong>${esc(normalizeVendorName(item.vendor))}</strong></span>
+      <button class="btn btn-secondary btn-xs purchase-reminder-vendor-edit" type="button" data-part="${esc(item.part_number)}">改廠商</button>
+    </div>
+    <div class="amounts">
+      <span class="amber">庫存 ${fmt(currentStock)}</span>
+      <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
+      ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
+      <span class="blue">建議買 ${fmt(suggestedQty)}</span>
+      ${notifiedAtHtml}
+    </div>
+    ${noteHtml}
+    <div class="purchase-reminder-actions">
+      <button class="btn btn-secondary btn-xs purchase-reminder-copy" type="button" data-part="${esc(item.part_number)}">複製料號</button>
+      <button class="btn ${item.notified ? "btn-secondary" : "btn-primary"} btn-xs purchase-reminder-notify" type="button" data-part="${esc(item.part_number)}" data-notified="${item.notified ? "0" : "1"}">
+        ${item.notified ? "取消通知" : "已通知採購"}
+      </button>
+    </div>
+  </div>`;
+}
+
+function bindPurchaseReminderPanelActions(scroll, items) {
+  scroll.querySelector(".purchase-reminder-export")?.addEventListener("click", () => {
+    void exportPurchaseReminders(items);
+  });
   scroll.querySelectorAll(".purchase-reminder-copy").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const part = normalizePartKey(btn.dataset.part);
-      try {
-        if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
-        await navigator.clipboard.writeText(part);
-        showToast(`已複製 ${part}`);
-      } catch (_) {
-        showToast(part);
-      }
+    btn.addEventListener("click", () => {
+      void copyPurchaseReminderPart(btn);
     });
   });
+  scroll.querySelectorAll(".purchase-reminder-notify").forEach(btn => {
+    btn.addEventListener("click", () => {
+      void savePurchaseReminderNotification(btn);
+    });
+  });
+  scroll.querySelectorAll(".purchase-reminder-vendor-edit").forEach(btn => {
+    btn.addEventListener("click", () => {
+      void editPurchaseReminderVendor(btn);
+    });
+  });
+}
+
+async function copyPurchaseReminderPart(button) {
+  const part = normalizePartKey(button?.dataset.part);
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+    await navigator.clipboard.writeText(part);
+    showToast(`已複製 ${part}`);
+  } catch (_) {
+    showToast(part);
+  }
+}
+
+async function savePurchaseReminderNotification(button) {
+  const part = normalizePartKey(button?.dataset.part);
+  const notified = String(button?.dataset.notified || "") === "1";
+  if (!part) return;
+
+  let note = "";
+  if (notified) {
+    const currentNote = _purchaseReminderStatuses?.[part]?.note || "";
+    const entered = prompt(`標記 ${part} 已通知採購，可輸入備註：`, currentNote);
+    if (entered === null) return;
+    note = entered;
+  }
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "保存中...";
+  try {
+    const result = await apiPatch("/api/main-file/purchase-reminder-status", {
+      part_number: part,
+      notified,
+      note,
+    });
+    const status = result.status || {};
+    if (status.notified) {
+      _purchaseReminderStatuses[part] = status;
+    } else {
+      delete _purchaseReminderStatuses[part];
+    }
+    showToast(notified ? `${part} 已標記通知採購` : `${part} 已取消通知`, { tone: "success" });
+    renderPurchaseReminderPanel();
+  } catch (error) {
+    showToast("通知狀態保存失敗：" + error.message, { tone: "error" });
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function editPurchaseReminderVendor(button) {
+  const part = normalizePartKey(button?.dataset.part);
+  if (!part) return;
+
+  const currentVendor = normalizeVendorName(_vendors?.[part]);
+  const entered = prompt(`修改 ${part} 的主檔 B 欄廠商：`, currentVendor === "未分類廠商" ? "" : currentVendor);
+  if (entered === null) return;
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "保存中...";
+  try {
+    const result = await apiPatch("/api/main-file/vendor", {
+      part_number: part,
+      vendor: entered,
+    });
+    _vendors[part] = result.vendor || "";
+    showToast(`已更新 ${part} 廠商：${normalizeVendorName(result.vendor)}`, { tone: "success" });
+    renderPurchaseReminderPanel();
+    if (_onRefreshMain) void _onRefreshMain();
+  } catch (error) {
+    showToast("廠商更新失敗：" + error.message, { tone: "error" });
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function exportPurchaseReminders(items) {
+  const payload = (Array.isArray(items) ? items : buildPurchaseReminderItems()).map(item => ({
+    vendor: normalizeVendorName(item.vendor),
+    part_number: item.part_number,
+    description: item.description || "",
+    current_stock: Number(item.current_stock || 0) || 0,
+    threshold: Number(item.threshold || 0) || 0,
+    moq: Number(item.moq || 0) || 0,
+    suggested_qty: Number(item.suggested_qty || 0) || 0,
+    notified: Boolean(item.notified),
+    notified_at: item.notified_at || "",
+    note: item.notification_note || "",
+  }));
+  try {
+    const result = await desktopDownload({
+      path: "/api/main-file/purchase-reminders/export",
+      method: "POST",
+      body: { items: payload },
+    });
+    showDownloadToast(result, "買料提醒");
+  } catch (error) {
+    showToast("買料提醒匯出失敗：" + error.message, { tone: "error" });
+  }
 }
 
 function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {

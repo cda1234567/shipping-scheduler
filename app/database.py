@@ -156,6 +156,14 @@ CREATE TABLE IF NOT EXISTS order_supplements (
     UNIQUE(order_id, part_number)
 );
 
+CREATE TABLE IF NOT EXISTS purchase_reminder_statuses (
+    part_number TEXT PRIMARY KEY,
+    notified    INTEGER NOT NULL DEFAULT 0,
+    notified_at TEXT    NOT NULL DEFAULT '',
+    note        TEXT    NOT NULL DEFAULT '',
+    updated_at  TEXT    NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS merge_drafts (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id          INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
@@ -213,6 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
+CREATE INDEX IF NOT EXISTS idx_purchase_reminder_notified ON purchase_reminder_statuses(notified, updated_at);
 CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
@@ -539,6 +548,71 @@ def set_setting(key: str, value: str):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, value),
         )
+
+
+# ── Purchase reminder statuses ───────────────────────────────────────────────
+
+def get_purchase_reminder_statuses() -> dict[str, dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT part_number, notified, notified_at, note, updated_at "
+            "FROM purchase_reminder_statuses"
+        ).fetchall()
+    return {
+        str(row["part_number"] or "").strip().upper(): {
+            "notified": bool(row["notified"]),
+            "notified_at": row["notified_at"] or "",
+            "note": row["note"] or "",
+            "updated_at": row["updated_at"] or "",
+        }
+        for row in rows
+        if str(row["part_number"] or "").strip()
+    }
+
+
+def set_purchase_reminder_status(part_number: str, notified: bool, note: str = "") -> dict:
+    normalized = str(part_number or "").strip().upper()
+    if not normalized:
+        return {"part_number": "", "notified": False, "notified_at": "", "note": "", "updated_at": ""}
+
+    now = _now()
+    if not notified:
+        with get_conn() as conn:
+            conn.execute("DELETE FROM purchase_reminder_statuses WHERE part_number=?", (normalized,))
+        return {
+            "part_number": normalized,
+            "notified": False,
+            "notified_at": "",
+            "note": "",
+            "updated_at": now,
+        }
+
+    cleaned_note = str(note or "").strip()
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT notified_at FROM purchase_reminder_statuses WHERE part_number=?",
+            (normalized,),
+        ).fetchone()
+        notified_at = existing["notified_at"] if existing and existing["notified_at"] else now
+        conn.execute(
+            """
+            INSERT INTO purchase_reminder_statuses(part_number, notified, notified_at, note, updated_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(part_number) DO UPDATE SET
+                notified=excluded.notified,
+                notified_at=excluded.notified_at,
+                note=excluded.note,
+                updated_at=excluded.updated_at
+            """,
+            (normalized, 1, notified_at, cleaned_note, now),
+        )
+    return {
+        "part_number": normalized,
+        "notified": True,
+        "notified_at": notified_at,
+        "note": cleaned_note,
+        "updated_at": now,
+    }
 
 
 # ── Inventory Snapshot ────────────────────────────────────────────────────────

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.23.4"
+APP_VERSION = "v2026.04.23.5"
 APP_RELEASED_AT = "2026-04-23"
-APP_HEADLINE = "右側補料區新增 IC / OC / UC 買料提醒，低於安全線會主動列出。"
+APP_HEADLINE = "買料提醒新增廠商分類、Excel 匯出、已通知狀態與主檔廠商修改。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒廠商",
+        "items": [
+            "右側「買料提醒」會依主檔 B 欄廠商分組，未填廠商的料號會集中在未分類廠商。",
+            "提醒卡片可直接按「改廠商」回寫主檔 B 欄，系統會先備份主檔再保存。",
+            "新增「已通知採購／取消通知」狀態，已通知的料不再算進右側待處理數量。",
+            "買料提醒可匯出 Excel，明細和廠商彙總會一起依廠商整理。",
+        ],
+    },
     {
         "title": "買料提醒",
         "items": [

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
+from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stock, read_vendors, update_vendor
 from app.services.bom_parser import parse_bom, read_formula_needed_qty_cache
 from app.services.bom_quantity import coerce_scrap_factor
 from app.services.merge_to_main import merge_row_to_main, preview_order_batches
@@ -59,6 +59,33 @@ class ExcelLogicTests(unittest.TestCase):
 
         self.assertEqual(stock["PART-A"], 0.0)
         self.assertEqual(stock["PART-B"], 20.0)
+
+    def test_read_vendors_reads_main_file_b_column(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(path)
+
+            vendors = read_vendors(str(path))
+
+        self.assertEqual(vendors["PART-A"], "Vendor")
+        self.assertEqual(vendors["PART-B"], "Vendor")
+
+    def test_update_vendor_writes_main_file_b_column(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(path)
+
+            result = update_vendor(str(path), "part-b", "新廠商")
+            wb = load_workbook(path)
+            ws = wb.active
+            saved_vendor = ws.cell(row=3, column=2).value
+            wb.close()
+
+        self.assertEqual(result["part_number"], "PART-B")
+        self.assertEqual(result["old_vendor"], "Vendor")
+        self.assertEqual(result["vendor"], "新廠商")
+        self.assertEqual(result["row"], 3)
+        self.assertEqual(saved_vendor, "新廠商")
 
     def test_find_legacy_snapshot_stock_fixes_detects_moq_only_rows(self):
         with tempfile.TemporaryDirectory() as temp_dir:

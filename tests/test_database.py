@@ -198,6 +198,30 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(bom["pcb"], "PCB-B")
 
 
+class PurchaseReminderStatusTests(InMemoryDbTestCase):
+    def test_set_purchase_reminder_status_persists_notified_note(self):
+        with patch.object(db, "_now", side_effect=["2026-04-23T10:00:00", "2026-04-23T11:00:00"]):
+            first = db.set_purchase_reminder_status(" ic-100 ", True, "先通知")
+            second = db.set_purchase_reminder_status("IC-100", True, "改備註")
+
+        statuses = db.get_purchase_reminder_statuses()
+
+        self.assertEqual(first["part_number"], "IC-100")
+        self.assertTrue(second["notified"])
+        self.assertEqual(second["notified_at"], "2026-04-23T10:00:00")
+        self.assertEqual(second["updated_at"], "2026-04-23T11:00:00")
+        self.assertEqual(statuses["IC-100"]["note"], "改備註")
+
+    def test_set_purchase_reminder_status_false_clears_record(self):
+        with patch.object(db, "_now", side_effect=["2026-04-23T10:00:00", "2026-04-23T11:00:00"]):
+            db.set_purchase_reminder_status("OC-1", True, "已通知")
+            cleared = db.set_purchase_reminder_status("oc-1", False)
+
+        self.assertFalse(cleared["notified"])
+        self.assertEqual(cleared["part_number"], "OC-1")
+        self.assertNotIn("OC-1", db.get_purchase_reminder_statuses())
+
+
 class OrderSupplementTests(InMemoryDbTestCase):
     def test_replace_order_supplements_preserves_existing_timestamp_when_unchanged(self):
         self.conn.execute(

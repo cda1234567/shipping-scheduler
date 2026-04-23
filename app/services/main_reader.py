@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import openpyxl
+
 from ..config import cfg
 from .xls_reader import open_workbook_any
 
 _PART_COL = None
+_VENDOR_COL = None
 _MOQ_COL = None
 _STOCK_SEARCH_START_COL = None
 
@@ -13,6 +18,13 @@ def _part_col():
     if _PART_COL is None:
         _PART_COL = cfg("excel.main_part_col", 0)
     return _PART_COL
+
+
+def _vendor_col():
+    global _VENDOR_COL
+    if _VENDOR_COL is None:
+        _VENDOR_COL = cfg("excel.main_vendor_col", 1)
+    return _VENDOR_COL
 
 
 def _moq_col():
@@ -75,6 +87,63 @@ def read_stock(path: str) -> dict[str, float]:
 
     wb.close()
     return result
+
+
+def read_vendors(path: str) -> dict[str, str]:
+    """讀取主檔 B 欄廠商，以料號為 key。"""
+    wb = open_workbook_any(path, read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    result: dict[str, str] = {}
+    pc = _part_col()
+    vc = _vendor_col()
+
+    for row_vals in ws.iter_rows(min_row=2, values_only=True):
+        if not row_vals or len(row_vals) <= pc:
+            continue
+        part = str(row_vals[pc] or "").strip()
+        if not part:
+            continue
+        vendor = str(row_vals[vc] if len(row_vals) > vc and row_vals[vc] is not None else "").strip()
+        result[part.upper()] = vendor
+
+    wb.close()
+    return result
+
+
+def update_vendor(path: str, part_number: str, vendor: str) -> dict:
+    """更新主檔 B 欄廠商。"""
+    part_key = str(part_number or "").strip().upper()
+    if not part_key:
+        raise ValueError("料號不可空白")
+
+    suffix = Path(path).suffix.lower()
+    if suffix == ".xls":
+        raise ValueError("xls 主檔不支援直接修改廠商，請先轉成 xlsx 或 xlsm")
+
+    wb = openpyxl.load_workbook(path, keep_vba=(suffix == ".xlsm"))
+    try:
+        ws = wb.worksheets[0]
+        pc = _part_col() + 1
+        vc = _vendor_col() + 1
+        for row_idx in range(2, ws.max_row + 1):
+            cell_part = str(ws.cell(row=row_idx, column=pc).value or "").strip().upper()
+            if cell_part != part_key:
+                continue
+            cell = ws.cell(row=row_idx, column=vc)
+            old_vendor = str(cell.value or "").strip()
+            new_vendor = str(vendor or "").strip()
+            cell.value = new_vendor
+            wb.save(path)
+            return {
+                "part_number": part_key,
+                "old_vendor": old_vendor,
+                "vendor": new_vendor,
+                "row": row_idx,
+            }
+    finally:
+        wb.close()
+
+    raise KeyError(f"主檔找不到料號 {part_key}")
 
 
 def read_moq(path: str) -> dict[str, float]:
