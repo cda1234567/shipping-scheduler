@@ -41,7 +41,7 @@ let _globalBusyDepth = 0;
 let _rightPanelMode = "shortages";
 let _rightPanelActiveTab = "shortages";
 let _lastShortagePanelData = { shortages: [], csShortages: [], mainDeficits: [] };
-const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-M24", "IC-XC2C32"];
+const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32"];
 const PURCHASE_REMINDER_PREFIXES = ["IC-", "OC-", "UC-"];
 const PURCHASE_REMINDER_FALLBACK_THRESHOLD = 100;
 

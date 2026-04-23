@@ -869,14 +869,24 @@ def _get_bom_model_groups() -> dict[str, str]:
         with get_conn() as conn:
             rows = conn.execute("SELECT group_model FROM bom_files WHERE group_model LIKE '%,%'").fetchall()
         for row in rows:
-            models = [m.strip().upper() for m in row["group_model"].split(",") if m.strip()]
+            models = _split_model_keys(row["group_model"])
             if len(models) >= 2:
                 primary = models[0]
                 for secondary in models[1:]:
+                    if secondary == primary:
+                        continue
                     alias_map[secondary] = primary
     except Exception:
         pass
     return alias_map
+
+
+def _split_model_keys(value: str) -> list[str]:
+    return list(dict.fromkeys(
+        item.strip().upper()
+        for item in str(value or "").split(",")
+        if item.strip()
+    ))
 
 
 def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
@@ -1342,7 +1352,7 @@ def get_all_bom_components_by_model() -> dict[str, list[dict]]:
             "is_customer_supplied": bool(r["is_customer_supplied"]),
         }
         raw_model = r["group_model"] or r["model"]
-        for key in [k.strip().upper() for k in raw_model.split(",") if k.strip()]:
+        for key in _split_model_keys(raw_model):
             if key not in result:
                 result[key] = []
             result[key].append(comp)
@@ -1357,7 +1367,7 @@ def get_bom_files_by_models(models: list[str]) -> list[dict]:
     upper_models = {m.upper() for m in models}
     for r in rows:
         raw = r["group_model"] or r["model"]
-        keys = {k.strip().upper() for k in raw.split(",") if k.strip()}
+        keys = set(_split_model_keys(raw))
         if keys & upper_models and r["id"] not in seen_ids:
             matched.append(dict(r))
             seen_ids.add(r["id"])

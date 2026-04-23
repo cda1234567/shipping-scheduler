@@ -475,11 +475,56 @@ console.log(JSON.stringify(results));
         self.assertEqual(second_shortage["suggested_qty"], 50)
         self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
 
+    def test_frontend_calculator_treats_m24_as_running_stock_part(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+import { calculate } from './static/modules/calculator.js';
+
+const results = calculate(
+  [
+    { id: 1, po_number: 2101, pcb: 'M', model: 'MODEL-M1' },
+    { id: 2, po_number: 2102, pcb: 'N', model: 'MODEL-M2' },
+  ],
+  {
+    'MODEL-M1': {
+      components: [
+        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 100, prev_qty_cs: 0, is_dash: false },
+      ],
+    },
+    'MODEL-M2': {
+      components: [
+        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 50, prev_qty_cs: 0, is_dash: false },
+      ],
+    },
+  },
+  { 'IC-M24C02-WMN6TP-TAB': 0 },
+  { 'IC-M24C02-WMN6TP-TAB': 100 },
+  {},
+  {},
+  {},
+);
+
+console.log(JSON.stringify(results));
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 100)
+        self.assertEqual(results[1]["shortages"][0]["current_stock"], -100)
+        self.assertEqual(results[1]["shortages"][0]["shortage_amount"], 150)
+
     def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         self.assertIn("if (isOrderScopedPart(item?.part_number)) return false;", schedule_module)
+        self.assertNotIn('"IC-M24"', schedule_module)
         self.assertIn("const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;", schedule_module)
         self.assertIn("const defaultQty = shortageChecked && !hasStoredSupplement", schedule_module)
 

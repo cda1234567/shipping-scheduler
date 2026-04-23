@@ -213,6 +213,44 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(second_shortage["suggested_qty"], 50)
         self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
 
+    def test_m24_parts_use_running_balance_instead_of_order_scoped_shortage(self):
+        results = run(
+            orders=[
+                {"id": 1, "po_number": 2101, "pcb": "M", "model": "MODEL-M1"},
+                {"id": 2, "po_number": 2102, "pcb": "N", "model": "MODEL-M2"},
+            ],
+            bom_map={
+                "MODEL-M1": [
+                    {
+                        "part_number": "IC-M24C02-WMN6TP-TAB",
+                        "description": "EEPROM",
+                        "needed_qty": 100,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+                "MODEL-M2": [
+                    {
+                        "part_number": "IC-M24C02-WMN6TP-TAB",
+                        "description": "EEPROM",
+                        "needed_qty": 50,
+                        "prev_qty_cs": 0,
+                        "is_dash": False,
+                        "is_customer_supplied": False,
+                    },
+                ],
+            },
+            snapshot_stock={"IC-M24C02-WMN6TP-TAB": 0},
+            moq={"IC-M24C02-WMN6TP-TAB": 100},
+        )
+
+        first_shortage = results[0]["shortages"][0]
+        second_shortage = results[1]["shortages"][0]
+        self.assertEqual(first_shortage["shortage_amount"], 100)
+        self.assertEqual(second_shortage["current_stock"], -100)
+        self.assertEqual(second_shortage["shortage_amount"], 150)
+
     def test_scales_component_need_by_schedule_order_qty(self):
         results = run(
             orders=[{"id": 1, "po_number": 3001, "pcb": "H", "model": "MODEL-H", "order_qty": 5}],

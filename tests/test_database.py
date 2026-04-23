@@ -645,6 +645,35 @@ class DispatchSessionTests(InMemoryDbTestCase):
 
 
 class BomOrderTests(InMemoryDbTestCase):
+    def test_get_all_bom_components_by_model_dedupes_repeated_group_aliases(self):
+        db.save_bom_file({
+            "id": "bom-1",
+            "filename": "one.xlsx",
+            "filepath": "C:/one.xlsx",
+            "po_number": "1",
+            "model": "MODEL-A",
+            "pcb": "PCB-A",
+            "group_model": "MODEL-A, model-a , MODEL-B",
+            "order_qty": 10,
+            "uploaded_at": "2026-03-12T10:00:00",
+            "components": [
+                {
+                    "part_number": "PB-20138A-TAB",
+                    "description": "Board",
+                    "needed_qty": 200,
+                    "prev_qty_cs": 48,
+                    "is_dash": False,
+                    "is_customer_supplied": False,
+                },
+            ],
+        })
+
+        bom_map = db.get_all_bom_components_by_model()
+
+        self.assertEqual(len(bom_map["MODEL-A"]), 1)
+        self.assertEqual(len(bom_map["MODEL-B"]), 1)
+        self.assertEqual(bom_map["MODEL-A"][0]["needed_qty"], 200)
+
     def test_save_bom_order_updates_group_and_sort_order(self):
         db.save_bom_file({
             "id": "bom-1",
