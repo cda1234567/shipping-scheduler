@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.23.6"
+APP_VERSION = "v2026.04.23.7"
 APP_RELEASED_AT = "2026-04-23"
-APP_HEADLINE = "補料分配改成訂單別來源一致，買料提醒改看 ST 庫存。"
+APP_HEADLINE = "買料提醒改成主檔料號清單搭配 ST 庫存 lookup。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒範圍",
+        "items": [
+            "右側「買料提醒」改成先以主檔存在的 IC / OC / UC 料號建立清單，再逐顆查 ST 庫存。",
+            "ST 庫存檔裡有、但主檔沒有的料號不會再出現在買料提醒，避免把 ST 全部料號都掃進提醒區。",
+            "主檔料號若在 ST 庫存沒有資料，會視為 ST 庫存 0 來判斷是否見底。",
+        ],
+    },
     {
         "title": "補料分配一致",
         "items": [

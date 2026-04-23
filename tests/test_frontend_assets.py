@@ -532,6 +532,24 @@ console.log(JSON.stringify(results));
         self.assertIn("if (!_scheduleInitialized) {", schedule_module)
         self.assertIn("_scheduleInitialized = true;", schedule_module)
 
+    def test_purchase_reminder_uses_main_file_parts_and_st_stock_lookup(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn("function buildMainPurchaseReminderPartKeys()", schedule_module)
+        self.assertIn("[_vendors, _liveStock, _stock, _moq].forEach(source => {", schedule_module)
+        self.assertIn("const mainPartKeys = buildMainPurchaseReminderPartKeys();", schedule_module)
+        self.assertIn("for (const key of mainPartKeys) {", schedule_module)
+        self.assertIn("const currentStock = Number(_stStock?.[key] ?? 0);", schedule_module)
+
+        match = re.search(
+            r"function\s+buildPurchaseReminderItems\(\)\s*\{(?P<body>.*?)\n\}",
+            schedule_module,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        self.assertNotIn("Object.entries(_stStock)", match.group("body"))
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")

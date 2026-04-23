@@ -1400,16 +1400,25 @@ function normalizeVendorName(value) {
   return String(value || "").trim() || "未分類廠商";
 }
 
+function buildMainPurchaseReminderPartKeys() {
+  const keys = new Set();
+  [_vendors, _liveStock, _stock, _moq].forEach(source => {
+    Object.keys(source || {}).forEach(part => {
+      const key = normalizePartKey(part);
+      if (key && isPurchaseReminderPart(key)) keys.add(key);
+    });
+  });
+  return [...keys].sort((a, b) => compareText(a, b));
+}
+
 function buildPurchaseReminderItems() {
   if (!_stStock || !Object.keys(_stStock).length) return [];
 
   const descLookup = buildPartDescriptionLookup();
   const items = [];
-  for (const [part, stockQty] of Object.entries(_stStock)) {
-    const key = normalizePartKey(part);
-    if (!key || !isPurchaseReminderPart(key)) continue;
-
-    const currentStock = Number(stockQty || 0);
+  const mainPartKeys = buildMainPurchaseReminderPartKeys();
+  for (const key of mainPartKeys) {
+    const currentStock = Number(_stStock?.[key] ?? 0);
     if (!Number.isFinite(currentStock)) continue;
 
     const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
