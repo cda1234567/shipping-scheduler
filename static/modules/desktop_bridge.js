@@ -870,6 +870,13 @@ export function showDownloadToast(result, noun = "檔案") {
 }
 
 export async function desktopDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
+  if (!saveAs) {
+    await hydrateServerDownloadState();
+    if (isServerDownloadEnabled()) {
+      return fallbackBrowserDownload({ path, method, body, filename, saveAs });
+    }
+  }
+
   if (!hasDesktopApi()) {
     return fallbackBrowserDownload({ path, method, body, filename, saveAs });
   }

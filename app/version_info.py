@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.22.9"
-APP_RELEASED_AT = "2026-04-22"
-APP_HEADLINE = "修正 BOM 公式引用文字生產數量時可能沿用舊快取，導致系統扣帳變兩倍的問題。"
+APP_VERSION = "v2026.04.23.1"
+APP_RELEASED_AT = "2026-04-23"
+APP_HEADLINE = "修正批次 merge 副檔下載沒有套用伺服器下載設定，並在伺服器下載啟用時略過桌面版下載攔截。"
 APP_CHANGELOG = [
+    {
+        "title": "批次副檔下載",
+        "items": [
+            "批次 merge modal 的「確認補料並下載副檔」現在會把 zip 寫到伺服器下載設定的位置，不再退回瀏覽器預設下載。",
+            "只要伺服器下載資料夾已啟用，前端下載會優先走 server-save，避免桌面版橋接把檔案存到本機下載資料夾。",
+            "單筆副檔與批次副檔下載都會使用同一套下載設定，和主檔、BOM、發料單下載行為一致。",
+        ],
+    },
     {
         "title": "扣帳數量修正",
         "items": [

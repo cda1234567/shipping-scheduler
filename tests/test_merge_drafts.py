@@ -67,6 +67,39 @@ class MergeDraftDetailTests(unittest.TestCase):
             with zipfile.ZipFile(saved_path) as zf:
                 self.assertEqual(set(zf.namelist()), {"first.xlsx", "second.xlsx"})
 
+    def test_download_selected_merge_drafts_uses_server_download_dir_when_requested(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = root / "downloads"
+            download_dir.mkdir()
+            first = root / "draft-a.xlsx"
+            second = root / "draft-b.xlsx"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            request = SimpleNamespace(query_params={"server_save": "1"})
+
+            with patch("app.services.merge_drafts.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
+                 patch("app.services.merge_drafts.db.get_order", side_effect=lambda order_id: {"po_number": f"PO{order_id}"}), \
+                 patch("app.services.merge_drafts.db.get_merge_draft_files", side_effect=[
+                     [{"filename": "draft-a.xlsx", "filepath": str(first)}],
+                     [{"filename": "draft-b.xlsx", "filepath": str(second)}],
+                 ]), \
+                 patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir), \
+                 patch("app.services.server_downloads.db.get_setting", side_effect=lambda key, default="": {
+                     "server_download_enabled": "1",
+                     "server_download_display_path": "D:\\Download\\excel",
+                 }.get(key, default)):
+                response = merge_drafts.download_selected_merge_drafts([1, 2], request=request)
+
+            payload = json.loads(response.body.decode("utf-8"))
+            saved_path = download_dir / payload["filename"]
+
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["directory"], "D:\\Download\\excel")
+            self.assertTrue(saved_path.exists())
+            with zipfile.ZipFile(saved_path) as zf:
+                self.assertEqual(set(zf.namelist()), {"draft-a.xlsx", "draft-b.xlsx"})
+
     def test_plan_order_draft_keeps_manual_supplement_even_without_shortage(self):
         order = {"id": 12, "code": "1-1", "model": "MODEL-A"}
         draft = {"decisions": {}, "supplements": {"PART-1": 25}}

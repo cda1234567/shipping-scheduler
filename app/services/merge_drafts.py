@@ -1026,4 +1026,4 @@ def download_selected_merge_drafts(order_ids: list[int], request: Request | None
                 "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
             })
 
-    return _build_download_response(file_entries)
+    return _build_download_response(file_entries, request=request)
