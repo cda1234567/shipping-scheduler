@@ -473,7 +473,7 @@
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
-import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview } from "/static/modules/main_preview.js";
+import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview, prewarmMainPreview } from "/static/modules/main_preview.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
 import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js";
@@ -680,12 +680,41 @@ async function refreshMainStatus() {
         ? '<span style="color:#22c55e">已有起始快照</span>'
         : '<span style="color:#f97316">尚未設定快照</span>';
     }
-  } catch (_) {}
+    return Boolean(d.loaded);
+  } catch (_) {
+    return false;
+  }
+}
+
+let _mainPreviewPrewarmQueued = false;
+
+function queueMainPreviewPrewarm({ force = false, delay = 250 } = {}) {
+  if (_mainPreviewPrewarmQueued && !force) return;
+  _mainPreviewPrewarmQueued = true;
+
+  const start = async () => {
+    try {
+      await prewarmMainPreview({ force });
+    } catch (error) {
+      console.warn("prewarmMainPreview failed:", error);
+    } finally {
+      _mainPreviewPrewarmQueued = false;
+    }
+  };
+
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(() => { void start(); }, { timeout: Math.max(500, delay) });
+  } else {
+    setTimeout(() => { void start(); }, delay);
+  }
 }
 
 async function handleMainMutation() {
-  await refreshMainStatus();
+  const hasMainFile = await refreshMainStatus();
   await refreshMainPreview({ force: true });
+  if (hasMainFile && getActiveTabName() !== "main-preview") {
+    queueMainPreviewPrewarm({ force: true, delay: 100 });
+  }
 }
 
 async function init() {
@@ -705,7 +734,7 @@ async function init() {
 
   setBootProgress(34, "正在讀取主檔與快照狀態...");
   await nextFrame();
-  await refreshMainStatus();
+  const hasMainFile = await refreshMainStatus();
 
   setBootProgress(46, "正在讀取 ST 庫存狀態...");
   await nextFrame();
@@ -741,6 +770,7 @@ async function init() {
   try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
   try { await initDefectives(); } catch (e) { console.warn("initDefectives failed:", e); }
   await finishBoot();
+  if (hasMainFile) queueMainPreviewPrewarm();
 }
 
 function setStatus(id, text, cls) {

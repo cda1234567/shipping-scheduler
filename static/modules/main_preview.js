@@ -8,6 +8,11 @@ let _searchMatches = [];
 let _searchCursor = -1;
 let _currentQuery = "";
 let _initialized = false;
+let _previewLoadPromise = null;
+let _previewLoadKey = "";
+let _previewLoadToken = null;
+let _previewGeneration = 0;
+let _previewRenderSequence = 0;
 const MAIN_PREVIEW_ROW_HEADER_WIDTH = 56;
 const MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30;
 const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3;
@@ -52,15 +57,26 @@ export async function onMainPreviewTabActivated() {
   await refreshMainPreview({ eager: true });
 }
 
+export async function prewarmMainPreview({ force = false } = {}) {
+  if (!force && _activeSheet && _sheetCache.has(_activeSheet)) return;
+  await refreshMainPreview({ force, eager: true });
+}
+
 export async function refreshMainPreview({ force = false, sheet = "", eager = false } = {}) {
+  const renderSequence = ++_previewRenderSequence;
   if (force) {
     _sheetCache.clear();
+    _previewGeneration += 1;
+    _previewLoadPromise = null;
+    _previewLoadKey = "";
+    _previewLoadToken = null;
     if (sheet) _activeSheet = sheet;
   }
 
   const panel = document.getElementById("tab-main-preview");
   const isActive = panel?.classList.contains("active");
   if (!isActive && !eager) return;
+  const generation = _previewGeneration;
 
   renderLoadingState("正在載入目前 live 主檔...");
 
@@ -71,7 +87,21 @@ export async function refreshMainPreview({ force = false, sheet = "", eager = fa
     if (!payload) {
       const url = new URL("/api/main-file/preview", window.location.origin);
       if (requestedSheet) url.searchParams.set("sheet", requestedSheet);
-      payload = await apiJson(`${url.pathname}${url.search}`);
+      const requestKey = `${url.pathname}${url.search}`;
+      if (!_previewLoadPromise || _previewLoadKey !== requestKey) {
+        const token = {};
+        _previewLoadToken = token;
+        _previewLoadKey = requestKey;
+        _previewLoadPromise = apiJson(requestKey).finally(() => {
+          if (_previewLoadToken !== token) return;
+          _previewLoadPromise = null;
+          _previewLoadKey = "";
+          _previewLoadToken = null;
+        });
+      }
+
+      payload = await _previewLoadPromise;
+      if (generation !== _previewGeneration || renderSequence !== _previewRenderSequence) return;
       _workbookMeta = {
         filename: payload.filename || "",
         loaded_at: payload.loaded_at || "",
@@ -84,10 +114,12 @@ export async function refreshMainPreview({ force = false, sheet = "", eager = fa
       _activeSheet = requestedSheet;
     }
 
+    if (generation !== _previewGeneration || renderSequence !== _previewRenderSequence) return;
     renderWorkbookMeta();
     renderSheetTabs();
     renderActiveSheet();
   } catch (error) {
+    if (generation !== _previewGeneration || renderSequence !== _previewRenderSequence) return;
     _sheetNames = [];
     _activeSheet = "";
     _sheetCache.clear();
