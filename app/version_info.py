@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.23.3"
+APP_VERSION = "v2026.04.23.4"
 APP_RELEASED_AT = "2026-04-23"
-APP_HEADLINE = "網站開啟後會在背景預熱主檔預覽，畫面仍停在出貨排程。"
+APP_HEADLINE = "右側補料區新增 IC / OC / UC 買料提醒，低於安全線會主動列出。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒",
+        "items": [
+            "右側補料區新增「買料提醒」分頁，會列出 live 主檔中 IC / OC / UC 開頭且庫存見底的料號。",
+            "提醒安全線優先使用該料號 MOQ；沒有 MOQ 時使用 100，並顯示目前庫存、安全線與建議購買量。",
+            "買料提醒和原本補料明細分開顯示，不會影響批次 merge、缺料勾選或寫入主檔流程。",
+        ],
+    },
     {
         "title": "主檔預覽預熱",
         "items": [

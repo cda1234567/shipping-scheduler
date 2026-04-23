@@ -36,7 +36,11 @@ let _modalDraftBaseSupplements = {};
 let _modalDraftVisibleParts = [];
 let _globalBusyDepth = 0;
 let _rightPanelMode = "shortages";
+let _rightPanelActiveTab = "shortages";
+let _lastShortagePanelData = { shortages: [], csShortages: [], mainDeficits: [] };
 const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-M24", "IC-XC2C32"];
+const PURCHASE_REMINDER_PREFIXES = ["IC-", "OC-", "UC-"];
+const PURCHASE_REMINDER_FALLBACK_THRESHOLD = 100;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -50,6 +54,9 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
+    document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
+      btn.addEventListener("click", () => activateRightPanelTab(btn.dataset.rightPanelTab));
+    });
     _scheduleInitialized = true;
   }
   await refresh();
@@ -1161,15 +1168,8 @@ function removeRightPanelShortageRowIfResolved(row) {
   }
 
   const remainingRows = scroll.querySelectorAll(".shortage-item").length;
-  const badge = document.getElementById("shortage-count");
-  if (badge) {
-    if (remainingRows > 0) {
-      badge.style.display = "inline";
-      badge.textContent = String(remainingRows);
-    } else {
-      badge.style.display = "none";
-    }
-  }
+  setRightPanelBadge(remainingRows);
+  updateRightPanelTabs(remainingRows);
   if (!remainingRows) {
     scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
   }
@@ -1339,11 +1339,7 @@ function buildRawModalShortageGroups(targets) {
   return { shortagesByScope, csShortagesByScope, orderedScopes };
 }
 
-/** 從主檔庫存中找出已經確定缺料的料號（庫存 < 安全水位）。 */
-function buildMainFileDeficitItems() {
-  if (!_liveStock || !Object.keys(_liveStock).length) return [];
-
-  // 建立 BOM 料號描述對照表
+function buildPartDescriptionLookup() {
   const descLookup = {};
   for (const entry of Object.values(_bomData || {})) {
     for (const comp of (entry?.components || [])) {
@@ -1354,6 +1350,14 @@ function buildMainFileDeficitItems() {
       }
     }
   }
+  return descLookup;
+}
+
+/** 從主檔庫存中找出已經確定缺料的料號（庫存 < 安全水位）。 */
+function buildMainFileDeficitItems() {
+  if (!_liveStock || !Object.keys(_liveStock).length) return [];
+
+  const descLookup = buildPartDescriptionLookup();
 
   const deficits = [];
   for (const [part, stockQty] of Object.entries(_liveStock)) {
@@ -1373,6 +1377,56 @@ function buildMainFileDeficitItems() {
 
   deficits.sort((a, b) => b.shortage_amount - a.shortage_amount);
   return deficits;
+}
+
+function isPurchaseReminderPart(partNumber) {
+  const key = normalizePartKey(partNumber);
+  return PURCHASE_REMINDER_PREFIXES.some(prefix => key.startsWith(prefix));
+}
+
+function getPurchaseReminderThreshold(partNumber) {
+  const key = normalizePartKey(partNumber);
+  const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
+  return moq > 0 ? moq : PURCHASE_REMINDER_FALLBACK_THRESHOLD;
+}
+
+function buildPurchaseReminderItems() {
+  if (!_liveStock || !Object.keys(_liveStock).length) return [];
+
+  const descLookup = buildPartDescriptionLookup();
+  const items = [];
+  for (const [part, stockQty] of Object.entries(_liveStock)) {
+    const key = normalizePartKey(part);
+    if (!key || !isPurchaseReminderPart(key)) continue;
+
+    const currentStock = Number(stockQty || 0);
+    if (!Number.isFinite(currentStock)) continue;
+
+    const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
+    const threshold = getPurchaseReminderThreshold(key);
+    if (currentStock > threshold) continue;
+
+    const neededToThreshold = Math.max(0, threshold - currentStock);
+    const suggestedQty = moq > 0
+      ? Math.max(moq, Math.ceil(Math.max(neededToThreshold, 1) / moq) * moq)
+      : Math.max(PURCHASE_REMINDER_FALLBACK_THRESHOLD, neededToThreshold);
+
+    items.push({
+      part_number: key,
+      description: descLookup[key] || "",
+      current_stock: currentStock,
+      threshold,
+      moq,
+      suggested_qty: suggestedQty,
+      status: currentStock <= 0 ? "已見底" : "低於安全線",
+    });
+  }
+
+  items.sort((a, b) => (
+    Number(a.current_stock || 0) - Number(b.current_stock || 0)
+    || compareText(a.part_number, b.part_number)
+  ));
+  return items;
 }
 
 function buildPostDispatchShortagesFromCompletedDrafts() {
@@ -4108,21 +4162,133 @@ function renderShortageGroupHtml(items, isCS) {
   return html;
 }
 
-function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
-  _rightPanelMode = "shortages";
-  const scroll = document.getElementById("right-scroll");
+function setRightPanelBadge(count, { purchase = false } = {}) {
   const badge = document.getElementById("shortage-count");
-  const orderShortageCount = shortages.length + csShortages.length;
-  const totalCount = orderShortageCount + mainDeficits.length;
-
-  if (!totalCount) {
-    scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
+  if (!badge) return;
+  badge.classList.toggle("is-purchase-alert", Boolean(purchase));
+  if (count > 0) {
+    badge.style.display = "inline";
+    badge.textContent = String(count);
+  } else {
     badge.style.display = "none";
+    badge.textContent = "";
+  }
+}
+
+function setRightPanelTabCount(id, count) {
+  const badge = document.getElementById(id);
+  if (!badge) return;
+  badge.textContent = count > 0 ? String(count) : "";
+  badge.classList.toggle("has-items", count > 0);
+}
+
+function updateRightPanelTabs(shortageCount = 0, purchaseCount = buildPurchaseReminderItems().length) {
+  document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.rightPanelTab === _rightPanelActiveTab);
+  });
+  const title = document.querySelector("#right-panel-header h3");
+  if (title) title.textContent = _rightPanelActiveTab === "purchase" ? "買料提醒" : "補料明細";
+  setRightPanelTabCount("right-panel-shortage-tab-count", shortageCount);
+  setRightPanelTabCount("right-panel-purchase-tab-count", purchaseCount);
+}
+
+function activateRightPanelTab(tabName) {
+  const nextTab = tabName === "purchase" ? "purchase" : "shortages";
+  if (nextTab === "purchase") {
+    renderPurchaseReminderPanel();
     return;
   }
 
-  badge.style.display = "inline";
-  badge.textContent = totalCount;
+  _rightPanelActiveTab = "shortages";
+  if (_rightPanelMode === "postDispatch") {
+    renderPostDispatchPanel();
+    return;
+  }
+  renderShortagePanel(
+    _lastShortagePanelData.shortages,
+    _lastShortagePanelData.csShortages,
+    _lastShortagePanelData.mainDeficits,
+  );
+}
+
+function renderPurchaseReminderPanel() {
+  _rightPanelActiveTab = "purchase";
+  const scroll = document.getElementById("right-scroll");
+  const items = buildPurchaseReminderItems();
+  const shortageCount = _rightPanelMode === "postDispatch"
+    ? _postDispatchShortages.length
+    : (_lastShortagePanelData.shortages.length
+      + _lastShortagePanelData.csShortages.length
+      + _lastShortagePanelData.mainDeficits.length);
+  updateRightPanelTabs(shortageCount, items.length);
+  setRightPanelBadge(items.length, { purchase: true });
+
+  if (!scroll) return;
+  if (!items.length) {
+    scroll.innerHTML = '<div class="no-shortage-msg">目前沒有 IC / OC / UC 買料提醒</div>';
+    return;
+  }
+
+  let html = '<div style="padding:6px 10px;font-size:12px;font-weight:600;color:#b45309;border-bottom:1px solid #fde68a;margin-bottom:8px">IC / OC / UC 庫存見底</div>';
+  for (const item of items) {
+    const currentStock = roundShortageUiValue(item.current_stock);
+    const threshold = roundShortageUiValue(item.threshold);
+    const moq = roundShortageUiValue(item.moq || 0);
+    const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
+    html += `<div class="shortage-item purchase-reminder-item" data-part="${esc(item.part_number)}">
+      <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span></div>
+      <div class="desc">${esc(item.description || "—")}</div>
+      <div class="amounts">
+        <span class="amber">庫存 ${fmt(currentStock)}</span>
+        <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
+        ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
+        <span class="blue">建議買 ${fmt(suggestedQty)}</span>
+      </div>
+      <button class="btn btn-secondary btn-xs purchase-reminder-copy" type="button" data-part="${esc(item.part_number)}">複製料號</button>
+    </div>`;
+  }
+  scroll.innerHTML = html;
+  scroll.querySelectorAll(".purchase-reminder-copy").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const part = normalizePartKey(btn.dataset.part);
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(part);
+        showToast(`已複製 ${part}`);
+      } catch (_) {
+        showToast(part);
+      }
+    });
+  });
+}
+
+function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
+  _rightPanelMode = "shortages";
+  _lastShortagePanelData = {
+    shortages: Array.isArray(shortages) ? shortages : [],
+    csShortages: Array.isArray(csShortages) ? csShortages : [],
+    mainDeficits: Array.isArray(mainDeficits) ? mainDeficits : [],
+  };
+  const scroll = document.getElementById("right-scroll");
+  const orderShortageCount = shortages.length + csShortages.length;
+  const totalCount = orderShortageCount + mainDeficits.length;
+  updateRightPanelTabs(totalCount);
+
+  if (_rightPanelActiveTab === "purchase") {
+    renderPurchaseReminderPanel();
+    return;
+  }
+
+  _rightPanelActiveTab = "shortages";
+  updateRightPanelTabs(totalCount);
+
+  if (!totalCount) {
+    scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
+    setRightPanelBadge(0);
+    return;
+  }
+
+  setRightPanelBadge(totalCount);
 
   let html = "";
 
@@ -4438,16 +4604,16 @@ function showPostDispatchShortages(shortages) {
 
 function renderPostDispatchPanel() {
   _rightPanelMode = "postDispatch";
+  _rightPanelActiveTab = "shortages";
+  updateRightPanelTabs(_postDispatchShortages.length);
   const scroll = document.getElementById("right-scroll");
-  const badge = document.getElementById("shortage-count");
   if (!_postDispatchShortages.length) {
     scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
-    badge.style.display = "none";
+    setRightPanelBadge(0);
     return;
   }
 
-  badge.style.display = "inline";
-  badge.textContent = _postDispatchShortages.length;
+  setRightPanelBadge(_postDispatchShortages.length);
 
   const grouped = {};
   for (const s of _postDispatchShortages) {
