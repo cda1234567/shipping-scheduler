@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.1"
+APP_VERSION = "v2026.04.24.2"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "IC-M24 類料號改回單筆訂單缺料特例，後續訂單的結存會承接前一筆的補料結果。"
+APP_HEADLINE = "前端缺料計算與後端對齊，優先按 BOM 原始訂單數量等比縮放，避免拋料被 qty_per_board 吃掉。"
 APP_CHANGELOG = [
+    {
+        "title": "前端缺料公式",
+        "items": [
+            "前端 merge modal 的缺料計算改成跟後端 bom_quantity 同樣優先：先按 needed_qty × 排程數量 ÷ bom_order_qty 做等比縮放，才 fallback 到 qty_per_board × 排程數量。",
+            "像 IC-BD9327EFJ 這種 BOM F 欄本來含拋料（200 片需 400 顆）的料，排程 300 片時會正確算成 600 顆並納入缺料列表，不會再被前端算成 300 顆後被庫存吃掉、整個從 modal 消失。",
+            "前端公式跟後端（/api/schedule/calculate）現在完全一致，不會再出現「後端有缺料、前端 modal 沒列」的情況。",
+        ],
+    },
     {
         "title": "IC-M24 單筆訂單缺料",
         "items": [

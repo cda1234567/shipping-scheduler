@@ -523,6 +523,52 @@ console.log(JSON.stringify(results));
         self.assertEqual(second_shortage["current_stock"], 34)
         self.assertEqual(second_shortage["shortage_amount"], 166)
 
+    def test_frontend_calculator_scales_need_by_bom_order_qty_over_qty_per_board(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+import { calculate } from './static/modules/calculator.js';
+
+const results = calculate(
+  [{ id: 1, po_number: 9002, pcb: 'PCB-BD9', model: 'TA7-3', order_qty: 300 }],
+  {
+    'TA7-3': {
+      components: [
+        {
+          part_number: 'IC-BD9327EFJ',
+          description: 'IC, VOLTAGE REGULATOR',
+          needed_qty: 400,
+          qty_per_board: 1,
+          bom_order_qty: 200,
+          prev_qty_cs: 0,
+          is_dash: false,
+        },
+      ],
+    },
+  },
+  { 'IC-BD9327EFJ': 161 },
+  { 'IC-BD9327EFJ': 2500 },
+  {},
+  {},
+  {},
+);
+
+console.log(JSON.stringify(results));
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        results = json.loads(completed.stdout)
+
+        shortages = results[0]["shortages"]
+        self.assertEqual(len(shortages), 1)
+        self.assertEqual(shortages[0]["needed"], 600)
+        self.assertEqual(shortages[0]["current_stock"], 161)
+        self.assertEqual(shortages[0]["shortage_amount"], 439)
+
     def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
