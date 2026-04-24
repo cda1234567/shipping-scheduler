@@ -1341,8 +1341,84 @@ function buildRawModalShortageGroups(targets) {
     });
   });
 
+  injectStoredSupplementOnlyItems(shortagesByScope, targetRows);
   applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
   return { shortagesByScope, csShortagesByScope, orderedScopes };
+}
+
+function injectStoredSupplementOnlyItems(shortagesByScope, targetRows) {
+  // 使用者在 draft 存了 supplement > 0 但系統判定不缺料的料號，
+  // 也要在 modal 列出，讓使用者看到自己輸入的補料並可以再編輯。
+  for (const row of targetRows) {
+    const draft = _draftsByOrderId?.[row.id];
+    if (!draft) continue;
+    const supplements = draft.supplements || {};
+    const modelKey = String(row.model || "").toUpperCase();
+    const bomEntry = _bomData?.[modelKey];
+    if (!bomEntry) continue;
+
+    const meta = buildShortageGroupMeta(row);
+    const scopeKey = meta._row_group_key;
+    const existingParts = new Set(
+      (shortagesByScope[scopeKey] || [])
+        .filter(item => normalizeOrderId(item._order_id) === row.id)
+        .map(item => normalizePartKey(item.part_number))
+    );
+
+    const orderQty = toSchedOrderQty(row);
+    for (const [rawPart, rawQty] of Object.entries(supplements)) {
+      const partKey = normalizePartKey(rawPart);
+      const supVal = Number(rawQty) || 0;
+      if (!partKey || supVal <= 0) continue;
+      if (existingParts.has(partKey)) continue;
+
+      const comp = (bomEntry.components || []).find(
+        c => normalizePartKey(c.part_number) === partKey,
+      );
+      if (!comp || comp.is_dash) continue;
+
+      const neededQty = effectiveNeededFromBomComp(comp, orderQty);
+      if (neededQty <= 0) continue;
+      const currentStock = Number(_stock?.[partKey] ?? 0) || 0;
+      const itemMoq = Number(_moq?.[partKey] ?? 0) || 0;
+      const stStockQty = Number(_stStock?.[partKey] ?? 0) || 0;
+
+      const synthetic = {
+        part_number: comp.part_number,
+        description: comp.description || "",
+        shortage_amount: 0,
+        current_stock: currentStock,
+        needed: neededQty,
+        supplement_qty: supVal,
+        moq: itemMoq,
+        suggested_qty: supVal,
+        purchase_suggested_qty: 0,
+        decision: "None",
+        st_stock_qty: stStockQty,
+        st_available_qty: 0,
+        purchase_needed_qty: 0,
+        needs_purchase: false,
+        _supplement_only: true,
+        ...meta,
+      };
+      if (!shortagesByScope[scopeKey]) shortagesByScope[scopeKey] = [];
+      shortagesByScope[scopeKey].push(synthetic);
+    }
+  }
+}
+
+function toSchedOrderQty(row) {
+  const v = Number(row?.order_qty || 0);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+function effectiveNeededFromBomComp(comp, scheduleQty) {
+  const qpb = Number(comp.qty_per_board || 0) || 0;
+  if (scheduleQty > 0 && qpb > 0) {
+    const scrap = Math.max(0, Number(comp.scrap_factor || 0) || 0);
+    return qpb * scheduleQty * (1 + scrap);
+  }
+  return Number(comp.needed_qty || 0) || 0;
 }
 
 function buildPartDescriptionLookup() {

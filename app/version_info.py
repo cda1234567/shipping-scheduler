@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.10"
+APP_VERSION = "v2026.04.24.11"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "非 EC 一般料結存 < 1 一律視為缺料，避免扣到 0.5 / 0.9 這種無法拆的分散整數料被誤判成夠用。"
+APP_HEADLINE = "merge modal 會把「有存 supplement 但不缺料」的料號也列出，使用者先前輸入的補料不會再被蓋掉看不到。"
 APP_CHANGELOG = [
+    {
+        "title": "Modal 補料保留",
+        "items": [
+            "merge modal 原本只顯示系統判定缺料的料號，使用者在之前編輯存的 supplement（例如 PK-10011B=100）會因為該料並不缺而從列表消失，導致按下批次 merge 後看不到自己輸入的值。",
+            "現在 modal 會多掃一次每張訂單的 draft supplements：有 supplement > 0 但不在缺料清單的料號會被補成 synthetic 項目一起列出，使用者可以繼續編輯或移除。",
+            "副檔 xlsx 本來就會把這些 supplement 寫到 H 欄，UI 行為現在跟副檔對齊。",
+        ],
+    },
     {
         "title": "結存小於 1 視為缺料",
         "items": [
