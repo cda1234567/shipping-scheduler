@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.6"
+APP_VERSION = "v2026.04.24.7"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "BOM 拋料率全面改用 F 欄快取值反推，只要 DB 存的 scrap 跟 F 實際算出的隱含拋料差 > 0.5% 就校正。"
+APP_HEADLINE = "修正拋料率欄偵測：不再把標題句「(含0.6%拋料率)」誤當成拋料率欄，避免 Item 流水號被當成拋料率。"
 APP_CHANGELOG = [
+    {
+        "title": "拋料率欄偵測修正",
+        "items": [
+            "`_detect_scrap_column` 原本會把 BOM 標題列「辰尚-外包廠商(庚霖)領料單 (含0.6%拋料率)...」誤當成拋料率欄 header，結果讀到 A 欄 Item 流水號，導致 Item 6 被當 6% 拋料、Item 29 被當 29% 拋料。",
+            "現在改成：先找「完全等於 拋料率/損耗率/不良率 等 strong 詞」的儲存格；找不到才 fallback 到寬鬆匹配，且要求 normalized 文字長度 ≤10 以排除整段標題句。",
+            "TA7-3 訂單的 EC-20029A / IC-M24C02 / EC-30059A-TAB 等料因此出現跨訂單算出來的需要量跟副檔 F 欄對不起來，本次修好。",
+        ],
+    },
     {
         "title": "拋料率全面校正",
         "items": [

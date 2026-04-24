@@ -110,12 +110,24 @@ def _normalize_header_text(value) -> str:
     return re.sub(r"[\s_:\-：／/\\()\[\]{}（）【】「」『』%％]+", "", text)
 
 
+def _looks_like_scrap_header_exact(value) -> bool:
+    normalized = _normalize_header_text(value)
+    return bool(normalized) and normalized in _SCRAP_HEADER_STRONG_TERMS
+
+
 def _looks_like_scrap_header(value) -> bool:
     normalized = _normalize_header_text(value)
     if not normalized:
         return False
-    if any(term in normalized for term in _SCRAP_HEADER_STRONG_TERMS):
+    # 標題句（>10 字）例如「領料單(含0.6%拋料率)」不當成欄位 header
+    if len(normalized) > 10:
+        return False
+    if normalized in _SCRAP_HEADER_STRONG_TERMS:
         return True
+    if any(term in normalized for term in _SCRAP_HEADER_STRONG_TERMS):
+        if not any(term in normalized for term in _SCRAP_HEADER_NEGATIVE_TERMS):
+            return True
+        return False
     if any(term in normalized for term in _SCRAP_HEADER_WEAK_TERMS):
         return not any(term in normalized for term in _SCRAP_HEADER_NEGATIVE_TERMS)
     return False
@@ -123,6 +135,12 @@ def _looks_like_scrap_header(value) -> bool:
 
 def _detect_scrap_column(rows_list: list[tuple], data_start: int, default_col: int) -> int:
     header_row_count = max(0, data_start - 1)
+    # 第一輪：完全等於 STRONG 詞（最乾淨的 header cell，例如 row 3 col E = "拋料率"）
+    for row_vals in rows_list[:header_row_count]:
+        for col_idx, value in enumerate(row_vals or ()):
+            if _looks_like_scrap_header_exact(value):
+                return col_idx
+    # 第二輪：寬鬆 header 匹配，配合長度＋否定詞過濾
     for row_vals in rows_list[:header_row_count]:
         for col_idx, value in enumerate(row_vals or ()):
             if _looks_like_scrap_header(value):
