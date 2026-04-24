@@ -6,7 +6,7 @@
  * 3. 套用各訂單已保存的補料值
  * 4. 對未發料訂單跑 running balance
  */
-const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32"];
+const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];
 
 export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}, orderSupplementsByOrder = {}) {
   const running = { ...stock };

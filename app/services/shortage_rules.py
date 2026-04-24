@@ -8,6 +8,7 @@ EC_NO_WARNING_PREFIXES = (
 ORDER_SCOPED_PART_PREFIXES = (
     "IC-STM",
     "IC-XC2C32",
+    "IC-M24",
 )
 
 

@@ -475,7 +475,7 @@ console.log(JSON.stringify(results));
         self.assertEqual(second_shortage["suggested_qty"], 50)
         self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
 
-    def test_frontend_calculator_treats_m24_as_running_stock_part(self):
+    def test_frontend_calculator_treats_m24_as_order_scoped_with_supplement_carryover(self):
         root = Path(__file__).resolve().parents[1]
         script = """
 import { calculate } from './static/modules/calculator.js';
@@ -488,20 +488,20 @@ const results = calculate(
   {
     'MODEL-M1': {
       components: [
-        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 100, prev_qty_cs: 0, is_dash: false },
+        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 200, prev_qty_cs: 0, is_dash: false },
       ],
     },
     'MODEL-M2': {
       components: [
-        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 50, prev_qty_cs: 0, is_dash: false },
+        { part_number: 'IC-M24C02-WMN6TP-TAB', description: 'EEPROM', needed_qty: 200, prev_qty_cs: 0, is_dash: false },
       ],
     },
   },
-  { 'IC-M24C02-WMN6TP-TAB': 0 },
+  { 'IC-M24C02-WMN6TP-TAB': 34 },
   { 'IC-M24C02-WMN6TP-TAB': 100 },
   {},
   {},
-  {},
+  { 1: { 'IC-M24C02-WMN6TP-TAB': 200 } },
 );
 
 console.log(JSON.stringify(results));
@@ -515,16 +515,19 @@ console.log(JSON.stringify(results));
         )
         results = json.loads(completed.stdout)
 
-        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 100)
-        self.assertEqual(results[1]["shortages"][0]["current_stock"], -100)
-        self.assertEqual(results[1]["shortages"][0]["shortage_amount"], 150)
+        first_shortage = results[0]["shortages"][0]
+        second_shortage = results[1]["shortages"][0]
+        self.assertEqual(first_shortage["current_stock"], 34)
+        self.assertEqual(first_shortage["shortage_amount"], 166)
+        self.assertEqual(first_shortage["supplement_qty"], 200)
+        self.assertEqual(second_shortage["current_stock"], 34)
+        self.assertEqual(second_shortage["shortage_amount"], 166)
 
     def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         self.assertIn("if (isOrderScopedPart(item?.part_number)) return false;", schedule_module)
-        self.assertNotIn('"IC-M24"', schedule_module)
         self.assertIn("const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;", schedule_module)
         self.assertIn("const defaultQty = shortageChecked && !hasStoredSupplement", schedule_module)
 

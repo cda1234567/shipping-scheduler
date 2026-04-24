@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.23.8"
-APP_RELEASED_AT = "2026-04-23"
-APP_HEADLINE = "修正 M24 類料號 running balance 與重複 BOM alias 造成的需求倍增。"
+APP_VERSION = "v2026.04.24.1"
+APP_RELEASED_AT = "2026-04-24"
+APP_HEADLINE = "IC-M24 類料號改回單筆訂單缺料特例，後續訂單的結存會承接前一筆的補料結果。"
 APP_CHANGELOG = [
+    {
+        "title": "IC-M24 單筆訂單缺料",
+        "items": [
+            "IC-M24 類料號重新納入「只看單筆訂單缺料」特例，和 IC-STM、IC-XC2C32 同一套規則。",
+            "同一顆 IC-M24 料如果多張訂單都有需求，補料輸入會以「訂單 + 料號」為單位累加到 running balance；下一張訂單開頭會看到補完後的結存，不會再直接帶負值。",
+            "像起始庫存 34、訂單 A 需 200 並補 200 時，下一張訂單 B 現在會看到 34-200+200=34 的結存起點，再次顯示缺 166，而不是直接寫成 -166。",
+        ],
+    },
     {
         "title": "扣帳 running balance",
         "items": [
-            "IC-M24 類料號改回一般 running balance，不再套用單筆訂單缺料特例，後續訂單會承接前面扣帳後的結存。",
             "BOM group_model 若不小心填入重複機種 alias，讀取 BOM data 時會先去重，避免同一份 BOM 在 modal 需求量被算兩次。",
             "補上前後端測試，覆蓋 M24 後續缺料承接與 PB 類料號需求被重複 alias 放大的情境。",
         ],

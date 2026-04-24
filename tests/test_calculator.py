@@ -213,7 +213,7 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(second_shortage["suggested_qty"], 50)
         self.assertEqual(second_shortage["purchase_suggested_qty"], 0)
 
-    def test_m24_parts_use_running_balance_instead_of_order_scoped_shortage(self):
+    def test_m24_parts_report_only_current_order_shortage(self):
         results = run(
             orders=[
                 {"id": 1, "po_number": 2101, "pcb": "M", "model": "MODEL-M1"},
@@ -249,7 +249,7 @@ class CalculatorTests(unittest.TestCase):
         second_shortage = results[1]["shortages"][0]
         self.assertEqual(first_shortage["shortage_amount"], 100)
         self.assertEqual(second_shortage["current_stock"], -100)
-        self.assertEqual(second_shortage["shortage_amount"], 150)
+        self.assertEqual(second_shortage["shortage_amount"], 50)
 
     def test_scales_component_need_by_schedule_order_qty(self):
         results = run(
