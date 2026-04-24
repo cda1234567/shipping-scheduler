@@ -346,9 +346,9 @@ class MergeDraftDetailTests(unittest.TestCase):
             )
 
         shortage = plan["shortages"][0]
-        self.assertEqual(shortage["shortage_amount"], 9.0)
+        self.assertEqual(shortage["shortage_amount"], 8.0)
         self.assertEqual(shortage["st_available_qty"], 6.0)
-        self.assertEqual(shortage["purchase_needed_qty"], 3.0)
+        self.assertEqual(shortage["purchase_needed_qty"], 2.0)
         self.assertEqual(shortage["purchase_suggested_qty"], 5.0)
         self.assertEqual(shortage["suggested_qty"], 11.0)
         self.assertEqual(plan["file_plans"][0]["purchase_parts"], [])

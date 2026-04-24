@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.11"
+APP_VERSION = "v2026.04.24.12"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "merge modal 會把「有存 supplement 但不缺料」的料號也列出，使用者先前輸入的補料不會再被蓋掉看不到。"
+APP_HEADLINE = "非 EC 門檻只對 PK 包材類套用 < 1 規則，其他料維持原本 < 0 判定。"
 APP_CHANGELOG = [
     {
         "title": "Modal 補料保留",
@@ -14,11 +14,11 @@ APP_CHANGELOG = [
         ],
     },
     {
-        "title": "結存小於 1 視為缺料",
+        "title": "PK 包材結存小於 1 視為缺料",
         "items": [
-            "一般料（非 EC 類）原本結存 >= 0 就當夠用，遇到扣完剩 0.5、0.9 這種無法再切的值會被放過。",
-            "現在安全水位改成 1：結存 < 1 一律視為缺料，會進 modal 缺料清單並擋寫入主檔。",
-            "EC 料 100 安全水位、EC-6 前綴 0 水位保持不變。",
+            "PK 開頭的包材類原本結存 >= 0 就當夠用，扣完剩 0.5 / 0.9 這種無法再切的值會被放過。",
+            "PK 料改成安全水位 1：結存 < 1 視為缺料，會進 modal 並擋寫入主檔。",
+            "EC / EC-6 / 一般 IC / OC / UC / PB 類門檻維持原本行為，只有 PK 受影響。",
         ],
     },
     {
