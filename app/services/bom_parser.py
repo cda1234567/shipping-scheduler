@@ -513,7 +513,10 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
         if scrap_factor >= 1:
             scrap_factor = 0.0
 
-        prev_cs = _try_float(h_raw) or 0.0
+        # BOM 的 G/H 欄（上批餘料庚霖/辰尚）常存歷史殘留值（如 90000），
+        # 會被加進 running stock 造成缺料計算失真，且副檔 generator 本來就
+        # 不讀這兩欄。一律不當作 prev_qty_cs 使用。
+        prev_cs = 0.0
         desc = str(row_vals[desc_col] or "").strip() if len(row_vals) > desc_col else ""
 
         components.append(BomComponent(

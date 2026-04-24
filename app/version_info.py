@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.8"
+APP_VERSION = "v2026.04.24.9"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "已發料分頁每個資料夾裡的訂單照 code (X-X) 自然排序，4-1 → 4-2 → 4-3 不會再亂跳。"
+APP_HEADLINE = "BOM 上傳不再把 H 欄「上批餘料辰尚」吃進 prev_qty_cs，避免歷史殘留值壓掉真實缺料。"
 APP_CHANGELOG = [
+    {
+        "title": "BOM 上批餘料改不參考",
+        "items": [
+            "BOM parser 不再讀 H 欄值當成 prev_qty_cs，固定存 0；副檔 generator 本來就不讀 G/H，改成一致。",
+            "之前 TA7-1 這類 BOM 在 H 欄殘留 90000 上批餘料會被當成「stock 多 9 萬顆」，導致 EC-10029A / PB-20138A-TAB 這些實際缺料的料不會出現在補料 modal 裡。",
+            "DB 內原本 53 筆非 0 的 prev_qty_cs 一次性歸零，重啟後任何缺料計算都從 main stock 出發，沒有幽靈庫存。",
+            "副檔裡真實的跨訂單結存（副檔 G 欄、J 欄）跟 modal 補料清單現在會一致，不會再出現「副檔結存負數但 modal 不通知」。",
+        ],
+    },
     {
         "title": "已發料排序",
         "items": [
