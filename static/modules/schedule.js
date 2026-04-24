@@ -3571,12 +3571,32 @@ function renderCompletedTab() {
     return;
   }
 
-  // 按 folder 分組
+  // 按 folder 分組，每組依 code (X-X) 自然排序
+  const parseCodeSort = (code) => {
+    if (!code) return [Number.MAX_SAFE_INTEGER];
+    return String(code).split("-").map(seg => {
+      const n = parseInt(seg, 10);
+      return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+    });
+  };
   const grouped = {};
   for (const r of _completedRows) {
     const folder = r.folder || "";
     if (!grouped[folder]) grouped[folder] = [];
     grouped[folder].push(r);
+  }
+  for (const rows of Object.values(grouped)) {
+    rows.sort((a, b) => {
+      const ac = parseCodeSort(a.code);
+      const bc = parseCodeSort(b.code);
+      const len = Math.max(ac.length, bc.length);
+      for (let i = 0; i < len; i += 1) {
+        const av = ac[i] ?? Number.MAX_SAFE_INTEGER;
+        const bv = bc[i] ?? Number.MAX_SAFE_INTEGER;
+        if (av !== bv) return av - bv;
+      }
+      return 0;
+    });
   }
 
   // 所有資料夾選項（給下拉用）

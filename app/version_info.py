@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.7"
+APP_VERSION = "v2026.04.24.8"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "修正拋料率欄偵測：不再把標題句「(含0.6%拋料率)」誤當成拋料率欄，避免 Item 流水號被當成拋料率。"
+APP_HEADLINE = "已發料分頁每個資料夾裡的訂單照 code (X-X) 自然排序，4-1 → 4-2 → 4-3 不會再亂跳。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料排序",
+        "items": [
+            "已發料分頁原本是按 _completedRows 的原始順序顯示，同資料夾內的 code 像 4-1 / 4-10 / 4-2 會混亂排列。",
+            "現在每個資料夾裡改成照 code 自然排序，兩段數字依序比較，4-1 → 4-2 → 4-3 → ... → 4-10 → 4-11。",
+        ],
+    },
     {
         "title": "拋料率欄偵測修正",
         "items": [
