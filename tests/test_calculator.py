@@ -31,8 +31,8 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["part_number"], "PART-1")
         self.assertEqual(results[0]["shortages"][0]["current_stock"], -2)
         self.assertEqual(results[0]["shortages"][0]["needed"], 3)
-        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 5)
-        self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 5)
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 6)
+        self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 10)
 
     def test_aggregates_duplicate_parts_within_same_order(self):
         results = run(
@@ -66,7 +66,7 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["part_number"], "PART-2")
         self.assertEqual(results[0]["shortages"][0]["current_stock"], 10)
         self.assertEqual(results[0]["shortages"][0]["needed"], 13)
-        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 3)
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 4)
         self.assertEqual(results[0]["shortages"][0]["suggested_qty"], 4)
 
     def test_customer_supplied_flag_is_ignored_and_uses_normal_shortage_list(self):
@@ -163,10 +163,10 @@ class CalculatorTests(unittest.TestCase):
         )
 
         shortage = results[0]["shortages"][0]
-        self.assertEqual(shortage["shortage_amount"], 8)
+        self.assertEqual(shortage["shortage_amount"], 9)
         self.assertEqual(shortage["st_stock_qty"], 6)
         self.assertEqual(shortage["st_available_qty"], 6)
-        self.assertEqual(shortage["purchase_needed_qty"], 2)
+        self.assertEqual(shortage["purchase_needed_qty"], 3)
         self.assertEqual(shortage["purchase_suggested_qty"], 5)
         self.assertTrue(shortage["needs_purchase"])
         self.assertEqual(shortage["suggested_qty"], 11)
@@ -274,7 +274,7 @@ class CalculatorTests(unittest.TestCase):
 
         self.assertEqual(results[0]["status"], "shortage")
         self.assertEqual(results[0]["shortages"][0]["needed"], 10)
-        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 2)
+        self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 3)
 
     def test_scales_component_need_with_bom_scrap_rate_preserved(self):
         # qty_per_board × schedule × (1 + scrap_factor)
@@ -302,7 +302,7 @@ class CalculatorTests(unittest.TestCase):
 
         self.assertEqual(results[0]["status"], "shortage")
         self.assertAlmostEqual(results[0]["shortages"][0]["needed"], 10.6)
-        self.assertAlmostEqual(results[0]["shortages"][0]["shortage_amount"], 2.6)
+        self.assertAlmostEqual(results[0]["shortages"][0]["shortage_amount"], 3.6)
 
 
 if __name__ == "__main__":

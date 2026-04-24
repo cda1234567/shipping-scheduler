@@ -43,7 +43,8 @@ def get_min_ending_stock(part_number: str) -> float:
         return 0.0
     if part_key.startswith(EC_PART_PREFIX):
         return EC_MIN_ENDING_STOCK
-    return 0.0
+    # 非 EC 一般料結存 < 1 視為缺料（單位無法切半）
+    return 1.0
 
 
 def calculate_shortage_amount(part_number: str, ending_stock: float) -> float:

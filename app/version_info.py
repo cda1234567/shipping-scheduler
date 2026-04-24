@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.9"
+APP_VERSION = "v2026.04.24.10"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "BOM 上傳不再把 H 欄「上批餘料辰尚」吃進 prev_qty_cs，避免歷史殘留值壓掉真實缺料。"
+APP_HEADLINE = "非 EC 一般料結存 < 1 一律視為缺料，避免扣到 0.5 / 0.9 這種無法拆的分散整數料被誤判成夠用。"
 APP_CHANGELOG = [
+    {
+        "title": "結存小於 1 視為缺料",
+        "items": [
+            "一般料（非 EC 類）原本結存 >= 0 就當夠用，遇到扣完剩 0.5、0.9 這種無法再切的值會被放過。",
+            "現在安全水位改成 1：結存 < 1 一律視為缺料，會進 modal 缺料清單並擋寫入主檔。",
+            "EC 料 100 安全水位、EC-6 前綴 0 水位保持不變。",
+        ],
+    },
     {
         "title": "BOM 上批餘料改不參考",
         "items": [

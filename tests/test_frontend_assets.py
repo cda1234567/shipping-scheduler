@@ -215,7 +215,7 @@ class FrontendAssetTests(unittest.TestCase):
         calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
 
         self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
-        self.assertIn('return normalized.startsWith("EC-") ? 100 : 0;', calculator_module)
+        self.assertIn('return normalized.startsWith("EC-") ? 100 : 1;', calculator_module)
 
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]
@@ -570,7 +570,7 @@ console.log(JSON.stringify(results));
         self.assertEqual(len(shortages), 1)
         self.assertEqual(shortages[0]["needed"], 330)  # 1 × 300 × 1.1
         self.assertEqual(shortages[0]["current_stock"], 100)
-        self.assertEqual(shortages[0]["shortage_amount"], 230)
+        self.assertEqual(shortages[0]["shortage_amount"], 231)
 
     def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
         root = Path(__file__).resolve().parents[1]

@@ -199,7 +199,8 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
 function getRequiredMinStock(partNumber) {
   const normalized = String(partNumber || "").trim().toUpperCase();
   if (normalized.startsWith("EC-6")) return 0;
-  return normalized.startsWith("EC-") ? 100 : 0;
+  // 非 EC 一般料結存 < 1 視為缺料
+  return normalized.startsWith("EC-") ? 100 : 1;
 }
 
 function calculateShortageAmount(partNumber, endingStock) {
