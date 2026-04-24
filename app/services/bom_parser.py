@@ -480,6 +480,20 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
                 scrap_factor=scrap_factor,
                 schedule_order_qty=order_qty,
             )
+
+        # 校正：若存的 scrap_factor 跟實際 needed_qty 隱含的 scrap 對不起來，
+        # 以反推值為準 (常見情況：E 欄誤存整數 1 被 coerce 成 100% 拋料)
+        if (
+            needed_qty
+            and qty_per > 0
+            and order_qty > 0
+        ):
+            expected_no_scrap = qty_per * order_qty
+            if expected_no_scrap > 0:
+                implied_scrap = (needed_qty / expected_no_scrap) - 1
+                if -0.0005 <= implied_scrap <= 0.5 and abs(implied_scrap - scrap_factor) > 0.005:
+                    scrap_factor = max(0.0, implied_scrap)
+
         prev_cs = _try_float(h_raw) or 0.0
         desc = str(row_vals[desc_col] or "").strip() if len(row_vals) > desc_col else ""
 

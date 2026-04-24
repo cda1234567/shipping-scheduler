@@ -267,6 +267,34 @@ class ExcelLogicTests(unittest.TestCase):
         self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.06)
         self.assertAlmostEqual(parsed.components[0].needed_qty, 21.2)
 
+    def test_parse_bom_reconciles_bad_scrap_cell_against_formula_needed(self):
+        # 若 E 欄 scrap cell 被誤存整數 1（coerce 會吐 1.0 = 100%），
+        # 但 F 欄公式實際評估出的 needed 隱含 0.6% 拋料，
+        # parser 應該用反推值覆蓋存錯的 1.0。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "bom.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=8, value="PO:4500059234")
+            ws.cell(row=1, column=11, value=192)
+            ws.cell(row=2, column=3, value="MODEL-RECONCILE")
+            ws.cell(row=2, column=4, value="PCB-R")
+            ws.cell(row=5, column=2, value=4)
+            ws.cell(row=5, column=3, value="PART-R")
+            ws.cell(row=5, column=4, value="Res")
+            # E 欄誤存整數 1（不該 100% 拋料）
+            ws.cell(row=5, column=5, value=1)
+            # F 欄公式實際含 0.006 scrap：4 × 192 × 1.006 = 772.608
+            ws.cell(row=5, column=6, value=772.608)
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_bom(str(path), "bom-reconcile", "bom.xlsx", "2026-04-24T10:00:00")
+
+        self.assertEqual(len(parsed.components), 1)
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.006)
+        self.assertAlmostEqual(parsed.components[0].needed_qty, 772.608)
+
     def test_coerce_scrap_factor_extracts_labeled_percentage_but_ignores_cell_refs(self):
         self.assertAlmostEqual(coerce_scrap_factor("拋料率 6%"), 0.06)
         self.assertAlmostEqual(coerce_scrap_factor("E5: 6%"), 0.06)

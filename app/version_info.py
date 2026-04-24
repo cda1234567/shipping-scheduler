@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.3"
+APP_VERSION = "v2026.04.24.4"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "需求量改成一律由每版用量 × 排程數量 × (1+拋料率) 即時算，不再讀 BOM F 欄，避免 F 欄錯值影響缺料。"
+APP_HEADLINE = "修正 BOM 拋料率上傳時被誤判成 100% 的 coerce bug，parser 會依 needed_qty 反推校正。"
 APP_CHANGELOG = [
+    {
+        "title": "拋料率校正",
+        "items": [
+            "上傳 BOM 時若 E 欄被誤填純數字 1（沒有百分號），coerce_scrap_factor 原本會吐成 100% 拋料，現在 parser 會比對 F 欄算出的 needed_qty 反推隱含拋料率，若差距超過 1% 就以反推值為準。",
+            "像 EC-10043A、PB-*-TAB、PK-10006B 這批 164 筆紀錄，原本 scrap_factor 被存成 1.0（100%），現在會依 F 欄公式自動校正回 0.6%、0% 等真實值。",
+            "加 regression 測試覆蓋「E 欄誤存 1 但 F 欄有 0.6% 拋料」的情境，避免未來重犯。",
+        ],
+    },
     {
         "title": "需求量即時計算",
         "items": [
