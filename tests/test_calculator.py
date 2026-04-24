@@ -277,6 +277,8 @@ class CalculatorTests(unittest.TestCase):
         self.assertEqual(results[0]["shortages"][0]["shortage_amount"], 2)
 
     def test_scales_component_need_with_bom_scrap_rate_preserved(self):
+        # qty_per_board × schedule × (1 + scrap_factor)
+        # 即使 needed_qty 在 BOM 裡存錯值，也用即時公式算，不再讀 F 欄
         results = run(
             orders=[{"id": 1, "po_number": 3002, "pcb": "H", "model": "MODEL-H-SCRAP", "order_qty": 5}],
             bom_map={
@@ -285,8 +287,9 @@ class CalculatorTests(unittest.TestCase):
                         "part_number": "PART-SCRAP",
                         "description": "Scaled with scrap",
                         "qty_per_board": 2,
+                        "scrap_factor": 0.06,
                         "bom_order_qty": 10,
-                        "needed_qty": 21.2,
+                        "needed_qty": 99999,  # 故意寫錯，驗證系統會忽略 F 欄
                         "prev_qty_cs": 0,
                         "is_dash": False,
                         "is_customer_supplied": False,

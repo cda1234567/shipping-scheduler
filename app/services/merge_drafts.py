@@ -233,6 +233,7 @@ def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_ord
     base_order_qty = coerce_qty(source_order_qty) or _read_ws_bom_order_qty(ws)
     part_col = cfg("excel.bom_part_col", 2) + 1
     qty_col = cfg("excel.bom_qty_per_board", 1) + 1
+    scrap_col = cfg("excel.bom_scrap_col", 4) + 1
     needed_col = cfg("excel.bom_needed_col", 5) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1
@@ -252,6 +253,7 @@ def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_ord
         needed_qty = calculate_effective_needed_qty(
             needed_qty=target_needed_cell.value,
             qty_per_board=ws.cell(row=row_idx, column=qty_col).value,
+            scrap_factor=ws.cell(row=row_idx, column=scrap_col).value,
             schedule_order_qty=effective_order_qty,
             bom_order_qty=base_order_qty,
         )

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.2"
+APP_VERSION = "v2026.04.24.3"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "前端缺料計算與後端對齊，優先按 BOM 原始訂單數量等比縮放，避免拋料被 qty_per_board 吃掉。"
+APP_HEADLINE = "需求量改成一律由每版用量 × 排程數量 × (1+拋料率) 即時算，不再讀 BOM F 欄，避免 F 欄錯值影響缺料。"
 APP_CHANGELOG = [
+    {
+        "title": "需求量即時計算",
+        "items": [
+            "扣帳、缺料與副檔產出改成每次都依 qty_per_board × 排程數量 × (1 + scrap_factor) 即時算，不再讀 BOM F 欄的 needed_qty。",
+            "像 OC-10932B-TAB 這種 F 欄寫錯（qty_per_board=1 但 F 欄存 96）的料，現在會依「每版 1 顆 × 192 片 × 拋料」直接算出正確數字，不會再被 F 欄錯值污染。",
+            "只有在該 BOM 沒有 qty_per_board 時才會退回讀 F 欄原值當 fallback，正常情況用不到。",
+            "前後端都用同一套公式，不會出現「後端算一個、前端算另一個」。",
+        ],
+    },
     {
         "title": "前端缺料公式",
         "items": [

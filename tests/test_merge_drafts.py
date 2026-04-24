@@ -452,6 +452,7 @@ class MergeDraftDetailTests(unittest.TestCase):
         worksheet.cell(row=2, column=7, value=10)
         worksheet.cell(row=5, column=2, value=2)
         worksheet.cell(row=5, column=3, value="PART-S")
+        worksheet.cell(row=5, column=5, value=0.06)  # E 欄：拋料率 6%
         worksheet.cell(row=5, column=6, value=21.2)
         worksheet.cell(row=5, column=7, value=0)
         worksheet.cell(row=5, column=8, value=0)

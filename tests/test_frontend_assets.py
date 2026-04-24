@@ -523,7 +523,9 @@ console.log(JSON.stringify(results));
         self.assertEqual(second_shortage["current_stock"], 34)
         self.assertEqual(second_shortage["shortage_amount"], 166)
 
-    def test_frontend_calculator_scales_need_by_bom_order_qty_over_qty_per_board(self):
+    def test_frontend_calculator_uses_qty_per_board_with_scrap_over_bom_needed_qty(self):
+        # 新公式：needed = qty_per_board × schedule × (1 + scrap_factor)
+        # 忽略 BOM F 欄的 needed_qty（即使 BOM 存錯值也不影響）
         root = Path(__file__).resolve().parents[1]
         script = """
 import { calculate } from './static/modules/calculator.js';
@@ -536,8 +538,9 @@ const results = calculate(
         {
           part_number: 'IC-BD9327EFJ',
           description: 'IC, VOLTAGE REGULATOR',
-          needed_qty: 400,
+          needed_qty: 99999,
           qty_per_board: 1,
+          scrap_factor: 0.1,
           bom_order_qty: 200,
           prev_qty_cs: 0,
           is_dash: false,
@@ -545,7 +548,7 @@ const results = calculate(
       ],
     },
   },
-  { 'IC-BD9327EFJ': 161 },
+  { 'IC-BD9327EFJ': 100 },
   { 'IC-BD9327EFJ': 2500 },
   {},
   {},
@@ -565,9 +568,9 @@ console.log(JSON.stringify(results));
 
         shortages = results[0]["shortages"]
         self.assertEqual(len(shortages), 1)
-        self.assertEqual(shortages[0]["needed"], 600)
-        self.assertEqual(shortages[0]["current_stock"], 161)
-        self.assertEqual(shortages[0]["shortage_amount"], 439)
+        self.assertEqual(shortages[0]["needed"], 330)  # 1 × 300 × 1.1
+        self.assertEqual(shortages[0]["current_stock"], 100)
+        self.assertEqual(shortages[0]["shortage_amount"], 230)
 
     def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
         root = Path(__file__).resolve().parents[1]

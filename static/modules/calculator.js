@@ -157,19 +157,17 @@ function resolveEffectiveOrderQty(scheduleOrderQty, bomOrderQty = 0) {
 }
 
 function calculateEffectiveNeededQty(component = {}, scheduleOrderQty = 0) {
+  // 需求量永遠由 qty_per_board × 排程數量 × (1 + 拋料率) 即時算，
+  // 不再讀 BOM F 欄的 needed_qty；只有在該 BOM 沒有 qty_per_board 時才退回原值。
   const originalNeededQty = toNumber(component.needed_qty);
   const scheduleQty = toNumber(scheduleOrderQty);
   if (scheduleQty <= 0) return originalNeededQty;
 
-  // F 欄本來就含 BOM 內建拋料量，優先按原始訂單數量等比縮放，
-  // 才不會被 qty_per_board * 排程數量 把拋料吃掉（與後端 bom_quantity.py 對齊）。
-  const bomOrderQty = toNumber(component.bom_order_qty);
-  if (bomOrderQty > 0 && originalNeededQty > 0) {
-    return originalNeededQty * scheduleQty / bomOrderQty;
-  }
-
   const qtyPerBoard = toNumber(component.qty_per_board);
-  if (qtyPerBoard > 0) return qtyPerBoard * scheduleQty;
+  if (qtyPerBoard > 0) {
+    const scrap = Math.max(0, toNumber(component.scrap_factor));
+    return qtyPerBoard * scheduleQty * (1 + scrap);
+  }
 
   return originalNeededQty;
 }

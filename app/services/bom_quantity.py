@@ -65,16 +65,13 @@ def calculate_effective_needed_qty(
     schedule_order_qty=0.0,
     bom_order_qty=0.0,
 ) -> float:
+    # 需求量永遠由 qty_per_board × 排程數量 × (1 + 拋料率) 即時算，
+    # 不再讀 BOM F 欄的 needed_qty（容易因上傳時公式/值不對而錯），
+    # 只有在這筆 BOM 沒有 qty_per_board 時才退回原始 F 欄值。
     original_needed_qty = coerce_qty(needed_qty)
     schedule_qty = coerce_qty(schedule_order_qty)
     if schedule_qty <= 0:
         return original_needed_qty
-
-    original_order_qty = coerce_qty(bom_order_qty)
-    if original_order_qty > 0 and original_needed_qty > 0:
-        # F 欄本來就包含 BOM 內建的拋料量，優先按原始訂單數量等比縮放，
-        # 才不會被單純 qty_per_board * 排程數量 把拋料吃掉。
-        return original_needed_qty * schedule_qty / original_order_qty
 
     per_board_qty = coerce_qty(qty_per_board)
     if per_board_qty > 0:
