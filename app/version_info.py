@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.12"
+APP_VERSION = "v2026.04.24.13"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "非 EC 門檻只對 PK 包材類套用 < 1 規則，其他料維持原本 < 0 判定。"
+APP_HEADLINE = "PK 包材缺料門檻新增例外清單：PK-50070 前綴維持 0 門檻，其他 PK 料照 < 1 規則。"
 APP_CHANGELOG = [
     {
         "title": "Modal 補料保留",

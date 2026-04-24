@@ -196,12 +196,17 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
   return normalized;
 }
 
+const PK_NO_WARNING_PREFIXES = ["PK-50070"];
+
 function getRequiredMinStock(partNumber) {
   const normalized = String(partNumber || "").trim().toUpperCase();
   if (normalized.startsWith("EC-6")) return 0;
   if (normalized.startsWith("EC-")) return 100;
-  // PK 包材類結存 < 1 視為缺料；其他料維持 0 門檻
-  if (normalized.startsWith("PK-")) return 1;
+  // PK 包材類結存 < 1 視為缺料；例外清單的 PK 料維持 0 門檻
+  if (normalized.startsWith("PK-")) {
+    if (PK_NO_WARNING_PREFIXES.some(p => normalized.startsWith(p))) return 0;
+    return 1;
+  }
   return 0;
 }
 

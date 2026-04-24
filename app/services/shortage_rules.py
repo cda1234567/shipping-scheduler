@@ -5,6 +5,10 @@ EC_MIN_ENDING_STOCK = 100.0
 EC_NO_WARNING_PREFIXES = (
     "EC-6",
 )
+PK_MIN_ENDING_PREFIX = "PK-"
+PK_NO_WARNING_PREFIXES = (
+    "PK-50070",
+)
 ORDER_SCOPED_PART_PREFIXES = (
     "IC-STM",
     "IC-XC2C32",
@@ -43,8 +47,10 @@ def get_min_ending_stock(part_number: str) -> float:
         return 0.0
     if part_key.startswith(EC_PART_PREFIX):
         return EC_MIN_ENDING_STOCK
-    # PK 包材類結存 < 1 視為缺料（無法再拆）；其他料維持 0 門檻
-    if part_key.startswith("PK-"):
+    # PK 包材類結存 < 1 視為缺料（無法再拆）；例外清單的 PK 料維持 0。
+    if part_key.startswith(PK_MIN_ENDING_PREFIX):
+        if any(part_key.startswith(prefix) for prefix in PK_NO_WARNING_PREFIXES):
+            return 0.0
         return 1.0
     return 0.0
 

@@ -216,7 +216,8 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
         self.assertIn('if (normalized.startsWith("EC-")) return 100;', calculator_module)
-        self.assertIn('if (normalized.startsWith("PK-")) return 1;', calculator_module)
+        self.assertIn('if (normalized.startsWith("PK-")) {', calculator_module)
+        self.assertIn('const PK_NO_WARNING_PREFIXES = ["PK-50070"];', calculator_module)
 
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]
