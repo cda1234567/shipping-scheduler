@@ -481,17 +481,19 @@ def parse_bom(path: str, bom_id: str, filename: str, uploaded_at: str) -> BomFil
                 schedule_order_qty=order_qty,
             )
 
-        # 校正：只在 scrap_factor 明顯錯誤（>=1，100% 拋料實務不合理）時反推
-        # 正常 scrap 值（0~99%）保留 coerce 結果，避免誤傷使用者自訂的 scrap
+        # 校正：F 欄快取值（needed_qty）實際上決定了這顆料真實用量，
+        # 若跟 E 欄存進來的 scrap_factor 不一致，以 F 反推的 implied 為準。
+        # 常見情況：E 欄填 "8"/"10" 被當 8%/10%，但 F 欄公式引用另一格的實際 scrap。
+        if needed_qty and qty_per > 0 and order_qty > 0:
+            expected_no_scrap = qty_per * order_qty
+            if expected_no_scrap > 0:
+                implied_scrap = (needed_qty / expected_no_scrap) - 1
+                if 0 <= implied_scrap <= 0.5 and abs(implied_scrap - scrap_factor) > 0.005:
+                    scrap_factor = implied_scrap
+
+        # 最後保險：100% 以上拋料率實務上不合理，直接歸 0
         if scrap_factor >= 1:
-            implied_scrap = None
-            if needed_qty and qty_per > 0 and order_qty > 0:
-                expected_no_scrap = qty_per * order_qty
-                if expected_no_scrap > 0:
-                    candidate = (needed_qty / expected_no_scrap) - 1
-                    if 0 <= candidate <= 0.5:
-                        implied_scrap = candidate
-            scrap_factor = implied_scrap if implied_scrap is not None else 0.0
+            scrap_factor = 0.0
 
         prev_cs = _try_float(h_raw) or 0.0
         desc = str(row_vals[desc_col] or "").strip() if len(row_vals) > desc_col else ""

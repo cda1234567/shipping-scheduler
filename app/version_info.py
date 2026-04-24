@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.24.5"
+APP_VERSION = "v2026.04.24.6"
 APP_RELEASED_AT = "2026-04-24"
-APP_HEADLINE = "BOM 拋料率若解析出 >= 100% 一律歸 0（實務不合理），避免 E 欄誤填整數時卡錯值。"
+APP_HEADLINE = "BOM 拋料率全面改用 F 欄快取值反推，只要 DB 存的 scrap 跟 F 實際算出的隱含拋料差 > 0.5% 就校正。"
 APP_CHANGELOG = [
     {
-        "title": "拋料率校正",
+        "title": "拋料率全面校正",
         "items": [
-            "上傳 BOM 時若 coerce 出來的 scrap_factor >= 100%，一律視為解析錯誤直接歸 0；若 F 欄 needed_qty 可反推出合理（0~50%）的拋料率，會以反推值為準。",
-            "常見觸發情境：E 欄誤填純數字 1 或 100（沒有百分號），原本 coerce_scrap_factor 會吐成 100% 拋料；現在會自動修正。",
-            "像 EC-10043A、PB-*-TAB、PK-10006B 這批 164+8 筆紀錄，原本 scrap_factor 被存成 1.0 或 1.27 等，現在會依 F 欄公式或歸 0 校正。",
-            "正常範圍內（0~99%）的使用者自訂拋料率完全保留，不會被誤動。",
-            "加 regression 測試覆蓋「E 欄誤存 1 但 F 欄有 0.6% 拋料」的情境。",
+            "改採「F 欄快取值才是真相」的原則：只要 DB 存的 scrap_factor 跟 needed_qty/(qty_per_board × bom_order_qty) − 1 反推出的隱含拋料率差 > 0.5%，parser 會以反推值取代 E 欄讀到的值。",
+            "之前只處理 scrap ≥ 100% 的明顯錯誤情況，現在連 E 欄被 coerce 成 8%/10% 但 F 實際用 0.6% 的細微錯位也能修正。",
+            "觸發情境：E 欄填整數 1/8/100 被不同 coerce 路徑吐出不同值、或 F 欄公式引用的 scrap cell 跟 E 欄不同。",
+            "DB 既有 1099+215 筆 scrap_factor 跟 F 反推不一致的紀錄已批次校正，新上傳的 BOM 會自動經過這套檢查。",
+            "100% 以上拋料率仍直接歸 0（實務不可能），0~50% 範圍內的差異才會套用 F 反推結果。",
         ],
     },
     {

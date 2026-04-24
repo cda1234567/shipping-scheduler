@@ -217,7 +217,9 @@ class ExcelLogicTests(unittest.TestCase):
             parsed = parse_bom(str(path), "bom-s", "bom.xlsx", "2026-04-22T10:00:00")
 
         self.assertEqual(len(parsed.components), 1)
-        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.04)
+        # F 欄快取值 306 對應 scrap = 306/(1*300) - 1 = 0.02，
+        # parser 會用 F 反推校正 E 欄的 0.04（避免 needed / scrap 兩端資料不一致）。
+        self.assertAlmostEqual(parsed.components[0].scrap_factor, 0.02)
         self.assertAlmostEqual(parsed.components[0].needed_qty, 306)
 
     def test_parse_bom_detects_scrap_factor_column_from_header(self):
