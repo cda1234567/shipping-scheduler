@@ -161,6 +161,8 @@ CREATE TABLE IF NOT EXISTS purchase_reminder_statuses (
     notified    INTEGER NOT NULL DEFAULT 0,
     notified_at TEXT    NOT NULL DEFAULT '',
     note        TEXT    NOT NULL DEFAULT '',
+    ignored     INTEGER NOT NULL DEFAULT 0,
+    ignored_at  TEXT    NOT NULL DEFAULT '',
     updated_at  TEXT    NOT NULL DEFAULT ''
 );
 
@@ -391,6 +393,11 @@ def init_db():
         supplement_cols = [r[1] for r in conn.execute("PRAGMA table_info(order_supplements)").fetchall()]
         if supplement_cols and "note" not in supplement_cols:
             conn.execute("ALTER TABLE order_supplements ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        purchase_reminder_cols = [r[1] for r in conn.execute("PRAGMA table_info(purchase_reminder_statuses)").fetchall()]
+        if purchase_reminder_cols and "ignored" not in purchase_reminder_cols:
+            conn.execute("ALTER TABLE purchase_reminder_statuses ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0")
+        if purchase_reminder_cols and "ignored_at" not in purchase_reminder_cols:
+            conn.execute("ALTER TABLE purchase_reminder_statuses ADD COLUMN ignored_at TEXT NOT NULL DEFAULT ''")
         # migration: defective_records 加 batch_id / stock 欄位
         def_cols = [r[1] for r in conn.execute("PRAGMA table_info(defective_records)").fetchall()]
         if def_cols and "batch_id" not in def_cols:
@@ -555,7 +562,7 @@ def set_setting(key: str, value: str):
 def get_purchase_reminder_statuses() -> dict[str, dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT part_number, notified, notified_at, note, updated_at "
+            "SELECT part_number, notified, notified_at, note, ignored, ignored_at, updated_at "
             "FROM purchase_reminder_statuses"
         ).fetchall()
     return {
@@ -563,6 +570,8 @@ def get_purchase_reminder_statuses() -> dict[str, dict]:
             "notified": bool(row["notified"]),
             "notified_at": row["notified_at"] or "",
             "note": row["note"] or "",
+            "ignored": bool(row["ignored"]),
+            "ignored_at": row["ignored_at"] or "",
             "updated_at": row["updated_at"] or "",
         }
         for row in rows
@@ -573,7 +582,15 @@ def get_purchase_reminder_statuses() -> dict[str, dict]:
 def set_purchase_reminder_status(part_number: str, notified: bool, note: str = "") -> dict:
     normalized = str(part_number or "").strip().upper()
     if not normalized:
-        return {"part_number": "", "notified": False, "notified_at": "", "note": "", "updated_at": ""}
+        return {
+            "part_number": "",
+            "notified": False,
+            "notified_at": "",
+            "note": "",
+            "ignored": False,
+            "ignored_at": "",
+            "updated_at": "",
+        }
 
     now = _now()
     if not notified:
@@ -584,6 +601,8 @@ def set_purchase_reminder_status(part_number: str, notified: bool, note: str = "
             "notified": False,
             "notified_at": "",
             "note": "",
+            "ignored": False,
+            "ignored_at": "",
             "updated_at": now,
         }
 
@@ -602,6 +621,8 @@ def set_purchase_reminder_status(part_number: str, notified: bool, note: str = "
                 notified=excluded.notified,
                 notified_at=excluded.notified_at,
                 note=excluded.note,
+                ignored=0,
+                ignored_at='',
                 updated_at=excluded.updated_at
             """,
             (normalized, 1, notified_at, cleaned_note, now),
@@ -611,6 +632,79 @@ def set_purchase_reminder_status(part_number: str, notified: bool, note: str = "
         "notified": True,
         "notified_at": notified_at,
         "note": cleaned_note,
+        "ignored": False,
+        "ignored_at": "",
+        "updated_at": now,
+    }
+
+
+def set_purchase_reminder_ignored(part_number: str, ignored: bool) -> dict:
+    normalized = str(part_number or "").strip().upper()
+    if not normalized:
+        return {
+            "part_number": "",
+            "notified": False,
+            "notified_at": "",
+            "note": "",
+            "ignored": False,
+            "ignored_at": "",
+            "updated_at": "",
+        }
+
+    now = _now()
+    if not ignored:
+        with get_conn() as conn:
+            existing = conn.execute(
+                "SELECT notified, notified_at, note FROM purchase_reminder_statuses WHERE part_number=?",
+                (normalized,),
+            ).fetchone()
+            if not existing or not existing["notified"]:
+                conn.execute("DELETE FROM purchase_reminder_statuses WHERE part_number=?", (normalized,))
+                return {
+                    "part_number": normalized,
+                    "notified": False,
+                    "notified_at": "",
+                    "note": "",
+                    "ignored": False,
+                    "ignored_at": "",
+                    "updated_at": now,
+                }
+            conn.execute(
+                "UPDATE purchase_reminder_statuses SET ignored=0, ignored_at='', updated_at=? WHERE part_number=?",
+                (now, normalized),
+            )
+            return {
+                "part_number": normalized,
+                "notified": True,
+                "notified_at": existing["notified_at"] or "",
+                "note": existing["note"] or "",
+                "ignored": False,
+                "ignored_at": "",
+                "updated_at": now,
+            }
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO purchase_reminder_statuses(part_number, notified, notified_at, note, ignored, ignored_at, updated_at)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(part_number) DO UPDATE SET
+                notified=0,
+                notified_at='',
+                note='',
+                ignored=excluded.ignored,
+                ignored_at=excluded.ignored_at,
+                updated_at=excluded.updated_at
+            """,
+            (normalized, 0, "", "", 1, now, now),
+        )
+    return {
+        "part_number": normalized,
+        "notified": False,
+        "notified_at": "",
+        "note": "",
+        "ignored": True,
+        "ignored_at": now,
         "updated_at": now,
     }
 

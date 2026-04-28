@@ -1032,11 +1032,20 @@ body.edit-auth-readonly #bom-upload-area {
   background: #f8fafc;
   border-color: #cbd5e1;
 }
+.purchase-reminder-item.is-ignored {
+  background: #f3f4f6;
+  border-color: #d1d5db;
+  opacity: .72;
+  filter: grayscale(.25);
+}
 .purchase-reminder-item .part {
   color: #92400e;
 }
 .purchase-reminder-item.is-notified .part {
   color: #475569;
+}
+.purchase-reminder-item.is-ignored .part {
+  color: #6b7280;
 }
 .purchase-reminder-item .desc {
   color: #78716c;
@@ -1063,6 +1072,35 @@ body.edit-auth-readonly #bom-upload-area {
   font-size: 12px;
   font-weight: 800;
   color: #374151;
+}
+.purchase-reminder-section-title.is-collapsible {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.purchase-reminder-section-title.is-collapsible::before {
+  content: "▾";
+  display: inline-block;
+  color: #6b7280;
+  transition: transform .15s ease;
+}
+.purchase-reminder-section-title.is-collapsed::before {
+  transform: rotate(-90deg);
+}
+.purchase-reminder-section-title span {
+  min-width: 20px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  color: #374151;
+  font-size: 10px;
+  line-height: 1.5;
+  text-align: center;
+}
+.purchase-reminder-section[data-collapsed="true"] .purchase-reminder-vendor-heading,
+.purchase-reminder-section[data-collapsed="true"] .purchase-reminder-item {
+  display: none;
 }
 .purchase-reminder-vendor-heading {
   display: flex;
@@ -1115,6 +1153,10 @@ body.edit-auth-readonly #bom-upload-area {
 .purchase-reminder-tag.is-notified {
   background: #dcfce7;
   color: #166534;
+}
+.purchase-reminder-tag.is-ignored {
+  background: #e5e7eb;
+  color: #4b5563;
 }
 .moq-badge {
   display: inline-flex;
@@ -1896,11 +1938,19 @@ body.desktop-dark .purchase-reminder-item.is-notified {
   background: #1f2937;
   border-color: #475569;
 }
+body.desktop-dark .purchase-reminder-item.is-ignored {
+  background: #111827;
+  border-color: #374151;
+  opacity: .68;
+}
 body.desktop-dark .purchase-reminder-item .part {
   color: #fbbf24;
 }
 body.desktop-dark .purchase-reminder-item.is-notified .part {
   color: #cbd5e1;
+}
+body.desktop-dark .purchase-reminder-item.is-ignored .part {
+  color: #9ca3af;
 }
 body.desktop-dark .purchase-reminder-item .desc {
   color: #fef3c7;
@@ -1917,6 +1967,13 @@ body.desktop-dark .purchase-reminder-note {
 body.desktop-dark .purchase-reminder-section-title {
   color: #e5e7eb;
 }
+body.desktop-dark .purchase-reminder-section-title.is-collapsible::before {
+  color: #9ca3af;
+}
+body.desktop-dark .purchase-reminder-section-title span {
+  background: #374151;
+  color: #e5e7eb;
+}
 body.desktop-dark .purchase-reminder-vendor-heading {
   background: #78350f;
 }
@@ -1931,6 +1988,10 @@ body.desktop-dark .purchase-reminder-tag {
 body.desktop-dark .purchase-reminder-tag.is-notified {
   background: #064e3b;
   color: #bbf7d0;
+}
+body.desktop-dark .purchase-reminder-tag.is-ignored {
+  background: #374151;
+  color: #d1d5db;
 }
 body.desktop-dark .file-status,
 body.desktop-dark .sidebar-meta,

@@ -232,7 +232,8 @@ class UpdateVendorRequest(BaseModel):
 
 class PurchaseReminderStatusRequest(BaseModel):
     part_number: str = ""
-    notified: bool = True
+    notified: bool | None = None
+    ignored: bool | None = None
     note: str = ""
 
 
@@ -415,12 +416,24 @@ async def update_purchase_reminder_status(req: PurchaseReminderStatusRequest):
     if not part_number:
         raise HTTPException(400, "料號不可空白")
 
-    status = db.set_purchase_reminder_status(part_number, req.notified, req.note)
+    if req.notified is True:
+        status = db.set_purchase_reminder_status(part_number, True, req.note)
+        log_detail = f"{part_number}: 已通知採購"
+    elif req.ignored is True:
+        status = db.set_purchase_reminder_ignored(part_number, True)
+        log_detail = f"{part_number}: 已忽略買料提醒"
+    elif req.notified is False and req.ignored is False:
+        status = db.set_purchase_reminder_status(part_number, False, req.note)
+        log_detail = f"{part_number}: 清除買料提醒狀態"
+    elif req.ignored is False:
+        status = db.set_purchase_reminder_ignored(part_number, False)
+        log_detail = f"{part_number}: 取消忽略買料提醒"
+    else:
+        status = db.set_purchase_reminder_status(part_number, False, req.note)
+        log_detail = f"{part_number}: 取消通知"
+
     invalidate_main_data_cache()
-    db.log_activity(
-        "purchase_reminder_status",
-        f"{part_number}: {'已通知採購' if req.notified else '取消通知'}",
-    )
+    db.log_activity("purchase_reminder_status", log_detail)
     return {"ok": True, "status": status}
 
 

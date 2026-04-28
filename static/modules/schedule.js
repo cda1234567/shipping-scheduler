@@ -10,6 +10,7 @@ let _liveStock = {};
 let _moq = {};
 let _vendors = {};
 let _purchaseReminderStatuses = {};
+let _purchaseReminderCollapsed = { pending: false, notified: false, ignored: true };
 let _stStock = {};
 let _stDescriptions = {};
 let _dispatchedConsumption = {};
@@ -1518,12 +1519,15 @@ function buildPurchaseReminderItems() {
       notified: Boolean(_purchaseReminderStatuses?.[key]?.notified),
       notified_at: _purchaseReminderStatuses?.[key]?.notified_at || "",
       notification_note: _purchaseReminderStatuses?.[key]?.note || "",
+      ignored: Boolean(_purchaseReminderStatuses?.[key]?.ignored),
+      ignored_at: _purchaseReminderStatuses?.[key]?.ignored_at || "",
     });
   }
 
   items.sort((a, b) => (
-    compareText(a.vendor, b.vendor, "zh-Hant")
+    Number(a.ignored) - Number(b.ignored)
     || Number(a.notified) - Number(b.notified)
+    || compareText(a.vendor, b.vendor, "zh-Hant")
     || Number(a.current_stock || 0) - Number(b.current_stock || 0)
     || compareText(a.part_number, b.part_number)
   ));
@@ -4312,7 +4316,7 @@ function setRightPanelTabCount(id, count) {
 }
 
 function getActivePurchaseReminderCount(items = buildPurchaseReminderItems()) {
-  return (Array.isArray(items) ? items : []).filter(item => !item.notified).length;
+  return (Array.isArray(items) ? items : []).filter(item => !item.notified && !item.ignored).length;
 }
 
 function updateRightPanelTabs(shortageCount = 0, purchaseCount = getActivePurchaseReminderCount()) {
@@ -4349,7 +4353,6 @@ function renderPurchaseReminderPanel() {
   const scroll = document.getElementById("right-scroll");
   const items = buildPurchaseReminderItems();
   const activeCount = getActivePurchaseReminderCount(items);
-  const notifiedCount = items.length - activeCount;
   const shortageCount = _rightPanelMode === "postDispatch"
     ? _postDispatchShortages.length
     : (_lastShortagePanelData.shortages.length
@@ -4364,26 +4367,32 @@ function renderPurchaseReminderPanel() {
     return;
   }
 
-  const pendingItems = items.filter(item => !item.notified);
-  const notifiedItems = items.filter(item => item.notified);
+  const pendingItems = items.filter(item => !item.notified && !item.ignored);
+  const notifiedItems = items.filter(item => item.notified && !item.ignored);
+  const ignoredItems = items.filter(item => item.ignored);
+  const notifiedCount = notifiedItems.length;
+  const ignoredCount = ignoredItems.length;
   let html = `<div class="purchase-reminder-toolbar">
     <div>
       <div class="purchase-reminder-toolbar-title">IC / OC / UC ST 庫存見底</div>
-      <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}</div>
+      <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}，已忽略 ${ignoredCount}</div>
     </div>
     <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
   </div>`;
   if (pendingItems.length) {
-    html += renderPurchaseReminderSection("待通知採購", pendingItems);
+    html += renderPurchaseReminderSection("待通知採購", pendingItems, { key: "pending", collapsible: true });
   }
   if (notifiedItems.length) {
-    html += renderPurchaseReminderSection("已通知採購", notifiedItems);
+    html += renderPurchaseReminderSection("已通知採購", notifiedItems, { key: "notified", collapsible: true });
+  }
+  if (ignoredItems.length) {
+    html += renderPurchaseReminderSection("已忽略", ignoredItems, { key: "ignored", collapsible: true, collapsed: true });
   }
   scroll.innerHTML = html;
   bindPurchaseReminderPanelActions(scroll, items);
 }
 
-function renderPurchaseReminderSection(title, items) {
+function renderPurchaseReminderSection(title, items, options = {}) {
   const grouped = {};
   for (const item of items) {
     const vendor = normalizeVendorName(item.vendor);
@@ -4391,13 +4400,20 @@ function renderPurchaseReminderSection(title, items) {
     grouped[vendor].push(item);
   }
 
-  let html = `<h4 class="purchase-reminder-section-title">${esc(title)}</h4>`;
+  const key = options.key || title;
+  const collapsible = Boolean(options.collapsible);
+  const collapsed = collapsible
+    ? Boolean(_purchaseReminderCollapsed[key] ?? options.collapsed)
+    : false;
+  let html = `<div class="purchase-reminder-section" data-section="${esc(key)}" data-collapsed="${collapsed ? "true" : "false"}">`;
+  html += `<h4 class="purchase-reminder-section-title ${collapsible ? "is-collapsible" : ""} ${collapsed ? "is-collapsed" : ""}" ${collapsible ? `data-section="${esc(key)}"` : ""}>${esc(title)} <span>${items.length}</span></h4>`;
   for (const [vendor, vendorItems] of Object.entries(grouped).sort((a, b) => compareText(a[0], b[0], "zh-Hant"))) {
     html += `<div class="purchase-reminder-vendor-heading">${esc(vendor)} <span>${vendorItems.length}</span></div>`;
     for (const item of vendorItems) {
       html += purchaseReminderItemHtml(item);
     }
   }
+  html += "</div>";
   return html;
 }
 
@@ -4407,15 +4423,19 @@ function purchaseReminderItemHtml(item) {
   const moq = roundShortageUiValue(item.moq || 0);
   const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
   const notifiedTag = item.notified ? '<span class="purchase-reminder-tag is-notified">已通知採購</span>' : "";
+  const ignoredTag = item.ignored ? '<span class="purchase-reminder-tag is-ignored">已忽略</span>' : "";
   const noteHtml = item.notification_note
     ? `<div class="purchase-reminder-note">備註：${esc(item.notification_note)}</div>`
     : "";
   const notifiedAtHtml = item.notified_at
     ? `<span style="color:#6b7280">通知 ${esc(String(item.notified_at).replace("T", " ").slice(0, 16))}</span>`
     : "";
+  const ignoredAtHtml = item.ignored_at
+    ? `<span style="color:#6b7280">忽略 ${esc(String(item.ignored_at).replace("T", " ").slice(0, 16))}</span>`
+    : "";
 
-  return `<div class="shortage-item purchase-reminder-item ${item.notified ? "is-notified" : ""}" data-part="${esc(item.part_number)}">
-    <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${notifiedTag}</div>
+  return `<div class="shortage-item purchase-reminder-item ${item.notified ? "is-notified" : ""} ${item.ignored ? "is-ignored" : ""}" data-part="${esc(item.part_number)}">
+    <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${notifiedTag}${ignoredTag}</div>
     <div class="desc">${esc(item.description || "—")}</div>
     <div class="purchase-reminder-vendor-line">
       <span>廠商：<strong>${esc(normalizeVendorName(item.vendor))}</strong></span>
@@ -4427,6 +4447,7 @@ function purchaseReminderItemHtml(item) {
       ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
       <span class="blue">建議買 ${fmt(suggestedQty)}</span>
       ${notifiedAtHtml}
+      ${ignoredAtHtml}
     </div>
     ${noteHtml}
     <div class="purchase-reminder-actions">
@@ -4434,11 +4455,25 @@ function purchaseReminderItemHtml(item) {
       <button class="btn ${item.notified ? "btn-secondary" : "btn-primary"} btn-xs purchase-reminder-notify" type="button" data-part="${esc(item.part_number)}" data-notified="${item.notified ? "0" : "1"}">
         ${item.notified ? "取消通知" : "已通知採購"}
       </button>
+      <button class="btn btn-secondary btn-xs purchase-reminder-ignore" type="button" data-part="${esc(item.part_number)}" data-ignored="${item.ignored ? "0" : "1"}">
+        ${item.ignored ? "取消忽略" : "忽略"}
+      </button>
     </div>
   </div>`;
 }
 
 function bindPurchaseReminderPanelActions(scroll, items) {
+  scroll.querySelectorAll(".purchase-reminder-section-title.is-collapsible").forEach(title => {
+    title.addEventListener("click", () => {
+      const key = title.dataset.section || "";
+      const section = title.closest(".purchase-reminder-section");
+      if (!key || !section) return;
+      const collapsed = section.dataset.collapsed !== "true";
+      _purchaseReminderCollapsed[key] = collapsed;
+      section.dataset.collapsed = collapsed ? "true" : "false";
+      title.classList.toggle("is-collapsed", collapsed);
+    });
+  });
   scroll.querySelector(".purchase-reminder-export")?.addEventListener("click", () => {
     void exportPurchaseReminders(items);
   });
@@ -4450,6 +4485,11 @@ function bindPurchaseReminderPanelActions(scroll, items) {
   scroll.querySelectorAll(".purchase-reminder-notify").forEach(btn => {
     btn.addEventListener("click", () => {
       void savePurchaseReminderNotification(btn);
+    });
+  });
+  scroll.querySelectorAll(".purchase-reminder-ignore").forEach(btn => {
+    btn.addEventListener("click", () => {
+      void savePurchaseReminderIgnore(btn);
     });
   });
   scroll.querySelectorAll(".purchase-reminder-vendor-edit").forEach(btn => {
@@ -4493,15 +4533,43 @@ async function savePurchaseReminderNotification(button) {
       note,
     });
     const status = result.status || {};
-    if (status.notified) {
+    await loadMainData();
+    if (!_purchaseReminderStatuses?.[part] && (status.notified || status.ignored)) {
       _purchaseReminderStatuses[part] = status;
-    } else {
-      delete _purchaseReminderStatuses[part];
     }
     showToast(notified ? `${part} 已標記通知採購` : `${part} 已取消通知`, { tone: "success" });
     renderPurchaseReminderPanel();
   } catch (error) {
     showToast("通知狀態保存失敗：" + error.message, { tone: "error" });
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = originalText;
+    }
+  }
+}
+
+async function savePurchaseReminderIgnore(button) {
+  const part = normalizePartKey(button?.dataset.part);
+  const ignored = String(button?.dataset.ignored || "") === "1";
+  if (!part) return;
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "保存中...";
+  try {
+    const result = await apiPatch("/api/main-file/purchase-reminder-status", {
+      part_number: part,
+      ignored,
+    });
+    const status = result.status || {};
+    await loadMainData();
+    if (!_purchaseReminderStatuses?.[part] && (status.notified || status.ignored)) {
+      _purchaseReminderStatuses[part] = status;
+    }
+    showToast(ignored ? `${part} 已忽略買料提醒` : `${part} 已取消忽略`, { tone: "success" });
+    renderPurchaseReminderPanel();
+  } catch (error) {
+    showToast("忽略狀態保存失敗：" + error.message, { tone: "error" });
     if (button.isConnected) {
       button.disabled = false;
       button.textContent = originalText;
@@ -4539,7 +4607,7 @@ async function editPurchaseReminderVendor(button) {
 }
 
 async function exportPurchaseReminders(items) {
-  const payload = (Array.isArray(items) ? items : buildPurchaseReminderItems()).map(item => ({
+  const payload = (Array.isArray(items) ? items : buildPurchaseReminderItems()).filter(item => !item.ignored).map(item => ({
     vendor: normalizeVendorName(item.vendor),
     part_number: item.part_number,
     description: item.description || "",

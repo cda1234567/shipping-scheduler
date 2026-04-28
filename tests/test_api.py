@@ -16,6 +16,7 @@ from openpyxl.styles import Font, PatternFill
 
 import app.routers.schedule as schedule_router
 import app.routers.bom as bom_router
+import app.database as database
 from app.models import BomComponent, BomFile
 from main import app
 
@@ -2001,6 +2002,8 @@ class ApiTests(unittest.TestCase):
             "notified": True,
             "notified_at": "2026-04-23T10:00:00",
             "note": "通知完成",
+            "ignored": False,
+            "ignored_at": "",
             "updated_at": "2026-04-23T10:00:00",
         }
 
@@ -2014,6 +2017,56 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], expected)
         mock_set.assert_called_once_with("IC-100", True, "通知完成")
+
+    def test_purchase_reminder_status_endpoint_persists_ignored_status(self):
+        expected = {
+            "part_number": "IC-100",
+            "notified": False,
+            "notified_at": "",
+            "note": "",
+            "ignored": True,
+            "ignored_at": "2026-04-23T10:00:00",
+            "updated_at": "2026-04-23T10:00:00",
+        }
+
+        with patch("app.routers.main_file.db.set_purchase_reminder_ignored", return_value=expected) as mock_set, \
+             patch("app.routers.main_file.db.log_activity"):
+            response = self.client.patch(
+                "/api/main-file/purchase-reminder-status",
+                json={"part_number": " ic-100 ", "ignored": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], expected)
+        mock_set.assert_called_once_with("IC-100", True)
+
+    def test_purchase_reminder_ignored_clears_notified_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(database, "DB_PATH", Path(temp_dir) / "system.db"):
+                database.init_db()
+                database.set_purchase_reminder_status("ic-100", True, "通知完成")
+                ignored = database.set_purchase_reminder_ignored("ic-100", True)
+                statuses = database.get_purchase_reminder_statuses()
+
+        self.assertFalse(ignored["notified"])
+        self.assertEqual(ignored["notified_at"], "")
+        self.assertEqual(ignored["note"], "")
+        self.assertTrue(ignored["ignored"])
+        self.assertFalse(statuses["IC-100"]["notified"])
+        self.assertTrue(statuses["IC-100"]["ignored"])
+
+    def test_purchase_reminder_notified_clears_ignored_status(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(database, "DB_PATH", Path(temp_dir) / "system.db"):
+                database.init_db()
+                database.set_purchase_reminder_ignored("ic-100", True)
+                notified = database.set_purchase_reminder_status("ic-100", True, "已寄信")
+                statuses = database.get_purchase_reminder_statuses()
+
+        self.assertTrue(notified["notified"])
+        self.assertFalse(notified["ignored"])
+        self.assertTrue(statuses["IC-100"]["notified"])
+        self.assertFalse(statuses["IC-100"]["ignored"])
 
     def test_purchase_reminder_export_groups_by_vendor(self):
         response = self.client.post(
