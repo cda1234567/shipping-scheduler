@@ -538,9 +538,9 @@ function startCellEdit(td) {
       if (!json.ok) throw new Error(json.detail || "儲存失敗");
 
       showToast(`已修改 R${rowIndex}C${colIndex}: ${json.old_value} → ${json.new_value}`);
-      // 清快取，重新載入當前 sheet
+      const updatedValue = json.new_value ?? newValue;
+      restoreCellDisplay(td, String(updatedValue));
       _sheetCache.delete(_activeSheet);
-      await refreshMainPreview({ force: false, sheet: _activeSheet, eager: true });
     } catch (err) {
       showToast(`編輯失敗：${err.message}`, "error");
       restoreCellDisplay(td, originalText);

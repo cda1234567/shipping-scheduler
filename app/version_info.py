@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.05.1"
+APP_VERSION = "v2026.05.05.2"
 APP_RELEASED_AT = "2026-05-05"
-APP_HEADLINE = "批次 merge modal 補料欄如果套用 lookahead 預設值，旁邊會顯示「總共缺 X（建議補 Y）」，補料數字不再像憑空冒出來。"
+APP_HEADLINE = "主檔預覽雙擊編輯不再每改一格就重載整個 sheet，編輯效能大幅提升。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽編輯效能",
+        "items": [
+            "主檔預覽雙擊改 cell 後，原本會清快取並重新 fetch 整個 sheet 資料 + 重新 render，主檔上千列時操作明顯卡頓。",
+            "改成只更新被編輯的那個 cell 顯示，sheet 快取標記髒掉，下次切 sheet 或 force refresh 才重新載入。",
+            "現在連續編輯多個 cell 不會再每次卡幾秒。",
+        ],
+    },
     {
         "title": "Lookahead 補料說明",
         "items": [
