@@ -13,6 +13,7 @@ let _previewLoadKey = "";
 let _previewLoadToken = null;
 let _previewGeneration = 0;
 let _previewRenderSequence = 0;
+let _cellEditRefreshTimer = null;
 const MAIN_PREVIEW_ROW_HEADER_WIDTH = 56;
 const MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30;
 const MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3;
@@ -541,6 +542,12 @@ function startCellEdit(td) {
       const updatedValue = json.new_value ?? newValue;
       restoreCellDisplay(td, String(updatedValue));
       _sheetCache.delete(_activeSheet);
+      if (_cellEditRefreshTimer) clearTimeout(_cellEditRefreshTimer);
+      _cellEditRefreshTimer = setTimeout(() => {
+        _cellEditRefreshTimer = null;
+        if (_editingCell) return;
+        refreshMainPreview({ force: false, sheet: _activeSheet, eager: true }).catch(() => {});
+      }, 600);
     } catch (err) {
       showToast(`編輯失敗：${err.message}`, "error");
       restoreCellDisplay(td, originalText);

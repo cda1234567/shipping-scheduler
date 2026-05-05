@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.05.3"
+APP_VERSION = "v2026.05.05.4"
 APP_RELEASED_AT = "2026-05-05"
-APP_HEADLINE = "新增「批次 Merge + 寫主檔」按鈕，modal 確認後直接逐筆寫入主檔，省掉手動再按寫入的步驟。"
+APP_HEADLINE = "主檔預覽編輯改用 debounce：cell 立即更新、停手 0.6 秒後自動重載整個 sheet 把公式跟著刷新。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔編輯後公式自動刷新",
+        "items": [
+            "上一版主檔預覽改成只更新被編輯的 cell，導致引用該 cell 的公式 cell 不會跟著更新，需要手動切 sheet 才會重算。",
+            "改成 debounce：每次編完 cell 立刻顯示新值，等使用者停手 0.6 秒後才自動重新拉一次完整 sheet，把公式 cell 一起刷新。",
+            "連續編輯多個 cell 不會卡頓（中間的編輯都會把 timer 重置），最後一格停手後才刷新一次。",
+        ],
+    },
     {
         "title": "批次 Merge + 寫主檔",
         "items": [
