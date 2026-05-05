@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.04.28.1"
-APP_RELEASED_AT = "2026-04-28"
-APP_HEADLINE = "買料提醒新增「忽略」按鈕：跟「已通知採購」互斥，已忽略段預設摺疊，紅點數字不再算進去。"
+APP_VERSION = "v2026.05.05.1"
+APP_RELEASED_AT = "2026-05-05"
+APP_HEADLINE = "批次 merge modal 補料欄如果套用 lookahead 預設值，旁邊會顯示「總共缺 X（建議補 Y）」，補料數字不再像憑空冒出來。"
 APP_CHANGELOG = [
+    {
+        "title": "Lookahead 補料說明",
+        "items": [
+            "批次 merge modal 的數字列原本只顯示「缺 / 庫存 / 需 / 這筆需要買」，補料欄卻會自動帶入往後看的建議量（例如後面同料號累積缺 24247 → 預設填 30000）。",
+            "現在當 lookahead 涵蓋的累積缺料量大於這筆訂單自己缺料時，旁邊會多一欄紫色「總共缺 24247（建議補 30000）」說明預設值來源。",
+            "只在「lookahead 缺料 > 本筆缺料」時顯示，最後一筆訂單或單筆缺料就足夠的情況不會多顯示。",
+        ],
+    },
     {
         "title": "買料提醒忽略按鈕",
         "items": [

@@ -2817,11 +2817,16 @@ function calculateModalCurrentOrderShortageAmount(partNumber, availableBefore, n
 }
 
 function buildModalShortageAmountsHtml(shortage) {
+  const ownShortage = roundShortageUiValue(shortage.shortage_amount || 0);
+  const lookaheadShortage = roundShortageUiValue(shortage._lookahead_shortage_amount || 0);
+  const lookaheadSuggested = roundShortageUiValue(shortage._lookahead_suggested_qty || 0);
+  const showLookahead = lookaheadShortage > ownShortage;
   return `
-      <span class="modal-shortage-amount modal-shortage-amount-shortage" style="color:#dc2626">缺 ${fmt(roundShortageUiValue(shortage.shortage_amount || 0))}</span>
+      <span class="modal-shortage-amount modal-shortage-amount-shortage" style="color:#dc2626">缺 ${fmt(ownShortage)}</span>
       <span class="modal-shortage-amount modal-shortage-amount-stock" style="color:#16a34a">庫存 ${fmt(roundShortageUiValue(shortage.current_stock || 0))}</span>
       <span class="modal-shortage-amount modal-shortage-amount-needed">需 ${fmt(roundShortageUiValue(shortage.needed || 0))}</span>
       ${stSupplySummaryHtml(shortage)}
+      ${showLookahead ? `<span class="modal-shortage-amount modal-shortage-amount-lookahead" style="color:#7c3aed">總共缺 ${fmt(lookaheadShortage)}（建議補 ${fmt(lookaheadSuggested)}）</span>` : ""}
       ${moqBadgeHtml(shortage)}
       ${moqEditTriggerHtml(shortage)}
   `;
