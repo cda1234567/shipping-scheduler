@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.05.2"
+APP_VERSION = "v2026.05.05.3"
 APP_RELEASED_AT = "2026-05-05"
-APP_HEADLINE = "主檔預覽雙擊編輯不再每改一格就重載整個 sheet，編輯效能大幅提升。"
+APP_HEADLINE = "新增「批次 Merge + 寫主檔」按鈕，modal 確認後直接逐筆寫入主檔，省掉手動再按寫入的步驟。"
 APP_CHANGELOG = [
     {
-        "title": "主檔預覽編輯效能",
+        "title": "批次 Merge + 寫主檔",
         "items": [
-            "主檔預覽雙擊改 cell 後，原本會清快取並重新 fetch 整個 sheet 資料 + 重新 render，主檔上千列時操作明顯卡頓。",
-            "改成只更新被編輯的那個 cell 顯示，sheet 快取標記髒掉，下次切 sheet 或 force refresh 才重新載入。",
-            "現在連續編輯多個 cell 不會再每次卡幾秒。",
+            "排程工具列新增「批次 Merge + 寫主檔」紅色按鈕，跟原本「批次 Merge」並排。",
+            "點下去跟現有批次 Merge 一樣建副檔、開補料 modal，但 modal 內按鈕變成「確認補料並寫主檔」。",
+            "modal 確認時會保存 supplements / decisions、重建副檔，再逐筆呼叫 commit_dispatch_plan 寫進主檔，不再需要手動逐筆按「寫入主檔」。",
+            "回傳結果摘要：成功筆數、失敗筆數、寫入後負庫存料件清單；負庫存會自動跳出採購提醒供你接續處理。",
+            "原本「批次 Merge」按鈕跟雙段流程保留不動，想用慢工流程仍可走原路。",
         ],
     },
     {

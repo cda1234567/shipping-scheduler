@@ -38,6 +38,7 @@ let _modalDraftReadOnly = false;
 let _modalDraftBaseDecisions = {};
 let _modalDraftBaseSupplements = {};
 let _modalDraftVisibleParts = [];
+let _modalCommitAfterSave = false;
 let _globalBusyDepth = 0;
 let _rightPanelMode = "shortages";
 let _rightPanelActiveTab = "shortages";
@@ -53,6 +54,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
+    document.getElementById("btn-batch-merge-commit")?.addEventListener("click", handleBatchMergeCommit);
     document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
@@ -2420,10 +2422,37 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
   return response?.drafts || null;
 }
 
+async function updateAndCommitBatchDraftsFromModal() {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) return null;
+
+  const supplements = _collectModalSupplements();
+  const decisions = _collectModalDecisions();
+  const orderSupplements = _collectModalOrderSupplements();
+  const orderDecisions = _collectModalOrderDecisions();
+  await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
+  Object.entries(decisions).forEach(([part, decision]) => {
+    setLocalDecision(part, decision);
+  });
+
+  return apiPost("/api/schedule/update-and-commit-drafts", {
+    order_ids: targetOrderIds,
+    decisions,
+    supplements,
+    order_decisions: orderDecisions,
+    order_supplements: orderSupplements,
+  });
+}
+
 async function handleModalSaveDrafts() {
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   if (!targetOrderIds.length) {
     showToast("找不到要儲存補料的訂單");
+    return;
+  }
+
+  if (_modalCommitAfterSave) {
+    await handleModalUpdateAndCommitDrafts();
     return;
   }
 
@@ -2437,6 +2466,43 @@ async function handleModalSaveDrafts() {
     showToast("補料已寫入副檔，請在訂單下方確認後再發料");
   } catch (error) {
     showToast("保存補料失敗: " + error.message);
+    setModalDownloadProgress(false, "", "", 0);
+  }
+}
+
+async function handleModalUpdateAndCommitDrafts() {
+  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  if (!targetOrderIds.length) {
+    showToast("找不到要寫入主檔的訂單");
+    return;
+  }
+  if (!confirm(`確認要強制寫入主檔 ${targetOrderIds.length} 筆訂單嗎？缺料不會擋停，主檔可能出現負庫存。`)) {
+    return;
+  }
+
+  try {
+    setModalDownloadProgress(true, "正在保存補料並寫入主檔...", "系統會先重建副檔，再逐筆強制寫入主檔。", 12);
+    startModalProgressAnimation(92, 260);
+    const result = await updateAndCommitBatchDraftsFromModal();
+    setModalDownloadProgress(true, "寫入主檔完成", "正在重新整理排程與主檔資料。", 100);
+    await new Promise(resolve => setTimeout(resolve, 220));
+    closeShortageModal();
+
+    targetOrderIds.forEach(id => _checkedIds.delete(id));
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+
+    const negativeCount = (result?.negative_shortages || []).length;
+    const failureCount = Number(result?.failure_count || 0);
+    const message = `已強制寫入 ${result?.success_count || result?.count || 0} 筆，失敗 ${failureCount} 筆，負庫存 ${negativeCount} 項`;
+    showToast(message, { tone: failureCount ? "error" : "success", sticky: failureCount > 0, duration: 6000 });
+    if (negativeCount > 0) {
+      showPostDispatchShortages(result.negative_shortages);
+    } else if (result?.shortages?.length) {
+      showPostDispatchShortages(result.shortages);
+    }
+  } catch (error) {
+    showToast("強制寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
     setModalDownloadProgress(false, "", "", 0);
   }
 }
@@ -2472,10 +2538,11 @@ async function handleModalDownloadDrafts() {
 }
 
 async function showBatchMergeDraftModal(targets) {
+  const commitAfterSave = Boolean(_modalCommitAfterSave);
   _modalTargets = targets;
   _modalBomFiles = [];
   _modalCarryOversByModel = {};
-  _modalMode = "download";
+  _modalMode = commitAfterSave ? "mergeCommit" : "download";
   _modalPreviewShortages = [];
   _modalDraftId = null;
   _modalDraftReadOnly = false;
@@ -2567,7 +2634,7 @@ async function showBatchMergeDraftModal(targets) {
         <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
       </div>
     </div>
-    <button id="modal-save-draft" class="btn btn-success btn-sm">確認補料</button>
+    <button id="modal-save-draft" class="btn btn-success btn-sm">${commitAfterSave ? "確認補料並寫主檔" : "確認補料"}</button>
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載副檔</button>
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-save-draft").onclick = handleModalSaveDrafts;
@@ -3026,6 +3093,7 @@ function closeShortageModal() {
   _modalDraftBaseDecisions = {};
   _modalDraftBaseSupplements = {};
   _modalDraftVisibleParts = [];
+  _modalCommitAfterSave = false;
 }
 
 function hasMoqValue(shortage) {
@@ -5257,6 +5325,14 @@ async function submitManualSupplement() {
 
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
+  await runBatchMergeWorkflow({ commitAfterModal: false });
+}
+
+async function handleBatchMergeCommit() {
+  await runBatchMergeWorkflow({ commitAfterModal: true });
+}
+
+async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
   if (_batchMergeInFlight) {
     showToast("批次 merge 進行中，請稍候");
     return;
@@ -5295,13 +5371,13 @@ async function handleBatchMerge() {
     return;
   }
 
-  const button = document.getElementById("btn-batch-merge");
-  const originalText = button?.textContent || "批次 Merge";
+  const button = document.getElementById(commitAfterModal ? "btn-batch-merge-commit" : "btn-batch-merge");
+  const originalText = button?.textContent || (commitAfterModal ? "批次 Merge + 寫主檔" : "批次 Merge");
   _batchMergeInFlight = true;
   try {
     if (button) {
       button.disabled = true;
-      button.textContent = "建立中...";
+      button.textContent = commitAfterModal ? "建立副檔中..." : "建立中...";
     }
     const targetIds = mergeableTargets.map(row => row.id);
     const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);
@@ -5315,7 +5391,7 @@ async function handleBatchMerge() {
         return apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
       },
       {
-        title: "正在批次建立副檔",
+        title: commitAfterModal ? "正在建立強制寫入副檔" : "正在批次建立副檔",
         detail: `共 ${mergeableTargets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
       },
     );
@@ -5329,13 +5405,23 @@ async function handleBatchMerge() {
         tone: "error",
       });
     } else {
-      showToast(`已建立 ${result.draft_count || 0} 份副檔，請先確認補料`, { tone: "success" });
+      showToast(
+        commitAfterModal
+          ? `已建立 ${result.draft_count || 0} 份副檔，確認補料後會強制寫入主檔`
+          : `已建立 ${result.draft_count || 0} 份副檔，請先確認補料`,
+        { tone: "success" },
+      );
     }
     try {
+      _modalCommitAfterSave = commitAfterModal;
       await openBatchMergeDraftModalStable(targetIds, targets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
       showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
+    } finally {
+      if (document.getElementById("shortage-modal")?.style.display !== "flex") {
+        _modalCommitAfterSave = false;
+      }
     }
   } catch (error) {
     console.error("[handleBatchMerge] batch merge failed:", error);

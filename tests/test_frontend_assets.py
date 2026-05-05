@@ -347,7 +347,7 @@ class FrontendAssetTests(unittest.TestCase):
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         match = re.search(
-            r"async function handleBatchMerge\(\) \{(?P<body>.*?)\n\}",
+            r"async function runBatchMergeWorkflow\([^)]*\) \{(?P<body>.*?)\n\}",
             schedule_module,
             re.S,
         )

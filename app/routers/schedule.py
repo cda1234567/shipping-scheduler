@@ -458,6 +458,73 @@ def _resolve_draft_commit_plan(draft_id: int, main_path: str):
     )
 
 
+def _apply_batch_draft_updates(req: BatchDispatchRequest) -> tuple[list[int], list[dict], dict[int, dict]]:
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
+    if not normalized_order_ids:
+        raise HTTPException(400, "請先選擇要更新副檔的訂單")
+
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
+    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
+    if missing_orders:
+        raise HTTPException(400, "部分訂單尚未建立副檔，請先重新 merge")
+
+    decision_updates = build_order_decision_allocations(
+        normalized_order_ids,
+        req.decisions,
+        include_none=True,
+    )
+    scoped_decisions = _normalize_order_decisions(req.order_decisions)
+    decision_allocations = {
+        order_id: _merge_decision_updates(
+            order_id,
+            {
+                **decision_updates.get(order_id, {}),
+                **scoped_decisions.get(order_id, {}),
+            },
+        )
+        for order_id in normalized_order_ids
+    }
+    supplement_allocations = _merge_order_supplement_allocations(
+        normalized_order_ids,
+        req.supplements,
+        _normalize_order_supplements(req.order_supplements),
+    )
+    db.replace_order_decisions(normalized_order_ids, decision_allocations)
+    db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+    refreshed = rebuild_merge_drafts(normalized_order_ids)
+    drafts = get_schedule_draft_map()
+    return normalized_order_ids, refreshed, drafts
+
+
+def _summarize_negative_shortages(shortages: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for item in shortages or []:
+        part = str(item.get("part_number") or "").strip().upper()
+        if not part:
+            continue
+        try:
+            resulting_stock = float(item.get("resulting_stock"))
+        except (TypeError, ValueError):
+            continue
+        if resulting_stock >= 0:
+            continue
+
+        current = grouped.setdefault(part, {
+            "part_number": part,
+            "description": str(item.get("description") or ""),
+            "resulting_stock": resulting_stock,
+            "shortage_amount": 0.0,
+            "order_ids": [],
+        })
+        current["resulting_stock"] = min(float(current["resulting_stock"]), resulting_stock)
+        current["shortage_amount"] += float(item.get("shortage_amount") or 0)
+        order_id = item.get("order_id")
+        if order_id is not None and order_id not in current["order_ids"]:
+            current["order_ids"].append(order_id)
+
+    return sorted(grouped.values(), key=lambda row: row["part_number"])
+
+
 # ── Upload schedule ───────────────────────────────────────────────────────────
 
 @router.post("/schedule/upload")
@@ -808,46 +875,90 @@ async def get_schedule_drafts():
 
 @router.put("/schedule/drafts")
 async def update_selected_schedule_drafts(req: BatchDispatchRequest):
-    normalized_order_ids = _normalize_order_ids(req.order_ids)
-    if not normalized_order_ids:
-        raise HTTPException(400, "請先選擇要更新副檔的訂單")
-
-    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
-    missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
-    if missing_orders:
-        raise HTTPException(400, "部分訂單尚未建立副檔，請先重新 merge")
-
-    decision_updates = build_order_decision_allocations(
-        normalized_order_ids,
-        req.decisions,
-        include_none=True,
-    )
-    scoped_decisions = _normalize_order_decisions(req.order_decisions)
-    decision_allocations = {
-        order_id: _merge_decision_updates(
-            order_id,
-            {
-                **decision_updates.get(order_id, {}),
-                **scoped_decisions.get(order_id, {}),
-            },
-        )
-        for order_id in normalized_order_ids
-    }
-    supplement_allocations = _merge_order_supplement_allocations(
-        normalized_order_ids,
-        req.supplements,
-        _normalize_order_supplements(req.order_supplements),
-    )
-    db.replace_order_decisions(normalized_order_ids, decision_allocations)
-    db.replace_order_supplements(normalized_order_ids, supplement_allocations)
-    refreshed = rebuild_merge_drafts(normalized_order_ids)
-    drafts = get_schedule_draft_map()
+    normalized_order_ids, refreshed, drafts = _apply_batch_draft_updates(req)
     db.log_activity("merge_draft_batch_update", f"批次更新副檔 {len(normalized_order_ids)} 筆")
     return {
         "ok": True,
         "count": len(normalized_order_ids),
         "draft_count": len(refreshed),
         "drafts": {str(order_id): drafts.get(order_id) for order_id in normalized_order_ids},
+    }
+
+
+@router.post("/schedule/update-and-commit-drafts")
+def update_and_commit_drafts(req: BatchDispatchRequest):
+    normalized_order_ids, refreshed, _ = _apply_batch_draft_updates(req)
+    main_path = _require_existing_main_path()
+
+    successes: list[dict] = []
+    failures: list[dict] = []
+    all_shortages: list[dict] = []
+
+    for order_id in normalized_order_ids:
+        draft_id_map = db.get_active_merge_draft_ids_by_order_ids([order_id])
+        draft_id = draft_id_map.get(order_id)
+        order = db.get_order(order_id) or {}
+        if not draft_id:
+            failures.append({
+                "order_id": order_id,
+                "po_number": order.get("po_number", ""),
+                "model": order.get("model", ""),
+                "message": "找不到可提交的副檔草稿",
+            })
+            continue
+
+        try:
+            plan = _resolve_draft_commit_plan(int(draft_id), main_path)
+            result = commit_dispatch_plan(
+                plan,
+                merge_executor=merge_row_to_main,
+                backup_dir=str(BACKUP_DIR),
+                rollback_executor=_rollback_dispatch_sessions,
+                execute_dispatcher=_execute_dispatch,
+                snapshot_refresher=refresh_snapshot_from_main,
+            )
+            successes.append({
+                "order_id": order_id,
+                "draft_id": int(draft_id),
+                "merged_parts": result.merged_parts,
+            })
+            all_shortages.extend(result.shortages)
+        except HTTPException as exc:
+            failures.append({
+                "order_id": order_id,
+                "draft_id": int(draft_id),
+                "po_number": order.get("po_number", ""),
+                "model": order.get("model", ""),
+                "message": str(exc.detail),
+            })
+        except Exception as exc:
+            log.exception("[update_and_commit_drafts] order %s failed", order_id)
+            failures.append({
+                "order_id": order_id,
+                "draft_id": int(draft_id),
+                "po_number": order.get("po_number", ""),
+                "model": order.get("model", ""),
+                "message": str(exc),
+            })
+
+    negative_shortages = _summarize_negative_shortages(all_shortages)
+    db.log_activity(
+        "merge_draft_batch_force_commit",
+        f"批次 merge 後強制寫主檔：成功 {len(successes)} 筆，失敗 {len(failures)} 筆，負庫存 {len(negative_shortages)} 項",
+    )
+    return {
+        "ok": not failures,
+        "count": len(successes),
+        "success_count": len(successes),
+        "failure_count": len(failures),
+        "draft_count": len(refreshed),
+        "merged_parts": sum(int(item.get("merged_parts") or 0) for item in successes),
+        "order_ids": [int(item["order_id"]) for item in successes],
+        "successes": successes,
+        "failures": failures,
+        "shortages": all_shortages,
+        "negative_shortages": negative_shortages,
+        "force_write": True,
     }
 
 
