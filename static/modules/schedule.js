@@ -10,6 +10,7 @@ let _liveStock = {};
 let _moq = {};
 let _vendors = {};
 let _purchaseReminderStatuses = {};
+let _partFirstOrder = {};
 let _purchaseReminderCollapsed = { pending: false, notified: false, ignored: true };
 let _stStock = {};
 let _stDescriptions = {};
@@ -535,7 +536,8 @@ async function loadMainData() {
     _moq = d.moq || {};
     _vendors = d.vendors || {};
     _purchaseReminderStatuses = d.purchase_reminder_statuses || {};
-  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; _vendors = {}; _purchaseReminderStatuses = {}; }
+    _partFirstOrder = d.part_first_order || {};
+  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; _vendors = {}; _purchaseReminderStatuses = {}; _partFirstOrder = {}; }
 }
 
 async function loadStInventoryData() {
@@ -1466,6 +1468,7 @@ function buildMainStockNegativeItems() {
     const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
     const stStockQty = Math.max(0, Number(_stStock?.[key] ?? 0) || 0);
     const suggestion = buildShortageSupplySuggestion(key, shortageAmount, moq, stStockQty);
+    const firstOrderCode = String(_partFirstOrder?.[key] || "").trim() || "主檔";
     items.push({
       part_number: key,
       description: descLookup[key] || "",
@@ -1484,7 +1487,7 @@ function buildMainStockNegativeItems() {
       purchase_suggested_qty: suggestion.purchase_suggested_qty,
       needs_purchase: suggestion.needs_purchase,
       decision: "None",
-      _row_code: "主檔",
+      _row_code: firstOrderCode,
       _row_model: "",
       _row_group_key: "主檔",
       _row_group_label: "主檔層級缺料",

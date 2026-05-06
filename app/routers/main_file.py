@@ -145,6 +145,7 @@ async def get_main_data():
         "live_stock": live_stock,
         "vendors": vendors,
         "purchase_reminder_statuses": db.get_purchase_reminder_statuses(),
+        "part_first_order": db.get_part_first_dispatched_order_code(),
         "part_count": int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),
         "filename": db.get_setting("main_filename") or Path(main_path).name,

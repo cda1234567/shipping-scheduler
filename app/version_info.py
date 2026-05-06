@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.5"
+APP_VERSION = "v2026.05.07.6"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細的主檔層級缺料改成只列『真的負庫存』，EC<100、PK<1 那種剛踩門檻的不會列。"
+APP_HEADLINE = "補料明細的主檔層級缺料卡片標上「X-X 開始缺料」，從 dispatch_records 找該料件最早出現的訂單 code。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細顯示『最早缺料訂單』",
+        "items": [
+            "新增 backend `get_part_first_dispatched_order_code()`：每個料件最早 dispatch 的訂單 code（譬如 IC-AZ1117CH 第一次用到是 1-3）。",
+            "`/api/main-file/data` 回傳新增 `part_first_order` dict，前端 `_partFirstOrder` 載入後在 buildMainStockNegativeItems 把 `_row_code` 設成這個值（找不到時 fallback 為「主檔」）。",
+            "卡片標籤從一律「主檔」改成顯示真實訂單 code，跟 active draft 缺料卡片格式一致。",
+        ],
+    },
     {
         "title": "補料明細只列真的負庫存",
         "items": [

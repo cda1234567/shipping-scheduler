@@ -247,7 +247,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const threshold = getRequiredMinStock(key);", schedule_module)
         self.assertIn("const shortageAmount = calculateShortageAmount(key, currentStock);", schedule_module)
         self.assertIn('vendor: normalizeVendorName(_vendors?.[key]),', schedule_module)
-        self.assertIn('_row_code: "主檔"', schedule_module)
+        self.assertIn("_row_code: firstOrderCode", schedule_module)
         self.assertIn('_row_group_label: "主檔層級缺料"', schedule_module)
         self.assertIn("_main_stock_level: true", schedule_module)
 

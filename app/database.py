@@ -1686,6 +1686,26 @@ def get_all_dispatched_consumption(after_snapshot_at: str = "") -> dict[str, flo
     return {r["part_number"].upper(): r["total"] for r in rows}
 
 
+def get_part_first_dispatched_order_code() -> dict[str, str]:
+    """每個料件最早 dispatched 的訂單 code，用來標『X-X 開始缺料』。"""
+    sql = (
+        "SELECT dr.part_number, o.code "
+        "FROM dispatch_records dr JOIN orders o ON o.id = dr.order_id "
+        "WHERE dr.part_number IS NOT NULL AND dr.part_number <> '' "
+        "ORDER BY dr.dispatched_at ASC, dr.id ASC"
+    )
+    result: dict[str, str] = {}
+    with get_conn() as conn:
+        for row in conn.execute(sql):
+            key = str(row["part_number"] or "").strip().upper()
+            code = str(row["code"] or "").strip()
+            if not key or not code:
+                continue
+            if key not in result:
+                result[key] = code
+    return result
+
+
 # ── Decisions ─────────────────────────────────────────────────────────────────
 
 def save_decision(order_id: int, part_number: str, decision: str):
