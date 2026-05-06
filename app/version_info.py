@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.1"
+APP_VERSION = "v2026.05.06.2"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "新增「主檔預覽 v2」分頁，使用 Luckysheet 提供更接近 Excel 的主檔瀏覽與單格編輯體驗。"
+APP_HEADLINE = "主檔預覽 v2 加上「跳到最右」按鈕，並預設凍結 A B 兩欄與第 1 列，捲動時表頭與料號永遠看得到。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 凍結與跳到最右",
+        "items": [
+            "v2 預設凍結 A B 兩欄（料號跟說明）與第 1 列（標題列），往右往下捲動都看得到對照。C 欄之後可正常隨捲動移動。",
+            "工具列新增「跳到最右 →」按鈕，跟舊版主檔預覽行為一致，可一鍵跳到表格最後一欄。",
+            "凍結與「跳到最右」整合 Luckysheet 內建 frozen / setRangeShow API，不需自寫捲動邏輯。",
+        ],
+    },
     {
         "title": "主檔預覽 v2",
         "items": [

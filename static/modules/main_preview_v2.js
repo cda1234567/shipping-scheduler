@@ -22,6 +22,23 @@ export function initMainPreviewV2() {
     if (!sheet || sheet === _activeSheet) return;
     void refreshMainPreviewV2({ force: true, sheet, eager: true });
   });
+
+  document.getElementById("btn-main-preview-v2-scroll-right")?.addEventListener("click", () => {
+    if (!_luckyMounted || !window.luckysheet) return;
+    try {
+      const ls = window.luckysheet;
+      const sheets = ls.getAllSheets ? ls.getAllSheets() : [];
+      const active = sheets.find(s => s.status === 1) || sheets[0];
+      const colCount = active?.column || active?.celldata?.reduce((m, c) => Math.max(m, (c.c ?? 0) + 1), 0) || 0;
+      if (colCount > 0 && ls.setRangeShow) {
+        ls.setRangeShow({ row: [0, 0], column: [colCount - 1, colCount - 1] });
+      } else if (ls.scroll) {
+        ls.scroll({ scrollLeft: Number.MAX_SAFE_INTEGER });
+      }
+    } catch (err) {
+      console.error("[main_preview_v2] scrollToRight failed", err);
+    }
+  });
 }
 
 export async function onMainPreviewV2TabActivated() {
@@ -145,6 +162,10 @@ function mountLuckysheet(payload) {
       config: {},
       status: 1,
       order: 0,
+      frozen: {
+        type: "rangeBoth",
+        range: { row_focus: 0, column_focus: 1 },
+      },
     }],
     hook: {
       cellUpdated: function (r, c, oldValue, newValue) {
