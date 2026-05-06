@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.7"
+APP_VERSION = "v2026.05.07.8"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細卡片雙擊料號跳到主檔預覽該料件 row，方便快速定位負庫存位置。"
+APP_HEADLINE = "補料明細雙擊跳主檔現在會真的捲到對應 row，欄寬列高拖完也會 mouseup 後寫進 localStorage。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細雙擊真的捲到位 + 欄寬記憶修正",
+        "items": [
+            "navigateToPart 之前只 setRangeShow，畫面不會自動跟過去；現在加上手動算 scrollY/scrollX（依 rowlen / columnlen 累加），直接設 .luckysheet-scrollbar-y/-x 的 scrollTop/Left。",
+            "Luckysheet 沒 column/row resize 完成的 hook（之前用的 resizeColumnAfter/resizeRowAfter 是不存在的名字），改成 stage mouseup 後 debounce 200ms dump 整個 sheet 的 columnlen / rowlen 到 localStorage，下次重新整理會還原。",
+        ],
+    },
     {
         "title": "補料明細雙擊跳主檔",
         "items": [

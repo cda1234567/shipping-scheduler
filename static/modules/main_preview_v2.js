@@ -34,6 +34,22 @@ export async function navigateToPart(partNumber) {
     if (ls.setRangeShow) {
       ls.setRangeShow({ row: [rowIndex, rowIndex], column: [lastCol, lastCol] });
     }
+    // setRangeShow 不會自動捲到位置，手動設 DOM scrollTop/Left
+    const stage = document.getElementById("main-preview-v2-stage");
+    const scrollY = stage?.querySelector(".luckysheet-scrollbar-y");
+    const scrollX = stage?.querySelector(".luckysheet-scrollbar-x");
+    if (scrollY) {
+      const rowConfig = sheet?.config?.rowlen || {};
+      let top = 0;
+      for (let i = 0; i < rowIndex; i++) top += Number(rowConfig[i] || 19);
+      scrollY.scrollTop = Math.max(0, top - 100);
+    }
+    if (scrollX && lastCol > 0) {
+      const colConfig = sheet?.config?.columnlen || {};
+      let left = 0;
+      for (let i = 0; i < lastCol; i++) left += Number(colConfig[i] || 73);
+      scrollX.scrollLeft = Math.max(0, left - 200);
+    }
     return true;
   } catch (err) {
     console.error("[main_preview_v2] navigateToPart failed", err);
@@ -325,12 +341,29 @@ function mountLuckysheet(payload) {
       workbookCreateAfter: function () {
         _luckyMounted = true;
         _suppressNextHook = false;
-      },
-      resizeColumnAfter: function (colIndex, oldWidth, newWidth) {
-        saveLayoutPart(LS_COLLEN_PREFIX, _activeSheet, colIndex, newWidth);
-      },
-      resizeRowAfter: function (rowIndex, oldHeight, newHeight) {
-        saveLayoutPart(LS_ROWLEN_PREFIX, _activeSheet, rowIndex, newHeight);
+        // Luckysheet 沒 column/row resize hook，改用 mouseup 後 dump 整個 sheet
+        // 的 columnlen / rowlen 到 localStorage（debounce 200ms）
+        const stage = document.getElementById("main-preview-v2-stage");
+        if (stage && !stage.dataset.layoutListenerBound) {
+          stage.dataset.layoutListenerBound = "1";
+          let timer = null;
+          stage.addEventListener("mouseup", () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+              try {
+                const ls = window.luckysheet;
+                const sh = ls?.getAllSheets?.()[0];
+                if (!sh || !_activeSheet) return;
+                if (sh.config?.columnlen) {
+                  localStorage.setItem(LS_COLLEN_PREFIX + _activeSheet, JSON.stringify(sh.config.columnlen));
+                }
+                if (sh.config?.rowlen) {
+                  localStorage.setItem(LS_ROWLEN_PREFIX + _activeSheet, JSON.stringify(sh.config.rowlen));
+                }
+              } catch (_) {}
+            }, 200);
+          });
+        }
       },
     },
   });
