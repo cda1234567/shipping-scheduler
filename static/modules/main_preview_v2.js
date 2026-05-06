@@ -159,7 +159,9 @@ function mountLuckysheet(payload) {
       celldata,
       row: rowCount,
       column: colCount,
-      config: {},
+      config: {
+        rowlen: buildRowConfig(sheet),
+      },
       status: 1,
       order: 0,
       frozen: {
@@ -214,17 +216,30 @@ function buildCelldata(sheet) {
       const colIndex = (cell?.col || 1) - 1;
       const rawValue = cell?.value;
       if (rawValue === null || rawValue === undefined || rawValue === "") continue;
+      const cellValue = {
+        v: rawValue,
+        m: String(rawValue),
+      };
+      if (rowIndex === 0) {
+        cellValue.tb = "2";
+      }
       result.push({
         r: rowIndex,
         c: colIndex,
-        v: {
-          v: rawValue,
-          m: String(rawValue),
-        },
+        v: cellValue,
       });
     }
   }
   return result;
+}
+
+function buildRowConfig(sheet) {
+  const rows = sheet?.rows || [];
+  const rowlen = {};
+  if (rows.length > 0) {
+    rowlen[0] = 80;
+  }
+  return rowlen;
 }
 
 function renderSheetSelect() {

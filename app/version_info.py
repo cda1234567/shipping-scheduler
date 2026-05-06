@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.3"
+APP_VERSION = "v2026.05.06.4"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽 v2 的水平與垂直捲軸改成藍色細版，hover 變深，看得清楚拉到哪。"
+APP_HEADLINE = "主檔預覽 v2 第 1 列改自動換行 + 加高，標題列裡長文字不再被截掉。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 第 1 列自動換行",
+        "items": [
+            "v2 標題列原本繼承預設 cell 行為，長標題會被截掉只看到前幾個字。",
+            "第 1 列每個 cell 套 Luckysheet `tb=2`（自動換行），並把第 1 列高度加到 80px，多行文字看得到。",
+            "其他列保持原本行為，避免整個 sheet 變胖。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 捲軸樣式",
         "items": [
