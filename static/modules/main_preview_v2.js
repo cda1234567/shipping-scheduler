@@ -11,6 +11,37 @@ let _luckyMounted = false;
 let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
 
+const LS_WRAP_KEY = "mainPreviewV2.headerWrap";
+const LS_COLLEN_PREFIX = "mainPreviewV2.columnlen.";
+const LS_ROWLEN_PREFIX = "mainPreviewV2.rowlen.";
+let _wrapEnabled = (() => {
+  try { return localStorage.getItem(LS_WRAP_KEY) !== "0"; } catch (_) { return true; }
+})();
+
+function loadLayout(sheetName) {
+  const safe = (key, fallback) => {
+    try { return JSON.parse(localStorage.getItem(key) || "null") ?? fallback; } catch (_) { return fallback; }
+  };
+  return {
+    columnlen: safe(LS_COLLEN_PREFIX + sheetName, {}),
+    rowlen: safe(LS_ROWLEN_PREFIX + sheetName, {}),
+  };
+}
+
+function saveLayoutPart(prefix, sheetName, idx, value) {
+  if (!sheetName) return;
+  const key = prefix + sheetName;
+  let obj = {};
+  try { obj = JSON.parse(localStorage.getItem(key) || "{}") || {}; } catch (_) { obj = {}; }
+  obj[idx] = value;
+  try { localStorage.setItem(key, JSON.stringify(obj)); } catch (_) {}
+}
+
+function updateWrapButtonLabel() {
+  const btn = document.getElementById("btn-main-preview-v2-toggle-wrap");
+  if (btn) btn.textContent = `標題列換行: ${_wrapEnabled ? "開" : "關"}`;
+}
+
 export function initMainPreviewV2() {
   if (_initialized) return;
   _initialized = true;
@@ -23,6 +54,14 @@ export function initMainPreviewV2() {
     const sheet = event.target.value || "";
     if (!sheet || sheet === _activeSheet) return;
     void refreshMainPreviewV2({ force: true, sheet, eager: true });
+  });
+
+  updateWrapButtonLabel();
+  document.getElementById("btn-main-preview-v2-toggle-wrap")?.addEventListener("click", () => {
+    _wrapEnabled = !_wrapEnabled;
+    try { localStorage.setItem(LS_WRAP_KEY, _wrapEnabled ? "1" : "0"); } catch (_) {}
+    updateWrapButtonLabel();
+    void refreshMainPreviewV2({ force: true, eager: true });
   });
 
   document.getElementById("btn-main-preview-v2-scroll-right")?.addEventListener("click", () => {
@@ -160,9 +199,14 @@ function mountLuckysheet(payload) {
       celldata,
       row: rowCount,
       column: colCount,
-      config: {
-        rowlen: buildRowConfig(sheet),
-      },
+      config: (() => {
+        const layout = loadLayout(_activeSheet);
+        const rowlen = { ...buildRowConfig(sheet), ...(layout.rowlen || {}) };
+        return {
+          rowlen,
+          columnlen: layout.columnlen || {},
+        };
+      })(),
       status: 1,
       order: 0,
       frozen: {
@@ -232,6 +276,12 @@ function mountLuckysheet(payload) {
         _luckyMounted = true;
         _suppressNextHook = false;
       },
+      resizeColumnAfter: function (colIndex, oldWidth, newWidth) {
+        saveLayoutPart(LS_COLLEN_PREFIX, _activeSheet, colIndex, newWidth);
+      },
+      resizeRowAfter: function (rowIndex, oldHeight, newHeight) {
+        saveLayoutPart(LS_ROWLEN_PREFIX, _activeSheet, rowIndex, newHeight);
+      },
     },
   });
 }
@@ -250,7 +300,7 @@ function buildCelldata(sheet) {
         v: rawValue,
         m: String(rawValue),
       };
-      if (rowIndex === 0) {
+      if (rowIndex === 0 && _wrapEnabled) {
         cellValue.tb = "2";
       }
       result.push({
@@ -266,7 +316,7 @@ function buildCelldata(sheet) {
 function buildRowConfig(sheet) {
   const rows = sheet?.rows || [];
   const rowlen = {};
-  if (rows.length > 0) {
+  if (rows.length > 0 && _wrapEnabled) {
     rowlen[0] = 80;
   }
   return rowlen;
