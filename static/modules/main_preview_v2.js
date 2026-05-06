@@ -10,6 +10,7 @@ let _loadToken = 0;
 let _luckyMounted = false;
 let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
+let _lastLoadedAt = "";
 
 const LS_WRAP_KEY = "mainPreviewV2.headerWrap";
 const LS_COLLEN_PREFIX = "mainPreviewV2.columnlen.";
@@ -82,6 +83,15 @@ export function initMainPreviewV2() {
 }
 
 export async function onMainPreviewV2TabActivated() {
+  // 已 mount 過 → 快速 check 主檔是否變動，沒變就跳過重 mount
+  if (_luckyMounted && _lastLoadedAt) {
+    try {
+      const url = new URL("/api/main-file/preview", window.location.origin);
+      if (_activeSheet) url.searchParams.set("sheet", _activeSheet);
+      const payload = await apiJson(`${url.pathname}${url.search}`);
+      if ((payload?.loaded_at || "") === _lastLoadedAt) return;
+    } catch (_) {}
+  }
   await refreshMainPreviewV2({ eager: true });
 }
 
@@ -121,6 +131,7 @@ export async function refreshMainPreviewV2({ force = false, sheet = "", eager = 
     renderSheetSelect();
     mountLuckysheet(payload);
     renderMeta(payload.sheet);
+    _lastLoadedAt = payload.loaded_at || "";
   } catch (error) {
     if (token !== _loadToken) return;
     renderStatus(error.message || "讀取主檔失敗");

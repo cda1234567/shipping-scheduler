@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.8"
+APP_VERSION = "v2026.05.06.9"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽 v2 新增「標題列換行」開關按鈕，並把欄寬／列高拖拉記到 localStorage 下次自動套用。"
+APP_HEADLINE = "切回主檔預覽 tab 不再每次重 mount Luckysheet，主檔沒變動時直接顯示既有畫面。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 切 tab 加速",
+        "items": [
+            "原本每次切到主檔預覽 tab 都會 destroy + recreate Luckysheet，渲染上千列要 3-4 秒。",
+            "改成：第一次 mount 後紀錄 loaded_at；後續切 tab 先打 preview API（cache hit 80ms），若 loaded_at 沒變則跳過重 mount，直接顯示既有 Luckysheet 畫面。",
+            "主檔被改（cell PATCH 後 mtime 變更）會自動偵測並重 mount，不會看到 stale 資料。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 換行開關 + 記憶欄寬列高",
         "items": [
