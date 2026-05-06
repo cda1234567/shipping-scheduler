@@ -27,6 +27,7 @@ from ..services.main_reader import (
 )
 from ..services.local_time import local_now
 from ..services.main_file_recalc import recalc_batch_balances_for_cell
+from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
 
@@ -508,10 +509,22 @@ async def edit_main_cell(req: EditCellRequest):
         refresh_snapshot_from_main(main_path)
     invalidate_main_data_cache()
 
+    schedule_refresh_required = False
+    if recalc_result.get("recalculated"):
+        active_order_ids = [
+            int(item["order_id"])
+            for item in db.get_active_merge_drafts()
+            if item.get("order_id") is not None
+        ]
+        if active_order_ids:
+            rebuild_merge_drafts(active_order_ids)
+            schedule_refresh_required = True
+
     db.log_activity("主檔編輯", f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}")
     return {
         "ok": True,
         "old_value": str(old_value or ""),
         "new_value": str(new_value),
         "affected_cells": recalc_result.get("affected_cells") or [],
+        "schedule_refresh_required": schedule_refresh_required,
     }

@@ -1,4 +1,5 @@
 import { apiJson, apiPatch, showToast } from "./api.js";
+import { refresh as refreshSchedule } from "./schedule.js";
 
 let _initialized = false;
 let _activeSheet = "";
@@ -192,7 +193,7 @@ function mountLuckysheet(payload) {
           row,
           col,
           value,
-        }).then(json => {
+        }).then(async json => {
           if (json?.ok) {
             const affectedCells = Array.isArray(json.affected_cells) ? json.affected_cells : [];
             if (affectedCells.length > 0 && window.luckysheet?.setCellValue) {
@@ -205,10 +206,20 @@ function mountLuckysheet(payload) {
                 );
               }
             }
+            let scheduleRefreshMessage = "";
+            if (json.schedule_refresh_required === true) {
+              try {
+                await refreshSchedule();
+                scheduleRefreshMessage = "，排程缺料已重新計算";
+              } catch (err) {
+                console.error("[main_preview_v2] refresh schedule failed", err);
+                scheduleRefreshMessage = "，但排程重新整理失敗";
+              }
+            }
             if (affectedCells.length > 0) {
-              showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell`);
+              showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell${scheduleRefreshMessage}`);
             } else {
-              showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}`);
+              showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}${scheduleRefreshMessage}`);
             }
           } else {
             showToast(`儲存失敗：${json?.detail || ""}`, "error");
