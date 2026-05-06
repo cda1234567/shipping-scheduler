@@ -1457,6 +1457,7 @@ function buildMainStockNegativeItems() {
 
     const currentStock = Number(stockQty || 0);
     if (!Number.isFinite(currentStock)) continue;
+    if (currentStock >= 0) continue;
 
     const threshold = getRequiredMinStock(key);
     const shortageAmount = calculateShortageAmount(key, currentStock);

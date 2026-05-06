@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.4"
+APP_VERSION = "v2026.05.07.5"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細真的接上主檔庫存門檻：上一版加的 buildMainStockNegativeItems 沒被 main render flow 用到，這版補上。"
+APP_HEADLINE = "補料明細的主檔層級缺料改成只列『真的負庫存』，EC<100、PK<1 那種剛踩門檻的不會列。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細只列真的負庫存",
+        "items": [
+            "buildMainStockNegativeItems 加 `currentStock >= 0 continue`，stock=0 的 EC（門檻 100）跟 PK（門檻 1）剛好踩到的不會列出。",
+            "之前 47 筆會降到只剩真正小於 0 的料件（譬如 OC-70019B-TAB -832、IC-AZ1117CH -548 之類），庫存安全水位提醒留給「買料提醒」面板處理。",
+        ],
+    },
     {
         "title": "補料明細實際納入主檔負庫存（修上版漏接）",
         "items": [
