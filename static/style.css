@@ -515,6 +515,34 @@ body.edit-auth-readonly #bom-upload-area {
   background-clip: padding-box;
 }
 
+/* 主檔預覽 v2 (Luckysheet) scrollbar */
+.luckysheet-scrollbar-x,
+.luckysheet-scrollbar-y {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(59, 130, 246, 0.55) transparent;
+}
+.luckysheet-scrollbar-x::-webkit-scrollbar,
+.luckysheet-scrollbar-y::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+.luckysheet-scrollbar-x::-webkit-scrollbar-track,
+.luckysheet-scrollbar-y::-webkit-scrollbar-track {
+  background: transparent;
+}
+.luckysheet-scrollbar-x::-webkit-scrollbar-thumb,
+.luckysheet-scrollbar-y::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: rgba(59, 130, 246, 0.55);
+  background-clip: padding-box;
+}
+.luckysheet-scrollbar-x::-webkit-scrollbar-thumb:hover,
+.luckysheet-scrollbar-y::-webkit-scrollbar-thumb:hover {
+  background: rgba(37, 99, 235, 0.78);
+  background-clip: padding-box;
+}
+
 /* PO group */
 .po-group {
   background: #fff; border-radius: 12px; margin-bottom: 10px;

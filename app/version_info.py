@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.2"
+APP_VERSION = "v2026.05.06.3"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽 v2 加上「跳到最右」按鈕，並預設凍結 A B 兩欄與第 1 列，捲動時表頭與料號永遠看得到。"
+APP_HEADLINE = "主檔預覽 v2 的水平與垂直捲軸改成藍色細版，hover 變深，看得清楚拉到哪。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 捲軸樣式",
+        "items": [
+            "Luckysheet 自帶捲軸原本是瀏覽器預設灰色細條，捲動時不容易看出位置。",
+            "改成藍色細版（跟主操作按鈕同色系）：閒置 rgba(59, 130, 246, 0.55)、hover rgba(37, 99, 235, 0.78)。",
+            "Firefox 套 scrollbar-color，Chrome / Edge 套 ::-webkit-scrollbar 全套樣式（thumb / track / hover）。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 凍結與跳到最右",
         "items": [
