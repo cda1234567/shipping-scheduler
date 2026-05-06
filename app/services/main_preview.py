@@ -1,30 +1,40 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime, time
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote
 
 from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import get_column_letter, range_boundaries
 
+from ..config import DATA_DIR
 from .xls_reader import is_xls, open_workbook_any
 
 _DEFAULT_COLUMN_WIDTH_PX = 92
 _DEFAULT_ROW_HEIGHT_PX = 24
+MAIN_PREVIEW_CACHE_DIR = DATA_DIR / "cache" / "main_preview"
 
 
 def read_live_main_preview(path: str, sheet_name: str | None = None) -> dict:
     path_obj = Path(path)
+    stat = path_obj.stat()
     return _read_live_main_preview_cached(
         str(path_obj),
-        path_obj.stat().st_mtime_ns,
+        stat.st_mtime_ns,
+        stat.st_size,
         str(sheet_name or "").strip(),
     )
 
 
 @lru_cache(maxsize=16)
-def _read_live_main_preview_cached(path: str, modified_ns: int, requested_sheet: str) -> dict:
+def _read_live_main_preview_cached(path: str, modified_ns: int, size: int, requested_sheet: str) -> dict:
+    cached_preview = _read_disk_cache(modified_ns, size, requested_sheet)
+    if cached_preview is not None:
+        return cached_preview
+
     workbook = open_workbook_any(path, read_only=False, data_only=True)
     try:
         sheet_names = list(workbook.sheetnames)
@@ -33,17 +43,68 @@ def _read_live_main_preview_cached(path: str, modified_ns: int, requested_sheet:
 
         selected_sheet = requested_sheet if requested_sheet in sheet_names else workbook.active.title
         worksheet = workbook[selected_sheet]
-        return {
+        preview = {
             "sheet_names": sheet_names,
             "selected_sheet": selected_sheet,
             "style_preserved": not is_xls(path),
             "sheet": _serialize_sheet(worksheet),
         }
+        _write_disk_cache(modified_ns, size, requested_sheet, preview)
+        return preview
     finally:
         try:
             workbook.close()
         except Exception:
             pass
+
+
+def _disk_cache_path(modified_ns: int, size: int, sheet_name: str) -> Path:
+    sheet_token = quote(str(sheet_name or ""), safe="") or "_"
+    return MAIN_PREVIEW_CACHE_DIR / f"{modified_ns}_{size}_{sheet_token}.json"
+
+
+def _read_disk_cache(modified_ns: int, size: int, requested_sheet: str) -> dict | None:
+    if not MAIN_PREVIEW_CACHE_DIR.exists():
+        return None
+
+    cache_path = _disk_cache_path(modified_ns, size, requested_sheet)
+    if not cache_path.exists():
+        return None
+
+    try:
+        with cache_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_disk_cache(modified_ns: int, size: int, sheet_name: str, preview: dict) -> None:
+    try:
+        MAIN_PREVIEW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        clean_main_preview_disk_cache(modified_ns)
+        cache_path = _disk_cache_path(modified_ns, size, sheet_name)
+        tmp_path = cache_path.with_suffix(cache_path.suffix + f".{os.getpid()}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(preview, f, ensure_ascii=False, separators=(",", ":"))
+        tmp_path.replace(cache_path)
+    except OSError:
+        return
+
+
+def clean_main_preview_disk_cache(current_main_mtime_ns: int) -> None:
+    if not MAIN_PREVIEW_CACHE_DIR.exists():
+        return
+
+    for cache_path in MAIN_PREVIEW_CACHE_DIR.glob("*.json"):
+        try:
+            cache_mtime_ns = int(cache_path.name.split("_", 1)[0])
+        except (ValueError, IndexError):
+            continue
+        if cache_mtime_ns < current_main_mtime_ns:
+            try:
+                cache_path.unlink()
+            except OSError:
+                pass
 
 
 def _serialize_sheet(worksheet) -> dict:

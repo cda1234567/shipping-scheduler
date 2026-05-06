@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 import zipfile
+import os
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 from pathlib import Path
 
@@ -12,6 +14,7 @@ from app.services.main_reader import find_legacy_snapshot_stock_fixes, read_stoc
 from app.services.bom_parser import parse_bom, read_formula_needed_qty_cache
 from app.services.bom_quantity import coerce_scrap_factor
 from app.services.merge_to_main import merge_row_to_main, preview_order_batches
+import app.services.main_preview as main_preview
 
 
 class ExcelLogicTests(unittest.TestCase):
@@ -69,6 +72,46 @@ class ExcelLogicTests(unittest.TestCase):
 
         self.assertEqual(vendors["PART-A"], "Vendor")
         self.assertEqual(vendors["PART-B"], "Vendor")
+
+    def test_main_preview_disk_cache_hit_does_not_reopen_workbook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "main.xlsx"
+            self._build_main_workbook(path)
+            cache_dir = temp_root / "cache"
+
+            with patch.object(main_preview, "MAIN_PREVIEW_CACHE_DIR", cache_dir):
+                main_preview._read_live_main_preview_cached.cache_clear()
+                first = main_preview.read_live_main_preview(str(path), sheet_name="2026")
+                main_preview._read_live_main_preview_cached.cache_clear()
+
+                with patch.object(main_preview, "open_workbook_any") as mock_open:
+                    second = main_preview.read_live_main_preview(str(path), sheet_name="2026")
+
+        self.assertEqual(second, first)
+        mock_open.assert_not_called()
+
+    def test_main_preview_disk_cache_invalidates_when_mtime_changes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            path = temp_root / "main.xlsx"
+            self._build_main_workbook(path)
+            cache_dir = temp_root / "cache"
+            real_open = main_preview.open_workbook_any
+
+            with patch.object(main_preview, "MAIN_PREVIEW_CACHE_DIR", cache_dir):
+                main_preview._read_live_main_preview_cached.cache_clear()
+                main_preview.read_live_main_preview(str(path), sheet_name="2026")
+
+                old_mtime_ns = path.stat().st_mtime_ns
+                new_mtime_ns = old_mtime_ns + 1_000_000_000
+                os.utime(path, ns=(new_mtime_ns, new_mtime_ns))
+                main_preview._read_live_main_preview_cached.cache_clear()
+
+                with patch.object(main_preview, "open_workbook_any", wraps=real_open) as mock_open:
+                    main_preview.read_live_main_preview(str(path), sheet_name="2026")
+
+        mock_open.assert_called_once()
 
     def test_update_vendor_writes_main_file_b_column(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -13,6 +13,7 @@ from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main
 from app.services.edit_auth import EDIT_AUTH_REQUIRED_MESSAGE, get_edit_auth_status, request_requires_edit_auth
 from app.services.db_backup import database_backup_scheduler
 from app.services.backup_cleanup import cleanup_old_backups
+from app.services.main_preview import clean_main_preview_disk_cache
 from app.snapshot_sync import refresh_snapshot_from_main
 from app.version_info import APP_VERSION
 
@@ -44,6 +45,10 @@ def _sync_snapshot_on_startup():
         count = refresh_snapshot_from_main(main_path)
         if count:
             print(f"[startup] 快照已同步，共 {count} 筆料號")
+        try:
+            clean_main_preview_disk_cache(os.stat(main_path).st_mtime_ns)
+        except OSError:
+            pass
 
 
 @asynccontextmanager

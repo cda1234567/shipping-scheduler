@@ -100,8 +100,7 @@
   <div id="main-content">
 
     <div id="tabs">
-      <button class="tab-btn" data-tab="main-preview">銝餅?預覽</button>
-      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽 v2</button>
+      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
@@ -161,37 +160,12 @@
       </div>
     </div>
 
-    <!-- ── Tab: BOM 管理 ── -->
-    <div id="tab-main-preview" class="tab-content">
-      <div class="main-preview-shell">
-        <div class="main-preview-toolbar">
-          <div class="main-preview-meta-wrap">
-            <div id="main-preview-title" class="main-preview-title">尚未載入主檔</div>
-            <div id="main-preview-meta" class="main-preview-meta"></div>
-            <div id="main-preview-hint" class="main-preview-hint"></div>
-          </div>
-          <span class="spacer"></span>
-          <div class="main-preview-actions">
-            <input type="text" id="main-preview-search" placeholder="搜尋料號 / 關鍵字">
-            <button class="btn btn-secondary btn-sm" id="btn-main-preview-search">搜尋</button>
-            <button class="btn btn-secondary btn-sm" id="btn-main-preview-clear">清除</button>
-            <button class="btn btn-secondary btn-sm" id="btn-main-preview-scroll-right">跳到最右 →</button>
-            <button class="btn btn-primary btn-sm" id="btn-main-preview-refresh">重新讀取</button>
-          </div>
-        </div>
-        <div id="main-preview-sheet-tabs" class="main-preview-sheet-tabs"></div>
-        <div id="main-preview-stage" class="main-preview-stage">
-          <div class="main-preview-empty">切到這頁後，會直接讀目前 live 主檔。</div>
-        </div>
-      </div>
-    </div>
-
     <div id="tab-main-preview-v2" class="tab-content">
       <div class="main-preview-v2-shell">
         <div class="main-preview-v2-toolbar">
           <div class="main-preview-v2-meta-wrap">
-            <div id="main-preview-v2-title" class="main-preview-v2-title">主檔預覽 v2</div>
-            <div id="main-preview-v2-meta" class="main-preview-v2-meta">切到這頁後，會直接用 Univer 讀目前 live 主檔。</div>
+            <div id="main-preview-v2-title" class="main-preview-v2-title">主檔預覽</div>
+            <div id="main-preview-v2-meta" class="main-preview-v2-meta">切到這頁後，會直接讀目前 live 主檔。</div>
           </div>
           <span class="spacer"></span>
           <label class="main-preview-v2-sheet-picker">
@@ -510,7 +484,6 @@
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
-import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview, prewarmMainPreview } from "/static/modules/main_preview.js";
 import { initMainPreviewV2, onMainPreviewV2TabActivated, refreshMainPreviewV2 } from "/static/modules/main_preview_v2.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
@@ -530,8 +503,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview" || btn.dataset.tab === "main-preview-v2");
-    if (btn.dataset.tab === "main-preview") onMainPreviewTabActivated();
+    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2");
     if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
@@ -725,36 +697,9 @@ async function refreshMainStatus() {
   }
 }
 
-let _mainPreviewPrewarmQueued = false;
-
-function queueMainPreviewPrewarm({ force = false, delay = 250 } = {}) {
-  if (_mainPreviewPrewarmQueued && !force) return;
-  _mainPreviewPrewarmQueued = true;
-
-  const start = async () => {
-    try {
-      await prewarmMainPreview({ force });
-    } catch (error) {
-      console.warn("prewarmMainPreview failed:", error);
-    } finally {
-      _mainPreviewPrewarmQueued = false;
-    }
-  };
-
-  if ("requestIdleCallback" in window) {
-    window.requestIdleCallback(() => { void start(); }, { timeout: Math.max(500, delay) });
-  } else {
-    setTimeout(() => { void start(); }, delay);
-  }
-}
-
 async function handleMainMutation() {
-  const hasMainFile = await refreshMainStatus();
-  await refreshMainPreview({ force: true });
+  await refreshMainStatus();
   await refreshMainPreviewV2({ force: true, eager: false });
-  if (hasMainFile && getActiveTabName() !== "main-preview") {
-    queueMainPreviewPrewarm({ force: true, delay: 100 });
-  }
 }
 
 async function init() {
@@ -770,7 +715,6 @@ async function init() {
 
   setBootProgress(20, "正在準備主檔預覽...");
   await nextFrame();
-  await initMainPreview();
   initMainPreviewV2();
 
   setBootProgress(34, "正在讀取主檔與快照狀態...");
@@ -811,7 +755,6 @@ async function init() {
   try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
   try { await initDefectives(); } catch (e) { console.warn("initDefectives failed:", e); }
   await finishBoot();
-  if (hasMainFile) queueMainPreviewPrewarm();
 }
 
 function setStatus(id, text, cls) {

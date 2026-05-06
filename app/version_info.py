@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.4"
+APP_VERSION = "v2026.05.06.5"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽 v2 第 1 列改自動換行 + 加高，標題列裡長文字不再被截掉。"
+APP_HEADLINE = "主檔預覽後端新增 disk cache，process 重啟後同 sheet cache hit 可從 4.7 秒降到 100ms 內。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽後端 disk cache",
+        "items": [
+            "`/api/main-file/preview?sheet=X` 解析完主檔後，會依 main file mtime_ns + size + sheet 寫入 `data/cache/main_preview/*.json`。",
+            "同一份主檔、同一個 sheet 在 process 重啟後可直接讀 disk cache，不必再用 openpyxl 重跑樣式、欄寬與行高解析；目標 cache hit 從約 4.7 秒降到 100ms 以內。",
+            "主檔 mtime 或 size 變更時 cache key 自動不同，舊 JSON 不會被命中；寫入新 cache 時會清掉 mtime 較舊的 preview cache，避免資料夾無限成長。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 第 1 列自動換行",
         "items": [

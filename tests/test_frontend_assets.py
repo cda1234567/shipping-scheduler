@@ -706,23 +706,6 @@ console.log(JSON.stringify(results));
         self.assertIn(".st-package-card.is-mismatch", stylesheet)
         self.assertIn(".st-package-input", stylesheet)
 
-    def test_main_preview_supports_freeze_panes_for_row_one_and_columns_abc(self):
-        root = Path(__file__).resolve().parents[1]
-        preview_module = (root / "static" / "modules" / "main_preview.js").read_text(encoding="utf-8")
-        stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
-
-        self.assertIn("MAIN_PREVIEW_FROZEN_COLUMN_COUNT = 3", preview_module)
-        self.assertIn("MAIN_PREVIEW_COLUMN_HEADER_HEIGHT = 30", preview_module)
-        self.assertIn("buildFrozenColumnOffsets", preview_module)
-        self.assertIn("is-frozen-col", preview_module)
-        self.assertIn("is-frozen-row", preview_module)
-        self.assertIn("top:${MAIN_PREVIEW_COLUMN_HEADER_HEIGHT}px", preview_module)
-
-        self.assertIn(".main-preview-col-header.is-frozen-col", stylesheet)
-        self.assertIn(".main-preview-row-header.is-frozen-row", stylesheet)
-        self.assertIn(".main-preview-cell.is-frozen-col", stylesheet)
-        self.assertIn(".main-preview-cell.is-frozen-row", stylesheet)
-
     def test_database_backup_assets_exist_for_sidebar_and_restore_modal(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
