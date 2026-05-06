@@ -26,6 +26,7 @@ from ..services.main_reader import (
     update_vendor,
 )
 from ..services.local_time import local_now
+from ..services.main_file_recalc import recalc_batch_balances_for_cell
 from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
 
@@ -480,11 +481,37 @@ async def edit_main_cell(req: EditCellRequest):
     except (ValueError, TypeError):
         pass
 
+    snapshot = db.get_snapshot()
+    snapshot_stock = {
+        str(part).strip().upper(): float(values.get("stock_qty") or 0)
+        for part, values in (snapshot or {}).items()
+        if str(part).strip()
+    }
+
     cell.value = new_value if new_value != "" else None
+    recalc_result = recalc_batch_balances_for_cell(
+        ws,
+        row=req.row,
+        col=req.col,
+        snapshot_stock=snapshot_stock,
+    )
     wb.save(main_path)
     wb.close()
-    refresh_snapshot_from_main(main_path)
+
+    part_number = str(recalc_result.get("part_number") or "").strip().upper()
+    current_stock = recalc_result.get("current_stock")
+    if recalc_result.get("recalculated") and part_number and current_stock is not None:
+        updated_snapshot_rows = db.update_snapshot_stock({part_number: float(current_stock)})
+        if not updated_snapshot_rows:
+            refresh_snapshot_from_main(main_path)
+    else:
+        refresh_snapshot_from_main(main_path)
     invalidate_main_data_cache()
 
     db.log_activity("主檔編輯", f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}")
-    return {"ok": True, "old_value": str(old_value or ""), "new_value": str(new_value)}
+    return {
+        "ok": True,
+        "old_value": str(old_value or ""),
+        "new_value": str(new_value),
+        "affected_cells": recalc_result.get("affected_cells") or [],
+    }

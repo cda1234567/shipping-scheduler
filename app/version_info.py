@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.5"
+APP_VERSION = "v2026.05.06.6"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽後端新增 disk cache，process 重啟後同 sheet cache hit 可從 4.7 秒降到 100ms 內。"
+APP_HEADLINE = "主檔預覽 v2 編輯補料/用量後，後端會自動重算後續結餘並同步目前庫存。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔批次結餘自動重算",
+        "items": [
+            "`/api/main-file/cell` 寫入批次區的補料或用量後，會從該批開始依「上批結餘 - 用量 + 補料」重算後續結餘欄。",
+            "完全空白的批次會跳過不寫入；手動修改結餘欄本身不會觸發重算，保留人工覆蓋情境。",
+            "重算後會把最後一個非空結餘同步成該料號目前庫存，並更新 `inventory_snapshot.stock_qty`。",
+            "主檔預覽 v2 會把後端回傳的 affected_cells 直接套回 Luckysheet，畫面不用重新整理也會看到新結餘。",
+        ],
+    },
     {
         "title": "主檔預覽後端 disk cache",
         "items": [

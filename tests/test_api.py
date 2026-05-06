@@ -2195,6 +2195,64 @@ class ApiTests(unittest.TestCase):
         target_cell = next(cell for cell in data["sheet"]["rows"][1]["cells"] if cell["col"] == 2)
         self.assertEqual(target_cell["value"], "切換成功")
 
+    def test_edit_main_cell_returns_affected_balances_and_updates_snapshot_stock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "庫存主檔"
+            sheet.cell(row=1, column=1).value = "料號"
+            sheet.cell(row=1, column=8).value = "盤點"
+            for col, code in ((9, "1-1"), (12, "1-2"), (15, "1-3")):
+                sheet.cell(row=1, column=col).value = code
+                sheet.cell(row=1, column=col + 1).value = f"PO-{code}"
+                sheet.cell(row=1, column=col + 2).value = f"MODEL-{code}"
+            sheet.cell(row=2, column=1).value = "PART-1"
+            sheet.cell(row=2, column=8).value = 100
+            sheet.cell(row=2, column=9).value = 0
+            sheet.cell(row=2, column=10).value = 30
+            sheet.cell(row=2, column=11).value = 70
+            sheet.cell(row=2, column=12).value = 5
+            sheet.cell(row=2, column=13).value = 20
+            sheet.cell(row=2, column=14).value = 55
+            workbook.save(main_path)
+            workbook.close()
+
+            def fake_setting(key, default=""):
+                return str(main_path) if key == "main_file_path" else default
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
+                 patch("app.routers.main_file.backup_main_file"), \
+                 patch("app.routers.main_file.db.get_snapshot", return_value={"PART-1": {"stock_qty": 100}}), \
+                 patch("app.routers.main_file.db.update_snapshot_stock", return_value=1) as mock_update_stock, \
+                 patch("app.routers.main_file.refresh_snapshot_from_main") as mock_refresh, \
+                 patch("app.routers.main_file.db.log_activity"):
+                response = self.client.patch("/api/main-file/cell", json={
+                    "sheet": "庫存主檔",
+                    "row": 2,
+                    "col": 9,
+                    "value": "10",
+                })
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["affected_cells"], [
+                {"row": 2, "col": 11, "value": 80},
+                {"row": 2, "col": 14, "value": 65},
+            ])
+            mock_update_stock.assert_called_once_with({"PART-1": 65.0})
+            mock_refresh.assert_not_called()
+
+            saved = openpyxl.load_workbook(main_path)
+            try:
+                saved_sheet = saved["庫存主檔"]
+                self.assertEqual(saved_sheet.cell(row=2, column=9).value, 10)
+                self.assertEqual(saved_sheet.cell(row=2, column=11).value, 80)
+                self.assertEqual(saved_sheet.cell(row=2, column=14).value, 65)
+            finally:
+                saved.close()
+
     def test_update_snapshot_moq_endpoint_normalizes_part_number(self):
         with patch("app.routers.main_file.db.upsert_snapshot_moq", return_value="IC-LD39100PUR-TAB") as mock_update, \
              patch("app.routers.main_file.db.log_activity") as mock_log:

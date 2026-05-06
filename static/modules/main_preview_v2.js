@@ -8,6 +8,7 @@ let _isLoading = false;
 let _loadToken = 0;
 let _luckyMounted = false;
 let _suppressNextHook = false;
+let _suppressProgrammaticUpdates = 0;
 
 export function initMainPreviewV2() {
   if (_initialized) return;
@@ -26,14 +27,13 @@ export function initMainPreviewV2() {
   document.getElementById("btn-main-preview-v2-scroll-right")?.addEventListener("click", () => {
     if (!_luckyMounted || !window.luckysheet) return;
     try {
-      const ls = window.luckysheet;
-      const sheets = ls.getAllSheets ? ls.getAllSheets() : [];
-      const active = sheets.find(s => s.status === 1) || sheets[0];
-      const colCount = active?.column || active?.celldata?.reduce((m, c) => Math.max(m, (c.c ?? 0) + 1), 0) || 0;
-      if (colCount > 0 && ls.setRangeShow) {
-        ls.setRangeShow({ row: [0, 0], column: [colCount - 1, colCount - 1] });
-      } else if (ls.scroll) {
-        ls.scroll({ scrollLeft: Number.MAX_SAFE_INTEGER });
+      const stage = document.getElementById("main-preview-v2-stage");
+      const scrollEl = stage?.querySelector(".luckysheet-scrollbar-x");
+      if (scrollEl) {
+        scrollEl.scrollLeft = scrollEl.scrollWidth;
+      }
+      if (window.luckysheet?.scroll) {
+        window.luckysheet.scroll({ scrollLeft: Number.MAX_SAFE_INTEGER });
       }
     } catch (err) {
       console.error("[main_preview_v2] scrollToRight failed", err);
@@ -171,6 +171,10 @@ function mountLuckysheet(payload) {
     }],
     hook: {
       cellUpdated: function (r, c, oldValue, newValue) {
+        if (_suppressProgrammaticUpdates > 0) {
+          _suppressProgrammaticUpdates -= 1;
+          return;
+        }
         if (_suppressNextHook) {
           _suppressNextHook = false;
           return;
@@ -190,7 +194,22 @@ function mountLuckysheet(payload) {
           value,
         }).then(json => {
           if (json?.ok) {
-            showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}`);
+            const affectedCells = Array.isArray(json.affected_cells) ? json.affected_cells : [];
+            if (affectedCells.length > 0 && window.luckysheet?.setCellValue) {
+              _suppressProgrammaticUpdates += affectedCells.length;
+              for (const cell of affectedCells) {
+                window.luckysheet.setCellValue(
+                  Number(cell.row || 1) - 1,
+                  Number(cell.col || 1) - 1,
+                  cell.value ?? "",
+                );
+              }
+            }
+            if (affectedCells.length > 0) {
+              showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell`);
+            } else {
+              showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}`);
+            }
           } else {
             showToast(`儲存失敗：${json?.detail || ""}`, "error");
           }
