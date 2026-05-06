@@ -67,6 +67,21 @@ export async function initSchedule(onRefreshMain) {
     document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
       btn.addEventListener("click", () => activateRightPanelTab(btn.dataset.rightPanelTab));
     });
+    document.getElementById("right-scroll")?.addEventListener("dblclick", async (e) => {
+      const card = e.target.closest(".shortage-item");
+      if (!card) return;
+      const part = card.dataset.part || card.querySelector("[data-part]")?.dataset.part;
+      if (!part) return;
+      document.querySelector('[data-tab="main-preview-v2"]')?.click();
+      try {
+        const mod = await import("./main_preview_v2.js");
+        await new Promise(r => setTimeout(r, 350));
+        const ok = await mod.navigateToPart(part);
+        if (!ok) showToast(`主檔找不到 ${part}`, { tone: "error" });
+      } catch (err) {
+        console.error("[shortage dblclick] navigate failed", err);
+      }
+    });
     _scheduleInitialized = true;
   }
   await refresh();

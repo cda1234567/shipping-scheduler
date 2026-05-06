@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.6"
+APP_VERSION = "v2026.05.07.7"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細的主檔層級缺料卡片標上「X-X 開始缺料」，從 dispatch_records 找該料件最早出現的訂單 code。"
+APP_HEADLINE = "補料明細卡片雙擊料號跳到主檔預覽該料件 row，方便快速定位負庫存位置。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細雙擊跳主檔",
+        "items": [
+            "補料明細卡片雙擊任一處（或料號區）會自動切到主檔預覽 tab 並用 Luckysheet setRangeShow 跳到該料件 row 的最後一個非空 cell。",
+            "main_preview_v2 mountLuckysheet 時掃 sheet rows 建 _partLocations dict（料號 → row），navigateToPart 直接 lookup。",
+            "找不到料號會跳 toast「主檔找不到 XXX」。",
+        ],
+    },
     {
         "title": "補料明細顯示『最早缺料訂單』",
         "items": [

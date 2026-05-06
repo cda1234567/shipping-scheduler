@@ -11,6 +11,35 @@ let _luckyMounted = false;
 let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
 let _lastLoadedAt = "";
+let _partLocations = {};
+
+export async function navigateToPart(partNumber) {
+  const key = String(partNumber || "").trim().toUpperCase();
+  if (!key) return false;
+  if (!_luckyMounted || !window.luckysheet) {
+    await refreshMainPreviewV2({ eager: true, force: false });
+  }
+  const rowIndex = _partLocations[key];
+  if (rowIndex === undefined) return false;
+  try {
+    const ls = window.luckysheet;
+    const sheet = ls.getAllSheets ? ls.getAllSheets()[0] : null;
+    const cells = sheet?.celldata || [];
+    let lastCol = 0;
+    for (const cell of cells) {
+      if ((cell.r ?? -1) === rowIndex && (cell.c ?? -1) > lastCol && cell.v?.v != null && cell.v?.v !== "") {
+        lastCol = cell.c;
+      }
+    }
+    if (ls.setRangeShow) {
+      ls.setRangeShow({ row: [rowIndex, rowIndex], column: [lastCol, lastCol] });
+    }
+    return true;
+  } catch (err) {
+    console.error("[main_preview_v2] navigateToPart failed", err);
+    return false;
+  }
+}
 
 const LS_WRAP_KEY = "mainPreviewV2.headerWrap";
 const LS_COLLEN_PREFIX = "mainPreviewV2.columnlen.";
@@ -146,6 +175,16 @@ function mountLuckysheet(payload) {
 
   const sheet = payload.sheet || {};
   const celldata = buildCelldata(sheet);
+
+  _partLocations = {};
+  for (const rowEntry of (sheet?.rows || [])) {
+    const rowIndex = (rowEntry?.index || 1) - 1;
+    if (rowIndex < 1) continue;
+    const partCell = (rowEntry?.cells || []).find(c => (c?.col || 0) === 1);
+    const partKey = String(partCell?.value || "").trim().toUpperCase();
+    if (!partKey || partKey in _partLocations) continue;
+    _partLocations[partKey] = rowIndex;
+  }
   const rowCount = Math.max(sheet.row_count || sheet.rows?.length || 100, 100);
   const colCount = Math.max(sheet.col_count || (sheet.columns?.length) || 26, 26);
 
