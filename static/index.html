@@ -7,8 +7,14 @@
 <link rel="shortcut icon" href="/static/assets/dispatch_app_icon.ico">
 <title>出貨排程系統</title>
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/css/pluginsCss.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/plugins.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/css/luckysheet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/assets/iconfont/iconfont.css">
 <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
 <script src="/static/assets/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/plugins/js/plugin.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/luckysheet@2.1.13/dist/luckysheet.umd.js"></script>
 </head>
 <body class="app-loading">
 
@@ -95,6 +101,7 @@
 
     <div id="tabs">
       <button class="tab-btn" data-tab="main-preview">銝餅?預覽</button>
+      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽 v2</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
@@ -175,6 +182,26 @@
         <div id="main-preview-sheet-tabs" class="main-preview-sheet-tabs"></div>
         <div id="main-preview-stage" class="main-preview-stage">
           <div class="main-preview-empty">切到這頁後，會直接讀目前 live 主檔。</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-main-preview-v2" class="tab-content">
+      <div class="main-preview-v2-shell">
+        <div class="main-preview-v2-toolbar">
+          <div class="main-preview-v2-meta-wrap">
+            <div id="main-preview-v2-title" class="main-preview-v2-title">主檔預覽 v2</div>
+            <div id="main-preview-v2-meta" class="main-preview-v2-meta">切到這頁後，會直接用 Univer 讀目前 live 主檔。</div>
+          </div>
+          <span class="spacer"></span>
+          <label class="main-preview-v2-sheet-picker">
+            <span>工作表</span>
+            <select id="main-preview-v2-sheet-select"></select>
+          </label>
+          <button class="btn btn-primary btn-sm" id="btn-main-preview-v2-refresh">重新讀取</button>
+        </div>
+        <div id="main-preview-v2-stage" class="main-preview-v2-stage">
+          <div class="main-preview-v2-empty">切到這頁後，會直接讀目前 live 主檔。</div>
         </div>
       </div>
     </div>
@@ -483,6 +510,7 @@ import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initMainPreview, onMainPreviewTabActivated, refreshMainPreview, prewarmMainPreview } from "/static/modules/main_preview.js";
+import { initMainPreviewV2, onMainPreviewV2TabActivated, refreshMainPreviewV2 } from "/static/modules/main_preview_v2.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
 import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js";
@@ -501,8 +529,9 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview");
+    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview" || btn.dataset.tab === "main-preview-v2");
     if (btn.dataset.tab === "main-preview") onMainPreviewTabActivated();
+    if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
@@ -721,6 +750,7 @@ function queueMainPreviewPrewarm({ force = false, delay = 250 } = {}) {
 async function handleMainMutation() {
   const hasMainFile = await refreshMainStatus();
   await refreshMainPreview({ force: true });
+  await refreshMainPreviewV2({ force: true, eager: false });
   if (hasMainFile && getActiveTabName() !== "main-preview") {
     queueMainPreviewPrewarm({ force: true, delay: 100 });
   }
@@ -740,6 +770,7 @@ async function init() {
   setBootProgress(20, "正在準備主檔預覽...");
   await nextFrame();
   await initMainPreview();
+  initMainPreviewV2();
 
   setBootProgress(34, "正在讀取主檔與快照狀態...");
   await nextFrame();

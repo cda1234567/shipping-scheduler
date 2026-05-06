@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.05.4"
-APP_RELEASED_AT = "2026-05-05"
-APP_HEADLINE = "主檔預覽編輯改用 debounce：cell 立即更新、停手 0.6 秒後自動重載整個 sheet 把公式跟著刷新。"
+APP_VERSION = "v2026.05.06.1"
+APP_RELEASED_AT = "2026-05-06"
+APP_HEADLINE = "新增「主檔預覽 v2」分頁，使用 Luckysheet 提供更接近 Excel 的主檔瀏覽與單格編輯體驗。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2",
+        "items": [
+            "頂層 tab 新增「主檔預覽 v2」，舊的「主檔預覽」完整保留不動，方便新舊版本並行核對。",
+            "v2 改用 Luckysheet 渲染 live 主檔，支援多格選取、複製貼上、Tab/Enter 跳格、凍結窗格、欄寬可調等接近 Excel 的操作。",
+            "工作表切換使用上方選單；單格編輯完成後會呼叫既有 `/api/main-file/cell` 寫回主檔，不新增後端 API。",
+            "Luckysheet 以固定版本 (2.1.13) 從 jsDelivr CDN 載入，避免日後套件變動影響現場部署。",
+        ],
+    },
     {
         "title": "主檔編輯後公式自動刷新",
         "items": [
