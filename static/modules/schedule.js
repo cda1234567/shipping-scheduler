@@ -1,5 +1,5 @@
 import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, hideToast, esc, fmt } from "./api.js";
-import { calculate } from "./calculator.js";
+import { calculate, calculateShortageAmount, getRequiredMinStock } from "./calculator.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -617,7 +617,7 @@ function renderScheduleLegacyBase() {
 
   if (!_rows.length) {
     container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
-    renderShortagePanel([], [], buildMainFileDeficitItems());
+    renderShortagePanel(buildMainStockNegativeItems(), [], []);
     return;
   }
 
@@ -639,7 +639,7 @@ function renderScheduleLegacyBase() {
     (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
     (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
   });
-  renderShortagePanel(allShortages, allCSShortages, buildMainFileDeficitItems());
+  renderShortagePanel(allShortages, allCSShortages, []);
 }
 
 function formatDraftTime(value) {
@@ -1308,6 +1308,11 @@ function buildRightPanelShortageData() {
     csShortages.push(...(csShortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));
   }
 
+  const shortagePartKeys = new Set(shortages.map(item => normalizePartKey(item?.part_number)).filter(Boolean));
+  const mainStockItems = buildMainStockNegativeItems()
+    .filter(item => !shortagePartKeys.has(normalizePartKey(item?.part_number)));
+  shortages.push(...mainStockItems);
+
   return { shortages, csShortages };
 }
 
@@ -1446,6 +1451,58 @@ function buildPartDescriptionLookup() {
     }
   }
   return descLookup;
+}
+
+/** 從主檔目前庫存找出已違反 shortage rule 門檻的料號。 */
+function buildMainStockNegativeItems() {
+  if (!_stock || !Object.keys(_stock).length) return [];
+
+  const descLookup = buildPartDescriptionLookup();
+  const items = [];
+  for (const [part, stockQty] of Object.entries(_stock)) {
+    const key = normalizePartKey(part);
+    if (!key) continue;
+
+    const currentStock = Number(stockQty || 0);
+    if (!Number.isFinite(currentStock)) continue;
+
+    const threshold = getRequiredMinStock(key);
+    const shortageAmount = calculateShortageAmount(key, currentStock);
+    if (shortageAmount <= 0) continue;
+
+    const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
+    const stStockQty = Math.max(0, Number(_stStock?.[key] ?? 0) || 0);
+    const suggestion = buildShortageSupplySuggestion(key, shortageAmount, moq, stStockQty);
+    items.push({
+      part_number: key,
+      description: descLookup[key] || "",
+      vendor: normalizeVendorName(_vendors?.[key]),
+      current_stock: currentStock,
+      resulting_stock: currentStock,
+      shortage_amount: shortageAmount,
+      threshold,
+      needed: threshold,
+      prev_qty_cs: 0,
+      moq,
+      suggested_qty: suggestion.suggested_qty,
+      st_stock_qty: stStockQty,
+      st_available_qty: suggestion.st_available_qty,
+      purchase_needed_qty: suggestion.purchase_needed_qty,
+      purchase_suggested_qty: suggestion.purchase_suggested_qty,
+      needs_purchase: suggestion.needs_purchase,
+      decision: "None",
+      _row_code: "主檔",
+      _row_model: "",
+      _row_group_key: "主檔",
+      _row_group_label: "主檔層級缺料",
+      _row_order_index: Number.MAX_SAFE_INTEGER,
+      _po_number: "",
+      _main_stock_level: true,
+    });
+  }
+
+  items.sort(compareShortageItems);
+  return items;
 }
 
 /** 從主檔庫存中找出已經確定缺料的料號（庫存 < 安全水位）。 */
@@ -4324,7 +4381,7 @@ function updateStatusOnly() {
   });
 
   const { shortages, csShortages } = buildRightPanelShortageData();
-  renderShortagePanel(shortages, csShortages, buildMainFileDeficitItems());
+  renderShortagePanel(shortages, csShortages, []);
 }
 
 // ── 合併跨機種同料號缺料 ─────────────────────────────────────────────────────
@@ -5030,6 +5087,7 @@ function shortageItemHtml(s, isCS) {
         : getStoredOrderSupplementQty(s._order_id, s.part_number),
   );
   const orderId = normalizeOrderId(s._order_id);
+  const isMainStockItem = Boolean(s?._main_stock_level);
   const supplementDetail = getStoredOrderSupplementDetail(orderId, s.part_number);
   const supplementNote = supplementDetail.note;
   const supplementUpdatedAt = formatDraftTime(supplementDetail.updated_at);
@@ -5057,8 +5115,24 @@ function shortageItemHtml(s, isCS) {
     s._po_number ? `PO ${s._po_number}` : "",
   ].join(" ");
   const searchSecondary = s.description || "";
-  const supplementEditorHtml = !isCS && Number.isInteger(orderId)
+  const supplementEditorHtml = isMainStockItem
     ? `<div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
+        <label style="font-size:11px;color:#6b7280;white-space:nowrap">補主檔</label>
+        <input
+          type="number"
+          class="right-panel-supplement-input"
+          data-part="${esc(s.part_number)}"
+          data-main-supplement="true"
+          value="${roundShortageUiValue(s.suggested_qty || s.shortage_amount || 0)}"
+          min="0"
+          step="any"
+          style="flex:1;min-width:0;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;font-size:12px"
+        >
+        <button class="btn btn-secondary btn-xs right-panel-supplement-save" data-part="${esc(s.part_number)}" data-main-supplement="true">補主檔</button>
+      </div>
+      <div style="font-size:10px;color:#6b7280;margin-top:4px">直接補到主檔，後續同料號欄位會一起同步加回</div>`
+    : !isCS && Number.isInteger(orderId)
+      ? `<div class="right-panel-supplement-row" style="display:flex;gap:6px;align-items:center;margin-top:8px">
         <label style="font-size:11px;color:#6b7280;white-space:nowrap">補這筆</label>
         <input
           type="number"
@@ -5086,7 +5160,7 @@ function shortageItemHtml(s, isCS) {
         ${supplementUpdatedAt ? `最後修改 ${esc(supplementUpdatedAt)}` : "尚未保存"}
       </div>
       <div style="font-size:10px;color:#6b7280;margin-top:4px">只補這筆，後面機種會沿用剩餘量繼續扣帳</div>`
-    : "";
+      : "";
 
   return `<div class="${shortageToneClass(s, isCS)}" data-search="${esc([searchPrimary, searchSecondary].join(" "))}" data-search-primary="${esc(searchPrimary)}" data-search-secondary="${esc(searchSecondary)}">
     <div class="part">${s.part_number}${codeTag}${csTag}</div>
@@ -5100,7 +5174,7 @@ function shortageItemHtml(s, isCS) {
     </div>
     ${missingMoqEditorHtml(s)}
     ${supplementEditorHtml}
-    ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : `
+    ${isCS ? '<div style="font-size:11px;color:#ca8a04;margin-top:4px">請通知客戶提供此料</div>' : isMainStockItem ? "" : `
     <div class="decision-btns">
       <button class="dec-btn ${dec === "CreateRequirement" ? "active-create" : ""}" data-dec="CreateRequirement" data-part="${s.part_number}">需採購</button>
       <button class="dec-btn ${dec === "MarkHasPO" ? "active-has-po" : ""}" data-dec="MarkHasPO" data-part="${s.part_number}">已有PO</button>
@@ -5734,7 +5808,7 @@ function renderSchedule() {
 
   if (!_rows.length) {
     container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
-    renderShortagePanel([], [], buildMainFileDeficitItems());
+    renderShortagePanel(buildMainStockNegativeItems(), [], []);
     return;
   }
 
@@ -5750,8 +5824,7 @@ function renderSchedule() {
     initSortable(container);
 
     const { shortages, csShortages } = buildRightPanelShortageData();
-    const mainDeficits = buildMainFileDeficitItems();
-    renderShortagePanel(shortages, csShortages, mainDeficits);
+    renderShortagePanel(shortages, csShortages, []);
   } catch (error) {
     console.error("renderSchedule failed", error);
     container.innerHTML = `<div class="empty-state">畫面載入失敗：${esc(error?.message || "未知錯誤")}</div>`;

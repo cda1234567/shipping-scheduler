@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.2"
+APP_VERSION = "v2026.05.07.3"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "Modal MOQ「存」按鈕修正：編輯中按下會立即儲存，不再被 early return 擋掉。"
+APP_HEADLINE = "補料明細會直接掃主檔庫存門檻，已發料造成的 EC / PK / 一般料缺料也會列出。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細納入主檔庫存門檻",
+        "items": [
+            "右側「補料明細」不再只看 active 副檔 shortage，會直接掃主檔目前庫存，只要違反 shortage rule 門檻就列出。",
+            "門檻沿用前端 calculator rule：EC < 100、PK < 1、一般料 < 0，EC-6 與 PK-50070 例外維持 0。",
+            "若同料號已出現在 active draft shortage，優先保留訂單脈絡；主檔層級缺料只補上未重複料號，紅點計數也會一起包含。",
+        ],
+    },
     {
         "title": "Modal MOQ 存按鈕修正",
         "items": [

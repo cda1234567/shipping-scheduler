@@ -198,7 +198,7 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
 
 const PK_NO_WARNING_PREFIXES = ["PK-50070"];
 
-function getRequiredMinStock(partNumber) {
+export function getRequiredMinStock(partNumber) {
   const normalized = String(partNumber || "").trim().toUpperCase();
   if (normalized.startsWith("EC-6")) return 0;
   if (normalized.startsWith("EC-")) return 100;
@@ -210,7 +210,7 @@ function getRequiredMinStock(partNumber) {
   return 0;
 }
 
-function calculateShortageAmount(partNumber, endingStock) {
+export function calculateShortageAmount(partNumber, endingStock) {
   const requiredMin = getRequiredMinStock(partNumber);
   return Math.max(0, requiredMin - Number(endingStock || 0));
 }

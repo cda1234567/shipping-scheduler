@@ -230,10 +230,37 @@ class FrontendAssetTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
 
+        self.assertIn("export function getRequiredMinStock(partNumber)", calculator_module)
+        self.assertIn("export function calculateShortageAmount(partNumber, endingStock)", calculator_module)
         self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
         self.assertIn('if (normalized.startsWith("EC-")) return 100;', calculator_module)
         self.assertIn('if (normalized.startsWith("PK-")) {', calculator_module)
         self.assertIn('const PK_NO_WARNING_PREFIXES = ["PK-50070"];', calculator_module)
+
+    def test_right_panel_includes_main_stock_shortage_rule_items_without_duplicates(self):
+        root = Path(__file__).resolve().parents[1]
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn('import { calculate, calculateShortageAmount, getRequiredMinStock } from "./calculator.js";', schedule_module)
+        self.assertIn("function buildMainStockNegativeItems()", schedule_module)
+        self.assertIn("for (const [part, stockQty] of Object.entries(_stock))", schedule_module)
+        self.assertIn("const threshold = getRequiredMinStock(key);", schedule_module)
+        self.assertIn("const shortageAmount = calculateShortageAmount(key, currentStock);", schedule_module)
+        self.assertIn('vendor: normalizeVendorName(_vendors?.[key]),', schedule_module)
+        self.assertIn('_row_code: "主檔"', schedule_module)
+        self.assertIn('_row_group_label: "主檔層級缺料"', schedule_module)
+        self.assertIn("_main_stock_level: true", schedule_module)
+
+        self.assertIn("const shortagePartKeys = new Set(shortages.map(item => normalizePartKey(item?.part_number)).filter(Boolean));", schedule_module)
+        self.assertIn("const mainStockItems = buildMainStockNegativeItems()", schedule_module)
+        self.assertIn(".filter(item => !shortagePartKeys.has(normalizePartKey(item?.part_number)));", schedule_module)
+        self.assertIn("shortages.push(...mainStockItems);", schedule_module)
+        self.assertIn("renderShortagePanel(shortages, csShortages, []);", schedule_module)
+        self.assertNotIn("renderShortagePanel(shortages, csShortages, buildMainFileDeficitItems())", schedule_module)
+
+        self.assertIn("const isMainStockItem = Boolean(s?._main_stock_level);", schedule_module)
+        self.assertIn('data-main-supplement="true"', schedule_module)
+        self.assertIn('isMainStockItem ? "" : `', schedule_module)
 
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]
