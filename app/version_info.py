@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.7"
+APP_VERSION = "v2026.05.06.8"
 APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "主檔預覽 v2 編輯補料/用量後，後端會自動重算後續結餘並同步目前庫存。"
+APP_HEADLINE = "主檔預覽 v2 新增「標題列換行」開關按鈕，並把欄寬／列高拖拉記到 localStorage 下次自動套用。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 換行開關 + 記憶欄寬列高",
+        "items": [
+            "工具列新增「標題列換行: 開/關」按鈕，預設開（第 1 列自動換行 + 80px 高度），點擊切換並記到 localStorage 下次自動套用。",
+            "拖拉欄寬或列高後，新尺寸會依 sheet 名稱記到 localStorage（key = mainPreviewV2.columnlen.<sheet> / .rowlen.<sheet>），下次重新整理或切回該 sheet 會自動套用。",
+            "每個瀏覽器/裝置獨立記錄，不會跨裝置同步。",
+        ],
+    },
     {
         "title": "主檔批次結餘自動重算",
         "items": [
