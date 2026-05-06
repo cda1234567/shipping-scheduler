@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.3"
+APP_VERSION = "v2026.05.07.4"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細會直接掃主檔庫存門檻，已發料造成的 EC / PK / 一般料缺料也會列出。"
+APP_HEADLINE = "補料明細真的接上主檔庫存門檻：上一版加的 buildMainStockNegativeItems 沒被 main render flow 用到，這版補上。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細實際納入主檔負庫存（修上版漏接）",
+        "items": [
+            "v2026.05.07.3 加了 buildMainStockNegativeItems 跟 buildRightPanelShortageData 合併邏輯，但 renderScheduleLegacyBase 直接用 _calcResults.shortages 餵 renderShortagePanel，沒走過合併路徑，所以主檔層級缺料沒列出來。",
+            "改成 main flow 也呼叫 buildRightPanelShortageData，補料明細終於會把主檔當下違反門檻的 47 筆都列出來（之前只看得到 active drafts 的 2 筆）。",
+        ],
+    },
     {
         "title": "補料明細納入主檔庫存門檻",
         "items": [

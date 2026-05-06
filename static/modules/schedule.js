@@ -630,16 +630,8 @@ function renderScheduleLegacyBase() {
 
   initSortable(container);
 
-  const allShortages = [];
-  const allCSShortages = [];
-  _calcResults.forEach((r, i) => {
-    if (!r) return;
-    const code = _rows[i]?.code || "";
-    const model = _rows[i]?.model || "";
-    (r.shortages || []).forEach(s => allShortages.push({ ...s, _row_code: code, _row_model: model }));
-    (r.customer_material_shortages || []).forEach(s => allCSShortages.push({ ...s, _row_code: code, _row_model: model }));
-  });
-  renderShortagePanel(allShortages, allCSShortages, []);
+  const { shortages: rpShortages, csShortages: rpCSShortages } = buildRightPanelShortageData();
+  renderShortagePanel(rpShortages, rpCSShortages, []);
 }
 
 function formatDraftTime(value) {
