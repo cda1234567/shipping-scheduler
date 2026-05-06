@@ -3429,7 +3429,13 @@ function bindShortageMoqBadgeEditors(root) {
       event.stopPropagation();
       const badge = button.parentElement?.querySelector(".moq-badge-editable");
       if (!badge) return;
-      void handleShortageBadgeMoqEdit(badge);
+      // 編輯中：blur input 觸發 save；不在編輯：進入編輯模式
+      const input = badge.querySelector(".moq-inline-input");
+      if (input) {
+        input.blur();
+      } else {
+        void handleShortageBadgeMoqEdit(badge);
+      }
     });
   });
 }

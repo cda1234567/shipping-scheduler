@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.1"
+APP_VERSION = "v2026.05.07.2"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "已發料分頁可批次勾選訂單下載 committed 副檔，並可直接生成已發料訂單的發料單。"
+APP_HEADLINE = "Modal MOQ「存」按鈕修正：編輯中按下會立即儲存，不再被 early return 擋掉。"
 APP_CHANGELOG = [
+    {
+        "title": "Modal MOQ 存按鈕修正",
+        "items": [
+            "雙擊 MOQ 進入編輯後，按旁邊的「存」按鈕會 trigger input.blur() 直接觸發儲存，不再因為 editing flag 被 handleShortageBadgeMoqEdit 早 return 擋掉。",
+            "之前現象：按「存」沒反應，數字像沒儲存，過一陣子才看到效果（其實是 blur 才存的）。修正後按下立即存。",
+        ],
+    },
     {
         "title": "已發料批次副檔與發料單",
         "items": [
