@@ -53,7 +53,7 @@ def _get_selected_orders(order_ids: list[int]) -> list[dict]:
         order = db.get_order(normalized_id)
         if not order:
             continue
-        if order.get("status") not in ("pending", "merged"):
+        if order.get("status") not in ("pending", "merged", "dispatched", "completed"):
             continue
         selected_orders.append(order)
     return selected_orders

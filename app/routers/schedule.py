@@ -52,6 +52,7 @@ from ..services.merge_drafts import (
     get_draft_detail,
     download_merge_draft,
     download_selected_merge_drafts,
+    download_selected_committed_merge_drafts,
     restore_recent_committed_merge_drafts,
 )
 from ..snapshot_sync import refresh_snapshot_from_main
@@ -971,6 +972,11 @@ async def get_schedule_draft_detail(draft_id: int):
 @router.post("/schedule/drafts/download")
 async def download_selected_schedule_drafts(req: BatchMergeRequest, request: Request):
     return download_selected_merge_drafts(req.order_ids, request=request)
+
+
+@router.post("/schedule/completed/drafts/download")
+async def download_selected_completed_schedule_drafts(req: BatchMergeRequest, request: Request):
+    return download_selected_committed_merge_drafts(req.order_ids, request=request)
 
 
 @router.get("/schedule/drafts/{draft_id}/download")

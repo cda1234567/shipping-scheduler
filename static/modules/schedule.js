@@ -25,6 +25,7 @@ let _completedDraftsByOrderId = {};
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
+let _completedCheckedIds = new Set();
 let _scheduleInitialized = false;
 let _batchMergeInFlight = false;
 let _modalProgressTimer = null;
@@ -59,6 +60,8 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
+    document.getElementById("btn-completed-download-drafts")?.addEventListener("click", handleCompletedDownloadDrafts);
+    document.getElementById("btn-completed-gen-dispatch")?.addEventListener("click", handleCompletedGenerateDispatch);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
     document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
       btn.addEventListener("click", () => activateRightPanelTab(btn.dataset.rightPanelTab));
@@ -99,6 +102,11 @@ export function getCheckedOrderIds() {
   return _rows
     .filter(row => _checkedIds.has(row.id))
     .map(row => row.id);
+}
+
+function getCompletedCheckedOrderIds() {
+  const validIds = new Set(_completedRows.map(row => normalizeOrderId(row?.id)).filter(Number.isInteger));
+  return [..._completedCheckedIds].filter(id => validIds.has(id));
 }
 
 export function clearCheckedOrderIds(orderIds) {
@@ -582,6 +590,8 @@ async function loadCompletedRows() {
     _completedRows = d.rows || [];
     _completedFolders = d.folders || [];
     _completedDraftsByOrderId = d.committed_merge_drafts || {};
+    const validIds = new Set(_completedRows.map(row => normalizeOrderId(row?.id)).filter(Number.isInteger));
+    _completedCheckedIds = new Set([..._completedCheckedIds].filter(id => validIds.has(id)));
   } catch (_) { _completedRows = []; _completedFolders = []; _completedDraftsByOrderId = {}; }
 }
 
@@ -3729,6 +3739,7 @@ function renderCompletedTab() {
 
   if (!_completedRows.length) {
     container.innerHTML = '<div class="empty-state">尚無已發料的排程列</div>';
+    updateCompletedToolbarState();
     return;
   }
 
@@ -3775,6 +3786,15 @@ function renderCompletedTab() {
   if (grouped[""]) {
     container.appendChild(buildFolderSection("", grouped[""], allFolders));
   }
+  updateCompletedToolbarState();
+}
+
+function updateCompletedToolbarState() {
+  const count = getCompletedCheckedOrderIds().length;
+  const countEl = document.getElementById("completed-selected-count");
+  if (countEl) countEl.textContent = count ? `已選 ${count} 筆` : "";
+  document.getElementById("btn-completed-download-drafts")?.toggleAttribute("disabled", count === 0);
+  document.getElementById("btn-completed-gen-dispatch")?.toggleAttribute("disabled", count === 0);
 }
 
 function buildFolderSection(folderName, rows, allFolders) {
@@ -3838,6 +3858,8 @@ function buildCompletedCard(r, allFolders) {
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
   const code = r.code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 4px">${esc(r.code)}</span>` : "";
+  const orderId = normalizeOrderId(r.id);
+  const checked = Number.isInteger(orderId) && _completedCheckedIds.has(orderId);
 
   // 資料夾下拉選項
   const currentFolder = r.folder || "";
@@ -3859,6 +3881,7 @@ function buildCompletedCard(r, allFolders) {
 
   div.innerHTML = `
     <div class="completed-card-header">
+      <input type="checkbox" class="completed-order-check" data-order-id="${r.id}" ${checked ? "checked" : ""} aria-label="選取已發料訂單">
       <span class="po-model-wrap">
         <span class="po-number">${esc(r.model)}</span>${draftToggleHtml}
       </span>
@@ -3874,6 +3897,17 @@ function buildCompletedCard(r, allFolders) {
       </div>
     </div>
     ${draftHtml}`;
+
+  div.querySelector(".completed-order-check")?.addEventListener("change", event => {
+    const id = normalizeOrderId(event.currentTarget?.dataset.orderId);
+    if (!Number.isInteger(id)) return;
+    if (event.currentTarget.checked) {
+      _completedCheckedIds.add(id);
+    } else {
+      _completedCheckedIds.delete(id);
+    }
+    updateCompletedToolbarState();
+  });
 
   // 移動資料夾
   div.querySelector(".folder-select").addEventListener("change", async (e) => {
@@ -3923,6 +3957,44 @@ function buildCompletedDraftPanelHtml(draft, { collapsed = false } = {}) {
         <button class="btn btn-secondary btn-sm btn-completed-draft-download" data-draft-id="${draft.id}">下載副檔</button>
       </div>
     </div>`;
+}
+
+async function handleCompletedDownloadDrafts() {
+  const orderIds = getCompletedCheckedOrderIds();
+  if (!orderIds.length) {
+    showToast("請先勾選要下載副檔的已發料訂單");
+    return;
+  }
+
+  try {
+    const result = await desktopDownload({
+      path: "/api/schedule/completed/drafts/download",
+      method: "POST",
+      body: { order_ids: orderIds },
+    });
+    showDownloadToast(result, "已發料副檔");
+  } catch (error) {
+    showToast("已發料副檔下載失敗：" + error.message, { tone: "error", sticky: true });
+  }
+}
+
+async function handleCompletedGenerateDispatch() {
+  const orderIds = getCompletedCheckedOrderIds();
+  if (!orderIds.length) {
+    showToast("請先勾選要生成發料單的已發料訂單");
+    return;
+  }
+
+  try {
+    const result = await desktopDownload({
+      path: "/api/dispatch/generate",
+      method: "POST",
+      body: { order_ids: orderIds, decisions: {} },
+    });
+    showDownloadToast(result, "發料單");
+  } catch (error) {
+    showToast("已發料發料單生成失敗：" + error.message, { tone: "error", sticky: true });
+  }
 }
 
 async function handleCreateFolder() {

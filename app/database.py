@@ -2185,11 +2185,11 @@ def get_latest_committed_merge_draft_for_order(order_id: int, committed_after: s
     return result
 
 
-def get_expired_committed_merge_drafts(retention_days: int = 30) -> list[dict]:
+def get_expired_committed_merge_drafts(retention_days: int = 365) -> list[dict]:
     try:
         days = max(int(retention_days), 1)
     except (TypeError, ValueError):
-        days = 30
+        days = 365
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
     with get_conn() as conn:
         rows = conn.execute(

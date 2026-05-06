@@ -200,6 +200,22 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('/rollback${forceDelete ? "?force=1" : ""}', schedule_module)
         self.assertIn("已退回", schedule_module)
 
+    def test_completed_tab_exposes_batch_download_and_dispatch_actions(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="btn-completed-download-drafts"', index_html)
+        self.assertIn('id="btn-completed-gen-dispatch"', index_html)
+        self.assertIn("completed-order-check", schedule_module)
+        self.assertIn("function getCompletedCheckedOrderIds()", schedule_module)
+        self.assertIn("handleCompletedDownloadDrafts", schedule_module)
+        self.assertIn('path: "/api/schedule/completed/drafts/download"', schedule_module)
+        self.assertIn("handleCompletedGenerateDispatch", schedule_module)
+        self.assertIn('path: "/api/dispatch/generate"', schedule_module)
+        self.assertIn("請先勾選要下載副檔的已發料訂單", schedule_module)
+        self.assertIn("請先勾選要生成發料單的已發料訂單", schedule_module)
+
     def test_schedule_module_auto_checks_shortage_for_negative_carry_over(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

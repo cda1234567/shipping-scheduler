@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -566,6 +567,27 @@ class MergeDraftTests(InMemoryDbTestCase):
 
         self.assertEqual(len(expired), 1)
         self.assertEqual(expired[0]["committed_at"], "2026-01-02T00:00:00")
+
+    def test_get_expired_committed_merge_drafts_defaults_to_365_days(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500059237', 'MODEL-D', 'PCB-D', 5, 'merged', 0, 1, 'n', 'n', '')"
+        )
+        order_id = self.conn.execute("SELECT id FROM orders").fetchone()["id"]
+        recent_committed_at = (datetime.now() - timedelta(days=200)).isoformat()
+        old_committed_at = (datetime.now() - timedelta(days=400)).isoformat()
+
+        for committed_at in (recent_committed_at, old_committed_at):
+            self.conn.execute(
+                "INSERT INTO merge_drafts(order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, decisions_json, supplements_json, shortages_json, created_at, updated_at, committed_at, deleted_at) "
+                "VALUES(?, 'committed', 'C:/main.xlsx', '', '', '{}', '{}', '[]', ?, ?, ?, '')",
+                (order_id, committed_at, committed_at, committed_at),
+            )
+
+        expired = db.get_expired_committed_merge_drafts()
+
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(expired[0]["committed_at"], old_committed_at)
 
 
 class DispatchConsumptionTests(InMemoryDbTestCase):

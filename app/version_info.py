@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.06.9"
-APP_RELEASED_AT = "2026-05-06"
-APP_HEADLINE = "切回主檔預覽 tab 不再每次重 mount Luckysheet，主檔沒變動時直接顯示既有畫面。"
+APP_VERSION = "v2026.05.07.1"
+APP_RELEASED_AT = "2026-05-07"
+APP_HEADLINE = "已發料分頁可批次勾選訂單下載 committed 副檔，並可直接生成已發料訂單的發料單。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料批次副檔與發料單",
+        "items": [
+            "已發料 tab 每筆訂單新增勾選框，工具列新增「下載副檔」與「生成發料單」。",
+            "下載副檔會呼叫 `/api/schedule/completed/drafts/download`，把已 commit 的 committed merge drafts 打包成 zip 或單檔下載。",
+            "`/api/dispatch/generate` 現在也接受 dispatched / completed 訂單，已發料訂單可直接重產發料單。",
+            "committed merge draft retention 從 30 天延長為 365 天，避免已發料副檔太快被清除。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 切 tab 加速",
         "items": [

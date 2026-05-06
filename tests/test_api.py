@@ -407,6 +407,17 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.content, b"ok")
         mock_download.assert_called_once_with([1, 2], request=ANY)
 
+    def test_download_selected_completed_schedule_drafts_proxies_to_committed_bundle_service(self):
+        with patch(
+            "app.routers.schedule.download_selected_committed_merge_drafts",
+            return_value=Response(content=b"ok", media_type="application/zip"),
+        ) as mock_download:
+            response = self.client.post("/api/schedule/completed/drafts/download", json={"order_ids": [5, 6]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"ok")
+        mock_download.assert_called_once_with([5, 6], request=ANY)
+
     def test_dispatch_order_saves_dispatch_session(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"

@@ -44,7 +44,7 @@ from .shortage_rules import (
 from .workbook_recalc import save_workbook_with_recalc
 from .workbook_recalc import cell_has_formula
 
-COMMITTED_DRAFT_RETENTION_DAYS = 30
+COMMITTED_DRAFT_RETENTION_DAYS = 365
 ORANGE_FILL = PatternFill(start_color="FFFFC000", end_color="FFFFC000", fill_type="solid")
 
 
@@ -1029,3 +1029,44 @@ def download_selected_merge_drafts(order_ids: list[int], request: Request | None
             })
 
     return _build_download_response(file_entries, request=request)
+
+
+def download_selected_committed_merge_drafts(order_ids: list[int], request: Request | None = None):
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        raise HTTPException(400, "請先選擇要下載副檔的已發料訂單")
+
+    file_entries: list[dict] = []
+    missing_orders: list[int] = []
+    for order_id in normalized_ids:
+        draft = db.get_latest_committed_merge_draft_for_order(order_id)
+        if not draft:
+            missing_orders.append(order_id)
+            continue
+
+        order = db.get_order(order_id) or {}
+        po = order.get("po_number", "")
+        draft_files = db.get_merge_draft_files(int(draft["id"]))
+        existing_count = 0
+        for item in draft_files:
+            file_path = Path(str(item.get("filepath") or ""))
+            if not file_path.exists():
+                continue
+            existing_count += 1
+            file_entries.append({
+                "path": file_path,
+                "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
+            })
+        if existing_count == 0:
+            missing_orders.append(order_id)
+
+    if missing_orders:
+        raise HTTPException(404, "部分已發料訂單沒有可下載的副檔")
+
+    return _build_download_response(file_entries, archive_label="已發料副檔", request=request)

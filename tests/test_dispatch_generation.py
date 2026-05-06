@@ -8,12 +8,26 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 from main import app
+from app.routers.dispatch import _get_selected_orders
 
 
 class DispatchGenerationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
+
+    def test_selected_orders_include_dispatched_and_completed_orders(self):
+        orders = {
+            1: {"id": 1, "status": "merged"},
+            2: {"id": 2, "status": "dispatched"},
+            3: {"id": 3, "status": "completed"},
+            4: {"id": 4, "status": "cancelled"},
+        }
+
+        with patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)):
+            selected = _get_selected_orders([1, 2, 3, 4])
+
+        self.assertEqual([order["id"] for order in selected], [1, 2, 3])
 
     def test_dispatch_generate_uses_selected_orders_saved_supplements_and_sample_layout(self):
         orders = {

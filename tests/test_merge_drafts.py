@@ -34,6 +34,26 @@ class MergeDraftDetailTests(unittest.TestCase):
 
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
 
+    def test_download_selected_committed_merge_drafts_uses_latest_committed_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            draft_file = Path(temp_dir) / "draft.xlsx"
+            draft_file.write_bytes(b"xlsx")
+
+            with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", return_value={"id": 7}), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"po_number": "4500059999"}), \
+                 patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[{
+                     "filename": "01_PO#4500050000 MODEL-A.xlsx",
+                     "filepath": str(draft_file),
+                 }]), \
+                 patch("app.services.merge_drafts._build_download_response", return_value="ok") as mock_response:
+                result = merge_drafts.download_selected_committed_merge_drafts([42])
+
+        self.assertEqual(result, "ok")
+        entries = mock_response.call_args.args[0]
+        self.assertEqual(entries[0]["path"], draft_file)
+        self.assertEqual(entries[0]["download_name"], "01_4500059999 MODEL-A.xlsx")
+        self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
+
     def test_build_download_response_saves_zip_to_server_download_dir_when_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
