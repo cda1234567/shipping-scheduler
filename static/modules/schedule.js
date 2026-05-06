@@ -72,11 +72,13 @@ export async function initSchedule(onRefreshMain) {
       if (!card) return;
       const part = card.dataset.part || card.querySelector("[data-part]")?.dataset.part;
       if (!part) return;
+      const codeTagEl = card.querySelector(".tag-pcb");
+      const batchCode = codeTagEl?.textContent?.trim() || card.dataset.rowCode || "";
       document.querySelector('[data-tab="main-preview-v2"]')?.click();
       try {
         const mod = await import("./main_preview_v2.js");
         await new Promise(r => setTimeout(r, 350));
-        const ok = await mod.navigateToPart(part);
+        const ok = await mod.navigateToPart(part, batchCode);
         if (!ok) showToast(`主檔找不到 ${part}`, { tone: "error" });
       } catch (err) {
         console.error("[shortage dblclick] navigate failed", err);

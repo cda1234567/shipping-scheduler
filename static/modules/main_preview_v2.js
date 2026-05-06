@@ -12,8 +12,9 @@ let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
 let _lastLoadedAt = "";
 let _partLocations = {};
+let _batchLocations = {};
 
-export async function navigateToPart(partNumber) {
+export async function navigateToPart(partNumber, batchCode = "") {
   const key = String(partNumber || "").trim().toUpperCase();
   if (!key) return false;
   if (!_luckyMounted || !window.luckysheet) {
@@ -26,9 +27,14 @@ export async function navigateToPart(partNumber) {
     const sheet = ls.getAllSheets ? ls.getAllSheets()[0] : null;
     const cells = sheet?.celldata || [];
     let lastCol = 0;
-    for (const cell of cells) {
-      if ((cell.r ?? -1) === rowIndex && (cell.c ?? -1) > lastCol && cell.v?.v != null && cell.v?.v !== "") {
-        lastCol = cell.c;
+    const code = String(batchCode || "").trim();
+    if (code && _batchLocations[code] !== undefined) {
+      lastCol = _batchLocations[code] + 2;
+    } else {
+      for (const cell of cells) {
+        if ((cell.r ?? -1) === rowIndex && (cell.c ?? -1) > lastCol && cell.v?.v != null && cell.v?.v !== "") {
+          lastCol = cell.c;
+        }
       }
     }
     if (ls.setRangeShow) {
@@ -193,9 +199,21 @@ function mountLuckysheet(payload) {
   const celldata = buildCelldata(sheet);
 
   _partLocations = {};
+  _batchLocations = {};
+  const batchCodeRe = /^\d+-\d+$/;
   for (const rowEntry of (sheet?.rows || [])) {
     const rowIndex = (rowEntry?.index || 1) - 1;
-    if (rowIndex < 1) continue;
+    if (rowIndex === 0) {
+      // 第 1 列：找批次 code → col 起點
+      for (const cell of (rowEntry?.cells || [])) {
+        const value = String(cell?.value || "").trim();
+        if (batchCodeRe.test(value)) {
+          const col0 = (cell.col || 1) - 1;
+          if (!(value in _batchLocations)) _batchLocations[value] = col0;
+        }
+      }
+      continue;
+    }
     const partCell = (rowEntry?.cells || []).find(c => (c?.col || 0) === 1);
     const partKey = String(partCell?.value || "").trim().toUpperCase();
     if (!partKey || partKey in _partLocations) continue;

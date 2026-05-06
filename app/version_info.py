@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.8"
+APP_VERSION = "v2026.05.07.9"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細雙擊跳主檔現在會真的捲到對應 row，欄寬列高拖完也會 mouseup 後寫進 localStorage。"
+APP_HEADLINE = "雙擊跳主檔會跟著卡片標的批次 code 跳到對應結餘 cell，不再都跳到最後非空 cell。"
 APP_CHANGELOG = [
+    {
+        "title": "雙擊跳主檔對齊卡片批次",
+        "items": [
+            "navigateToPart 加 batchCode 參數，schedule.js dblclick 從卡片的 tag-pcb 取出批次 code（譬如 5-1）傳過去。",
+            "main_preview_v2 mountLuckysheet 同時建 _batchLocations: 從第 1 列找 X-Y 格式 code → col 起點，三欄一組（補料/用量/結餘）。",
+            "navigateToPart 用 _batchLocations[batchCode] + 2 找該批次結餘 cell；若沒批次 code 則 fallback 最後非空 cell。",
+        ],
+    },
     {
         "title": "補料明細雙擊真的捲到位 + 欄寬記憶修正",
         "items": [
