@@ -414,12 +414,14 @@ body.edit-auth-readonly #bom-upload-area {
 .tab-btn[data-tab="completed"] { order: 1; }
 .tab-btn[data-tab="main-preview"] { order: 2; }
 .tab-btn[data-tab="main-preview-v2"] { order: 3; }
-.tab-btn[data-tab="bom"] { order: 4; }
-.tab-btn[data-tab="alerts-tab"] { order: 5; }
-.tab-btn[data-tab="logs-tab"] { order: 6; }
-.tab-btn[data-tab="backups-tab"] { order: 7; }
-.tab-btn[data-tab="analytics-tab"] { order: 8; }
-.tab-btn[data-tab="defectives-tab"] { order: 9; }
+.tab-btn[data-tab="st-inventory"] { order: 4; }
+.tab-btn[data-tab="bom"] { order: 5; }
+.tab-btn[data-tab="st-packages-tab"] { order: 6; }
+.tab-btn[data-tab="alerts-tab"] { order: 7; }
+.tab-btn[data-tab="logs-tab"] { order: 8; }
+.tab-btn[data-tab="backups-tab"] { order: 9; }
+.tab-btn[data-tab="analytics-tab"] { order: 10; }
+.tab-btn[data-tab="defectives-tab"] { order: 11; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -432,6 +434,93 @@ body.edit-auth-readonly #bom-upload-area {
 }
 
 #tab-st-packages-tab.active { display: flex; }
+
+#tab-st-inventory {
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#tab-st-inventory.active { display: flex; }
+
+.st-inventory-shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.st-inventory-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.st-inventory-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.st-inventory-subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.st-inventory-search {
+  width: 220px;
+  padding: 7px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.st-inventory-table-wrap {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.st-inventory-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.st-inventory-table th,
+.st-inventory-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: top;
+}
+
+.st-inventory-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #374151;
+  font-weight: 600;
+}
+
+.st-inventory-table td.num,
+.st-inventory-table th:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.st-inventory-empty {
+  text-align: center;
+  color: #8e8e93;
+}
 
 /* ── Schedule tab ───────────────────────── */
 #tab-schedule { display: none; flex-direction: row; overflow: hidden; }

@@ -101,6 +101,7 @@
 
     <div id="tabs">
       <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
+      <button class="tab-btn" data-tab="st-inventory">ST 庫存</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
@@ -181,6 +182,33 @@
         </div>
         <div id="main-preview-v2-stage" class="main-preview-v2-stage">
           <div class="main-preview-v2-empty">切到這頁後，會直接讀目前 live 主檔。</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-st-inventory" class="tab-content">
+      <div class="st-inventory-shell">
+        <div class="st-inventory-header">
+          <div>
+            <h3 class="st-inventory-title">ST 庫存</h3>
+            <div class="st-inventory-subtitle">只列出同時存在於主檔與 ST 庫存的料號。</div>
+          </div>
+          <span class="spacer"></span>
+          <input type="search" id="st-inventory-search" class="st-inventory-search" placeholder="搜尋料號">
+          <button class="btn btn-secondary btn-sm" id="btn-st-inventory-tab-refresh">重新整理</button>
+        </div>
+        <div id="st-inventory-tab-status" class="file-status">切到這頁後會讀取主檔交集 ST 庫存。</div>
+        <div class="st-inventory-table-wrap">
+          <table class="st-inventory-table">
+            <thead>
+              <tr>
+                <th>料號</th>
+                <th>描述</th>
+                <th>ST 庫存</th>
+              </tr>
+            </thead>
+            <tbody id="st-inventory-table-body"></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -495,6 +523,7 @@ import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js
 import { initDesktopBridge, desktopDownload, showDownloadToast } from "/static/modules/desktop_bridge.js";
 import { initVersionInfo } from "/static/modules/version_info.js";
 import { initStInventory } from "/static/modules/st_inventory.js";
+import { initStInventoryInMain, refreshStInventoryInMain } from "/static/modules/st_inventory.js";
 import { initStPackages, refreshStPackages } from "/static/modules/st_packages.js";
 import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
@@ -509,6 +538,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2" || btn.dataset.tab === "completed");
     if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
+    if (btn.dataset.tab === "st-inventory") refreshStInventoryInMain();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
@@ -728,6 +758,7 @@ async function init() {
   setBootProgress(46, "正在讀取 ST 庫存狀態...");
   await nextFrame();
   await initStInventory({ onChanged: async () => { await refreshSchedule(); await refreshStPackages(); } });
+  await initStInventoryInMain({ autoLoad: false });
 
   setBootProgress(52, "正在建立無 MOQ 包裝頁...");
   await nextFrame();

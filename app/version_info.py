@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.26"
+APP_VERSION = "v2026.05.07.27"
 APP_RELEASED_AT = "2026-05-07"
 APP_HEADLINE = "主檔預覽 v2 左方向鍵改由系統接管，避免 Luckysheet 把游標捲進凍結欄底下。"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存 tab 與主檔補料修正同步",
+        "items": [
+            "新增 ST 庫存 tab，只列出 ST 庫存與主檔交集料號，支援料號搜尋並依料號排序。",
+            "`/api/st-inventory/in-main` 回傳主檔交集 ST 庫存清單。",
+            "已發料 / 已完成訂單的主檔批次補料欄被手動修正時，會依補料差額同步扣回或加回 ST 庫存並寫入 audit log。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 左方向鍵接管修正",
         "items": [

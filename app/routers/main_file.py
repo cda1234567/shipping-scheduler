@@ -29,6 +29,8 @@ from ..services.local_time import local_now
 import re as _re_main
 from ..services.main_file_recalc import find_first_batch_col, recalc_batch_balances_for_cell
 
+_COMMITTED_ORDER_STATUSES = {"dispatched", "completed"}
+
 
 def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
     """讀主檔每個料件 row，找『第一個負結餘』cell 對應的批次 code（語意：X-X 開始缺料）。"""
@@ -220,42 +222,66 @@ def _merge_supplement_updates(order_id: int, part_number: str, supplement_qty: f
     return {order_id: merged}
 
 
-def _sync_order_supplement_from_main_cell(ws, *, row: int, col: int, value) -> bool:
+def _is_committed_status(status: object) -> bool:
+    return str(status or "").strip().lower() in _COMMITTED_ORDER_STATUSES
+
+
+def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value) -> dict:
     """主檔補料欄是唯一真相；手動改補料 cell 後同步 order_supplements。"""
+    result = {"supplement_synced": False, "st_inventory_synced": False}
     if row <= 1:
-        return False
+        return result
 
     first_batch_col = find_first_batch_col(ws)
     if first_batch_col is None or col < first_batch_col or col > ws.max_column:
-        return False
+        return result
 
     offset = (col - first_batch_col) % 3
     if offset != 0:
-        return False
+        return result
 
     batch_first_col = col - offset
     batch_code = str(ws.cell(row=1, column=batch_first_col).value or "").strip()
     if not _re_main.match(r"^\d+-\d+$", batch_code):
-        return False
+        return result
 
     part_number = str(ws.cell(row=row, column=1).value or "").strip().upper()
     if not part_number:
-        return False
+        return result
 
     supplement_qty = _to_supplement_qty(value)
     if supplement_qty is None:
-        return False
+        return result
 
     order = db.get_order_by_code(batch_code)
     if not order or order.get("id") is None:
-        return False
+        return result
 
     order_id = int(order["id"])
     db.replace_order_supplements(
         [order_id],
         _merge_supplement_updates(order_id, part_number, supplement_qty),
     )
-    return True
+    result["supplement_synced"] = True
+
+    old_supplement_qty = _to_supplement_qty(old_value)
+    if old_supplement_qty is None or not _is_committed_status(order.get("status")):
+        return result
+
+    supplement_delta = round(float(supplement_qty or 0) - float(old_supplement_qty or 0), 6)
+    if supplement_delta == 0:
+        return result
+
+    st_stock = db.get_st_inventory_stock()
+    old_st_qty = float(st_stock.get(part_number) or 0)
+    new_st_qty = round(old_st_qty - supplement_delta, 6)
+    db.update_st_inventory_stock(
+        {part_number: new_st_qty},
+        reason="主檔批次區補料量修正",
+        actor="main_file_cell_patch",
+    )
+    result["st_inventory_synced"] = True
+    return result
 
 
 @router.patch("/main-file/moq")
@@ -600,10 +626,11 @@ async def edit_main_cell(req: EditCellRequest):
         snapshot_stock=snapshot_stock,
     )
     wb.save(main_path)
-    supplement_synced = _sync_order_supplement_from_main_cell(
+    supplement_sync = _sync_supplement_from_main_cell(
         ws,
         row=req.row,
         col=req.col,
+        old_value=old_value,
         value=cell.value,
     )
     wb.close()
@@ -635,6 +662,7 @@ async def edit_main_cell(req: EditCellRequest):
         "old_value": str(old_value or ""),
         "new_value": str(new_value),
         "affected_cells": recalc_result.get("affected_cells") or [],
-        "supplement_synced": supplement_synced,
+        "supplement_synced": supplement_sync["supplement_synced"],
+        "st_inventory_synced": supplement_sync["st_inventory_synced"],
         "schedule_refresh_required": schedule_refresh_required,
     }
