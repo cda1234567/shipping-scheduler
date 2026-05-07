@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.19"
+APP_VERSION = "v2026.05.07.20"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "committed 副檔下載時即時重建，不再用 frozen 快照"
+APP_HEADLINE = "ST 庫存變動加 audit log，未來可追每次扣帳來源"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存變動 audit log",
+        "items": [
+            "ST 庫存整檔上傳與扣帳更新會記錄料號、舊值、新值、差異、原因、actor 與時間。",
+            "新增 `/api/system/st-inventory/audit`，可依料號與筆數查詢最新 ST 庫存變動紀錄。",
+            "consume_st_package_breakdowns 扣 ST 包裝庫存時會帶入固定 reason，未來可追每次扣帳來源。",
+        ],
+    },
     {
         "title": "已發料副檔下載即時重建",
         "items": [

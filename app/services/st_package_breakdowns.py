@@ -179,7 +179,7 @@ def consume_st_package_breakdowns(allocations: dict[int, dict[str, float]] | Non
         package_updates[part_number] = next_package_text
 
     if stock_updates:
-        db.update_st_inventory_stock(stock_updates)
+        db.update_st_inventory_stock(stock_updates, reason="consume_st_package_breakdowns")
 
     return {
         "usage_by_part": usage_by_part,

@@ -52,6 +52,17 @@ CREATE TABLE IF NOT EXISTS st_inventory_snapshot (
     loaded_at   TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS st_inventory_audit_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    part_number TEXT NOT NULL,
+    old_qty     REAL,
+    new_qty     REAL NOT NULL,
+    delta       REAL,
+    reason      TEXT NOT NULL DEFAULT '',
+    actor       TEXT NOT NULL DEFAULT '',
+    changed_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS st_package_breakdowns (
     part_number  TEXT PRIMARY KEY,
     package_text TEXT NOT NULL DEFAULT '',
@@ -217,6 +228,7 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
+CREATE INDEX IF NOT EXISTS idx_st_inventory_audit_part_changed ON st_inventory_audit_log(part_number, changed_at);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
@@ -824,12 +836,28 @@ def save_st_inventory_snapshot(stock: dict[str, float], descriptions: dict[str, 
     loaded_at = _now()
 
     with get_conn() as conn:
+        existing_rows = conn.execute("SELECT part_number, stock_qty FROM st_inventory_snapshot").fetchall()
+        old_stock = {str(row["part_number"]): float(row["stock_qty"] or 0) for row in existing_rows}
         conn.execute("DELETE FROM st_inventory_snapshot")
         for part in all_parts:
             conn.execute(
                 "INSERT INTO st_inventory_snapshot(part_number, stock_qty, description, loaded_at) VALUES(?,?,?,?)",
                 (part, normalized_stock.get(part, 0.0), normalized_desc.get(part, ""), loaded_at),
             )
+        audit_parts = sorted(set(old_stock) | set(normalized_stock))
+        for part in audit_parts:
+            old_qty = old_stock.get(part)
+            new_qty = normalized_stock.get(part, 0.0)
+            if old_qty is None or old_qty != new_qty:
+                _insert_st_inventory_audit_log(
+                    conn,
+                    part_number=part,
+                    old_qty=old_qty,
+                    new_qty=new_qty,
+                    reason="st_inventory_upload",
+                    actor="system",
+                    changed_at=loaded_at,
+                )
 
 
 def get_st_inventory_snapshot() -> dict[str, dict]:
@@ -849,7 +877,35 @@ def get_st_inventory_stock() -> dict[str, float]:
     return {part: float(item.get("stock_qty") or 0) for part, item in snapshot.items()}
 
 
-def update_st_inventory_stock(stock_updates: dict[str, float]) -> int:
+def _insert_st_inventory_audit_log(
+    conn: sqlite3.Connection,
+    *,
+    part_number: str,
+    old_qty: float | None,
+    new_qty: float,
+    reason: str,
+    actor: str,
+    changed_at: str,
+):
+    delta = None if old_qty is None else round(float(new_qty) - float(old_qty), 6)
+    conn.execute(
+        """
+        INSERT INTO st_inventory_audit_log(part_number, old_qty, new_qty, delta, reason, actor, changed_at)
+        VALUES(?,?,?,?,?,?,?)
+        """,
+        (
+            part_number,
+            old_qty,
+            new_qty,
+            delta,
+            str(reason or ""),
+            str(actor or ""),
+            changed_at,
+        ),
+    )
+
+
+def update_st_inventory_stock(stock_updates: dict[str, float], reason: str = "", actor: str = "system") -> int:
     normalized = {
         str(part).strip().upper(): float(qty or 0)
         for part, qty in (stock_updates or {}).items()
@@ -863,9 +919,10 @@ def update_st_inventory_stock(stock_updates: dict[str, float]) -> int:
     with get_conn() as conn:
         for part, qty in normalized.items():
             existing = conn.execute(
-                "SELECT description FROM st_inventory_snapshot WHERE part_number=?",
+                "SELECT stock_qty, description FROM st_inventory_snapshot WHERE part_number=?",
                 (part,),
             ).fetchone()
+            old_qty = float(existing["stock_qty"]) if existing else None
             if existing:
                 conn.execute(
                     "UPDATE st_inventory_snapshot SET stock_qty=?, loaded_at=? WHERE part_number=?",
@@ -876,8 +933,49 @@ def update_st_inventory_stock(stock_updates: dict[str, float]) -> int:
                     "INSERT INTO st_inventory_snapshot(part_number, stock_qty, description, loaded_at) VALUES(?,?,?,?)",
                     (part, qty, "", loaded_at),
                 )
+            if old_qty is None or old_qty != qty:
+                _insert_st_inventory_audit_log(
+                    conn,
+                    part_number=part,
+                    old_qty=old_qty,
+                    new_qty=qty,
+                    reason=reason,
+                    actor=actor,
+                    changed_at=loaded_at,
+                )
             updated += 1
     return updated
+
+
+def get_st_inventory_audit_log(part_number: str | None = None, limit: int = 200) -> list[dict]:
+    normalized_part = str(part_number or "").strip().upper()
+    safe_limit = max(1, min(int(limit or 200), 1000))
+    sql = """
+        SELECT id, part_number, old_qty, new_qty, delta, reason, actor, changed_at
+        FROM st_inventory_audit_log
+    """
+    params: list[object] = []
+    if normalized_part:
+        sql += " WHERE part_number=?"
+        params.append(normalized_part)
+    sql += " ORDER BY changed_at DESC, id DESC LIMIT ?"
+    params.append(safe_limit)
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "part_number": str(row["part_number"] or ""),
+            "old_qty": None if row["old_qty"] is None else float(row["old_qty"]),
+            "new_qty": float(row["new_qty"] or 0),
+            "delta": None if row["delta"] is None else float(row["delta"]),
+            "reason": str(row["reason"] or ""),
+            "actor": str(row["actor"] or ""),
+            "changed_at": str(row["changed_at"] or ""),
+        }
+        for row in rows
+    ]
 
 
 def get_st_package_breakdowns(part_numbers: list[str] | None = None) -> dict[str, dict]:

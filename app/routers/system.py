@@ -128,6 +128,12 @@ async def get_st_inventory_data():
     }
 
 
+@router.get("/system/st-inventory/audit")
+async def get_st_inventory_audit(part_number: str | None = None, limit: int = 200):
+    rows = db.get_st_inventory_audit_log(part_number=part_number, limit=limit)
+    return {"rows": rows, "count": len(rows)}
+
+
 @router.get("/system/st-packages/missing-moq")
 async def get_missing_moq_st_packages():
     rows = build_missing_moq_package_rows()

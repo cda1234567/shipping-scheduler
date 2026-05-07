@@ -128,6 +128,73 @@ class SnapshotTests(InMemoryDbTestCase):
         self.assertEqual(stock, {"PART-1": 8.0, "PART-2": 0.0})
         self.assertTrue(loaded_at)
 
+    def test_update_st_inventory_stock_writes_audit_log(self):
+        db.save_st_inventory_snapshot({"PART-1": 100}, {"PART-1": "Capacitor"})
+
+        updated = db.update_st_inventory_stock(
+            {"part-1": 75, "part-2": 20},
+            reason="manual_edit",
+            actor="system",
+        )
+        logs = db.get_st_inventory_audit_log(limit=10)
+        part_logs = {row["part_number"]: row for row in logs if row["reason"] == "manual_edit"}
+
+        self.assertEqual(updated, 2)
+        self.assertEqual(part_logs["PART-1"]["old_qty"], 100.0)
+        self.assertEqual(part_logs["PART-1"]["new_qty"], 75.0)
+        self.assertEqual(part_logs["PART-1"]["delta"], -25.0)
+        self.assertEqual(part_logs["PART-1"]["actor"], "system")
+        self.assertIsNone(part_logs["PART-2"]["old_qty"])
+        self.assertEqual(part_logs["PART-2"]["new_qty"], 20.0)
+        self.assertIsNone(part_logs["PART-2"]["delta"])
+
+    def test_save_st_inventory_snapshot_writes_audit_for_changed_parts(self):
+        db.save_st_inventory_snapshot({"PART-1": 100, "PART-2": 50})
+        self.conn.execute("DELETE FROM st_inventory_audit_log")
+
+        db.save_st_inventory_snapshot({"PART-1": 80, "PART-3": 25})
+        logs = db.get_st_inventory_audit_log(limit=10)
+        logs_by_part = {row["part_number"]: row for row in logs}
+
+        self.assertEqual(set(logs_by_part), {"PART-1", "PART-2", "PART-3"})
+        self.assertEqual(logs_by_part["PART-1"]["old_qty"], 100.0)
+        self.assertEqual(logs_by_part["PART-1"]["new_qty"], 80.0)
+        self.assertEqual(logs_by_part["PART-1"]["delta"], -20.0)
+        self.assertEqual(logs_by_part["PART-2"]["old_qty"], 50.0)
+        self.assertEqual(logs_by_part["PART-2"]["new_qty"], 0.0)
+        self.assertEqual(logs_by_part["PART-2"]["delta"], -50.0)
+        self.assertIsNone(logs_by_part["PART-3"]["old_qty"])
+        self.assertEqual(logs_by_part["PART-3"]["new_qty"], 25.0)
+        self.assertEqual({row["reason"] for row in logs}, {"st_inventory_upload"})
+        self.assertEqual({row["actor"] for row in logs}, {"system"})
+
+    def test_get_st_inventory_audit_log_filters_and_sorts(self):
+        db.save_st_inventory_snapshot({"PART-1": 100, "PART-2": 50})
+        self.conn.execute("DELETE FROM st_inventory_audit_log")
+        db.update_st_inventory_stock({"PART-1": 90}, reason="first")
+        db.update_st_inventory_stock({"PART-2": 45}, reason="other")
+        db.update_st_inventory_stock({"PART-1": 80}, reason="second")
+        rows = self.conn.execute("SELECT id FROM st_inventory_audit_log ORDER BY id").fetchall()
+        self.conn.execute(
+            "UPDATE st_inventory_audit_log SET changed_at='2026-03-12T10:00:00' WHERE id=?",
+            (rows[0]["id"],),
+        )
+        self.conn.execute(
+            "UPDATE st_inventory_audit_log SET changed_at='2026-03-12T10:05:00' WHERE id=?",
+            (rows[1]["id"],),
+        )
+        self.conn.execute(
+            "UPDATE st_inventory_audit_log SET changed_at='2026-03-12T10:10:00' WHERE id=?",
+            (rows[2]["id"],),
+        )
+
+        part_logs = db.get_st_inventory_audit_log(part_number="part-1", limit=10)
+        limited_logs = db.get_st_inventory_audit_log(limit=2)
+
+        self.assertEqual([row["reason"] for row in part_logs], ["second", "first"])
+        self.assertEqual({row["part_number"] for row in part_logs}, {"PART-1"})
+        self.assertEqual([row["reason"] for row in limited_logs], ["second", "other"])
+
     def test_save_bom_file_keeps_source_metadata(self):
         db.save_bom_file({
             "id": "bom-1",
