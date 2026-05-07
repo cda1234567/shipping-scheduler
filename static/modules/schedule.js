@@ -5128,8 +5128,24 @@ function shortageItemHtml(s, isCS) {
     _order_id: orderId,
   };
   const dec = _decisions[normalizePartKey(s.part_number)] || "None";
+  const _orderByCode = (code) => {
+    if (!code) return null;
+    return _rows.find(r => r.code === code) || _completedRows.find(r => r.code === code) || null;
+  };
+  const _matchedOrder = _orderByCode(s._row_code);
+  const _displayModel = s._row_model || _matchedOrder?.model || "";
+  const _displayPo = s._po_number || _matchedOrder?.po_number || "";
+  const _displayShip = _matchedOrder?.ship_date || _matchedOrder?.delivery_date || "";
   const codeTag = s._row_code
-    ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px;margin-left:6px">${esc(s._row_code)}</span>`
+    ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 6px">${esc(s._row_code)}</span>`
+    : "";
+  const metaParts = [];
+  if (codeTag) metaParts.push(codeTag);
+  if (_displayModel) metaParts.push(`<span>${esc(_displayModel)}</span>`);
+  if (_displayPo) metaParts.push(`<span>PO ${esc(_displayPo)}</span>`);
+  if (_displayShip) metaParts.push(`<span>出貨 ${esc(String(_displayShip).slice(0, 10))}</span>`);
+  const metaLineHtml = metaParts.length
+    ? `<div class="shortage-meta" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px;color:#6b7280;margin-top:2px">${metaParts.join("")}</div>`
     : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const orderIdAttr = Number.isInteger(orderId) ? ` data-order-id="${orderId}"` : "";
@@ -5189,7 +5205,8 @@ function shortageItemHtml(s, isCS) {
       : "";
 
   return `<div class="${shortageToneClass(s, isCS)}" data-search="${esc([searchPrimary, searchSecondary].join(" "))}" data-search-primary="${esc(searchPrimary)}" data-search-secondary="${esc(searchSecondary)}">
-    <div class="part">${s.part_number}${codeTag}${csTag}</div>
+    <div class="part">${s.part_number}${csTag}</div>
+    ${metaLineHtml}
     <div class="desc">${s.description || "—"}</div>
     <div class="amounts">
       <span class="red">缺 ${fmt(s.shortage_amount)}</span>

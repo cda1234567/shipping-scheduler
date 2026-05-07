@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.12"
+APP_VERSION = "v2026.05.07.13"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細排序改成依 X-X 兩段數字升冪 (4-1 < 4-7 < 5-1 < 5-2)，同 X-X 內按料號字母。"
+APP_HEADLINE = "補料明細卡片把 X-X 標籤搬到料號下面，新增機種 / PO / 出貨日 meta 行。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細卡片 meta 行",
+        "items": [
+            "X-X 從料號右邊小膠囊位置搬到料號下方獨立一行（class=shortage-meta）。",
+            "meta 行依序顯示 X-X 標籤、機種名稱、PO 編號、出貨日（從 _rows / _completedRows 找對應 order 的 ship_date / delivery_date）。",
+            "缺欄位的 token 會自動省略（譬如沒 PO 就不顯示 PO XXXX）。",
+        ],
+    },
     {
         "title": "補料明細按 X-X 順序排",
         "items": [
