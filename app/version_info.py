@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.20"
+APP_VERSION = "v2026.05.07.21"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "ST 庫存變動加 audit log，未來可追每次扣帳來源"
+APP_HEADLINE = "切到已發料 tab 隱藏 sidebar，避免跟工具列「生成發料單」重複按鈕。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料 tab 隱藏 sidebar",
+        "items": [
+            "已發料 tab 工具列已有「下載副檔」「生成發料單」，sidebar 還重複顯示一個「生成發料單」會混淆。",
+            "tab 切到 completed 時跟 main-preview-v2 一樣加 sidebar-hidden class，畫面只剩 tab 內容區。",
+        ],
+    },
     {
         "title": "ST 庫存變動 audit log",
         "items": [
