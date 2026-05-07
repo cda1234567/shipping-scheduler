@@ -231,41 +231,52 @@ def _is_committed_status(order: dict) -> bool:
     return str(order.get("status") or "").strip().lower() in {"dispatched", "completed"}
 
 
+def _subtract_selected_committed_dispatch_records(
+    orders: list[dict],
+    dispatched_consumption: dict[str, float],
+) -> dict[str, float]:
+    adjusted = {
+        _normalize_part_key(part): float(qty or 0)
+        for part, qty in (dispatched_consumption or {}).items()
+        if _normalize_part_key(part)
+    }
+
+    for order in orders:
+        if not _is_committed_status(order):
+            continue
+        try:
+            order_id = int(order["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        for record in db.get_dispatch_records(order_id):
+            if str(record.get("decision") or "None") == "Shortage":
+                continue
+            part = _normalize_part_key(record.get("part_number"))
+            if not part:
+                continue
+            adjusted[part] = adjusted.get(part, 0.0) - float(record.get("needed_qty") or 0)
+
+    return adjusted
+
+
 def _build_dispatch_result_by_order(
     orders: list[dict],
     bom_map: dict[str, list[dict]],
-) -> tuple[dict[int, dict], list[int]]:
-    committed_order_ids = [int(order["id"]) for order in orders if _is_committed_status(order)]
-    active_orders = [order for order in orders if not _is_committed_status(order)]
-
+) -> dict[int, dict]:
     result_by_order: dict[int, dict] = {}
-    if committed_order_ids:
-        committed_shortages = db.get_committed_merge_draft_shortages_by_order_ids(committed_order_ids)
-        for order_id, shortages in committed_shortages.items():
-            result_by_order[order_id] = {
-                "order_id": order_id,
-                "shortages": shortages or [],
-                "customer_material_shortages": [],
-            }
-
-    fallback_order_ids = [
-        order_id
-        for order_id in committed_order_ids
-        if order_id not in result_by_order
-    ]
-    fallback_order_id_set = set(fallback_order_ids)
-    calc_orders = [
-        *active_orders,
-        *[order for order in orders if int(order["id"]) in fallback_order_id_set],
-    ]
-    if calc_orders:
+    if orders:
         stock, moq, dispatched_consumption = _load_shortage_inputs()
-        calc_results = calc_run(calc_orders, bom_map, stock, moq, dispatched_consumption, db.get_st_inventory_stock())
+        adjusted_dispatched_consumption = _subtract_selected_committed_dispatch_records(
+            orders,
+            dispatched_consumption,
+        )
+        calc_results = calc_run(orders, bom_map, stock, moq, adjusted_dispatched_consumption, db.get_st_inventory_stock())
         for result in calc_results:
             if result.get("order_id") is not None:
                 result_by_order[int(result["order_id"])] = result
 
-    return result_by_order, fallback_order_ids
+    return result_by_order
 
 
 @router.post("/dispatch/generate")
@@ -282,7 +293,7 @@ async def generate(req: DispatchRequest, request: Request):
     if not orders:
         raise HTTPException(400, "勾選的訂單沒有可生成的待處理內容")
 
-    result_by_order, fallback_order_ids = _build_dispatch_result_by_order(orders, bom_map)
+    result_by_order = _build_dispatch_result_by_order(orders, bom_map)
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
     active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
@@ -428,9 +439,4 @@ async def generate(req: DispatchRequest, request: Request):
         filename,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    if fallback_order_ids:
-        response.headers["X-Dispatch-Warning"] = (
-            "部分已發料訂單找不到當時 commit 快照，已改用主檔當下庫存重算；"
-            "結果可能受後續扣帳影響。"
-        )
     return response

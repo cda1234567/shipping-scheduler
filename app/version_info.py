@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.16"
+APP_VERSION = "v2026.05.07.17"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "已發料訂單重產發料單改用當時 commit 快照，避免主檔被後續訂單扣帳後算錯"
+APP_HEADLINE = "發料單改成主檔即時+加回該訂單已扣的量，主檔變動發料單跟著變，不再用 committed snapshot"
 APP_CHANGELOG = [
     {
-        "title": "已發料發料單重產改用 commit 快照",
+        "title": "已發料發料單重產改用主檔即時庫存",
         "items": [
-            "`/api/dispatch/generate` 對 dispatched / completed 訂單優先讀 committed merge draft 的 shortages_json，不再用主檔當下庫存重算當時缺料。",
-            "若舊訂單的 committed draft 已被 retention 清掉，會 fallback 到即時計算並回傳警告，提醒結果可能受後續扣帳影響。",
+            "`/api/dispatch/generate` 對 dispatched / completed 訂單不再讀 committed merge draft 的 shortages_json。",
+            "重產發料單時改用主檔當下庫存，並從 dispatched consumption 扣回該訂單 dispatch_records 的 needed_qty，等同假設該訂單尚未被處理後重算缺料。",
+            "移除 X-Dispatch-Warning fallback 提醒路徑，桌面版下載回到一般 fallbackBrowserDownload 回傳格式。",
         ],
     },
     {
