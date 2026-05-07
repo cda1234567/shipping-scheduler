@@ -71,6 +71,7 @@ const LS_ROWLEN_PREFIX = "mainPreviewV2.rowlen.";
 const HEADER_WRAP_ROW_HEIGHT = 80;
 const HEADER_WRAP_VALUE = "2";
 const HEADER_CLIP_VALUE = "0";
+const HEADER_DISPLAY_BREAK_MIN_LENGTH = 9;
 let _wrapEnabled = (() => {
   try { return localStorage.getItem(LS_WRAP_KEY) !== "0"; } catch (_) { return true; }
 })();
@@ -410,7 +411,7 @@ function applyHeaderWrapFormat(colCount) {
   _suppressHeaderFormatHooksUntil = Date.now() + 1500;
 
   try {
-    const sheet = ls.getAllSheets?.()[0];
+    const sheet = ls.getluckysheetfile?.()[0] || ls.getAllSheets?.()[0];
     const rowData = sheet?.data?.[0] || [];
     for (let col = 0; col <= lastCol; col++) {
       const cell = rowData[col];
@@ -424,8 +425,19 @@ function applyHeaderWrapFormat(colCount) {
       });
     }
 
-    const refreshedSheet = ls.getAllSheets?.()[0] || sheet;
+    const refreshedSheet = ls.getluckysheetfile?.()[0] || sheet;
     if (refreshedSheet) {
+      const refreshedRowData = refreshedSheet.data?.[0] || [];
+      if (_wrapEnabled) {
+        for (let col = 0; col <= lastCol; col++) {
+          const cell = refreshedRowData[col];
+          if (!cell || typeof cell !== "object") continue;
+          cell.tb = HEADER_WRAP_VALUE;
+          const richText = buildHeaderWrapRichText(cell.v ?? cell.m);
+          if (richText) cell.ct = richText;
+        }
+      }
+
       const config = refreshedSheet.config || {};
       config.rowlen = { ...(config.rowlen || {}) };
       if (_wrapEnabled) {
@@ -617,6 +629,22 @@ function buildCelldata(sheet) {
     }
   }
   return result;
+}
+
+function buildHeaderWrapRichText(rawValue) {
+  const text = String(rawValue ?? "");
+  if (text.length < HEADER_DISPLAY_BREAK_MIN_LENGTH) return null;
+
+  // Luckysheet 2.1.13 only wraps when its width estimate says text overflows.
+  // Row 0 headers near that boundary can be clipped, so add a display-only
+  // inlineStr hard break while keeping cell.v / cell.m as the original value.
+  const breakAt = Math.ceil(text.length / 2);
+  return {
+    t: "inlineStr",
+    s: [
+      { v: `${text.slice(0, breakAt)}\n${text.slice(breakAt)}` },
+    ],
+  };
 }
 
 function buildRowConfig(sheet) {

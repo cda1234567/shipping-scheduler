@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.29"
+APP_VERSION = "v2026.05.07.30"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔預覽 v2 標題列換行改用 Luckysheet range format 強制套用。"
+APP_HEADLINE = "主檔預覽 v2 標題列用 display-only rich text 強制換行。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 標題列 11 字元換行修正",
+        "items": [
+            "row 0 cell 保留原本 `v` / `m`，另外加 display-only `ct.inlineStr` 並在顯示層插入硬換行，避開 Luckysheet 2.1.13 寬度估算邊界。",
+            "`T7U-REV-1.0`、`T8U-REV-1.4`、`TA7-2-REV-B` 這類 11 字元標題不再因 Luckysheet 誤判可容納而被截斷。",
+            "標題列換行關閉時不建立 rich text display layer，維持原本截斷模式。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 標題列換行修正",
         "items": [
