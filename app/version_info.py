@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.11"
+APP_VERSION = "v2026.05.07.12"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細 X-X 標籤改成『第一個負結餘批次』(開始缺料)，符合「X-X 開始缺料」語意。"
+APP_HEADLINE = "補料明細排序改成依 X-X 兩段數字升冪 (4-1 < 4-7 < 5-1 < 5-2)，同 X-X 內按料號字母。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細按 X-X 順序排",
+        "items": [
+            "compareShortageItems 改成先解析 _row_code 為兩段數字陣列依序比較（parseCodeSegments），同 X-X 內 fallback 比 part_number alphabetic。",
+            "之前用 _row_order_index 排，主檔層級缺料 (Number.MAX_SAFE_INTEGER) 全部塞最後；現在改成 4-1 → 4-2 → ... → 4-10 → 5-1 → 5-2 自然順序。",
+        ],
+    },
     {
         "title": "X-X 標籤改第一個負結餘批次",
         "items": [

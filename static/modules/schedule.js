@@ -4486,15 +4486,28 @@ function compareText(a, b, locale = "en") {
   return String(a || "").localeCompare(String(b || ""), locale, { numeric: true, sensitivity: "base" });
 }
 
+function _parseCodeSegments(code) {
+  return String(code || "")
+    .split(/[-_]/)
+    .map(seg => {
+      const num = parseInt(seg, 10);
+      return Number.isFinite(num) ? num : Number.MAX_SAFE_INTEGER;
+    });
+}
+
 function compareShortageItems(a, b) {
-  const orderIndexA = Number.isFinite(Number(a?._row_order_index)) ? Number(a._row_order_index) : Number.MAX_SAFE_INTEGER;
-  const orderIndexB = Number.isFinite(Number(b?._row_order_index)) ? Number(b._row_order_index) : Number.MAX_SAFE_INTEGER;
-  if (orderIndexA !== orderIndexB) return orderIndexA - orderIndexB;
-  const groupCmp = compareText(a._row_group_label, b._row_group_label, "zh-Hant");
-  if (groupCmp !== 0) return groupCmp;
-  const partCmp = compareText(a.part_number, b.part_number);
+  const codeA = _parseCodeSegments(a?._row_code);
+  const codeB = _parseCodeSegments(b?._row_code);
+  const len = Math.max(codeA.length, codeB.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = codeA[i] ?? Number.MAX_SAFE_INTEGER;
+    const bv = codeB[i] ?? Number.MAX_SAFE_INTEGER;
+    if (av !== bv) return av - bv;
+  }
+  const partCmp = compareText(a?.part_number, b?.part_number);
   if (partCmp !== 0) return partCmp;
-  return compareText(a._row_code, b._row_code);
+  const groupCmp = compareText(a?._row_group_label, b?._row_group_label, "zh-Hant");
+  return groupCmp;
 }
 
 function renderShortageGroupHtml(items, isCS) {
