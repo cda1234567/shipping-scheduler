@@ -10,6 +10,7 @@ let _loadToken = 0;
 let _luckyMounted = false;
 let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
+let _suppressHeaderFormatHooksUntil = 0;
 let _lastLoadedAt = "";
 let _partLocations = {};
 let _batchLocations = {};
@@ -67,6 +68,9 @@ export async function navigateToPart(partNumber, batchCode = "") {
 const LS_WRAP_KEY = "mainPreviewV2.headerWrap";
 const LS_COLLEN_PREFIX = "mainPreviewV2.columnlen.";
 const LS_ROWLEN_PREFIX = "mainPreviewV2.rowlen.";
+const HEADER_WRAP_ROW_HEIGHT = 80;
+const HEADER_WRAP_VALUE = "2";
+const HEADER_CLIP_VALUE = "0";
 let _wrapEnabled = (() => {
   try { return localStorage.getItem(LS_WRAP_KEY) !== "0"; } catch (_) { return true; }
 })();
@@ -284,14 +288,7 @@ function mountLuckysheet(payload) {
       celldata,
       row: rowCount,
       column: colCount,
-      config: (() => {
-        const layout = loadLayout(_activeSheet);
-        const rowlen = { ...buildRowConfig(sheet), ...(layout.rowlen || {}) };
-        return {
-          rowlen,
-          columnlen: layout.columnlen || {},
-        };
-      })(),
+      config: buildLuckysheetConfig(sheet),
       status: 1,
       order: 0,
       frozen: {
@@ -301,6 +298,9 @@ function mountLuckysheet(payload) {
     }],
     hook: {
       cellUpdated: function (r, c, oldValue, newValue) {
+        if (r === 0 && Date.now() < _suppressHeaderFormatHooksUntil) {
+          return;
+        }
         if (_suppressProgrammaticUpdates > 0) {
           _suppressProgrammaticUpdates -= 1;
           return;
@@ -360,6 +360,7 @@ function mountLuckysheet(payload) {
       workbookCreateAfter: function () {
         _luckyMounted = true;
         _suppressNextHook = false;
+        applyHeaderWrapFormat(colCount);
         // 鍵盤左推到凍結邊界時，畫面跟著往左捲（避免 cursor 被凍結 A/B 欄壓住）
         bindFrozenBoundaryKeyboardScroll();
         // Luckysheet 沒 column/row resize hook，改用 mouseup 後 dump 整個 sheet
@@ -388,6 +389,60 @@ function mountLuckysheet(payload) {
       },
     },
   });
+}
+
+function buildLuckysheetConfig(sheet) {
+  const layout = loadLayout(_activeSheet);
+  const rowlen = { ...(layout.rowlen || {}), ...buildRowConfig(sheet) };
+  if (!_wrapEnabled) delete rowlen[0];
+  return {
+    rowlen,
+    columnlen: layout.columnlen || {},
+  };
+}
+
+function applyHeaderWrapFormat(colCount) {
+  const ls = window.luckysheet;
+  const lastCol = Math.max(0, Number(colCount || 1) - 1);
+  if (!ls || lastCol < 0) return;
+
+  const tbValue = _wrapEnabled ? HEADER_WRAP_VALUE : HEADER_CLIP_VALUE;
+  _suppressHeaderFormatHooksUntil = Date.now() + 1500;
+
+  try {
+    const sheet = ls.getAllSheets?.()[0];
+    const rowData = sheet?.data?.[0] || [];
+    for (let col = 0; col <= lastCol; col++) {
+      const cell = rowData[col];
+      if (cell && typeof cell === "object") cell.tb = tbValue;
+    }
+
+    if (ls.setRangeFormat) {
+      ls.setRangeFormat("tb", tbValue, {
+        range: { row: [0, 0], column: [0, lastCol] },
+        order: 0,
+      });
+    }
+
+    const refreshedSheet = ls.getAllSheets?.()[0] || sheet;
+    if (refreshedSheet) {
+      const config = refreshedSheet.config || {};
+      config.rowlen = { ...(config.rowlen || {}) };
+      if (_wrapEnabled) {
+        config.rowlen[0] = HEADER_WRAP_ROW_HEIGHT;
+      } else {
+        delete config.rowlen[0];
+      }
+      refreshedSheet.config = config;
+      if (ls.jfrefreshgrid) {
+        ls.jfrefreshgrid(refreshedSheet.data, [{ row: [0, 0], column: [0, lastCol] }], { cfg: config, RowlChange: true }, false);
+      } else if (ls.luckysheetrefreshgrid) {
+        ls.luckysheetrefreshgrid();
+      }
+    }
+  } catch (err) {
+    console.error("[main_preview_v2] apply header wrap failed", err);
+  }
 }
 
 function bindFrozenBoundaryKeyboardScroll() {
@@ -551,8 +606,8 @@ function buildCelldata(sheet) {
         v: rawValue,
         m: String(rawValue),
       };
-      if (rowIndex === 0 && _wrapEnabled) {
-        cellValue.tb = "2";
+      if (rowIndex === 0) {
+        cellValue.tb = _wrapEnabled ? HEADER_WRAP_VALUE : HEADER_CLIP_VALUE;
       }
       result.push({
         r: rowIndex,
@@ -568,7 +623,7 @@ function buildRowConfig(sheet) {
   const rows = sheet?.rows || [];
   const rowlen = {};
   if (rows.length > 0 && _wrapEnabled) {
-    rowlen[0] = 80;
+    rowlen[0] = HEADER_WRAP_ROW_HEIGHT;
   }
   return rowlen;
 }

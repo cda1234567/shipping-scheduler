@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.28"
+APP_VERSION = "v2026.05.07.29"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "ST 庫存 tab 可展開 audit history，主檔預覽 v2 左方向鍵只在凍結邊界必要時接管。"
+APP_HEADLINE = "主檔預覽 v2 標題列換行改用 Luckysheet range format 強制套用。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 標題列換行修正",
+        "items": [
+            "確認 Luckysheet 2.1.13 的文字換行格式鍵是 `tb`，值 `2` 為 wrap、`0` 為截斷。",
+            "主檔預覽 v2 初始化後會再用 `setRangeFormat(\"tb\", ...)` 對第 1 列強制套用 wrap / clip，避免 celldata 內的 `tb` 沒觸發實際繪製。",
+            "標題列換行關閉時會移除 row 0 的 80px 高度覆寫，避免先前記憶的 rowlen 讓文字看起來仍像換行模式。",
+        ],
+    },
     {
         "title": "ST 庫存歷史與左方向鍵接管修正",
         "items": [
