@@ -324,6 +324,65 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
         wb.close()
 
+    def test_dispatch_generate_adds_dispatched_order_supplement_back_for_highlight_check(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "dispatched",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "5-1",
+                "delivery_date": "2026-05-01",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "PART-ST", "description": "ST desc", "needed_qty": 1, "is_dash": 0},
+                {"part_number": "PART-NEG", "description": "Negative ST desc", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [],
+                "customer_material_shortages": [],
+            },
+        ]
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={
+                 1: {"PART-ST": 5000, "PART-NEG": 5000},
+             }), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={
+                 "PART-ST": "CreateRequirement",
+                 "PART-NEG": "CreateRequirement",
+             }), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={
+                 "PART-ST": 0,
+                 "PART-NEG": -15000,
+             }), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        self.assertEqual(ws.cell(row=3, column=3).value, "PART-NEG")
+        self.assertEqual(ws.cell(row=3, column=5).value, 5000)
+        self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
+        self.assertEqual(ws.cell(row=4, column=3).value, "PART-ST")
+        self.assertEqual(ws.cell(row=4, column=5).value, 5000)
+        self.assertEqual(ws["E4"].fill.fgColor.rgb, "FFFFFFFF")
+        wb.close()
+
     def test_dispatch_generate_ignores_non_bom_decision_parts_for_selected_order(self):
         orders = {
             1: {

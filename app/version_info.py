@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.22"
+APP_VERSION = "v2026.05.07.23"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔預覽鍵盤左推到凍結 A/B 欄邊界時自動捲動畫面，cursor 不再被凍結列壓住。"
+APP_HEADLINE = "dispatched 訂單塗色判斷把該訂單已扣 ST 量加回，避免被自己 commit 過的扣帳影響判斷。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料發料單 ST 塗色加回自己扣帳",
+        "items": [
+            "`/api/dispatch/generate` 重產 dispatched / completed 訂單發料單時，橙色塗色判斷會先把該訂單本列補料量加回 ST 庫存視圖。",
+            "active 訂單仍使用當下 ST 庫存；已發料訂單只加回自己的 supplement，不會把其他訂單扣過的 ST 一起還原。",
+        ],
+    },
     {
         "title": "主檔預覽鍵盤左推自動捲",
         "items": [

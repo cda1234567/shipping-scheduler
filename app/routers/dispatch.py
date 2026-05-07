@@ -216,7 +216,12 @@ def _should_render_dispatch_item(
     return bool(shortage_item) and suggested_qty > 0
 
 
-def _should_highlight_dispatch_qty(part: str, qty: float, shortage_item: dict | None, st_inventory_stock: dict[str, float]) -> bool:
+def _should_highlight_dispatch_qty(
+    part: str,
+    qty: float,
+    shortage_item: dict | None,
+    st_inventory_stock: dict[str, float],
+) -> bool:
     part_key = _normalize_part_key(part)
     shortage = shortage_item or {}
     st_stock_qty = max(
@@ -225,6 +230,24 @@ def _should_highlight_dispatch_qty(part: str, qty: float, shortage_item: dict | 
         float(st_inventory_stock.get(part_key, 0) or 0),
     )
     return bool(summarize_requested_supply(qty, st_stock_qty)["needs_purchase"])
+
+
+def _build_highlight_st_inventory_stock(
+    order: dict,
+    part: str,
+    supplement_qty: float,
+    st_inventory_stock: dict[str, float],
+) -> dict[str, float]:
+    if not _is_committed_status(order) or supplement_qty <= 0:
+        return st_inventory_stock
+
+    part_key = _normalize_part_key(part)
+    if not part_key:
+        return st_inventory_stock
+
+    adjusted = dict(st_inventory_stock)
+    adjusted[part_key] = float(adjusted.get(part_key, 0) or 0) + float(supplement_qty or 0)
+    return adjusted
 
 
 def _is_committed_status(order: dict) -> bool:
@@ -381,9 +404,15 @@ async def generate(req: DispatchRequest, request: Request):
                 continue
 
             if effective_supplement_qty > 0:
+                highlight_st_inventory_stock = _build_highlight_st_inventory_stock(
+                    order,
+                    display_part,
+                    effective_supplement_qty,
+                    st_inventory_stock,
+                )
                 fill_color = (
                     "FFFFC000"
-                    if _should_highlight_dispatch_qty(display_part, effective_supplement_qty, final_shortage or shortage_item, st_inventory_stock)
+                    if _should_highlight_dispatch_qty(display_part, effective_supplement_qty, final_shortage or shortage_item, highlight_st_inventory_stock)
                     else None
                 )
                 items.append({
