@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.21"
+APP_VERSION = "v2026.05.07.22"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "切到已發料 tab 隱藏 sidebar，避免跟工具列「生成發料單」重複按鈕。"
+APP_HEADLINE = "主檔預覽鍵盤左推到凍結 A/B 欄邊界時自動捲動畫面，cursor 不再被凍結列壓住。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽鍵盤左推自動捲",
+        "items": [
+            "捲到很右邊後用左方向鍵往回推，cursor 進凍結邊界 (col index <= column_focus + 1) 時，自動 scrollLeft -= 該 col 寬度，畫面往左捲一格讓 cursor 露出來。",
+            "Ctrl/Shift/Alt + Left 等組合鍵不觸發（保留原 Luckysheet 跳到行首等行為）。",
+        ],
+    },
     {
         "title": "已發料 tab 隱藏 sidebar",
         "items": [

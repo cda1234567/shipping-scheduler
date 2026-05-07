@@ -359,6 +359,34 @@ function mountLuckysheet(payload) {
       workbookCreateAfter: function () {
         _luckyMounted = true;
         _suppressNextHook = false;
+        // 鍵盤左推到凍結邊界時，畫面跟著往左捲（避免 cursor 被凍結 A/B 欄壓住）
+        const stage2 = document.getElementById("main-preview-v2-stage");
+        if (stage2 && !stage2.dataset.keyboardScrollBound) {
+          stage2.dataset.keyboardScrollBound = "1";
+          stage2.addEventListener("keydown", (e) => {
+            if (e.key !== "ArrowLeft" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            setTimeout(() => {
+              try {
+                const ls = window.luckysheet;
+                const sh = ls?.getAllSheets?.()[0];
+                if (!sh) return;
+                const sel = (sh.luckysheet_select_save || [])[0];
+                if (!sel) return;
+                const colSelected = Array.isArray(sel.column) ? sel.column[0] : sel.column;
+                const frozenCol = sh.frozen?.range?.column_focus ?? -1;
+                if (colSelected <= frozenCol + 1) {
+                  // 進入凍結邊界，往左捲一格
+                  const scrollX = stage2.querySelector(".luckysheet-scrollbar-x");
+                  if (scrollX && scrollX.scrollLeft > 0) {
+                    const colConfig = sh.config?.columnlen || {};
+                    const step = Number(colConfig[colSelected] || 73);
+                    scrollX.scrollLeft = Math.max(0, scrollX.scrollLeft - step);
+                  }
+                }
+              } catch (_) {}
+            }, 30);
+          });
+        }
         // Luckysheet 沒 column/row resize hook，改用 mouseup 後 dump 整個 sheet
         // 的 columnlen / rowlen 到 localStorage（debounce 200ms）
         const stage = document.getElementById("main-preview-v2-stage");
