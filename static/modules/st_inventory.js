@@ -5,6 +5,10 @@ let _busy = false;
 let _onChanged = null;
 let _inMainRows = [];
 let _inMainInitialized = false;
+let _expandedPartNumber = "";
+let _auditRowsByPart = {};
+let _auditLoadingPart = "";
+let _auditRequestToken = 0;
 
 export async function initStInventory({ onChanged, autoLoad = true } = {}) {
   _onChanged = typeof onChanged === "function" ? onChanged : null;
@@ -65,6 +69,7 @@ export async function refreshStInventoryInMain({ silent = false } = {}) {
   try {
     const rows = await apiJson("/api/st-inventory/in-main");
     _inMainRows = Array.isArray(rows) ? rows : [];
+    _expandedPartNumber = "";
     renderInMainRows();
   } catch (error) {
     _inMainRows = [];
@@ -102,19 +107,139 @@ function renderInMainRows() {
     return;
   }
 
-  body.innerHTML = rows.map(row => `
-    <tr>
-      <td>${esc(row.part_number || "")}</td>
+  body.innerHTML = rows.map(row => renderInventoryRow(row)).join("");
+  bindInventoryRowClicks(body);
+}
+
+function renderInventoryRow(row) {
+  const partNumber = String(row.part_number || "");
+  const isExpanded = partNumber && partNumber === _expandedPartNumber;
+  const arrow = isExpanded ? "▼" : "▶";
+  const mainRow = `
+    <tr class="st-inventory-data-row${isExpanded ? " expanded" : ""}" data-part-number="${esc(partNumber)}">
+      <td>
+        <button class="st-inventory-expand-btn" type="button" aria-label="${isExpanded ? "收起" : "展開"} ${esc(partNumber)} 歷史紀錄">
+          <span class="st-inventory-arrow">${arrow}</span>
+          <span>${esc(partNumber)}</span>
+        </button>
+      </td>
       <td>${esc(row.description || "")}</td>
       <td class="num">${formatQty(row.stock_qty)}</td>
     </tr>
-  `).join("");
+  `;
+  if (!isExpanded) return mainRow;
+  return mainRow + renderAuditDetailRow(partNumber);
+}
+
+function renderAuditDetailRow(partNumber) {
+  const rows = _auditRowsByPart[partNumber];
+  let content = "";
+  if (_auditLoadingPart === partNumber) {
+    content = `<div class="st-inventory-audit-empty">讀取變動紀錄中...</div>`;
+  } else if (!Array.isArray(rows)) {
+    content = `<div class="st-inventory-audit-empty">讀取變動紀錄中...</div>`;
+  } else if (!rows.length) {
+    content = `<div class="st-inventory-audit-empty">沒有變動紀錄</div>`;
+  } else {
+    content = `
+      <table class="st-inventory-audit-table">
+        <thead>
+          <tr>
+            <th>時間</th>
+            <th>舊值</th>
+            <th>新值</th>
+            <th>差異</th>
+            <th>reason</th>
+            <th>actor</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(log => `
+            <tr>
+              <td>${esc(formatDateTime(log.changed_at))}</td>
+              <td class="num">${formatAuditQty(log.old_qty)}</td>
+              <td class="num">${formatAuditQty(log.new_qty)}</td>
+              <td class="num ${Number(log.delta || 0) < 0 ? "neg" : "pos"}">${formatSignedQty(log.delta)}</td>
+              <td>${esc(log.reason || "")}</td>
+              <td>${esc(log.actor || "")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+  return `
+    <tr class="st-inventory-audit-row">
+      <td colspan="3">
+        <div class="st-inventory-audit-panel">${content}</div>
+      </td>
+    </tr>
+  `;
+}
+
+function bindInventoryRowClicks(body) {
+  body.querySelectorAll(".st-inventory-data-row").forEach(row => {
+    row.addEventListener("click", () => {
+      const partNumber = String(row.dataset.partNumber || "");
+      if (!partNumber) return;
+      void toggleAuditRow(partNumber);
+    });
+  });
+}
+
+async function toggleAuditRow(partNumber) {
+  if (_expandedPartNumber === partNumber) {
+    _expandedPartNumber = "";
+    renderInMainRows();
+    return;
+  }
+
+  _expandedPartNumber = partNumber;
+  renderInMainRows();
+  if (Array.isArray(_auditRowsByPart[partNumber])) return;
+
+  const token = ++_auditRequestToken;
+  _auditLoadingPart = partNumber;
+  renderInMainRows();
+  try {
+    const payload = await apiJson(`/api/system/st-inventory/audit?part_number=${encodeURIComponent(partNumber)}&limit=200`);
+    if (token !== _auditRequestToken) return;
+    _auditRowsByPart[partNumber] = Array.isArray(payload?.rows) ? payload.rows : [];
+  } catch (error) {
+    if (token !== _auditRequestToken) return;
+    _auditRowsByPart[partNumber] = [{
+      changed_at: "",
+      old_qty: null,
+      new_qty: 0,
+      delta: null,
+      reason: `讀取失敗：${error.message}`,
+      actor: "",
+    }];
+  } finally {
+    if (token === _auditRequestToken) {
+      _auditLoadingPart = "";
+      renderInMainRows();
+    }
+  }
 }
 
 function formatQty(value) {
   const num = Number(value || 0);
   if (!Number.isFinite(num)) return "0";
   return Number.isInteger(num) ? String(num) : String(Math.round(num * 1000000) / 1000000);
+}
+
+function formatAuditQty(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  return formatQty(value);
+}
+
+function formatSignedQty(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const num = Number(value || 0);
+  if (!Number.isFinite(num)) return "-";
+  const formatted = formatQty(num);
+  return num > 0 ? `+${formatted}` : formatted;
 }
 
 function setBusy(nextBusy) {

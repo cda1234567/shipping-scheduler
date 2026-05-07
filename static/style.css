@@ -517,6 +517,94 @@ body.edit-auth-readonly #bom-upload-area {
   white-space: nowrap;
 }
 
+.st-inventory-data-row {
+  cursor: pointer;
+}
+
+.st-inventory-data-row:hover {
+  background: #f8fafc;
+}
+
+.st-inventory-data-row.expanded {
+  background: #f8fafc;
+}
+
+.st-inventory-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.st-inventory-arrow {
+  width: 14px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.st-inventory-audit-row td {
+  padding: 0;
+  background: #f8fafc;
+}
+
+.st-inventory-audit-panel {
+  padding: 10px 12px 12px 33px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.st-inventory-audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.st-inventory-audit-table th,
+.st-inventory-audit-table td {
+  padding: 7px 9px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  vertical-align: top;
+}
+
+.st-inventory-audit-table th {
+  background: #f3f4f6;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.st-inventory-audit-table td.num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.st-inventory-audit-table td.pos {
+  color: #047857;
+}
+
+.st-inventory-audit-table td.neg {
+  color: #b91c1c;
+}
+
+.st-inventory-audit-empty {
+  padding: 10px 12px;
+  color: #8e8e93;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
 .st-inventory-empty {
   text-align: center;
   color: #8e8e93;

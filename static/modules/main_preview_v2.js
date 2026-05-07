@@ -431,6 +431,18 @@ function moveSelectionLeftAwayFromFrozenBoundary() {
     if (selectedCol == null || selectedRow == null || selectedCol <= 0) return false;
 
     const nextCol = selectedCol - 1;
+    const frozenCol = Number(sheet.frozen?.range?.column_focus ?? -1);
+    const firstScrollableCol = frozenCol + 1;
+    if (frozenCol < 0) return false;
+
+    const scrollX = stage.querySelector(".luckysheet-scrollbar-x");
+    const currentLeft = Number(scrollX?.scrollLeft || 0);
+    if (nextCol >= firstScrollableCol) {
+      const frozenWidth = getColumnLeft(sheet, firstScrollableCol);
+      const nextVisibleLeft = getColumnLeft(sheet, nextCol) - currentLeft;
+      if (nextVisibleLeft >= frozenWidth) return false;
+    }
+
     ls.setRangeShow({ row: [selectedRow, selectedRow], column: [nextCol, nextCol] });
     adjustFrozenBoundaryScrollLeft(nextCol);
     return true;
@@ -465,7 +477,7 @@ function adjustFrozenBoundaryScrollLeft(focusCol = null) {
     const frozenWidth = getColumnLeft(sheet, firstScrollableCol);
     const selectedLeft = getColumnLeft(sheet, selectedCol);
     const visibleLeft = selectedLeft - currentLeft;
-    const margin = 8;
+    const margin = 0;
     if (visibleLeft >= frozenWidth + margin) return;
 
     const targetLeft = Math.max(0, selectedLeft - frozenWidth - margin);

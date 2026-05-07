@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.27"
+APP_VERSION = "v2026.05.07.28"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔預覽 v2 左方向鍵改由系統接管，避免 Luckysheet 把游標捲進凍結欄底下。"
+APP_HEADLINE = "ST 庫存 tab 可展開 audit history，主檔預覽 v2 左方向鍵只在凍結邊界必要時接管。"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存歷史與左方向鍵接管修正",
+        "items": [
+            "ST 庫存 tab 每筆料號可點擊展開，直接查看該料號的 ST 庫存變動紀錄；同時間只保留一筆展開。",
+            "展開列會列出時間、舊值、新值、差異、reason 與 actor；沒有 audit log 時顯示「沒有變動紀錄」。",
+            "主檔預覽 v2 的 ArrowLeft 改成只有下一欄會被 A/B 凍結欄遮住時才接管，平常交回 Luckysheet 預設處理以降低 lag。",
+            "凍結邊界左推 margin 改為 0；進入凍結欄本身時 scrollLeft 歸零，讓游標顯示在凍結欄高亮。",
+        ],
+    },
     {
         "title": "ST 庫存 tab 與主檔補料修正同步",
         "items": [
