@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.18"
+APP_VERSION = "v2026.05.07.19"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔 cell 改補料時同步 order_supplements，發料單跟主檔對齊"
+APP_HEADLINE = "committed 副檔下載時即時重建，不再用 frozen 快照"
 APP_CHANGELOG = [
+    {
+        "title": "已發料副檔下載即時重建",
+        "items": [
+            "committed merge draft 下載不再直接回傳 commit 當下 frozen 的副檔 xlsx。",
+            "單筆與批次已發料副檔下載會用當下主檔庫存、最新 order_supplements / order_decisions 與 BOM 重新跑副檔規劃並寫到 temp 檔後回傳。",
+            "committed_merge_drafts 仍保留原紀錄作為歷史 audit trail，不會在下載時覆寫 DB 或舊副檔。",
+        ],
+    },
     {
         "title": "主檔補料 cell 同步發料單補料來源",
         "items": [

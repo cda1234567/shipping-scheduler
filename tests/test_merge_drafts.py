@@ -34,25 +34,128 @@ class MergeDraftDetailTests(unittest.TestCase):
 
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
 
-    def test_download_selected_committed_merge_drafts_uses_latest_committed_files(self):
+    def test_download_selected_committed_merge_drafts_rebuilds_from_live_stock_and_supplements(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            draft_file = Path(temp_dir) / "draft.xlsx"
-            draft_file.write_bytes(b"xlsx")
+            root = Path(temp_dir)
+            main_path = root / "main.xlsx"
+            main_path.write_bytes(b"main")
+            source_path = root / "bom.xlsx"
 
-            with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", return_value={"id": 7}), \
-                 patch("app.services.merge_drafts.db.get_order", return_value={"po_number": "4500059999"}), \
-                 patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[{
-                     "filename": "01_PO#4500050000 MODEL-A.xlsx",
-                     "filepath": str(draft_file),
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.cell(row=1, column=11, value=1)
+            worksheet.cell(row=5, column=3, value="PART-1")
+            worksheet.cell(row=5, column=6, value=60)
+            worksheet.cell(row=5, column=7, value=5)
+            worksheet.cell(row=5, column=8, value=7)
+            worksheet.cell(row=5, column=9, value="=SUM(G5,H5)")
+            worksheet.cell(row=5, column=10, value="=I5-F5")
+            workbook.save(source_path)
+            workbook.close()
+
+            bom = {
+                "id": "bom-1",
+                "filename": "bom.xlsx",
+                "filepath": str(source_path),
+                "model": "MODEL-A",
+                "group_model": "MODEL-A",
+                "order_qty": 1,
+            }
+
+            with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", return_value={"id": 7, "order_id": 42, "status": "committed"}), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 42, "po_number": "4500059999", "model": "MODEL-A", "order_qty": 1}), \
+                 patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
+                     "main_file_path": str(main_path),
+                 }.get(key, default)), \
+                 patch("app.services.merge_drafts.db.get_bom_files_by_models", return_value=[bom]), \
+                 patch("app.services.merge_drafts.db.get_bom_file", return_value=bom), \
+                 patch("app.services.merge_drafts.db.get_bom_components", return_value=[{
+                     "part_number": "PART-1",
+                     "description": "Resistor",
+                     "needed_qty": 60,
+                     "prev_qty_cs": 0,
+                     "is_dash": 0,
                  }]), \
+                 patch("app.services.merge_drafts.db.get_order_decisions", return_value={42: {}}), \
+                 patch("app.services.merge_drafts.db.get_order_supplements", return_value={42: {"PART-1": 20}}), \
+                 patch("app.services.merge_drafts.db.get_st_inventory_stock", return_value={}), \
+                 patch("app.services.merge_drafts.db.replace_merge_draft") as mock_replace_draft, \
+                 patch("app.services.merge_drafts.db.replace_merge_draft_files") as mock_replace_files, \
+                 patch("app.services.merge_drafts._ensure_editable_bom_for_draft", side_effect=lambda bom, **kwargs: bom), \
+                 patch("app.services.merge_drafts._build_running_stock", return_value={"PART-1": 50}), \
+                 patch("app.services.merge_drafts._load_effective_moq", return_value={}), \
+                 patch("app.services.merge_drafts.save_workbook_with_recalc", side_effect=lambda workbook, output_path: workbook.save(output_path)), \
                  patch("app.services.merge_drafts._build_download_response", return_value="ok") as mock_response:
                 result = merge_drafts.download_selected_committed_merge_drafts([42])
 
         self.assertEqual(result, "ok")
         entries = mock_response.call_args.args[0]
+        self.assertEqual(len(entries), 1)
+        self.assertNotEqual(entries[0]["path"], source_path)
+        self.assertTrue(entries[0]["download_name"].startswith("4500059999_MODEL-A_"))
+        self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
+        mock_replace_draft.assert_not_called()
+        mock_replace_files.assert_not_called()
+
+        rebuilt = load_workbook(entries[0]["path"], data_only=False)
+        try:
+            sheet = rebuilt.active
+            self.assertEqual(sheet.cell(row=5, column=7).value, 50)
+            self.assertEqual(sheet.cell(row=5, column=8).value, 20)
+            self.assertEqual(sheet.cell(row=5, column=10).value, "=I5-F5")
+        finally:
+            rebuilt.close()
+
+    def test_download_active_merge_draft_keeps_existing_file_flow(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            draft_file = Path(temp_dir) / "draft.xlsx"
+            draft_file.write_bytes(b"xlsx")
+
+            with patch("app.services.merge_drafts.db.get_merge_draft", return_value={"id": 7, "order_id": 42, "status": "active"}), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"po_number": "4500059999"}), \
+                 patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[{
+                     "filename": "01_PO#4500050000 MODEL-A.xlsx",
+                     "filepath": str(draft_file),
+                 }]), \
+                 patch("app.services.merge_drafts._rebuild_committed_merge_draft_files") as mock_rebuild_committed, \
+                 patch("app.services.merge_drafts._build_download_response", return_value="ok") as mock_response:
+                result = merge_drafts.download_merge_draft(7)
+
+        self.assertEqual(result, "ok")
+        mock_rebuild_committed.assert_not_called()
+        entries = mock_response.call_args.args[0]
         self.assertEqual(entries[0]["path"], draft_file)
         self.assertEqual(entries[0]["download_name"], "01_4500059999 MODEL-A.xlsx")
-        self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
+
+    def test_download_committed_merge_draft_rebuilds_instead_of_serving_frozen_file(self):
+        rebuilt_file = Path(tempfile.gettempdir()) / "rebuilt-committed-draft.xlsx"
+        rebuilt_file.write_bytes(b"xlsx")
+        frozen_file = Path(tempfile.gettempdir()) / "frozen-committed-draft.xlsx"
+        frozen_file.write_bytes(b"old")
+        try:
+            with patch("app.services.merge_drafts.db.get_merge_draft", return_value={"id": 7, "order_id": 42, "status": "committed"}), \
+                 patch("app.services.merge_drafts.db.get_order") as mock_get_order, \
+                 patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[{
+                     "filename": "frozen.xlsx",
+                     "filepath": str(frozen_file),
+                 }]), \
+                 patch("app.services.merge_drafts._rebuild_committed_merge_draft_files", return_value=[{
+                     "path": rebuilt_file,
+                     "download_name": "rebuilt.xlsx",
+                 }]) as mock_rebuild_committed, \
+                 patch("app.services.merge_drafts._build_download_response", return_value="ok") as mock_response:
+                result = merge_drafts.download_merge_draft(7)
+
+            self.assertEqual(result, "ok")
+            mock_rebuild_committed.assert_called_once_with({"id": 7, "order_id": 42, "status": "committed"}, file_id=None)
+            mock_get_order.assert_not_called()
+            entries = mock_response.call_args.args[0]
+            self.assertEqual(entries[0]["path"], rebuilt_file)
+            self.assertEqual(entries[0]["download_name"], "rebuilt.xlsx")
+            self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
+        finally:
+            rebuilt_file.unlink(missing_ok=True)
+            frozen_file.unlink(missing_ok=True)
 
     def test_build_download_response_saves_zip_to_server_download_dir_when_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:

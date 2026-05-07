@@ -4,6 +4,7 @@ import io
 import logging
 import re
 import shutil
+import tempfile
 import time
 import zipfile
 from datetime import datetime, timedelta
@@ -600,8 +601,8 @@ def _plan_order_draft(
     }
 
 
-def _write_draft_files(draft_id: int, file_plans: list[dict]) -> list[dict]:
-    draft_dir = MERGE_DRAFT_DIR / f"draft_{draft_id}"
+def _write_draft_files(draft_id: int, file_plans: list[dict], *, root_dir: Path | None = None) -> list[dict]:
+    draft_dir = (root_dir or MERGE_DRAFT_DIR) / f"draft_{draft_id}"
     draft_dir.mkdir(parents=True, exist_ok=True)
     written: list[dict] = []
 
@@ -977,10 +978,77 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
     return f"{updated_stem}{path.suffix}" if updated_stem != path.stem else filename
 
 
+def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = None) -> list[dict]:
+    draft_id = int(draft["id"])
+    order_id = int(draft["order_id"])
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(404, "找不到已發料訂單")
+
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先載入主檔，才能下載已發料副檔")
+
+    requested_bom_file_ids: set[str] | None = None
+    if file_id is not None:
+        requested_files = [
+            item for item in db.get_merge_draft_files(draft_id)
+            if int(item.get("id", -1)) == file_id
+        ]
+        if not requested_files:
+            raise HTTPException(404, "找不到副檔檔案")
+        requested_bom_file_ids = {
+            str(item.get("bom_file_id") or "").strip()
+            for item in requested_files
+            if str(item.get("bom_file_id") or "").strip()
+        }
+
+    bom_files = [
+        _ensure_editable_bom_for_draft(bom)
+        for bom in db.get_bom_files_by_models([str(order.get("model") or "")])
+    ]
+    if requested_bom_file_ids is not None:
+        bom_files = [
+            bom for bom in bom_files
+            if str(bom.get("id") or "").strip() in requested_bom_file_ids
+        ]
+    if not bom_files:
+        raise HTTPException(404, "已發料訂單沒有可下載的副檔")
+
+    decisions = _get_persisted_decision_map([order_id]).get(order_id, {})
+    supplements = _get_persisted_supplement_map([order_id]).get(order_id, {})
+    plan = _plan_order_draft(
+        order,
+        draft,
+        bom_files,
+        _build_running_stock(main_path),
+        _load_effective_moq(main_path),
+        db.get_st_inventory_stock(),
+        decisions=decisions,
+        supplements=supplements,
+    )
+
+    temp_root = Path(tempfile.mkdtemp(prefix=f"committed_merge_draft_{draft_id}_"))
+    written = _write_draft_files(draft_id, plan["file_plans"], root_dir=temp_root)
+    po = order.get("po_number", "")
+    return [
+        {
+            "path": Path(str(item.get("filepath") or "")),
+            "download_name": _replace_po_in_filename(item.get("filename") or "", po),
+        }
+        for item in written
+        if Path(str(item.get("filepath") or "")).exists()
+    ]
+
+
 def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
+    if draft.get("status") == "committed":
+        valid_files = _rebuild_committed_merge_draft_files(draft, file_id=file_id)
+        return _build_download_response(valid_files, archive_label="已發料副檔", request=request)
+
     order = db.get_order(int(draft["order_id"])) or {}
     po = order.get("po_number", "")
     files = db.get_merge_draft_files(draft_id)
@@ -1050,21 +1118,11 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
             missing_orders.append(order_id)
             continue
 
-        order = db.get_order(order_id) or {}
-        po = order.get("po_number", "")
-        draft_files = db.get_merge_draft_files(int(draft["id"]))
-        existing_count = 0
-        for item in draft_files:
-            file_path = Path(str(item.get("filepath") or ""))
-            if not file_path.exists():
-                continue
-            existing_count += 1
-            file_entries.append({
-                "path": file_path,
-                "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
-            })
-        if existing_count == 0:
+        rebuilt_entries = _rebuild_committed_merge_draft_files(draft)
+        if not rebuilt_entries:
             missing_orders.append(order_id)
+            continue
+        file_entries.extend(rebuilt_entries)
 
     if missing_orders:
         raise HTTPException(404, "部分已發料訂單沒有可下載的副檔")
