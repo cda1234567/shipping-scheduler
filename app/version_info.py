@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.10"
+APP_VERSION = "v2026.05.07.11"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細 X-X 標籤改成讀『主檔當下最後負結餘 cell 對應的批次』，不再用歷史最早 dispatched 訂單。"
+APP_HEADLINE = "補料明細 X-X 標籤改成『第一個負結餘批次』(開始缺料)，符合「X-X 開始缺料」語意。"
 APP_CHANGELOG = [
+    {
+        "title": "X-X 標籤改第一個負結餘批次",
+        "items": [
+            "原本 _compute_part_last_balance_batch 從右往左找最後一個非空結餘 cell，但語意應該是「開始缺料」(第一個變負那批)。",
+            "改成從左往右掃結餘 col，找第一個 < 0 的批次 code。",
+            "OC-70019B-TAB 5-1 結餘 -312, 5-2 結餘 -832 → 標 5-1（之前標 5-2）；IC-AZ1117CH 只在 4-7 變負 → 標 4-7。",
+        ],
+    },
     {
         "title": "X-X 標籤對應主檔當下狀態",
         "items": [

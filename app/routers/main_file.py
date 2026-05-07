@@ -31,7 +31,7 @@ from ..services.main_file_recalc import recalc_batch_balances_for_cell
 
 
 def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
-    """讀主檔每個料件 row，找最後一個非空結餘 cell 對應的批次 code。"""
+    """讀主檔每個料件 row，找『第一個負結餘』cell 對應的批次 code（語意：X-X 開始缺料）。"""
     try:
         wb = openpyxl.load_workbook(main_path, data_only=True, read_only=True)
     except Exception:
@@ -54,14 +54,20 @@ def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
             part = str(row[0] or "").strip().upper()
             if not part or part in result:
                 continue
-            for col_idx, code in reversed(sorted_batches):
+            # 從左往右找第一個負結餘
+            for col_idx, code in sorted_batches:
                 bal_idx = col_idx + 2 - 1
                 if bal_idx >= len(row):
                     continue
                 v = row[bal_idx]
-                if v is not None and str(v).strip() != "":
-                    result[part] = code
-                    break
+                if v is None or str(v).strip() == "":
+                    continue
+                try:
+                    if float(v) < 0:
+                        result[part] = code
+                        break
+                except (TypeError, ValueError):
+                    continue
         return result
     finally:
         wb.close()
