@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.9"
+APP_VERSION = "v2026.05.07.10"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "雙擊跳主檔會跟著卡片標的批次 code 跳到對應結餘 cell，不再都跳到最後非空 cell。"
+APP_HEADLINE = "補料明細 X-X 標籤改成讀『主檔當下最後負結餘 cell 對應的批次』，不再用歷史最早 dispatched 訂單。"
 APP_CHANGELOG = [
+    {
+        "title": "X-X 標籤對應主檔當下狀態",
+        "items": [
+            "原本 X-X 標籤是『最早 dispatched 過此料件的訂單』（譬如 IC-AZ1117CH 標 1-3），跟主檔當下狀態無關，使用者覺得不對。",
+            "改成 backend 直接讀主檔，每個料件 row 從右往左找最後一個非空結餘 cell 對應的批次 code，當作該料件『目前缺料位置』的批次。",
+            "範例：IC-AZ1117CH-ADJTRG1-TAB 主檔最後結餘在 4-7（-548），標籤改顯示 4-7；OC-70019B-TAB 最後結餘在 5-2（-832），標籤顯示 5-2。",
+            "找不到時 fallback 到 dispatch_records 最早出現的訂單。",
+        ],
+    },
     {
         "title": "雙擊跳主檔對齊卡片批次",
         "items": [

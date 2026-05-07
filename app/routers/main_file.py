@@ -26,7 +26,45 @@ from ..services.main_reader import (
     update_vendor,
 )
 from ..services.local_time import local_now
+import re as _re_main
 from ..services.main_file_recalc import recalc_batch_balances_for_cell
+
+
+def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
+    """讀主檔每個料件 row，找最後一個非空結餘 cell 對應的批次 code。"""
+    try:
+        wb = openpyxl.load_workbook(main_path, data_only=True, read_only=True)
+    except Exception:
+        return {}
+    try:
+        ws = wb.worksheets[0]
+        batch_code_re = _re_main.compile(r"^\d+-\d+$")
+        batch_cols: list[tuple[int, str]] = []
+        for col_idx, cell in enumerate(next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ()), start=1):
+            value = str(cell or "").strip()
+            if batch_code_re.match(value):
+                batch_cols.append((col_idx, value))
+        if not batch_cols:
+            return {}
+        result: dict[str, str] = {}
+        sorted_batches = sorted(batch_cols, key=lambda b: b[0])
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            part = str(row[0] or "").strip().upper()
+            if not part or part in result:
+                continue
+            for col_idx, code in reversed(sorted_batches):
+                bal_idx = col_idx + 2 - 1
+                if bal_idx >= len(row):
+                    continue
+                v = row[bal_idx]
+                if v is not None and str(v).strip() != "":
+                    result[part] = code
+                    break
+        return result
+    finally:
+        wb.close()
 from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
@@ -145,7 +183,7 @@ async def get_main_data():
         "live_stock": live_stock,
         "vendors": vendors,
         "purchase_reminder_statuses": db.get_purchase_reminder_statuses(),
-        "part_first_order": db.get_part_first_dispatched_order_code(),
+        "part_first_order": _compute_part_last_balance_batch(main_path) or db.get_part_first_dispatched_order_code(),
         "part_count": int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),
         "filename": db.get_setting("main_filename") or Path(main_path).name,
