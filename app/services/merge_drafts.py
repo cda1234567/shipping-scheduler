@@ -435,12 +435,15 @@ def _build_download_response(file_entries: list[dict], archive_label: str = "副
     used_names: set[str] = set()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for entry in file_entries:
-            target_name = entry["download_name"]
-            stem = Path(target_name).stem
-            suffix = Path(target_name).suffix or entry["path"].suffix
+            download_name = entry["download_name"]
+            subdir = str(entry.get("subdir") or "").strip().strip("/\\")
+            target_name = f"{subdir}/{download_name}" if subdir else download_name
+            stem = Path(download_name).stem
+            suffix = Path(download_name).suffix or Path(entry["path"]).suffix
             counter = 1
             while target_name in used_names:
-                target_name = f"{stem}_{counter}{suffix}"
+                deduped_name = f"{stem}_{counter}{suffix}"
+                target_name = f"{subdir}/{deduped_name}" if subdir else deduped_name
                 counter += 1
             used_names.add(target_name)
             zf.write(str(entry["path"]), target_name)
@@ -978,6 +981,51 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
     return f"{updated_stem}{path.suffix}" if updated_stem != path.stem else filename
 
 
+def _sanitize_committed_archive_piece(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r'[\\/:*?"<>|]+', " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .")
+    return text
+
+
+def _format_committed_archive_date(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.strptime(text[:10], "%Y-%m-%d")
+    except ValueError:
+        return ""
+    return f"{parsed.year}.{parsed.month}.{parsed.day}"
+
+
+def _format_committed_archive_subdir(order: dict) -> str:
+    code = _sanitize_committed_archive_piece(order.get("code"))
+    po_number = _sanitize_committed_archive_piece(order.get("po_number"))
+    model = _sanitize_committed_archive_piece(order.get("model"))
+    ship_date = _format_committed_archive_date(order.get("delivery_date"))
+
+    prefix_parts: list[str] = []
+    if code:
+        prefix_parts.append(code)
+    if po_number:
+        prefix_parts.append(f"PO#{po_number}")
+    if model:
+        prefix_parts.append(model)
+
+    prefix = " ".join(prefix_parts)
+    date_part = f"{ship_date} 出貨" if ship_date else ""
+    if prefix and date_part:
+        return f"{prefix}  {date_part}"
+    if prefix:
+        return prefix
+    if date_part:
+        return date_part
+    return _sanitize_committed_archive_piece(f"order_{order.get('id') or ''}") or "order"
+
+
 def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = None) -> list[dict]:
     draft_id = int(draft["id"])
     order_id = int(draft["order_id"])
@@ -1122,6 +1170,11 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
         if not rebuilt_entries:
             missing_orders.append(order_id)
             continue
+
+        order = db.get_order(order_id) or {"id": order_id}
+        subdir = _format_committed_archive_subdir(order)
+        for entry in rebuilt_entries:
+            entry["subdir"] = subdir
         file_entries.extend(rebuilt_entries)
 
     if missing_orders:

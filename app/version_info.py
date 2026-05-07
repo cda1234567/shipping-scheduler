@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.23"
+APP_VERSION = "v2026.05.07.24"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "dispatched 訂單塗色判斷把該訂單已扣 ST 量加回，避免被自己 commit 過的扣帳影響判斷。"
+APP_HEADLINE = "已發料 tab 多選下載副檔 zip 時，每筆訂單會各自放進以訂單資訊命名的資料夾。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料副檔 zip 依訂單分資料夾",
+        "items": [
+            "已發料 tab 多選「下載副檔」時，zip 內每筆訂單會建立 `{code} PO#{po_number} {model}  {YYYY.M.D} 出貨` 資料夾。",
+            "資料夾名稱會清掉 Windows 不合法字元；缺少欄位時自動省略，資料不足時 fallback 成 `order_{id}`。",
+            "active draft 批次下載仍維持原本平鋪 zip；單筆已發料副檔下載也保留直接回傳單檔的行為。",
+        ],
+    },
     {
         "title": "已發料發料單 ST 塗色加回自己扣帳",
         "items": [

@@ -93,6 +93,7 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertNotEqual(entries[0]["path"], source_path)
         self.assertTrue(entries[0]["download_name"].startswith("4500059999_MODEL-A_"))
+        self.assertEqual(entries[0]["subdir"], "PO#4500059999 MODEL-A")
         self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
         mock_replace_draft.assert_not_called()
         mock_replace_files.assert_not_called()
@@ -189,6 +190,55 @@ class MergeDraftDetailTests(unittest.TestCase):
             self.assertTrue(saved_path.exists())
             with zipfile.ZipFile(saved_path) as zf:
                 self.assertEqual(set(zf.namelist()), {"first.xlsx", "second.xlsx"})
+
+    def test_download_selected_committed_merge_drafts_groups_zip_entries_by_order_subdir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            download_dir = root / "downloads"
+            download_dir.mkdir()
+            first = root / "draft-a.xlsx"
+            second = root / "draft-b.xlsx"
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            request = SimpleNamespace(query_params={"server_save": "1"})
+
+            def fake_order(order_id):
+                return {
+                    1: {
+                        "id": 1,
+                        "code": "4-1",
+                        "po_number": "4500059323",
+                        "model": "TA7-9",
+                        "delivery_date": "2026-07-03",
+                    },
+                    2: {
+                        "id": 2,
+                        "code": "4-2",
+                        "po_number": "4500059324",
+                        "model": "TA8",
+                        "delivery_date": "2026-07-04",
+                    },
+                }[order_id]
+
+            with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", side_effect=lambda order_id: {"id": order_id + 10, "order_id": order_id, "status": "committed"}), \
+                 patch("app.services.merge_drafts.db.get_order", side_effect=fake_order), \
+                 patch("app.services.merge_drafts._rebuild_committed_merge_draft_files", side_effect=[
+                     [{"path": first, "download_name": "副檔.xlsx"}],
+                     [{"path": second, "download_name": "副檔.xlsx"}],
+                 ]), \
+                 patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir), \
+                 patch("app.services.server_downloads.db.get_setting", side_effect=lambda key, default="": {
+                     "server_download_enabled": "1",
+                     "server_download_display_path": "D:\\Download\\excel",
+                 }.get(key, default)):
+                response = merge_drafts.download_selected_committed_merge_drafts([1, 2], request=request)
+
+            payload = json.loads(response.body.decode("utf-8"))
+            with zipfile.ZipFile(download_dir / payload["filename"]) as zf:
+                self.assertEqual(set(zf.namelist()), {
+                    "4-1 PO#4500059323 TA7-9  2026.7.3 出貨/副檔.xlsx",
+                    "4-2 PO#4500059324 TA8  2026.7.4 出貨/副檔.xlsx",
+                })
 
     def test_download_selected_merge_drafts_uses_server_download_dir_when_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:
