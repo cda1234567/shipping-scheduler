@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.13"
+APP_VERSION = "v2026.05.07.14"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "補料明細卡片把 X-X 標籤搬到料號下面，新增機種 / PO / 出貨日 meta 行。"
+APP_HEADLINE = "排程主刷新時順便載入已發料訂單，補料明細卡片才查得到 dispatched 訂單的機種 / PO / 出貨日。"
 APP_CHANGELOG = [
+    {
+        "title": "排程 refresh 含已發料",
+        "items": [
+            "schedule.js refresh() 的 Promise.all 加上 loadCompletedRows()，讓 _completedRows 在主畫面 init 時就有資料。",
+            "之前 _completedRows 只在用戶切到「已發料」tab 才載入，導致補料明細卡片想反查 dispatched 訂單的 model / PO / ship_date 都查不到（譬如 4-7 TDA5 顯示空白）。",
+        ],
+    },
     {
         "title": "補料明細卡片 meta 行",
         "items": [

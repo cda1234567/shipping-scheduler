@@ -90,7 +90,7 @@ export async function initSchedule(onRefreshMain) {
 }
 
 export async function refresh() {
-  await Promise.all([loadMainData(), loadStInventoryData(), loadScheduleRows(), loadBomData()]);
+  await Promise.all([loadMainData(), loadStInventoryData(), loadScheduleRows(), loadBomData(), loadCompletedRows()]);
   recalculate();
   renderSchedule();
 }
