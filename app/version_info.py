@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.24"
+APP_VERSION = "v2026.05.07.25"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "已發料 tab 多選下載副檔 zip 時，每筆訂單會各自放進以訂單資訊命名的資料夾。"
+APP_HEADLINE = "主檔預覽 v2 左方向鍵回到凍結邊界時，會把游標對齊到 A/B 凍結欄右側。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 左方向鍵凍結邊界修正",
+        "items": [
+            "ArrowLeft 監聽改到 document capture 階段，先捕捉按鍵、再等 Luckysheet 更新選區後補做捲動，避開 Luckysheet bubble handler stopPropagation 的不穩定性。",
+            "目前選區改優先讀 `luckysheet.getluckysheet_select_save()`，fallback 才讀 sheet metadata 或 `getRange()`。",
+            "捲動改用 `luckysheet.scroll({ scrollLeft })`，並依欄寬計算把第一個非凍結欄（C 欄，col index 2）對齊到 A/B 凍結欄右側，不再只 `scrollLeft -= 一欄`。",
+        ],
+    },
     {
         "title": "已發料副檔 zip 依訂單分資料夾",
         "items": [

@@ -13,6 +13,7 @@ let _suppressProgrammaticUpdates = 0;
 let _lastLoadedAt = "";
 let _partLocations = {};
 let _batchLocations = {};
+let _keyboardScrollBound = false;
 
 export async function navigateToPart(partNumber, batchCode = "") {
   const key = String(partNumber || "").trim().toUpperCase();
@@ -360,33 +361,7 @@ function mountLuckysheet(payload) {
         _luckyMounted = true;
         _suppressNextHook = false;
         // 鍵盤左推到凍結邊界時，畫面跟著往左捲（避免 cursor 被凍結 A/B 欄壓住）
-        const stage2 = document.getElementById("main-preview-v2-stage");
-        if (stage2 && !stage2.dataset.keyboardScrollBound) {
-          stage2.dataset.keyboardScrollBound = "1";
-          stage2.addEventListener("keydown", (e) => {
-            if (e.key !== "ArrowLeft" || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
-            setTimeout(() => {
-              try {
-                const ls = window.luckysheet;
-                const sh = ls?.getAllSheets?.()[0];
-                if (!sh) return;
-                const sel = (sh.luckysheet_select_save || [])[0];
-                if (!sel) return;
-                const colSelected = Array.isArray(sel.column) ? sel.column[0] : sel.column;
-                const frozenCol = sh.frozen?.range?.column_focus ?? -1;
-                if (colSelected <= frozenCol + 1) {
-                  // 進入凍結邊界，往左捲一格
-                  const scrollX = stage2.querySelector(".luckysheet-scrollbar-x");
-                  if (scrollX && scrollX.scrollLeft > 0) {
-                    const colConfig = sh.config?.columnlen || {};
-                    const step = Number(colConfig[colSelected] || 73);
-                    scrollX.scrollLeft = Math.max(0, scrollX.scrollLeft - step);
-                  }
-                }
-              } catch (_) {}
-            }, 30);
-          });
-        }
+        bindFrozenBoundaryKeyboardScroll();
         // Luckysheet 沒 column/row resize hook，改用 mouseup 後 dump 整個 sheet
         // 的 columnlen / rowlen 到 localStorage（debounce 200ms）
         const stage = document.getElementById("main-preview-v2-stage");
@@ -413,6 +388,98 @@ function mountLuckysheet(payload) {
       },
     },
   });
+}
+
+function bindFrozenBoundaryKeyboardScroll() {
+  if (_keyboardScrollBound) return;
+  _keyboardScrollBound = true;
+  document.addEventListener("keydown", (event) => {
+    if ((event.key !== "ArrowLeft" && event.keyCode !== 37) || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+
+    const stage = document.getElementById("main-preview-v2-stage");
+    if (!stage || (!stage.contains(event.target) && !stage.contains(document.activeElement))) return;
+
+    const inputBox = document.getElementById("luckysheet-input-box");
+    const inputTop = inputBox ? Number.parseInt(window.getComputedStyle(inputBox).top || "0", 10) : 0;
+    if (inputTop > 0 && event.target?.closest?.(".luckysheet-input-box")) return;
+
+    setTimeout(adjustFrozenBoundaryScrollLeft, 30);
+  }, true);
+}
+
+function adjustFrozenBoundaryScrollLeft() {
+  try {
+    const stage = document.getElementById("main-preview-v2-stage");
+    const ls = window.luckysheet;
+    const sheet = ls?.getAllSheets?.()[0];
+    if (!stage || !ls || !sheet) return;
+
+    const selection = getCurrentLuckysheetSelection(ls, sheet);
+    const selectedCol = getSelectionFocusColumn(selection);
+    if (selectedCol == null) return;
+
+    const frozenCol = Number(sheet.frozen?.range?.column_focus ?? -1);
+    const firstScrollableCol = frozenCol + 1;
+    if (frozenCol < 0 || selectedCol < firstScrollableCol) return;
+
+    const scrollX = stage.querySelector(".luckysheet-scrollbar-x");
+    const currentLeft = Number(scrollX?.scrollLeft || 0);
+    if (currentLeft <= 0) return;
+
+    const frozenWidth = getColumnLeft(sheet, firstScrollableCol);
+    const selectedLeft = getColumnLeft(sheet, selectedCol);
+    const visibleLeft = selectedLeft - currentLeft;
+    const margin = 8;
+    if (visibleLeft >= frozenWidth + margin) return;
+
+    const targetLeft = Math.max(0, selectedLeft - frozenWidth - margin);
+    setLuckysheetScrollLeft(ls, stage, targetLeft);
+  } catch (_) {}
+}
+
+function getCurrentLuckysheetSelection(ls, sheet) {
+  const legacySelection = ls.getluckysheet_select_save?.();
+  if (Array.isArray(legacySelection) && legacySelection.length > 0) return legacySelection[legacySelection.length - 1];
+
+  const sheetSelection = sheet?.luckysheet_select_save;
+  if (Array.isArray(sheetSelection) && sheetSelection.length > 0) return sheetSelection[sheetSelection.length - 1];
+
+  const range = ls.getRange?.();
+  if (Array.isArray(range) && range.length > 0) return range[range.length - 1];
+  return null;
+}
+
+function getSelectionFocusColumn(selection) {
+  if (!selection) return null;
+  const column = selection.column_focus ?? (Array.isArray(selection.column) ? selection.column[0] : selection.column);
+  const colNumber = Number(column);
+  return Number.isFinite(colNumber) ? colNumber : null;
+}
+
+function getColumnWidth(sheet, colIndex) {
+  const customWidth = Number(sheet?.config?.columnlen?.[colIndex]);
+  if (Number.isFinite(customWidth) && customWidth > 0) return customWidth;
+  const defaultWidth = Number(sheet?.defaultColWidth || 73);
+  return Number.isFinite(defaultWidth) && defaultWidth > 0 ? defaultWidth : 73;
+}
+
+function getColumnLeft(sheet, colIndex) {
+  let left = 0;
+  for (let i = 0; i < colIndex; i++) left += getColumnWidth(sheet, i);
+  return left;
+}
+
+function setLuckysheetScrollLeft(ls, stage, scrollLeft) {
+  if (ls?.scroll) {
+    ls.scroll({ scrollLeft });
+    return;
+  }
+
+  const scrollX = stage.querySelector(".luckysheet-scrollbar-x");
+  if (scrollX) {
+    scrollX.scrollLeft = scrollLeft;
+    scrollX.dispatchEvent(new Event("scroll", { bubbles: true }));
+  }
 }
 
 function buildCelldata(sheet) {
