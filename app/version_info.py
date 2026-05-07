@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.14"
+APP_VERSION = "v2026.05.07.15"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "排程主刷新時順便載入已發料訂單，補料明細卡片才查得到 dispatched 訂單的機種 / PO / 出貨日。"
+APP_HEADLINE = "補料明細 meta 行字色改藍 (#3b82f6)，跟主操作色系一致比較明顯。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細 meta 行改藍色",
+        "items": [
+            ".shortage-meta inline color 從 #6b7280 灰色改成 #3b82f6 藍色，X-X / 機種 / PO / 出貨日讀起來更明顯。",
+        ],
+    },
     {
         "title": "排程 refresh 含已發料",
         "items": [

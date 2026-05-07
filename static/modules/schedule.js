@@ -5145,7 +5145,7 @@ function shortageItemHtml(s, isCS) {
   if (_displayPo) metaParts.push(`<span>PO ${esc(_displayPo)}</span>`);
   if (_displayShip) metaParts.push(`<span>出貨 ${esc(String(_displayShip).slice(0, 10))}</span>`);
   const metaLineHtml = metaParts.length
-    ? `<div class="shortage-meta" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px;color:#6b7280;margin-top:2px">${metaParts.join("")}</div>`
+    ? `<div class="shortage-meta" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:11px;color:#3b82f6;margin-top:2px">${metaParts.join("")}</div>`
     : "";
   const csTag = isCS ? '<span class="tag tag-cs">客供</span>' : "";
   const orderIdAttr = Number.isInteger(orderId) ? ` data-order-id="${orderId}"` : "";
