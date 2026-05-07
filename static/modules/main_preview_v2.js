@@ -126,7 +126,7 @@ export function initMainPreviewV2() {
         scrollEl.scrollLeft = scrollEl.scrollWidth;
       }
       if (window.luckysheet?.scroll) {
-        window.luckysheet.scroll({ scrollLeft: Number.MAX_SAFE_INTEGER });
+        window.luckysheet.scroll({ scrollWidth: Number.MAX_SAFE_INTEGER });
       }
     } catch (err) {
       console.error("[main_preview_v2] scrollToRight failed", err);
@@ -396,35 +396,71 @@ function bindFrozenBoundaryKeyboardScroll() {
   document.addEventListener("keydown", (event) => {
     if ((event.key !== "ArrowLeft" && event.keyCode !== 37) || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
 
+    // Luckysheet 的 .luckysheet-cell-input 是 floating div 不在 stage 子樹裡，
+    // 因此用「stage 是否可見」+「luckysheet 已 mount」當作接管條件，不檢查 event.target 位置
     const stage = document.getElementById("main-preview-v2-stage");
-    if (!stage || (!stage.contains(event.target) && !stage.contains(document.activeElement))) return;
+    if (!stage || stage.offsetParent === null || !_luckyMounted) return;
 
-    const inputBox = document.getElementById("luckysheet-input-box");
-    const inputTop = inputBox ? Number.parseInt(window.getComputedStyle(inputBox).top || "0", 10) : 0;
-    if (inputTop > 0 && event.target?.closest?.(".luckysheet-input-box")) return;
+    // 真的進入編輯模式 (cell-input contenteditable=true 且有文字) 時不接管
+    const cellInput = document.getElementById("luckysheet-input-box");
+    if (cellInput && cellInput.style.display !== "none" && cellInput.style.zIndex !== "" && Number(cellInput.style.zIndex) > 0) {
+      const inputBoxStyle = window.getComputedStyle(cellInput);
+      if (inputBoxStyle.visibility !== "hidden" && inputBoxStyle.display !== "none") {
+        const editing = !!cellInput.querySelector?.(".luckysheet-cell-input[contenteditable='true']:focus");
+        if (editing) return;
+      }
+    }
 
-    setTimeout(adjustFrozenBoundaryScrollLeft, 30);
+    if (moveSelectionLeftAwayFromFrozenBoundary()) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
   }, true);
 }
 
-function adjustFrozenBoundaryScrollLeft() {
+function moveSelectionLeftAwayFromFrozenBoundary() {
+  try {
+    const stage = document.getElementById("main-preview-v2-stage");
+    const ls = window.luckysheet;
+    const sheet = ls?.getAllSheets?.()[0];
+    if (!stage || !ls || !sheet || !ls.setRangeShow) return false;
+
+    const selection = getCurrentLuckysheetSelection(ls, sheet);
+    const selectedCol = getSelectionFocusColumn(selection);
+    const selectedRow = getSelectionFocusRow(selection);
+    if (selectedCol == null || selectedRow == null || selectedCol <= 0) return false;
+
+    const nextCol = selectedCol - 1;
+    ls.setRangeShow({ row: [selectedRow, selectedRow], column: [nextCol, nextCol] });
+    adjustFrozenBoundaryScrollLeft(nextCol);
+    return true;
+  } catch (err) {
+    console.error("[main_preview_v2] manual ArrowLeft failed", err);
+    return false;
+  }
+}
+
+function adjustFrozenBoundaryScrollLeft(focusCol = null) {
   try {
     const stage = document.getElementById("main-preview-v2-stage");
     const ls = window.luckysheet;
     const sheet = ls?.getAllSheets?.()[0];
     if (!stage || !ls || !sheet) return;
 
-    const selection = getCurrentLuckysheetSelection(ls, sheet);
-    const selectedCol = getSelectionFocusColumn(selection);
+    const selection = focusCol == null ? getCurrentLuckysheetSelection(ls, sheet) : null;
+    const selectedCol = focusCol == null ? getSelectionFocusColumn(selection) : Number(focusCol);
     if (selectedCol == null) return;
 
     const frozenCol = Number(sheet.frozen?.range?.column_focus ?? -1);
     const firstScrollableCol = frozenCol + 1;
-    if (frozenCol < 0 || selectedCol < firstScrollableCol) return;
+    if (frozenCol < 0) return;
 
     const scrollX = stage.querySelector(".luckysheet-scrollbar-x");
     const currentLeft = Number(scrollX?.scrollLeft || 0);
-    if (currentLeft <= 0) return;
+    if (selectedCol < firstScrollableCol) {
+      if (currentLeft > 0) setLuckysheetScrollLeft(ls, stage, 0);
+      return;
+    }
 
     const frozenWidth = getColumnLeft(sheet, firstScrollableCol);
     const selectedLeft = getColumnLeft(sheet, selectedCol);
@@ -456,6 +492,13 @@ function getSelectionFocusColumn(selection) {
   return Number.isFinite(colNumber) ? colNumber : null;
 }
 
+function getSelectionFocusRow(selection) {
+  if (!selection) return null;
+  const row = selection.row_focus ?? (Array.isArray(selection.row) ? selection.row[0] : selection.row);
+  const rowNumber = Number(row);
+  return Number.isFinite(rowNumber) ? rowNumber : null;
+}
+
 function getColumnWidth(sheet, colIndex) {
   const customWidth = Number(sheet?.config?.columnlen?.[colIndex]);
   if (Number.isFinite(customWidth) && customWidth > 0) return customWidth;
@@ -470,14 +513,14 @@ function getColumnLeft(sheet, colIndex) {
 }
 
 function setLuckysheetScrollLeft(ls, stage, scrollLeft) {
+  const normalizedLeft = Math.max(0, Number(scrollLeft) || 0);
   if (ls?.scroll) {
-    ls.scroll({ scrollLeft });
-    return;
+    ls.scroll({ scrollWidth: normalizedLeft });
   }
 
   const scrollX = stage.querySelector(".luckysheet-scrollbar-x");
   if (scrollX) {
-    scrollX.scrollLeft = scrollLeft;
+    scrollX.scrollLeft = normalizedLeft;
     scrollX.dispatchEvent(new Event("scroll", { bubbles: true }));
   }
 }

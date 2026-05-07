@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.25"
+APP_VERSION = "v2026.05.07.26"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔預覽 v2 左方向鍵回到凍結邊界時，會把游標對齊到 A/B 凍結欄右側。"
+APP_HEADLINE = "主檔預覽 v2 左方向鍵改由系統接管，避免 Luckysheet 把游標捲進凍結欄底下。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽 v2 左方向鍵接管修正",
+        "items": [
+            "ArrowLeft 不再用 setTimeout 等 Luckysheet 事後更新；capture 階段直接攔下按鍵，自己用 setRangeShow 移動選區。",
+            "水平捲動改用 Luckysheet 2.1.13 正確參數 `scrollWidth`，並保留 `.luckysheet-scrollbar-x` DOM scroll fallback。",
+            "當選區往左靠近 A/B 凍結欄時，依欄寬把目標欄維持在凍結欄右側；回到凍結欄本身時同步歸零 scroll。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 左方向鍵凍結邊界修正",
         "items": [
