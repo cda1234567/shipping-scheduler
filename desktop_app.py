@@ -388,6 +388,7 @@ class DesktopBridge:
                     or Path(urllib.parse.urlparse(path).path).name
                     or "download.bin"
                 )
+                warning = str(response.headers.get("X-Dispatch-Warning") or "")
         except urllib.error.HTTPError as error:
             return {"ok": False, "message": self._read_http_error(error)}
 
@@ -409,6 +410,7 @@ class DesktopBridge:
             "filename": target_path.name,
             "path": str(target_path),
             "directory": str(target_path.parent),
+            "warning": warning,
         }
 
     def minimize_window(self):

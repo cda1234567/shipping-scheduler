@@ -796,7 +796,9 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
       const ct = sRes.headers.get("content-type") || "";
       if (ct.includes("application/json")) {
         const result = await sRes.json();
-        if (result?.ok) return result;
+        if (result?.ok) {
+          return { ...result, warning: sRes.headers.get("x-dispatch-warning") || "" };
+        }
       }
     }
   }
@@ -817,14 +819,16 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
   const contentType = response.headers.get("content-type") || blob.type || "";
+  const warning = response.headers.get("x-dispatch-warning") || "";
   const shouldAskEachTime = Boolean(saveAs)
     || normalizeDownloadMode(_browserDownloadState?.download_mode || _browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
   if (shouldAskEachTime && supportsBrowserSavePicker()) {
-    return saveBlobWithBrowserPicker(blob, outputName, contentType);
+    const result = await saveBlobWithBrowserPicker(blob, outputName, contentType);
+    return { ...result, warning };
   }
   const configuredDirectoryResult = await saveBlobWithConfiguredBrowserDirectory(blob, outputName);
   if (configuredDirectoryResult) {
-    return configuredDirectoryResult;
+    return { ...configuredDirectoryResult, warning };
   }
   const blobUrl = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -837,7 +841,7 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
     URL.revokeObjectURL(blobUrl);
     anchor.remove();
   }, 1200);
-  return { ok: true, filename: outputName, path: outputName, directory: "", browser_download_started: true };
+  return { ok: true, filename: outputName, path: outputName, directory: "", browser_download_started: true, warning };
 }
 
 export function buildDownloadToastMessage(result, noun = "檔案") {
@@ -846,23 +850,25 @@ export function buildDownloadToastMessage(result, noun = "檔案") {
   const directory = normalizeDownloadText(result?.directory);
   const path = normalizeDownloadText(result?.path);
   const savedWithPicker = Boolean(result?.saved_with_picker);
+  const warning = normalizeDownloadText(result?.warning);
 
+  const withWarning = message => warning ? `${message}\n提醒：${warning}` : message;
   if (filename && directory) {
-    return `${label}已下載：${filename}\n儲存位置：${directory}`;
+    return withWarning(`${label}已下載：${filename}\n儲存位置：${directory}`);
   }
   if (filename && savedWithPicker) {
-    return `${label}已下載：${filename}\n儲存位置：你剛剛選擇的位置`;
+    return withWarning(`${label}已下載：${filename}\n儲存位置：你剛剛選擇的位置`);
   }
   if (filename && path && path !== filename) {
-    return `${label}已下載：${filename}\n儲存位置：${path}`;
+    return withWarning(`${label}已下載：${filename}\n儲存位置：${path}`);
   }
   if (filename) {
-    return `${label}已下載：${filename}`;
+    return withWarning(`${label}已下載：${filename}`);
   }
   if (path) {
-    return `${label}已下載：${path}`;
+    return withWarning(`${label}已下載：${path}`);
   }
-  return `${label}已下載`;
+  return withWarning(`${label}已下載`);
 }
 
 export function showDownloadToast(result, noun = "檔案") {

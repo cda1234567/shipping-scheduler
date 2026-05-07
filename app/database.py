@@ -2205,6 +2205,35 @@ def get_latest_committed_merge_draft_for_order(order_id: int, committed_after: s
     return result
 
 
+def get_committed_merge_draft_shortages_by_order_ids(order_ids: list[int]) -> dict[int, list[dict]]:
+    normalized_ids = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT order_id, shortages_json FROM merge_drafts "
+            f"WHERE status='committed' AND order_id IN ({placeholders}) "
+            f"ORDER BY committed_at DESC, id DESC",
+            normalized_ids,
+        ).fetchall()
+
+    result: dict[int, list[dict]] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        if order_id in result:
+            continue
+        result[order_id] = _json_loads(row["shortages_json"], [])
+    return result
+
+
 def get_expired_committed_merge_drafts(retention_days: int = 365) -> list[dict]:
     try:
         days = max(int(retention_days), 1)

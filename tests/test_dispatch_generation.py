@@ -123,6 +123,78 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws["E2"].font.sz, 9)
         wb.close()
 
+    def test_dispatch_generate_uses_committed_shortages_for_dispatched_order(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "dispatched",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "5-1",
+                "delivery_date": "2026-05-01",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "EC-80004A", "description": "Cap committed", "needed_qty": 1, "is_dash": 0},
+                {"part_number": "EC-LIVE", "description": "Live wrong", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        committed_shortages = {
+            1: [
+                {
+                    "part_number": "EC-80004A",
+                    "description": "Cap committed",
+                    "suggested_qty": 320,
+                    "shortage_amount": 320,
+                },
+            ],
+        }
+        live_calc_results = [
+            {
+                "order_id": 1,
+                "shortages": [
+                    {
+                        "part_number": "EC-LIVE",
+                        "description": "Live wrong",
+                        "suggested_qty": 171,
+                        "shortage_amount": 171,
+                    },
+                ],
+                "customer_material_shortages": [],
+            },
+        ]
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch.db.get_committed_merge_draft_shortages_by_order_ids", return_value=committed_shortages) as mock_committed, \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({"EC-LIVE": 149}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=live_calc_results) as mock_calc, \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={}), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={}), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+        mock_committed.assert_called_once_with([1])
+        mock_calc.assert_not_called()
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        parts = [
+            str(ws.cell(row=row_idx, column=3).value or "").strip()
+            for row_idx in range(1, ws.max_row + 1)
+        ]
+        self.assertIn("EC-80004A", parts)
+        self.assertNotIn("EC-LIVE", parts)
+        self.assertEqual(ws.cell(row=3, column=5).value, 320)
+        wb.close()
+
     def test_dispatch_generate_keeps_st_covered_rows_white_when_no_purchase_is_needed(self):
         orders = {
             1: {

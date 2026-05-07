@@ -227,6 +227,47 @@ def _should_highlight_dispatch_qty(part: str, qty: float, shortage_item: dict | 
     return bool(summarize_requested_supply(qty, st_stock_qty)["needs_purchase"])
 
 
+def _is_committed_status(order: dict) -> bool:
+    return str(order.get("status") or "").strip().lower() in {"dispatched", "completed"}
+
+
+def _build_dispatch_result_by_order(
+    orders: list[dict],
+    bom_map: dict[str, list[dict]],
+) -> tuple[dict[int, dict], list[int]]:
+    committed_order_ids = [int(order["id"]) for order in orders if _is_committed_status(order)]
+    active_orders = [order for order in orders if not _is_committed_status(order)]
+
+    result_by_order: dict[int, dict] = {}
+    if committed_order_ids:
+        committed_shortages = db.get_committed_merge_draft_shortages_by_order_ids(committed_order_ids)
+        for order_id, shortages in committed_shortages.items():
+            result_by_order[order_id] = {
+                "order_id": order_id,
+                "shortages": shortages or [],
+                "customer_material_shortages": [],
+            }
+
+    fallback_order_ids = [
+        order_id
+        for order_id in committed_order_ids
+        if order_id not in result_by_order
+    ]
+    fallback_order_id_set = set(fallback_order_ids)
+    calc_orders = [
+        *active_orders,
+        *[order for order in orders if int(order["id"]) in fallback_order_id_set],
+    ]
+    if calc_orders:
+        stock, moq, dispatched_consumption = _load_shortage_inputs()
+        calc_results = calc_run(calc_orders, bom_map, stock, moq, dispatched_consumption, db.get_st_inventory_stock())
+        for result in calc_results:
+            if result.get("order_id") is not None:
+                result_by_order[int(result["order_id"])] = result
+
+    return result_by_order, fallback_order_ids
+
+
 @router.post("/dispatch/generate")
 async def generate(req: DispatchRequest, request: Request):
     bom_map = db.get_all_bom_components_by_model()
@@ -241,9 +282,7 @@ async def generate(req: DispatchRequest, request: Request):
     if not orders:
         raise HTTPException(400, "勾選的訂單沒有可生成的待處理內容")
 
-    stock, moq, dispatched_consumption = _load_shortage_inputs()
-    calc_results = calc_run(orders, bom_map, stock, moq, dispatched_consumption, db.get_st_inventory_stock())
-    result_by_order = {int(result.get("order_id")): result for result in calc_results if result.get("order_id") is not None}
+    result_by_order, fallback_order_ids = _build_dispatch_result_by_order(orders, bom_map)
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
     active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
@@ -383,9 +422,15 @@ async def generate(req: DispatchRequest, request: Request):
     generate_dispatch_form(groups, out_path)
     db.log_activity("dispatch_generated", f"生成發料單，{len(groups)} 筆訂單")
 
-    return maybe_server_save_response(
+    response = maybe_server_save_response(
         request,
         out_path,
         filename,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+    if fallback_order_ids:
+        response.headers["X-Dispatch-Warning"] = (
+            "部分已發料訂單找不到當時 commit 快照，已改用主檔當下庫存重算；"
+            "結果可能受後續扣帳影響。"
+        )
+    return response
