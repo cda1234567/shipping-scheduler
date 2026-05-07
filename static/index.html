@@ -507,7 +507,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2");
+    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2" || btn.dataset.tab === "completed");
     if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
