@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.17"
+APP_VERSION = "v2026.05.07.18"
 APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "發料單改成主檔即時+加回該訂單已扣的量，主檔變動發料單跟著變，不再用 committed snapshot"
+APP_HEADLINE = "主檔 cell 改補料時同步 order_supplements，發料單跟主檔對齊"
 APP_CHANGELOG = [
+    {
+        "title": "主檔補料 cell 同步發料單補料來源",
+        "items": [
+            "`/api/main-file/cell` 手動修改批次區補料欄時，會依批次 code 找回訂單並只更新該訂單該料號的 order_supplements。",
+            "其他料件補料保留不動；用量欄、結餘欄與批次區外 cell 不會同步 order_supplements。",
+        ],
+    },
     {
         "title": "已發料發料單重產改用主檔即時庫存",
         "items": [

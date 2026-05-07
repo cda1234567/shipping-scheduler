@@ -1192,6 +1192,18 @@ def get_order(order_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def get_order_by_code(code: str) -> dict | None:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM orders WHERE code=? ORDER BY id DESC LIMIT 1",
+            (normalized_code,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
 def remove_duplicate_pending_orders() -> dict:
     """移除 pending/merged 中與已發料 PO+機種 完全重複的訂單。回傳 {removed, duplicates}。"""
     with get_conn() as conn:

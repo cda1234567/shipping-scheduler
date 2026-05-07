@@ -27,7 +27,7 @@ from ..services.main_reader import (
 )
 from ..services.local_time import local_now
 import re as _re_main
-from ..services.main_file_recalc import recalc_batch_balances_for_cell
+from ..services.main_file_recalc import find_first_batch_col, recalc_batch_balances_for_cell
 
 
 def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
@@ -198,6 +198,64 @@ async def get_main_data():
     _main_data_cache = result
     _main_data_cache_mtime = current_mtime
     return result
+
+
+def _to_supplement_qty(value) -> float | None:
+    if value is None or str(value).strip() == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_supplement_updates(order_id: int, part_number: str, supplement_qty: float) -> dict[int, dict[str, float]]:
+    existing = db.get_order_supplements([order_id]).get(order_id) or {}
+    merged = {
+        str(part or "").strip().upper(): float(qty or 0)
+        for part, qty in existing.items()
+        if str(part or "").strip()
+    }
+    merged[part_number] = float(supplement_qty or 0)
+    return {order_id: merged}
+
+
+def _sync_order_supplement_from_main_cell(ws, *, row: int, col: int, value) -> bool:
+    """主檔補料欄是唯一真相；手動改補料 cell 後同步 order_supplements。"""
+    if row <= 1:
+        return False
+
+    first_batch_col = find_first_batch_col(ws)
+    if first_batch_col is None or col < first_batch_col or col > ws.max_column:
+        return False
+
+    offset = (col - first_batch_col) % 3
+    if offset != 0:
+        return False
+
+    batch_first_col = col - offset
+    batch_code = str(ws.cell(row=1, column=batch_first_col).value or "").strip()
+    if not _re_main.match(r"^\d+-\d+$", batch_code):
+        return False
+
+    part_number = str(ws.cell(row=row, column=1).value or "").strip().upper()
+    if not part_number:
+        return False
+
+    supplement_qty = _to_supplement_qty(value)
+    if supplement_qty is None:
+        return False
+
+    order = db.get_order_by_code(batch_code)
+    if not order or order.get("id") is None:
+        return False
+
+    order_id = int(order["id"])
+    db.replace_order_supplements(
+        [order_id],
+        _merge_supplement_updates(order_id, part_number, supplement_qty),
+    )
+    return True
 
 
 @router.patch("/main-file/moq")
@@ -542,6 +600,12 @@ async def edit_main_cell(req: EditCellRequest):
         snapshot_stock=snapshot_stock,
     )
     wb.save(main_path)
+    supplement_synced = _sync_order_supplement_from_main_cell(
+        ws,
+        row=req.row,
+        col=req.col,
+        value=cell.value,
+    )
     wb.close()
 
     part_number = str(recalc_result.get("part_number") or "").strip().upper()
@@ -571,5 +635,6 @@ async def edit_main_cell(req: EditCellRequest):
         "old_value": str(old_value or ""),
         "new_value": str(new_value),
         "affected_cells": recalc_result.get("affected_cells") or [],
+        "supplement_synced": supplement_synced,
         "schedule_refresh_required": schedule_refresh_required,
     }

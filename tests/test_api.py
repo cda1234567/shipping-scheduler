@@ -2238,6 +2238,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.main_file.db.get_snapshot", return_value={"PART-1": {"stock_qty": 100}}), \
                  patch("app.routers.main_file.db.update_snapshot_stock", return_value=1) as mock_update_stock, \
                  patch("app.routers.main_file.refresh_snapshot_from_main") as mock_refresh, \
+                 patch("app.routers.main_file.db.get_order_by_code", return_value=None), \
                  patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[]), \
                  patch("app.routers.main_file.db.log_activity"):
                 response = self.client.patch("/api/main-file/cell", json={
@@ -2265,6 +2266,140 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(saved_sheet.cell(row=2, column=14).value, 65)
             finally:
                 saved.close()
+
+    def test_edit_main_supplement_cell_syncs_order_supplements_and_preserves_other_parts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "庫存主檔"
+            sheet.cell(row=1, column=1).value = "料號"
+            sheet.cell(row=1, column=8).value = "盤點"
+            sheet.cell(row=1, column=9).value = "5-1"
+            sheet.cell(row=1, column=10).value = "PO-5-1"
+            sheet.cell(row=1, column=11).value = "MODEL-5-1"
+            sheet.cell(row=2, column=1).value = "EC-60008A"
+            sheet.cell(row=2, column=8).value = 100
+            sheet.cell(row=2, column=9).value = 0
+            sheet.cell(row=2, column=10).value = 30
+            sheet.cell(row=2, column=11).value = 70
+            workbook.save(main_path)
+            workbook.close()
+
+            def fake_setting(key, default=""):
+                return str(main_path) if key == "main_file_path" else default
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
+                 patch("app.routers.main_file.backup_main_file"), \
+                 patch("app.routers.main_file.db.get_snapshot", return_value={"EC-60008A": {"stock_qty": 100}}), \
+                 patch("app.routers.main_file.db.update_snapshot_stock", return_value=1), \
+                 patch("app.routers.main_file.db.get_order_by_code", return_value={"id": 42, "code": "5-1"}) as mock_get_order, \
+                 patch("app.routers.main_file.db.get_order_supplements", return_value={
+                     42: {"EC-60008A": 10000, "PART-KEEP": 123},
+                 }) as mock_get_supplements, \
+                 patch("app.routers.main_file.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.main_file.db.log_activity"):
+                response = self.client.patch("/api/main-file/cell", json={
+                    "sheet": "庫存主檔",
+                    "row": 2,
+                    "col": 9,
+                    "value": "2000",
+                })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["supplement_synced"])
+        mock_get_order.assert_called_once_with("5-1")
+        mock_get_supplements.assert_called_once_with([42])
+        mock_replace.assert_called_once_with(
+            [42],
+            {42: {"EC-60008A": 2000.0, "PART-KEEP": 123.0}},
+        )
+
+    def test_edit_main_usage_or_balance_cell_does_not_sync_order_supplements(self):
+        for col, value in ((10, "40"), (11, "999")):
+            with self.subTest(col=col), tempfile.TemporaryDirectory() as temp_dir:
+                main_path = Path(temp_dir) / "main.xlsx"
+
+                workbook = openpyxl.Workbook()
+                sheet = workbook.active
+                sheet.title = "庫存主檔"
+                sheet.cell(row=1, column=1).value = "料號"
+                sheet.cell(row=1, column=8).value = "盤點"
+                sheet.cell(row=1, column=9).value = "5-1"
+                sheet.cell(row=1, column=10).value = "PO-5-1"
+                sheet.cell(row=1, column=11).value = "MODEL-5-1"
+                sheet.cell(row=2, column=1).value = "EC-60008A"
+                sheet.cell(row=2, column=8).value = 100
+                sheet.cell(row=2, column=9).value = 0
+                sheet.cell(row=2, column=10).value = 30
+                sheet.cell(row=2, column=11).value = 70
+                workbook.save(main_path)
+                workbook.close()
+
+                def fake_setting(key, default=""):
+                    return str(main_path) if key == "main_file_path" else default
+
+                with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
+                     patch("app.routers.main_file.backup_main_file"), \
+                     patch("app.routers.main_file.db.get_snapshot", return_value={"EC-60008A": {"stock_qty": 100}}), \
+                     patch("app.routers.main_file.db.update_snapshot_stock", return_value=1), \
+                     patch("app.routers.main_file.refresh_snapshot_from_main"), \
+                     patch("app.routers.main_file.db.get_order_by_code") as mock_get_order, \
+                     patch("app.routers.main_file.db.replace_order_supplements") as mock_replace, \
+                     patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[]), \
+                     patch("app.routers.main_file.db.log_activity"):
+                    response = self.client.patch("/api/main-file/cell", json={
+                        "sheet": "庫存主檔",
+                        "row": 2,
+                        "col": col,
+                        "value": value,
+                    })
+
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.json()["supplement_synced"])
+                mock_get_order.assert_not_called()
+                mock_replace.assert_not_called()
+
+    def test_edit_main_cell_outside_batch_area_does_not_sync_order_supplements(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+
+            workbook = openpyxl.Workbook()
+            sheet = workbook.active
+            sheet.title = "庫存主檔"
+            sheet.cell(row=1, column=1).value = "料號"
+            sheet.cell(row=1, column=8).value = "盤點"
+            sheet.cell(row=1, column=9).value = "5-1"
+            sheet.cell(row=2, column=1).value = "EC-60008A"
+            sheet.cell(row=2, column=8).value = 100
+            sheet.cell(row=2, column=9).value = 0
+            workbook.save(main_path)
+            workbook.close()
+
+            def fake_setting(key, default=""):
+                return str(main_path) if key == "main_file_path" else default
+
+            with patch("app.routers.main_file.db.get_setting", side_effect=fake_setting), \
+                 patch("app.routers.main_file.backup_main_file"), \
+                 patch("app.routers.main_file.db.get_snapshot", return_value={"EC-60008A": {"stock_qty": 100}}), \
+                 patch("app.routers.main_file.refresh_snapshot_from_main"), \
+                 patch("app.routers.main_file.db.get_order_by_code") as mock_get_order, \
+                 patch("app.routers.main_file.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.main_file.db.log_activity"):
+                response = self.client.patch("/api/main-file/cell", json={
+                    "sheet": "庫存主檔",
+                    "row": 2,
+                    "col": 8,
+                    "value": "200",
+                })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["supplement_synced"])
+        mock_get_order.assert_not_called()
+        mock_replace.assert_not_called()
 
     def test_edit_main_cell_rebuilds_active_merge_drafts_after_batch_recalc(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2294,6 +2429,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.main_file.backup_main_file"), \
                  patch("app.routers.main_file.db.get_snapshot", return_value={"PART-1": {"stock_qty": 100}}), \
                  patch("app.routers.main_file.db.update_snapshot_stock", return_value=1), \
+                 patch("app.routers.main_file.db.get_order_by_code", return_value=None), \
                  patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[
                      {"order_id": 5},
                      {"order_id": 6},
