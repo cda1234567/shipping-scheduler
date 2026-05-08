@@ -373,7 +373,7 @@ class ExcelLogicTests(unittest.TestCase):
             wb = load_workbook(path, data_only=True)
             ws = wb.active
             self.assertEqual(result["merged_parts"], 1)
-            self.assertEqual(ws.cell(row=2, column=9).value, 0)
+            self.assertIsNone(ws.cell(row=2, column=9).value)
             self.assertEqual(ws.cell(row=2, column=10).value, 50)
             self.assertEqual(ws.cell(row=2, column=11).value, -50)
             wb.close()

@@ -226,6 +226,23 @@ def _is_committed_status(status: object) -> bool:
     return str(status or "").strip().lower() in _COMMITTED_ORDER_STATUSES
 
 
+def _is_batch_supplement_cell(ws, *, row: int, col: int) -> bool:
+    if row <= 1:
+        return False
+    first_batch_col = find_first_batch_col(ws)
+    if first_batch_col is None or col < first_batch_col or col > ws.max_column:
+        return False
+    return (col - first_batch_col) % 3 == 0
+
+
+def _main_cell_write_value(ws, *, row: int, col: int, value):
+    if _is_batch_supplement_cell(ws, row=row, col=col):
+        supplement_qty = _to_supplement_qty(value)
+        if supplement_qty == 0:
+            return None
+    return value if value != "" else None
+
+
 def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value) -> dict:
     """主檔補料欄是唯一真相；手動改補料 cell 後同步 order_supplements。"""
     result = {"supplement_synced": False, "st_inventory_synced": False}
@@ -618,7 +635,7 @@ async def edit_main_cell(req: EditCellRequest):
         if str(part).strip()
     }
 
-    cell.value = new_value if new_value != "" else None
+    cell.value = _main_cell_write_value(ws, row=req.row, col=req.col, value=new_value)
     recalc_result = recalc_batch_balances_for_cell(
         ws,
         row=req.row,

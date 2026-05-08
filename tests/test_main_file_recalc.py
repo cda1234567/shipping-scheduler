@@ -62,6 +62,21 @@ class MainFileRecalcTests(unittest.TestCase):
         finally:
             wb.close()
 
+    def test_blank_supplement_recalculates_as_zero(self):
+        wb, ws = self._build_sheet()
+        try:
+            ws.cell(row=2, column=9).value = None
+
+            result = recalc_batch_balances_for_cell(ws, row=2, col=9)
+
+            self.assertTrue(result["recalculated"])
+            self.assertEqual(ws.cell(row=2, column=11).value, 70)
+            self.assertEqual(ws.cell(row=2, column=14).value, 55)
+            self.assertEqual(ws.cell(row=2, column=20).value, 50)
+            self.assertEqual(result["current_stock"], 50)
+        finally:
+            wb.close()
+
     def test_edit_usage_recalculates_following_balances(self):
         wb, ws = self._build_sheet()
         try:

@@ -460,13 +460,20 @@ def _write_group_headers(ws, group_plan: dict):
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 
+def _format_main_supplement_value(value):
+    numeric_value = _try_float(value)
+    if numeric_value == 0:
+        return None
+    return value
+
+
 def _write_group_rows(ws, group_plan: dict):
     for row in group_plan.get("rows", []):
         h_cell = ws.cell(row=row["row_idx"], column=group_plan["col_h"])
         f_cell = ws.cell(row=row["row_idx"], column=group_plan["col_f"])
         j_cell = ws.cell(row=row["row_idx"], column=group_plan["col_j"])
 
-        h_cell.value = row["effective_h"]
+        h_cell.value = _format_main_supplement_value(row["effective_h"])
 
         f_cell.value = row["f_value"]
         if row["decision"] == "CreateRequirement":

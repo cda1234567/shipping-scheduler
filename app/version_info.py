@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.07.30"
-APP_RELEASED_AT = "2026-05-07"
-APP_HEADLINE = "主檔預覽 v2 標題列用 display-only rich text 強制換行。"
+APP_VERSION = "v2026.05.08.1"
+APP_RELEASED_AT = "2026-05-08"
+APP_HEADLINE = "主檔批次補料欄 0 改為留白。"
 APP_CHANGELOG = [
+    {
+        "title": "主檔批次補料欄 0 留白",
+        "items": [
+            "`/api/main-file/cell` 手動把批次區補料欄改成 0 時，主檔 cell 會存成空白但仍同步 order_supplements 為 0。",
+            "發料 merge 寫入主檔批次補料欄時，補料 / 上批餘料合計為 0 會留白，不再寫入 `0`。",
+            "批次結餘重算繼續把空白補料視為 0，避免後續結餘出現 NaN 或漏算。",
+        ],
+    },
     {
         "title": "主檔預覽 v2 標題列 11 字元換行修正",
         "items": [
