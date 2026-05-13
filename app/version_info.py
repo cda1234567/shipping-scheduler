@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.08.1"
-APP_RELEASED_AT = "2026-05-08"
-APP_HEADLINE = "主檔批次補料欄 0 改為留白。"
+APP_VERSION = "v2026.05.13.1"
+APP_RELEASED_AT = "2026-05-13"
+APP_HEADLINE = "ST 庫存頁可雙擊編輯 MOQ。"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存頁 MOQ 編輯",
+        "items": [
+            "ST 庫存 tab 表格新增 MOQ 欄位，沿用主檔 inventory_snapshot 的 MOQ 為單一來源。",
+            "MOQ badge 可雙擊進入 inline 編輯，Enter 或失焦儲存、ESC 取消；儲存後同步主檔 MOQ（呼叫 `/api/main-file/moq`），會設 `moq_manual=1` 並寫 audit log。",
+            "`/api/st-inventory/in-main` 回傳多帶 `moq` 欄位，連同既有的 part_number / description / stock_qty 一起。",
+        ],
+    },
     {
         "title": "主檔批次補料欄 0 留白",
         "items": [

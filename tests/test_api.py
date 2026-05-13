@@ -3500,8 +3500,8 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), [
-            {"part_number": "PART-A", "description": "Capacitor", "stock_qty": 3.0},
-            {"part_number": "PART-B", "description": "Main B", "stock_qty": 8.0},
+            {"part_number": "PART-A", "description": "Capacitor", "stock_qty": 3.0, "moq": 0.0},
+            {"part_number": "PART-B", "description": "Main B", "stock_qty": 8.0, "moq": 0.0},
         ])
 
     def test_get_missing_moq_st_packages_returns_rows(self):

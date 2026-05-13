@@ -26,5 +26,6 @@ async def get_st_inventory_in_main():
             "part_number": part_number,
             "description": str(st_row.get("description") or main_row.get("description") or ""),
             "stock_qty": st_stock[part_number],
+            "moq": float(main_row.get("moq") or 0),
         })
     return rows

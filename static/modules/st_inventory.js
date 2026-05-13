@@ -1,4 +1,4 @@
-import { apiFetch, apiJson, showToast, esc } from "./api.js";
+import { apiFetch, apiJson, apiPatch, showToast, esc } from "./api.js";
 
 let _initialized = false;
 let _busy = false;
@@ -101,7 +101,7 @@ function renderInMainRows() {
   if (!rows.length) {
     body.innerHTML = `
       <tr>
-        <td colspan="3" class="st-inventory-empty">沒有符合的 ST 庫存料號。</td>
+        <td colspan="4" class="st-inventory-empty">沒有符合的 ST 庫存料號。</td>
       </tr>
     `;
     return;
@@ -109,6 +109,7 @@ function renderInMainRows() {
 
   body.innerHTML = rows.map(row => renderInventoryRow(row)).join("");
   bindInventoryRowClicks(body);
+  bindMoqBadgeEditors(body);
 }
 
 function renderInventoryRow(row) {
@@ -125,6 +126,7 @@ function renderInventoryRow(row) {
       </td>
       <td>${esc(row.description || "")}</td>
       <td class="num">${formatQty(row.stock_qty)}</td>
+      <td>${moqBadgeHtml(row)}</td>
     </tr>
   `;
   if (!isExpanded) return mainRow;
@@ -170,7 +172,7 @@ function renderAuditDetailRow(partNumber) {
   }
   return `
     <tr class="st-inventory-audit-row">
-      <td colspan="3">
+      <td colspan="4">
         <div class="st-inventory-audit-panel">${content}</div>
       </td>
     </tr>
@@ -184,6 +186,115 @@ function bindInventoryRowClicks(body) {
       if (!partNumber) return;
       void toggleAuditRow(partNumber);
     });
+  });
+}
+
+function moqBadgeHtml(row) {
+  const partNumber = esc(row?.part_number || "");
+  const moq = Number(row?.moq || 0);
+  if (Number.isFinite(moq) && moq > 0) {
+    return `<span class="moq-badge moq-badge-present moq-badge-editable" data-part="${partNumber}" data-moq="${moq}" title="雙擊可編輯 MOQ">MOQ ${formatQty(moq)}</span>`;
+  }
+  return `<span class="moq-badge moq-badge-missing moq-badge-editable" data-part="${partNumber}" data-moq="0" title="雙擊可編輯 MOQ">未寫 MOQ</span>`;
+}
+
+function bindMoqBadgeEditors(root) {
+  if (!root) return;
+  root.querySelectorAll(".moq-badge-editable").forEach(badge => {
+    if (badge.dataset.moqBadgeBound === "1") return;
+    badge.dataset.moqBadgeBound = "1";
+    badge.addEventListener("click", event => {
+      event.stopPropagation();
+    });
+    badge.addEventListener("dblclick", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      void handleMoqBadgeEdit(badge);
+    });
+  });
+}
+
+async function handleMoqBadgeEdit(badge) {
+  const partNumber = String(badge?.dataset.part || "").trim().toUpperCase();
+  if (!partNumber) {
+    showToast("料號不可空白");
+    return;
+  }
+  if (badge.dataset.editing === "1") return;
+
+  const currentMoq = Number(badge?.dataset.moq || 0);
+  const originalHtml = badge.innerHTML;
+  badge.dataset.editing = "1";
+  badge.innerHTML = `<input type="number" class="moq-inline-input" min="0" step="0.01" value="${currentMoq > 0 ? currentMoq : ""}" placeholder="MOQ">`;
+
+  const input = badge.querySelector(".moq-inline-input");
+  if (!input) {
+    delete badge.dataset.editing;
+    badge.innerHTML = originalHtml;
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+
+  let finished = false;
+  const cancel = () => {
+    if (finished) return;
+    finished = true;
+    delete badge.dataset.editing;
+    badge.innerHTML = originalHtml;
+  };
+
+  const save = async () => {
+    if (finished) return;
+    const rawValue = String(input.value || "").trim();
+    if (!rawValue) {
+      cancel();
+      return;
+    }
+
+    const moqValue = parseFloat(rawValue);
+    if (!Number.isFinite(moqValue) || moqValue < 0) {
+      showToast("MOQ 請輸入 0 或大於 0 的數字");
+      input.focus();
+      input.select();
+      return;
+    }
+
+    finished = true;
+    try {
+      const result = await apiPatch("/api/main-file/moq", { part_number: partNumber, moq: moqValue });
+      const savedPart = String(result?.part_number || partNumber).trim().toUpperCase();
+      _inMainRows = _inMainRows.map(row => {
+        if (String(row.part_number || "").trim().toUpperCase() !== savedPart) return row;
+        return { ...row, moq: moqValue };
+      });
+      renderInMainRows();
+      showToast(`${savedPart} MOQ 已儲存`, { tone: "success" });
+    } catch (error) {
+      delete badge.dataset.editing;
+      badge.innerHTML = originalHtml;
+      showToast(`MOQ 儲存失敗：${error.message}`, { tone: "error" });
+    }
+  };
+
+  input.addEventListener("click", event => event.stopPropagation());
+  input.addEventListener("dblclick", event => event.stopPropagation());
+  input.addEventListener("keydown", event => {
+    event.stopPropagation();
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void save();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancel();
+    }
+  });
+  input.addEventListener("blur", event => {
+    event.stopPropagation();
+    void save();
   });
 }
 
