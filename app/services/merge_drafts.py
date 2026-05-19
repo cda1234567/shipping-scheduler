@@ -1033,51 +1033,51 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
     if not order:
         raise HTTPException(404, "找不到已發料訂單")
 
-    main_path = str(db.get_setting("main_file_path") or "").strip()
-    if not main_path or not Path(main_path).exists():
-        raise HTTPException(400, "請先載入主檔，才能下載已發料副檔")
-
-    requested_bom_file_ids: set[str] | None = None
+    committed_files = db.get_merge_draft_files(draft_id)
     if file_id is not None:
         requested_files = [
-            item for item in db.get_merge_draft_files(draft_id)
+            item for item in committed_files
             if int(item.get("id", -1)) == file_id
         ]
         if not requested_files:
             raise HTTPException(404, "找不到副檔檔案")
-        requested_bom_file_ids = {
-            str(item.get("bom_file_id") or "").strip()
-            for item in requested_files
-            if str(item.get("bom_file_id") or "").strip()
-        }
+        committed_files = requested_files
 
-    bom_files = [
-        _ensure_editable_bom_for_draft(bom)
-        for bom in db.get_bom_files_by_models([str(order.get("model") or "")])
-    ]
-    if requested_bom_file_ids is not None:
-        bom_files = [
-            bom for bom in bom_files
-            if str(bom.get("id") or "").strip() in requested_bom_file_ids
-        ]
-    if not bom_files:
+    file_plans: list[dict] = []
+    fallback_entries: list[dict] = []
+    for file_item in committed_files:
+        bom_file_id = str(file_item.get("bom_file_id") or "").strip()
+        bom = db.get_bom_file(bom_file_id) if bom_file_id else None
+        if not bom:
+            existing_path = Path(str(file_item.get("filepath") or ""))
+            if existing_path.exists():
+                fallback_entries.append({
+                    "path": existing_path,
+                    "download_name": _replace_po_in_filename(file_item.get("filename") or existing_path.name, order.get("po_number", "")),
+                })
+            continue
+
+        file_plans.append({
+            "bom_file_id": bom_file_id,
+            "source_filename": str(file_item.get("source_filename") or bom.get("filename") or ""),
+            "source_format": str(file_item.get("source_format") or bom.get("source_format") or Path(str(bom.get("filename") or "")).suffix.lower()),
+            "model": str(file_item.get("model") or bom.get("model") or ""),
+            "group_model": str(file_item.get("group_model") or bom.get("group_model") or ""),
+            "po_number": str(order.get("po_number") or bom.get("po_number") or ""),
+            "order_qty": coerce_qty(order.get("order_qty")) or None,
+            "source_order_qty": coerce_qty(bom.get("order_qty")),
+            "carry_overs": file_item.get("carry_overs") or {},
+            "supplements": file_item.get("supplements") or {},
+            "purchase_parts": [],
+        })
+
+    if not file_plans and fallback_entries:
+        return fallback_entries
+    if not file_plans:
         raise HTTPException(404, "已發料訂單沒有可下載的副檔")
 
-    decisions = _get_persisted_decision_map([order_id]).get(order_id, {})
-    supplements = _get_persisted_supplement_map([order_id]).get(order_id, {})
-    plan = _plan_order_draft(
-        order,
-        draft,
-        bom_files,
-        _build_running_stock(main_path),
-        _load_effective_moq(main_path),
-        db.get_st_inventory_stock(),
-        decisions=decisions,
-        supplements=supplements,
-    )
-
     temp_root = Path(tempfile.mkdtemp(prefix=f"committed_merge_draft_{draft_id}_"))
-    written = _write_draft_files(draft_id, plan["file_plans"], root_dir=temp_root)
+    written = _write_draft_files(draft_id, file_plans, root_dir=temp_root)
     po = order.get("po_number", "")
     return [
         {
@@ -1086,7 +1086,7 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
         }
         for item in written
         if Path(str(item.get("filepath") or "")).exists()
-    ]
+    ] + fallback_entries
 
 
 def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):

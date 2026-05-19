@@ -34,7 +34,7 @@ class MergeDraftDetailTests(unittest.TestCase):
 
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
 
-    def test_download_selected_committed_merge_drafts_rebuilds_from_live_stock_and_supplements(self):
+    def test_download_selected_committed_merge_drafts_rebuilds_from_committed_carry_overs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             main_path = root / "main.xlsx"
@@ -67,8 +67,20 @@ class MergeDraftDetailTests(unittest.TestCase):
                  patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
                      "main_file_path": str(main_path),
                  }.get(key, default)), \
-                 patch("app.services.merge_drafts.db.get_bom_files_by_models", return_value=[bom]), \
                  patch("app.services.merge_drafts.db.get_bom_file", return_value=bom), \
+                 patch("app.services.merge_drafts.db.get_merge_draft_files", return_value=[{
+                     "id": 700,
+                     "draft_id": 7,
+                     "bom_file_id": "bom-1",
+                     "filename": "4500051111_MODEL-A_20260422.xlsx",
+                     "filepath": str(source_path),
+                     "source_filename": "bom.xlsx",
+                     "source_format": ".xlsx",
+                     "model": "MODEL-A",
+                     "group_model": "MODEL-A",
+                     "carry_overs": {"PART-1": 120},
+                     "supplements": {"PART-1": 20},
+                 }]), \
                  patch("app.services.merge_drafts.db.get_bom_components", return_value=[{
                      "part_number": "PART-1",
                      "description": "Resistor",
@@ -101,7 +113,7 @@ class MergeDraftDetailTests(unittest.TestCase):
         rebuilt = load_workbook(entries[0]["path"], data_only=False)
         try:
             sheet = rebuilt.active
-            self.assertEqual(sheet.cell(row=5, column=7).value, 50)
+            self.assertEqual(sheet.cell(row=5, column=7).value, 120)
             self.assertEqual(sheet.cell(row=5, column=8).value, 20)
             self.assertEqual(sheet.cell(row=5, column=10).value, "=I5-F5")
         finally:
