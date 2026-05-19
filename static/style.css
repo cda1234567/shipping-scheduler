@@ -811,19 +811,34 @@ body.edit-auth-readonly #bom-upload-area {
   color: #475569;
   text-align: center;
 }
-.busy-bar {
+.busy-progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: 14px;
+  font-size: 12px;
+  color: #64748b;
+}
+#busy-overlay-percent {
+  min-width: 42px;
+  text-align: right;
+  font-weight: 700;
+  color: #2563eb;
+}
+.busy-bar {
+  margin-top: 6px;
   height: 8px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(148, 163, 184, 0.18);
 }
 .busy-bar-fill {
-  width: 38%;
+  width: 0;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, #2563eb, #38bdf8);
-  animation: busy-bar-shift 1.2s ease-in-out infinite;
+  transition: width 0.2s ease-out;
 }
 .busy-overlay[style*="display:none"] {
   pointer-events: none;

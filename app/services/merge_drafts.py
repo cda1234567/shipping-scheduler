@@ -1008,6 +1008,20 @@ def _main_stock_events(ws) -> list[dict[str, int | str]]:
     return sorted(events, key=lambda item: int(item["start_col"]))
 
 
+def _main_value_context(ws) -> dict:
+    batch_cols_by_code: dict[str, list[int]] = {}
+    for col in range(1, ws.max_column + 1):
+        header = _main_header_text(ws, col)
+        if re.match(r"^\d+-\d+$", header):
+            batch_cols_by_code.setdefault(header, []).append(col)
+    return {
+        "row_map": _main_file_part_row_map(ws),
+        "events": _main_stock_events(ws),
+        "batch_cols_by_code": batch_cols_by_code,
+        "components_by_bom": {},
+    }
+
+
 def _main_number(value) -> float | None:
     if value is None or str(value).strip() == "":
         return None
@@ -1038,15 +1052,17 @@ def _model_tokens(*values) -> set[str]:
     return tokens
 
 
-def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | None) -> int | None:
+def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> int | None:
     code = str(order.get("code") or "").strip()
     if not code:
         return None
 
-    candidates = [
-        col for col in range(1, ws.max_column + 1)
-        if _main_header_text(ws, col) == code
-    ]
+    candidates = list((context or {}).get("batch_cols_by_code", {}).get(code, []))
+    if not candidates:
+        candidates = [
+            col for col in range(1, ws.max_column + 1)
+            if _main_header_text(ws, col) == code
+        ]
     if not candidates:
         return None
 
@@ -1065,17 +1081,22 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
     return candidates[0]
 
 
-def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None) -> tuple[dict[str, float], dict[str, float]]:
-    batch_col = _find_main_batch_col_for_file(ws, order, file_item, bom)
+def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> tuple[dict[str, float], dict[str, float]]:
+    batch_col = _find_main_batch_col_for_file(ws, order, file_item, bom, context)
     if batch_col is None:
         return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
 
-    row_map = _main_file_part_row_map(ws)
-    events = _main_stock_events(ws)
+    context = context or _main_value_context(ws)
+    row_map = context["row_map"]
+    events = context["events"]
+    components_by_bom = context.setdefault("components_by_bom", {})
+    bom_file_id = str(file_item.get("bom_file_id") or "")
     carry_overs: dict[str, float] = {}
     supplements: dict[str, float] = {}
     seen_parts: set[str] = set()
-    for component in db.get_bom_components(str(file_item.get("bom_file_id") or "")):
+    if bom_file_id not in components_by_bom:
+        components_by_bom[bom_file_id] = db.get_bom_components(bom_file_id)
+    for component in components_by_bom.get(bom_file_id, []):
         part = normalize_part_key(component.get("part_number"))
         if not part or part in seen_parts:
             continue
@@ -1162,6 +1183,7 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
     workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
     try:
         ws = workbook.worksheets[0]
+        main_context = _main_value_context(ws)
         for file_item in committed_files:
             bom_file_id = str(file_item.get("bom_file_id") or "").strip()
             bom = db.get_bom_file(bom_file_id) if bom_file_id else None
@@ -1174,7 +1196,7 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
                     })
                 continue
 
-            carry_overs, supplements = _main_values_for_committed_file(ws, order, file_item, bom)
+            carry_overs, supplements = _main_values_for_committed_file(ws, order, file_item, bom, main_context)
             file_plans.append({
                 "bom_file_id": bom_file_id,
                 "source_filename": str(file_item.get("source_filename") or bom.get("filename") or ""),

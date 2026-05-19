@@ -42,6 +42,8 @@ let _modalDraftBaseSupplements = {};
 let _modalDraftVisibleParts = [];
 let _modalCommitAfterSave = false;
 let _globalBusyDepth = 0;
+let _globalBusyProgressTimer = null;
+let _globalBusyPercent = 0;
 let _rightPanelMode = "shortages";
 let _rightPanelActiveTab = "shortages";
 let _lastShortagePanelData = { shortages: [], csShortages: [], mainDeficits: [] };
@@ -313,7 +315,42 @@ function setSelectedDraftFileId(draftId, fileId) {
   saveDraftFileSelectionState();
 }
 
-function setGlobalBusyState(active, { title = "系統正在處理中", detail = "大型批次可能需要幾秒鐘，請稍候，不用重複點擊。" } = {}) {
+function setGlobalBusyPercent(percent, phase = "") {
+  const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const fill = document.querySelector("#action-busy-overlay .busy-bar-fill");
+  const percentEl = document.getElementById("busy-overlay-percent");
+  const phaseEl = document.getElementById("busy-overlay-phase");
+  _globalBusyPercent = value;
+  if (fill) fill.style.width = `${value}%`;
+  if (percentEl) percentEl.textContent = `${value}%`;
+  if (phaseEl && phase) phaseEl.textContent = phase;
+}
+
+function stopGlobalBusyProgress() {
+  if (_globalBusyProgressTimer) {
+    clearInterval(_globalBusyProgressTimer);
+    _globalBusyProgressTimer = null;
+  }
+}
+
+function startGlobalBusyProgress({ initialPercent = 6, ceilingPercent = 92, phase = "處理中" } = {}) {
+  stopGlobalBusyProgress();
+  setGlobalBusyPercent(initialPercent, phase);
+  _globalBusyProgressTimer = setInterval(() => {
+    if (_globalBusyPercent >= ceilingPercent) return;
+    const remaining = ceilingPercent - _globalBusyPercent;
+    const step = remaining > 35 ? 4 : remaining > 18 ? 2 : 1;
+    setGlobalBusyPercent(Math.min(ceilingPercent, _globalBusyPercent + step));
+  }, 700);
+}
+
+function setGlobalBusyState(active, {
+  title = "系統正在處理中",
+  detail = "大型批次可能需要幾秒鐘，請稍候，不用重複點擊。",
+  phase = "處理中",
+  initialPercent = 6,
+  ceilingPercent = 92,
+} = {}) {
   const overlay = document.getElementById("action-busy-overlay");
   if (!overlay) return;
   const titleEl = document.getElementById("busy-overlay-title");
@@ -323,12 +360,17 @@ function setGlobalBusyState(active, { title = "系統正在處理中", detail = 
     _globalBusyDepth += 1;
     if (titleEl) titleEl.textContent = title;
     if (detailEl) detailEl.textContent = detail;
+    if (_globalBusyDepth === 1) {
+      startGlobalBusyProgress({ initialPercent, ceilingPercent, phase });
+    }
     overlay.style.display = "flex";
     return;
   }
 
   _globalBusyDepth = Math.max(0, _globalBusyDepth - 1);
   if (_globalBusyDepth === 0) {
+    stopGlobalBusyProgress();
+    setGlobalBusyPercent(0, "處理中");
     overlay.style.display = "none";
   }
 }
@@ -337,12 +379,18 @@ export async function withGlobalBusy(task, options = {}) {
   const timeoutMs = options.timeout || 600000;
   hideToast();
   setGlobalBusyState(true, options);
+  let succeeded = false;
   try {
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error("操作逾時，請重新整理頁面後再試")), timeoutMs),
     );
-    return await Promise.race([task(), timeoutPromise]);
+    const result = await Promise.race([task(), timeoutPromise]);
+    succeeded = true;
+    setGlobalBusyPercent(100, "完成");
+    await new Promise(resolve => setTimeout(resolve, 160));
+    return result;
   } finally {
+    if (!succeeded) setGlobalBusyPercent(100, "中止");
     setGlobalBusyState(false);
   }
 }
@@ -3315,6 +3363,7 @@ async function downloadDraft(draftId, fileId = null) {
       {
         title: "正在產生副檔",
         detail: "系統會讀取主檔與 BOM 重新整理 Excel，檔案較大時請稍候。",
+        phase: "讀取主檔",
         timeout: 600000,
       },
     );
@@ -4059,6 +4108,7 @@ async function handleCompletedDownloadDrafts() {
       {
         title: "正在重新產生已發料副檔",
         detail: `共 ${orderIds.length} 筆訂單，會依目前主檔批次欄重新抓上批餘料與補料。`,
+        phase: "讀取主檔",
         timeout: 600000,
       },
     );
@@ -4085,6 +4135,7 @@ async function handleCompletedGenerateDispatch() {
       {
         title: "正在生成發料單",
         detail: `共 ${orderIds.length} 筆訂單，系統正在彙整補料與缺料資料。`,
+        phase: "彙整資料",
         timeout: 600000,
       },
     );

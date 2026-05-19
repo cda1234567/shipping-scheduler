@@ -449,6 +449,10 @@
     <div class="busy-spinner" aria-hidden="true"></div>
     <div id="busy-overlay-title" class="busy-title">系統正在處理中</div>
     <div id="busy-overlay-detail" class="busy-detail">大型批次可能需要幾秒鐘，請稍候，不用重複點擊。</div>
+    <div class="busy-progress-head">
+      <span id="busy-overlay-phase">處理中</span>
+      <span id="busy-overlay-percent">0%</span>
+    </div>
     <div class="busy-bar">
       <div class="busy-bar-fill"></div>
     </div>
@@ -709,6 +713,7 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
       {
         title: "正在生成發料單",
         detail: `共 ${orderIds.length} 筆訂單，系統正在彙整補料與缺料資料。`,
+        phase: "彙整資料",
         timeout: 600000,
       },
     );
