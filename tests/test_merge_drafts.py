@@ -227,6 +227,10 @@ class MergeDraftDetailTests(unittest.TestCase):
             root = Path(temp_dir)
             download_dir = root / "downloads"
             download_dir.mkdir()
+            main_path = root / "main.xlsx"
+            main_workbook = Workbook()
+            main_workbook.save(main_path)
+            main_workbook.close()
             first = root / "draft-a.xlsx"
             second = root / "draft-b.xlsx"
             first.write_bytes(b"first")
@@ -253,15 +257,16 @@ class MergeDraftDetailTests(unittest.TestCase):
 
             with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", side_effect=lambda order_id: {"id": order_id + 10, "order_id": order_id, "status": "committed"}), \
                  patch("app.services.merge_drafts.db.get_order", side_effect=fake_order), \
+                 patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
+                     "main_file_path": str(main_path),
+                     "server_download_enabled": "1",
+                     "server_download_display_path": "D:\\Download\\excel",
+                 }.get(key, default)), \
                  patch("app.services.merge_drafts._rebuild_committed_merge_draft_files", side_effect=[
                      [{"path": first, "download_name": "副檔.xlsx"}],
                      [{"path": second, "download_name": "副檔.xlsx"}],
-                 ]), \
-                 patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir), \
-                 patch("app.services.server_downloads.db.get_setting", side_effect=lambda key, default="": {
-                     "server_download_enabled": "1",
-                     "server_download_display_path": "D:\\Download\\excel",
-                 }.get(key, default)):
+                 ]) as mock_rebuild_committed, \
+                 patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir):
                 response = merge_drafts.download_selected_committed_merge_drafts([1, 2], request=request)
 
             payload = json.loads(response.body.decode("utf-8"))
@@ -270,6 +275,8 @@ class MergeDraftDetailTests(unittest.TestCase):
                     "4-1 PO#4500059323 TA7-9  2026.7.3 出貨/副檔.xlsx",
                     "4-2 PO#4500059324 TA8  2026.7.4 出貨/副檔.xlsx",
                 })
+            self.assertEqual(mock_rebuild_committed.call_count, 2)
+            self.assertIs(mock_rebuild_committed.call_args_list[0].kwargs["main_ws"], mock_rebuild_committed.call_args_list[1].kwargs["main_ws"])
 
     def test_download_selected_merge_drafts_uses_server_download_dir_when_requested(self):
         with tempfile.TemporaryDirectory() as temp_dir:

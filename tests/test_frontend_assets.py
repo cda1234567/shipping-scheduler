@@ -833,6 +833,7 @@ console.log(JSON.stringify(results));
         self.assertIn("from app.services.desktop_connection import resolve_remote_server_url", desktop_app)
         self.assertIn('parser.add_argument("--server-url"', desktop_app)
         self.assertIn('remote_server": self.server.is_remote', desktop_app)
+        self.assertIn("urllib.request.urlopen(request, timeout=600)", desktop_app)
 
     def test_version_info_assets_exist_for_header_chip_and_release_notes_modal(self):
         root = Path(__file__).resolve().parents[1]

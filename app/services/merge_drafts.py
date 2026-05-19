@@ -1157,7 +1157,13 @@ def _format_committed_archive_subdir(order: dict) -> str:
     return _sanitize_committed_archive_piece(f"order_{order.get('id') or ''}") or "order"
 
 
-def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = None) -> list[dict]:
+def _rebuild_committed_merge_draft_files(
+    draft: dict,
+    *,
+    file_id: int | None = None,
+    main_ws=None,
+    main_context: dict | None = None,
+) -> list[dict]:
     draft_id = int(draft["id"])
     order_id = int(draft["order_id"])
     order = db.get_order(order_id)
@@ -1180,10 +1186,14 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
 
     file_plans: list[dict] = []
     fallback_entries: list[dict] = []
-    workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+    workbook = None
     try:
-        ws = workbook.worksheets[0]
-        main_context = _main_value_context(ws)
+        if main_ws is None:
+            workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+            ws = workbook.worksheets[0]
+        else:
+            ws = main_ws
+        main_context = main_context or _main_value_context(ws)
         for file_item in committed_files:
             bom_file_id = str(file_item.get("bom_file_id") or "").strip()
             bom = db.get_bom_file(bom_file_id) if bom_file_id else None
@@ -1211,7 +1221,8 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
                 "purchase_parts": [],
             })
     finally:
-        workbook.close()
+        if workbook is not None:
+            workbook.close()
 
     if not file_plans and fallback_entries:
         return fallback_entries
@@ -1300,24 +1311,38 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
     if not normalized_ids:
         raise HTTPException(400, "請先選擇要下載副檔的已發料訂單")
 
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先載入主檔，才能下載已發料副檔")
+
     file_entries: list[dict] = []
     missing_orders: list[int] = []
-    for order_id in normalized_ids:
-        draft = db.get_latest_committed_merge_draft_for_order(order_id)
-        if not draft:
-            missing_orders.append(order_id)
-            continue
+    workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+    try:
+        ws = workbook.worksheets[0]
+        main_context = _main_value_context(ws)
+        for order_id in normalized_ids:
+            draft = db.get_latest_committed_merge_draft_for_order(order_id)
+            if not draft:
+                missing_orders.append(order_id)
+                continue
 
-        rebuilt_entries = _rebuild_committed_merge_draft_files(draft)
-        if not rebuilt_entries:
-            missing_orders.append(order_id)
-            continue
+            rebuilt_entries = _rebuild_committed_merge_draft_files(
+                draft,
+                main_ws=ws,
+                main_context=main_context,
+            )
+            if not rebuilt_entries:
+                missing_orders.append(order_id)
+                continue
 
-        order = db.get_order(order_id) or {"id": order_id}
-        subdir = _format_committed_archive_subdir(order)
-        for entry in rebuilt_entries:
-            entry["subdir"] = subdir
-        file_entries.extend(rebuilt_entries)
+            order = db.get_order(order_id) or {"id": order_id}
+            subdir = _format_committed_archive_subdir(order)
+            for entry in rebuilt_entries:
+                entry["subdir"] = subdir
+            file_entries.extend(rebuilt_entries)
+    finally:
+        workbook.close()
 
     if missing_orders:
         raise HTTPException(404, "部分已發料訂單沒有可下載的副檔")

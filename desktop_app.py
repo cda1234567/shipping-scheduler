@@ -380,7 +380,7 @@ class DesktopBridge:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=600) as response:
                 content = response.read()
                 filename = (
                     str(payload.get("filename") or "").strip()
