@@ -135,7 +135,11 @@ def _merge_order_decision_allocations(
         decisions or {},
         include_none=include_none,
     )
+    persisted = db.get_order_decisions(order_ids)
     for order_id in order_ids:
+        stored = _normalize_decisions((persisted or {}).get(order_id) or {})
+        if stored:
+            merged.setdefault(order_id, {}).update(stored)
         scoped = _normalize_decisions((order_decisions or {}).get(order_id) or {})
         if not scoped:
             merged.setdefault(order_id, {})
@@ -149,12 +153,37 @@ def _merge_order_supplement_allocations(
     supplements: dict[str, float] | None = None,
     order_supplements: dict[int, dict[str, float]] | None = None,
 ) -> dict[int, dict[str, float]]:
-    return _merge_order_supplement_allocations_service(
+    normalized_ids = _normalize_order_ids(order_ids)
+    persisted = {
+        order_id: _normalize_supplements((items or {}))
+        for order_id, items in (db.get_order_supplements(normalized_ids) or {}).items()
+    }
+    requested = _merge_order_supplement_allocations_service(
         order_ids,
         supplements,
         order_supplements,
         allocator=build_order_supplement_allocations,
     )
+    explicit_order_ids: set[int] = set()
+    for raw_order_id in (order_supplements or {}).keys():
+        try:
+            explicit_order_ids.add(int(raw_order_id))
+        except (TypeError, ValueError):
+            continue
+
+    has_global_supplements = bool(_normalize_supplements(supplements or {}))
+    merged: dict[int, dict[str, float]] = {}
+    for order_id in normalized_ids:
+        if order_id in explicit_order_ids:
+            merged[order_id] = dict(requested.get(order_id) or {})
+        elif has_global_supplements:
+            merged[order_id] = {
+                **persisted.get(order_id, {}),
+                **(requested.get(order_id) or {}),
+            }
+        else:
+            merged[order_id] = dict(persisted.get(order_id) or requested.get(order_id) or {})
+    return merged
 
 
 def _merge_decision_updates(order_id: int, updates: dict[str, str] | None = None) -> dict[str, str]:

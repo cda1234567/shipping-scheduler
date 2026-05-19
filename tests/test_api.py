@@ -1098,6 +1098,55 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_execute.call_args_list[1].args[5], {})
         mock_replace.assert_called_once_with([1, 2], {1: {"PART-1": 3000}, 2: {}})
 
+    def test_batch_dispatch_uses_saved_right_panel_supplements(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            groups = [{
+                "batch_code": "1-1",
+                "po_number": "4500059234",
+                "bom_model": "MODEL-A",
+                "components": [{"part_number": "PART-1", "needed_qty": 5, "prev_qty_cs": 0}],
+            }]
+            context = (
+                {"id": 1, "po_number": "4500059234", "model": "MODEL-A", "status": "merged"},
+                groups,
+                [{"part_number": "PART-1", "needed_qty": 5}],
+            )
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={}), \
+                 patch("app.routers.schedule.db.get_order_decisions", return_value={1: {"PART-1": "CreateRequirement"}}), \
+                 patch("app.routers.schedule.db.get_order_supplements", return_value={1: {"PART-1": 3000}}), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={}), \
+                 patch("app.routers.schedule._prepare_dispatch_context", return_value=context), \
+                 patch("app.routers.schedule.preview_order_batches", return_value={
+                     "merged_parts": 1,
+                     "shortages": [],
+                 }) as mock_preview, \
+                 patch("app.routers.schedule._execute_dispatch", return_value={
+                     "order_id": 1,
+                     "merged_parts": 1,
+                     "backup_path": "C:/b1.xlsx",
+                     "session": {"id": 11},
+                 }) as mock_execute, \
+                 patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
+                 patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]), \
+                 patch("app.routers.schedule.refresh_snapshot_from_main"), \
+                 patch("app.routers.schedule.db.log_activity"):
+                response = self.client.post("/api/schedule/batch-dispatch", json={
+                    "order_ids": [1],
+                    "decisions": {"part-1": "Shortage"},
+                })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_preview.call_args.args[1][0]["decisions"], {"PART-1": "CreateRequirement"})
+        self.assertEqual(mock_preview.call_args.args[1][0]["supplements"], {"PART-1": 3000.0})
+        self.assertEqual(mock_execute.call_args.args[4], {"PART-1": "CreateRequirement"})
+        self.assertEqual(mock_execute.call_args.args[5], {"PART-1": 3000.0})
+        mock_replace.assert_called_once_with([1], {1: {"PART-1": 3000.0}})
+
     def test_main_write_preview_and_batch_dispatch_share_same_scoped_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"

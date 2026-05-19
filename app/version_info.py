@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.19.4"
+APP_VERSION = "v2026.05.19.5"
 APP_RELEASED_AT = "2026-05-19"
-APP_HEADLINE = "下載副檔與生成發料單會顯示趴數。"
+APP_HEADLINE = "右側補料會確實帶入主檔寫入。"
 APP_CHANGELOG = [
+    {
+        "title": "右側補料寫入主檔修正",
+        "items": [
+            "從主頁右側補料區保存的補料量，批次寫入主檔時會直接讀取最新訂單別補料紀錄。",
+            "即使前端 payload 漏帶右側補料，後端仍會用資料庫保存值寫入主檔補料欄。",
+            "同料號多筆訂單時，訂單別決策會優先於全域同料號決策，避免補料被誤判成缺料而沒有寫入。",
+        ],
+    },
     {
         "title": "長時間下載顯示趴數",
         "items": [
