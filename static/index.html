@@ -515,7 +515,7 @@
 
 <script type="module">
 import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
-import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds } from "/static/modules/schedule.js";
+import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds, withGlobalBusy } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initMainPreviewV2, onMainPreviewV2TabActivated, refreshMainPreviewV2 } from "/static/modules/main_preview_v2.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
@@ -700,11 +700,18 @@ document.getElementById("btn-gen-dispatch").addEventListener("click", async () =
   statusEl.textContent = "生成中...";
   try {
     const decisions = getDecisions();
-    const result = await desktopDownload({
-      path: "/api/dispatch/generate",
-      method: "POST",
-      body: { order_ids: orderIds, decisions },
-    });
+    const result = await withGlobalBusy(
+      () => desktopDownload({
+        path: "/api/dispatch/generate",
+        method: "POST",
+        body: { order_ids: orderIds, decisions },
+      }),
+      {
+        title: "正在生成發料單",
+        detail: `共 ${orderIds.length} 筆訂單，系統正在彙整補料與缺料資料。`,
+        timeout: 600000,
+      },
+    );
     statusEl.textContent = "已下載";
     showDownloadToast(result, "發料單");
     setTimeout(() => statusEl.textContent = "", 3000);

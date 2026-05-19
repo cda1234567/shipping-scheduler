@@ -333,8 +333,8 @@ function setGlobalBusyState(active, { title = "系統正在處理中", detail = 
   }
 }
 
-async function withGlobalBusy(task, options = {}) {
-  const timeoutMs = options.timeout || 60000;
+export async function withGlobalBusy(task, options = {}) {
+  const timeoutMs = options.timeout || 600000;
   hideToast();
   setGlobalBusyState(true, options);
   try {
@@ -3310,7 +3310,14 @@ async function handleCommitDraft(draftId, model) {
 async function downloadDraft(draftId, fileId = null) {
   try {
     const query = fileId ? `?file_id=${encodeURIComponent(fileId)}` : "";
-    const result = await desktopDownload({ path: `/api/schedule/drafts/${draftId}/download${query}` });
+    const result = await withGlobalBusy(
+      () => desktopDownload({ path: `/api/schedule/drafts/${draftId}/download${query}` }),
+      {
+        title: "正在產生副檔",
+        detail: "系統會讀取主檔與 BOM 重新整理 Excel，檔案較大時請稍候。",
+        timeout: 600000,
+      },
+    );
     showDownloadToast(result, "副檔");
   } catch (error) {
     showToast("副檔下載失敗: " + error.message);
@@ -4043,11 +4050,18 @@ async function handleCompletedDownloadDrafts() {
   }
 
   try {
-    const result = await desktopDownload({
-      path: "/api/schedule/completed/drafts/download",
-      method: "POST",
-      body: { order_ids: orderIds },
-    });
+    const result = await withGlobalBusy(
+      () => desktopDownload({
+        path: "/api/schedule/completed/drafts/download",
+        method: "POST",
+        body: { order_ids: orderIds },
+      }),
+      {
+        title: "正在重新產生已發料副檔",
+        detail: `共 ${orderIds.length} 筆訂單，會依目前主檔批次欄重新抓上批餘料與補料。`,
+        timeout: 600000,
+      },
+    );
     showDownloadToast(result, "已發料副檔");
   } catch (error) {
     showToast("已發料副檔下載失敗：" + error.message, { tone: "error", sticky: true });
@@ -4062,11 +4076,18 @@ async function handleCompletedGenerateDispatch() {
   }
 
   try {
-    const result = await desktopDownload({
-      path: "/api/dispatch/generate",
-      method: "POST",
-      body: { order_ids: orderIds, decisions: {} },
-    });
+    const result = await withGlobalBusy(
+      () => desktopDownload({
+        path: "/api/dispatch/generate",
+        method: "POST",
+        body: { order_ids: orderIds, decisions: {} },
+      }),
+      {
+        title: "正在生成發料單",
+        detail: `共 ${orderIds.length} 筆訂單，系統正在彙整補料與缺料資料。`,
+        timeout: 600000,
+      },
+    );
     showDownloadToast(result, "發料單");
   } catch (error) {
     showToast("已發料發料單生成失敗：" + error.message, { tone: "error", sticky: true });

@@ -215,6 +215,9 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('path: "/api/dispatch/generate"', schedule_module)
         self.assertIn("請先勾選要下載副檔的已發料訂單", schedule_module)
         self.assertIn("請先勾選要生成發料單的已發料訂單", schedule_module)
+        self.assertIn("正在重新產生已發料副檔", schedule_module)
+        self.assertIn("正在生成發料單", schedule_module)
+        self.assertIn("timeout: 600000", schedule_module)
 
     def test_schedule_module_auto_checks_shortage_for_negative_carry_over(self):
         root = Path(__file__).resolve().parents[1]
