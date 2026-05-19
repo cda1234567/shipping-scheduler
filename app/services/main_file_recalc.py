@@ -4,6 +4,8 @@ import re
 from typing import Any
 
 _BATCH_CODE_RE = re.compile(r"^\d+-\d+$")
+_DEDUCT_HEADER_KEYWORDS = ("扣帳",)
+_REVERSE_HEADER_KEYWORDS = ("回復", "恢復")
 _PART_COL = 1
 _STOCK_FALLBACK_COL = 8
 
@@ -31,16 +33,82 @@ def _part_number(ws, row: int) -> str:
 
 def find_first_batch_col(ws) -> int | None:
     """找 row 1 第一個 X-Y 批次 code 欄位。"""
+    batch_cols = find_batch_cols(ws)
+    return batch_cols[0] if batch_cols else None
+
+
+def find_batch_cols(ws) -> list[int]:
+    """找 row 1 所有 X-Y 批次 code 欄位，不要求批次區彼此連續。"""
+    cols: list[int] = []
     for col in range(1, ws.max_column + 1):
         value = str(ws.cell(row=1, column=col).value or "").strip()
         if _BATCH_CODE_RE.match(value):
-            return col
+            cols.append(col)
+    return cols
+
+
+def find_batch_col_for_cell(ws, col: int) -> int | None:
+    """回傳 cell 所屬批次起始欄；只接受補料欄或用量欄。"""
+    for batch_col in reversed(find_batch_cols(ws)):
+        if col in {batch_col, batch_col + 1}:
+            return batch_col
+        if col > batch_col + 1:
+            return None
     return None
 
 
-def _previous_balance(ws, row: int, first_batch_col: int, start_batch_col: int) -> float | None:
-    for batch_col in range(start_batch_col - 3, first_batch_col - 1, -3):
-        value = _to_number(ws.cell(row=row, column=batch_col + 2).value)
+def _header_text(ws, col: int) -> str:
+    return str(ws.cell(row=1, column=col).value or "").strip()
+
+
+def _adjustment_kind(header: str) -> str | None:
+    if any(keyword in header for keyword in _REVERSE_HEADER_KEYWORDS):
+        return "reverse"
+    if any(keyword in header for keyword in _DEDUCT_HEADER_KEYWORDS):
+        return "deduct"
+    return None
+
+
+def _stock_events(ws) -> list[dict[str, int | str]]:
+    """找出會影響庫存 running balance 的欄位事件。"""
+    events: list[dict[str, int | str]] = []
+    for col in range(1, ws.max_column + 1):
+        header = _header_text(ws, col)
+        if _BATCH_CODE_RE.match(header):
+            events.append({
+                "kind": "batch",
+                "start_col": col,
+                "balance_col": col + 2,
+            })
+            continue
+
+        adjustment_kind = _adjustment_kind(header)
+        if adjustment_kind:
+            events.append({
+                "kind": adjustment_kind,
+                "start_col": col,
+                "balance_col": col + 1,
+            })
+
+    return sorted(events, key=lambda item: int(item["start_col"]))
+
+
+def _event_for_cell(events: list[dict[str, int | str]], col: int) -> dict[str, int | str] | None:
+    for event in reversed(events):
+        kind = str(event["kind"])
+        start_col = int(event["start_col"])
+        if kind == "batch" and col in {start_col, start_col + 1}:
+            return event
+        if kind in {"deduct", "reverse"} and col == start_col:
+            return event
+        if col > int(event["balance_col"]):
+            return None
+    return None
+
+
+def _previous_balance(ws, row: int, events: list[dict[str, int | str]], start_col: int) -> float | None:
+    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
+        value = _to_number(ws.cell(row=row, column=int(event["balance_col"])).value)
         if value is not None:
             return value
     return None
@@ -50,15 +118,16 @@ def _initial_balance(
     ws,
     row: int,
     part_number: str,
-    first_batch_col: int,
+    first_event_col: int,
+    events: list[dict[str, int | str]],
     snapshot_stock: dict[str, float] | None,
 ) -> float:
-    previous = _previous_balance(ws, row, first_batch_col, first_batch_col)
+    previous = _previous_balance(ws, row, events, first_event_col)
     if previous is not None:
         return previous
 
     # 現場主檔常用 H 欄作為盤點/起始庫存；若批次區從 H 之後才開始，優先採用它。
-    if _STOCK_FALLBACK_COL < first_batch_col:
+    if _STOCK_FALLBACK_COL < first_event_col:
         fallback = _to_number(ws.cell(row=row, column=_STOCK_FALLBACK_COL).value)
         if fallback is not None:
             return fallback
@@ -71,10 +140,10 @@ def _initial_balance(
     return fallback if fallback is not None else 0.0
 
 
-def _last_balance(ws, row: int, first_batch_col: int) -> float | None:
+def _last_balance(ws, row: int, first_event_col: int) -> float | None:
     last: float | None = None
-    for batch_col in range(first_batch_col, ws.max_column + 1, 3):
-        value = _to_number(ws.cell(row=row, column=batch_col + 2).value)
+    for event in [item for item in _stock_events(ws) if int(item["start_col"]) >= first_event_col]:
+        value = _to_number(ws.cell(row=row, column=int(event["balance_col"])).value)
         if value is not None:
             last = value
     return last
@@ -88,7 +157,7 @@ def recalc_batch_balances_for_cell(
     snapshot_stock: dict[str, float] | None = None,
 ) -> dict:
     """
-    若編輯的是批次區補料/用量 cell，重算該列後續批次結餘。
+    若編輯的是批次補料/用量，或不良品/多打扣帳數量，重算該列後續結餘。
 
     回傳:
         affected_cells: [{row, col, value}]
@@ -99,42 +168,58 @@ def recalc_batch_balances_for_cell(
     if row <= 1:
         return {"affected_cells": [], "part_number": "", "current_stock": None, "recalculated": False}
 
-    first_batch_col = find_first_batch_col(ws)
-    if first_batch_col is None or col < first_batch_col:
+    events = _stock_events(ws)
+    first_event_col = int(events[0]["start_col"]) if events else None
+    if first_event_col is None or col < first_event_col:
         return {"affected_cells": [], "part_number": _part_number(ws, row), "current_stock": None, "recalculated": False}
 
-    offset = (col - first_batch_col) % 3
-    if offset not in {0, 1}:
+    start_event = _event_for_cell(events, col)
+    if start_event is None:
         return {"affected_cells": [], "part_number": _part_number(ws, row), "current_stock": None, "recalculated": False}
+    start_col = int(start_event["start_col"])
 
     part_number = _part_number(ws, row)
     if not part_number:
         return {"affected_cells": [], "part_number": "", "current_stock": None, "recalculated": False}
 
-    start_batch_col = col - offset
-    previous = _previous_balance(ws, row, first_batch_col, start_batch_col)
+    previous = _previous_balance(ws, row, events, start_col)
     if previous is None:
-        previous = _initial_balance(ws, row, part_number, first_batch_col, snapshot_stock)
+        previous = _initial_balance(ws, row, part_number, first_event_col, events, snapshot_stock)
 
     affected_cells: list[dict[str, int | float]] = []
-    for batch_col in range(start_batch_col, ws.max_column + 1, 3):
-        supplement_cell = ws.cell(row=row, column=batch_col)
-        usage_cell = ws.cell(row=row, column=batch_col + 1)
-        balance_cell = ws.cell(row=row, column=batch_col + 2)
+    for event in [item for item in events if int(item["start_col"]) >= start_col]:
+        kind = str(event["kind"])
+        event_col = int(event["start_col"])
+        balance_col = int(event["balance_col"])
+        balance_cell = ws.cell(row=row, column=balance_col)
 
-        if _is_blank(supplement_cell.value) and _is_blank(usage_cell.value) and _is_blank(balance_cell.value):
-            continue
+        if kind == "batch":
+            supplement_cell = ws.cell(row=row, column=event_col)
+            usage_cell = ws.cell(row=row, column=event_col + 1)
+            if _is_blank(supplement_cell.value) and _is_blank(usage_cell.value) and _is_blank(balance_cell.value):
+                continue
 
-        supplement = _to_number(supplement_cell.value) or 0.0
-        usage = _to_number(usage_cell.value) or 0.0
-        previous = previous - usage + supplement
+            supplement = _to_number(supplement_cell.value) or 0.0
+            usage = _to_number(usage_cell.value) or 0.0
+            previous = previous - usage + supplement
+        else:
+            qty_cell = ws.cell(row=row, column=event_col)
+            if _is_blank(qty_cell.value) and _is_blank(balance_cell.value):
+                continue
+
+            qty = _to_number(qty_cell.value) or 0.0
+            if kind == "reverse":
+                previous = previous + qty
+            else:
+                previous = previous - qty
+
         value = _display_number(previous)
         balance_cell.value = value
-        affected_cells.append({"row": row, "col": batch_col + 2, "value": value})
+        affected_cells.append({"row": row, "col": balance_col, "value": value})
 
     return {
         "affected_cells": affected_cells,
         "part_number": part_number,
-        "current_stock": _last_balance(ws, row, first_batch_col),
+        "current_stock": _last_balance(ws, row, first_event_col),
         "recalculated": True,
     }

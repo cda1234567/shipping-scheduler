@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import openpyxl
@@ -9,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from app.routers.dispatch import _build_dispatch_result_by_order, _get_selected_orders
+from app.services.dispatch_form_generator import generate_dispatch_form
 
 
 class DispatchGenerationTests(unittest.TestCase):
@@ -28,6 +31,34 @@ class DispatchGenerationTests(unittest.TestCase):
             selected = _get_selected_orders([1, 2, 3, 4])
 
         self.assertEqual([order["id"] for order in selected], [1, 2, 3])
+
+    def test_dispatch_form_writes_explicit_zero_quantity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "dispatch.xlsx"
+
+            generate_dispatch_form([
+                {
+                    "batch_code": "1-1",
+                    "po_number": "4500059234",
+                    "model": "MODEL-A",
+                    "date": "2026/03/27",
+                    "items": [
+                        {
+                            "part": "PART-ZERO",
+                            "desc": "Zero qty",
+                            "qty": 0,
+                            "fill_color": None,
+                            "is_shortage": False,
+                        },
+                    ],
+                },
+            ], str(output_path))
+
+            wb = openpyxl.load_workbook(output_path, data_only=False)
+            ws = wb.active
+            self.assertEqual(ws.cell(row=3, column=3).value, "PART-ZERO")
+            self.assertEqual(ws.cell(row=3, column=5).value, 0)
+            wb.close()
 
     def test_dispatch_generate_uses_selected_orders_saved_supplements_and_sample_layout(self):
         orders = {
@@ -322,6 +353,54 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=3).value, "PART-MANUAL")
         self.assertEqual(ws.cell(row=3, column=5).value, 20000)
         self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
+        wb.close()
+
+    def test_dispatch_generate_writes_reviewed_draft_explicit_zero_quantity(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "1-3",
+                "delivery_date": "2026-03-27",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "PART-ZERO", "description": "Zero desc", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+        reviewed_draft = {
+            "order_id": 1,
+            "decisions": {"PART-ZERO": "CreateRequirement"},
+            "supplements": {"PART-ZERO": 0},
+            "shortages": [
+                {"part_number": "PART-ZERO", "description": "Zero desc", "suggested_qty": 1000, "shortage_amount": 1000},
+            ],
+        }
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=[]), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={1: {}}), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value=reviewed_draft["decisions"]), \
+             patch("app.routers.dispatch.db.get_active_merge_drafts", return_value=[reviewed_draft]), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={}), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                "order_ids": [1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        self.assertEqual(ws.cell(row=3, column=3).value, "PART-ZERO")
+        self.assertEqual(ws.cell(row=3, column=5).value, 0)
         wb.close()
 
     def test_dispatch_generate_adds_dispatched_order_supplement_back_for_highlight_check(self):

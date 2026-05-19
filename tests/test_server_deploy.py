@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from app.services.server_downloads import save_bytes_to_user_downloads
 
 
 class ServerDeployTests(unittest.TestCase):
@@ -45,3 +49,16 @@ class ServerDeployTests(unittest.TestCase):
         self.assertIn("APP_BASIC_AUTH_USER=admin", env_example)
         self.assertIn("APP_BASIC_AUTH_PASSWORD_HASH='$2b$12$Soo61t0XpKANoBu0jiWNmuiP6gaIf.i3TlfZO/L4sn.YkQ4LsM2IO'", env_example)
         self.assertIn("CADDY_CONTAINER_NAME=dispatch-caddy", env_example)
+
+    def test_server_download_save_strips_path_from_filename(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            download_dir = Path(temp_dir) / "downloads"
+            download_dir.mkdir()
+            outside_path = Path(temp_dir) / "escape.xlsx"
+
+            with patch("app.services.server_downloads.SERVER_DOWNLOAD_DIR", download_dir):
+                saved_name = save_bytes_to_user_downloads(b"demo", "..\\escape.xlsx")
+
+            self.assertEqual(saved_name, "escape.xlsx")
+            self.assertTrue((download_dir / "escape.xlsx").exists())
+            self.assertFalse(outside_path.exists())

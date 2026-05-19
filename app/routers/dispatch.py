@@ -153,6 +153,16 @@ def _build_order_dispatch_context(
     bom_parts = set(descriptions)
     saved_decisions = db.get_decisions_for_order(order_id)
     stored_order_supplements = saved_supplements.get(order_id, {})
+    draft_supplements = {}
+    if active_draft:
+        for raw_part, raw_qty in (active_draft.get("supplements") or {}).items():
+            part = _normalize_part_key(raw_part)
+            if not part:
+                continue
+            try:
+                draft_supplements[part] = float(raw_qty or 0)
+            except (TypeError, ValueError):
+                draft_supplements[part] = 0.0
 
     reviewed_draft = _is_reviewed_active_draft(active_draft)
     if reviewed_draft:
@@ -172,7 +182,7 @@ def _build_order_dispatch_context(
         if _normalize_part_key(item.get("part_number"))
     }
 
-    candidate_parts = set(shortages_by_part) | set(stored_order_supplements)
+    candidate_parts = set(shortages_by_part) | set(stored_order_supplements) | set(draft_supplements)
     candidate_parts.update(
         part_number
         for part_number, decision in decisions.items()
@@ -186,6 +196,7 @@ def _build_order_dispatch_context(
         "descriptions": descriptions,
         "decisions": decisions,
         "stored_supplements": stored_order_supplements,
+        "draft_supplements": draft_supplements,
         "shortages_by_part": shortages_by_part,
         "candidate_parts": sorted(candidate_parts),
         "reviewed_draft": reviewed_draft,
@@ -198,10 +209,13 @@ def _should_render_dispatch_item(
     shortage_item: dict | None,
     *,
     reviewed_draft: bool = False,
+    has_explicit_supplement: bool = False,
 ) -> bool:
     if decision in {"MarkHasPO", "IgnoreOnce"}:
         return False
     if decision == "Shortage":
+        return True
+    if decision == "CreateRequirement" and has_explicit_supplement:
         return True
     if supplement_qty > 0:
         return True
@@ -348,13 +362,17 @@ async def generate(req: DispatchRequest, request: Request):
     for context in order_contexts:
         for part in context["candidate_parts"]:
             decision = context["decisions"].get(part, "None")
-            supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
+            has_explicit_supplement = part in context["stored_supplements"] or part in context["draft_supplements"]
+            supplement_qty = float(
+                context["stored_supplements"].get(part, context["draft_supplements"].get(part, 0)) or 0
+            )
             shortage_item = context["shortages_by_part"].get(part)
             if not _should_render_dispatch_item(
                 decision,
                 supplement_qty,
                 shortage_item,
                 reviewed_draft=bool(context.get("reviewed_draft")),
+                has_explicit_supplement=has_explicit_supplement,
             ):
                 continue
             if is_order_scoped_shortage_part(part):
@@ -362,7 +380,7 @@ async def generate(req: DispatchRequest, request: Request):
             first_order_by_part.setdefault(part, context["order_id"])
             if shortage_item:
                 final_shortage_by_part[part] = shortage_item
-            if supplement_qty > 0:
+            if has_explicit_supplement:
                 aggregated_supplement_by_part[part] = aggregated_supplement_by_part.get(part, 0.0) + supplement_qty
 
     for context in order_contexts:
@@ -371,7 +389,10 @@ async def generate(req: DispatchRequest, request: Request):
 
         for part in context["candidate_parts"]:
             decision = context["decisions"].get(part, "None")
-            supplement_qty = float(context["stored_supplements"].get(part, 0) or 0)
+            has_explicit_supplement = part in context["stored_supplements"] or part in context["draft_supplements"]
+            supplement_qty = float(
+                context["stored_supplements"].get(part, context["draft_supplements"].get(part, 0)) or 0
+            )
             shortage_item = context["shortages_by_part"].get(part)
             use_order_scoped = is_order_scoped_shortage_part(part)
             final_shortage = (shortage_item or {}) if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
@@ -380,6 +401,7 @@ async def generate(req: DispatchRequest, request: Request):
                 supplement_qty,
                 shortage_item,
                 reviewed_draft=bool(context.get("reviewed_draft")),
+                has_explicit_supplement=has_explicit_supplement,
             ):
                 continue
             if not use_order_scoped and first_order_by_part.get(part) != context["order_id"]:
@@ -403,7 +425,7 @@ async def generate(req: DispatchRequest, request: Request):
                 })
                 continue
 
-            if effective_supplement_qty > 0:
+            if effective_supplement_qty > 0 or has_explicit_supplement:
                 highlight_st_inventory_stock = _build_highlight_st_inventory_stock(
                     order,
                     display_part,

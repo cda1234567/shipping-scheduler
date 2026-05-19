@@ -27,7 +27,7 @@ from ..services.main_reader import (
 )
 from ..services.local_time import local_now
 import re as _re_main
-from ..services.main_file_recalc import find_first_batch_col, recalc_batch_balances_for_cell
+from ..services.main_file_recalc import find_batch_col_for_cell, recalc_batch_balances_for_cell
 
 _COMMITTED_ORDER_STATUSES = {"dispatched", "completed"}
 
@@ -229,10 +229,7 @@ def _is_committed_status(status: object) -> bool:
 def _is_batch_supplement_cell(ws, *, row: int, col: int) -> bool:
     if row <= 1:
         return False
-    first_batch_col = find_first_batch_col(ws)
-    if first_batch_col is None or col < first_batch_col or col > ws.max_column:
-        return False
-    return (col - first_batch_col) % 3 == 0
+    return find_batch_col_for_cell(ws, col) == col
 
 
 def _main_cell_write_value(ws, *, row: int, col: int, value):
@@ -249,15 +246,10 @@ def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value)
     if row <= 1:
         return result
 
-    first_batch_col = find_first_batch_col(ws)
-    if first_batch_col is None or col < first_batch_col or col > ws.max_column:
+    batch_first_col = find_batch_col_for_cell(ws, col)
+    if batch_first_col != col:
         return result
 
-    offset = (col - first_batch_col) % 3
-    if offset != 0:
-        return result
-
-    batch_first_col = col - offset
     batch_code = str(ws.cell(row=1, column=batch_first_col).value or "").strip()
     if not _re_main.match(r"^\d+-\d+$", batch_code):
         return result

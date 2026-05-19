@@ -1612,7 +1612,7 @@ class ApiTests(unittest.TestCase):
 
             wb = openpyxl.load_workbook(main_path, data_only=True)
             ws = wb.active
-            self.assertEqual(ws.cell(row=2, column=9).value, 0)
+            self.assertIsNone(ws.cell(row=2, column=9).value)
             self.assertEqual(ws.cell(row=2, column=10).value, 30)
             self.assertEqual(ws.cell(row=2, column=11).value, 90)
             wb.close()
@@ -1692,7 +1692,7 @@ class ApiTests(unittest.TestCase):
 
             wb = openpyxl.load_workbook(main_path, data_only=True)
             ws = wb.active
-            self.assertEqual(ws.cell(row=2, column=9).value, 0)
+            self.assertIsNone(ws.cell(row=2, column=9).value)
             self.assertEqual(ws.cell(row=2, column=10).value, 30)
             self.assertEqual(ws.cell(row=2, column=11).value, 90)
             wb.close()

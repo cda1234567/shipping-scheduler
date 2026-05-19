@@ -219,10 +219,10 @@ class DispatchEquivalenceTests(unittest.TestCase):
 
             wb = load_workbook(path, data_only=True)
             ws = wb.active
-            self.assertEqual(ws.cell(row=2, column=9).value, 0)
+            self.assertIsNone(ws.cell(row=2, column=9).value)
             self.assertEqual(ws.cell(row=2, column=10).value, 15)
             self.assertEqual(ws.cell(row=2, column=11).value, 5)
-            self.assertEqual(ws.cell(row=2, column=12).value, 0)
+            self.assertIsNone(ws.cell(row=2, column=12).value)
             self.assertEqual(ws.cell(row=2, column=13).value, 10)
             self.assertEqual(ws.cell(row=2, column=14).value, -5)
             wb.close()

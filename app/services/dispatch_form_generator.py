@@ -128,7 +128,7 @@ def _write_item_row(source_ws, target_ws, row_idx: int, index: int, item: dict):
 
     description = str(item.get("desc") or "")
     is_shortage = bool(item.get("is_shortage"))
-    qty_value = "缺" if is_shortage else item.get("qty", "")
+    qty_value = "缺" if is_shortage else (item["qty"] if "qty" in item else "")
 
     target_ws.cell(row_idx, 1).value = index
     target_ws.cell(row_idx, 3).value = item.get("part", "")

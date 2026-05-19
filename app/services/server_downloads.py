@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
+import re
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -11,6 +12,18 @@ from .. import database as db
 SERVER_DOWNLOAD_DIR = Path("/app/user_downloads")
 
 
+def _safe_download_filename(filename: str) -> str:
+    raw = str(filename or "").strip()
+    names = [
+        Path(raw).name,
+        PureWindowsPath(raw).name,
+        PurePosixPath(raw).name,
+    ]
+    name = next((item for item in names if item and item not in {".", ".."}), "download")
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip(" .")
+    return name or "download"
+
+
 def is_server_download_available() -> bool:
     return SERVER_DOWNLOAD_DIR.is_dir()
 
@@ -18,7 +31,8 @@ def is_server_download_available() -> bool:
 def _available_user_download_path(filename: str) -> Path | None:
     if not SERVER_DOWNLOAD_DIR.is_dir():
         return None
-    dest = SERVER_DOWNLOAD_DIR / filename
+    safe_name = _safe_download_filename(filename)
+    dest = SERVER_DOWNLOAD_DIR / safe_name
     if dest.exists():
         stem = dest.stem
         suffix = dest.suffix

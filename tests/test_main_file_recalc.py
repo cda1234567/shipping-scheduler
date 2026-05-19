@@ -127,6 +127,170 @@ class MainFileRecalcTests(unittest.TestCase):
         finally:
             wb.close()
 
+    def test_recalculates_later_batches_even_when_batch_columns_are_not_contiguous(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        try:
+            ws.cell(row=1, column=1).value = "料號"
+            ws.cell(row=1, column=8).value = "盤點"
+            ws.cell(row=1, column=9).value = "1-1"
+            ws.cell(row=1, column=10).value = "PO-1-1"
+            ws.cell(row=1, column=11).value = "MODEL-1-1"
+            ws.cell(row=1, column=15).value = "1-2"
+            ws.cell(row=1, column=16).value = "PO-1-2"
+            ws.cell(row=1, column=17).value = "MODEL-1-2"
+            ws.cell(row=1, column=22).value = "1-3"
+            ws.cell(row=1, column=23).value = "PO-1-3"
+            ws.cell(row=1, column=24).value = "MODEL-1-3"
+
+            ws.cell(row=2, column=1).value = "PART-1"
+            ws.cell(row=2, column=8).value = 100
+            ws.cell(row=2, column=9).value = 0
+            ws.cell(row=2, column=10).value = 30
+            ws.cell(row=2, column=11).value = 70
+            ws.cell(row=2, column=15).value = 5
+            ws.cell(row=2, column=16).value = 20
+            ws.cell(row=2, column=17).value = 55
+            ws.cell(row=2, column=22).value = 0
+            ws.cell(row=2, column=23).value = 5
+            ws.cell(row=2, column=24).value = 50
+
+            ws.cell(row=2, column=9).value = 10
+            result = recalc_batch_balances_for_cell(ws, row=2, col=9)
+
+            self.assertEqual(
+                result["affected_cells"],
+                [
+                    {"row": 2, "col": 11, "value": 80},
+                    {"row": 2, "col": 17, "value": 65},
+                    {"row": 2, "col": 24, "value": 60},
+                ],
+            )
+            self.assertEqual(result["current_stock"], 60)
+        finally:
+            wb.close()
+
+    def test_recalculates_through_defective_deduction_columns(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        try:
+            ws.cell(row=1, column=1).value = "料號"
+            ws.cell(row=1, column=8).value = "盤點"
+            ws.cell(row=1, column=9).value = "1-1"
+            ws.cell(row=1, column=10).value = "PO-1-1"
+            ws.cell(row=1, column=11).value = "MODEL-1-1"
+            ws.cell(row=1, column=12).value = "不良品扣帳"
+            ws.cell(row=1, column=13).value = "05/19 10:00"
+            ws.cell(row=1, column=15).value = "1-2"
+            ws.cell(row=1, column=16).value = "PO-1-2"
+            ws.cell(row=1, column=17).value = "MODEL-1-2"
+
+            ws.cell(row=2, column=1).value = "PART-1"
+            ws.cell(row=2, column=8).value = 100
+            ws.cell(row=2, column=9).value = 10
+            ws.cell(row=2, column=10).value = 30
+            ws.cell(row=2, column=11).value = 80
+            ws.cell(row=2, column=12).value = 25
+            ws.cell(row=2, column=13).value = 55
+            ws.cell(row=2, column=15).value = 5
+            ws.cell(row=2, column=16).value = 20
+            ws.cell(row=2, column=17).value = 40
+
+            ws.cell(row=2, column=9).value = 20
+            result = recalc_batch_balances_for_cell(ws, row=2, col=9)
+
+            self.assertEqual(
+                result["affected_cells"],
+                [
+                    {"row": 2, "col": 11, "value": 90},
+                    {"row": 2, "col": 13, "value": 65},
+                    {"row": 2, "col": 17, "value": 50},
+                ],
+            )
+            self.assertEqual(result["current_stock"], 50)
+        finally:
+            wb.close()
+
+    def test_editing_defective_deduction_recalculates_following_batches(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        try:
+            ws.cell(row=1, column=1).value = "料號"
+            ws.cell(row=1, column=8).value = "盤點"
+            ws.cell(row=1, column=9).value = "1-1"
+            ws.cell(row=1, column=10).value = "PO-1-1"
+            ws.cell(row=1, column=11).value = "MODEL-1-1"
+            ws.cell(row=1, column=12).value = "加工多打扣帳"
+            ws.cell(row=1, column=13).value = "05/19 10:00"
+            ws.cell(row=1, column=15).value = "1-2"
+            ws.cell(row=1, column=16).value = "PO-1-2"
+            ws.cell(row=1, column=17).value = "MODEL-1-2"
+
+            ws.cell(row=2, column=1).value = "PART-1"
+            ws.cell(row=2, column=8).value = 100
+            ws.cell(row=2, column=9).value = 10
+            ws.cell(row=2, column=10).value = 30
+            ws.cell(row=2, column=11).value = 80
+            ws.cell(row=2, column=12).value = 25
+            ws.cell(row=2, column=13).value = 55
+            ws.cell(row=2, column=15).value = 5
+            ws.cell(row=2, column=16).value = 20
+            ws.cell(row=2, column=17).value = 40
+
+            ws.cell(row=2, column=12).value = 30
+            result = recalc_batch_balances_for_cell(ws, row=2, col=12)
+
+            self.assertEqual(
+                result["affected_cells"],
+                [
+                    {"row": 2, "col": 13, "value": 50},
+                    {"row": 2, "col": 17, "value": 35},
+                ],
+            )
+            self.assertEqual(result["current_stock"], 35)
+        finally:
+            wb.close()
+
+    def test_recalculates_through_defective_reverse_columns(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        try:
+            ws.cell(row=1, column=1).value = "料號"
+            ws.cell(row=1, column=8).value = "盤點"
+            ws.cell(row=1, column=9).value = "1-1"
+            ws.cell(row=1, column=10).value = "PO-1-1"
+            ws.cell(row=1, column=11).value = "MODEL-1-1"
+            ws.cell(row=1, column=12).value = "不良品回復"
+            ws.cell(row=1, column=13).value = "05/19 10:00"
+            ws.cell(row=1, column=15).value = "1-2"
+            ws.cell(row=1, column=16).value = "PO-1-2"
+            ws.cell(row=1, column=17).value = "MODEL-1-2"
+
+            ws.cell(row=2, column=1).value = "PART-1"
+            ws.cell(row=2, column=8).value = 100
+            ws.cell(row=2, column=9).value = 0
+            ws.cell(row=2, column=10).value = 30
+            ws.cell(row=2, column=11).value = 70
+            ws.cell(row=2, column=12).value = 25
+            ws.cell(row=2, column=13).value = 95
+            ws.cell(row=2, column=15).value = 0
+            ws.cell(row=2, column=16).value = 20
+            ws.cell(row=2, column=17).value = 75
+
+            ws.cell(row=2, column=12).value = 20
+            result = recalc_batch_balances_for_cell(ws, row=2, col=12)
+
+            self.assertEqual(
+                result["affected_cells"],
+                [
+                    {"row": 2, "col": 13, "value": 90},
+                    {"row": 2, "col": 17, "value": 70},
+                ],
+            )
+            self.assertEqual(result["current_stock"], 70)
+        finally:
+            wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()
