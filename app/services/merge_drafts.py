@@ -981,6 +981,116 @@ def _replace_po_in_filename(filename: str, po_number: str) -> str:
     return f"{updated_stem}{path.suffix}" if updated_stem != path.stem else filename
 
 
+def _main_file_part_row_map(ws) -> dict[str, int]:
+    part_col = cfg("excel.main_part_col", 0) + 1
+    rows: dict[str, int] = {}
+    for row_idx in range(2, ws.max_row + 1):
+        part = normalize_part_key(ws.cell(row=row_idx, column=part_col).value)
+        if part:
+            rows[part] = row_idx
+    return rows
+
+
+def _main_header_text(ws, col: int) -> str:
+    return str(ws.cell(row=1, column=col).value or "").strip()
+
+
+def _main_stock_events(ws) -> list[dict[str, int | str]]:
+    events: list[dict[str, int | str]] = []
+    for col in range(1, ws.max_column + 1):
+        header = _main_header_text(ws, col)
+        if re.match(r"^\d+-\d+$", header):
+            events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
+        elif "回復" in header or "恢復" in header:
+            events.append({"kind": "reverse", "start_col": col, "balance_col": col + 1})
+        elif "扣帳" in header:
+            events.append({"kind": "deduct", "start_col": col, "balance_col": col + 1})
+    return sorted(events, key=lambda item: int(item["start_col"]))
+
+
+def _main_number(value) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _main_previous_stock_before_col(ws, row_idx: int, start_col: int, events: list[dict[str, int | str]]) -> float:
+    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
+        value = _main_number(ws.cell(row=row_idx, column=int(event["balance_col"])).value)
+        if value is not None:
+            return value
+
+    fallback_col = 8
+    value = _main_number(ws.cell(row=row_idx, column=fallback_col).value)
+    return value if value is not None else 0.0
+
+
+def _model_tokens(*values) -> set[str]:
+    tokens: set[str] = set()
+    for value in values:
+        for part in str(value or "").split(","):
+            token = normalize_part_key(part)
+            if token:
+                tokens.add(token)
+    return tokens
+
+
+def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | None) -> int | None:
+    code = str(order.get("code") or "").strip()
+    if not code:
+        return None
+
+    candidates = [
+        col for col in range(1, ws.max_column + 1)
+        if _main_header_text(ws, col) == code
+    ]
+    if not candidates:
+        return None
+
+    model_tokens = _model_tokens(
+        file_item.get("model"),
+        file_item.get("group_model"),
+        (bom or {}).get("model"),
+        (bom or {}).get("group_model"),
+    )
+    for col in candidates:
+        header_model = normalize_part_key(_main_header_text(ws, col + 2))
+        if not header_model or not model_tokens:
+            continue
+        if header_model in model_tokens or any(token in header_model or header_model in token for token in model_tokens):
+            return col
+    return candidates[0]
+
+
+def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None) -> tuple[dict[str, float], dict[str, float]]:
+    batch_col = _find_main_batch_col_for_file(ws, order, file_item, bom)
+    if batch_col is None:
+        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
+
+    row_map = _main_file_part_row_map(ws)
+    events = _main_stock_events(ws)
+    carry_overs: dict[str, float] = {}
+    supplements: dict[str, float] = {}
+    seen_parts: set[str] = set()
+    for component in db.get_bom_components(str(file_item.get("bom_file_id") or "")):
+        part = normalize_part_key(component.get("part_number"))
+        if not part or part in seen_parts:
+            continue
+        seen_parts.add(part)
+        row_idx = row_map.get(part)
+        if row_idx is None:
+            continue
+        carry_overs[part] = _main_previous_stock_before_col(ws, row_idx, batch_col, events)
+        supplements[part] = _main_number(ws.cell(row=row_idx, column=batch_col).value) or 0.0
+
+    if not carry_overs and not supplements:
+        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
+    return carry_overs, supplements
+
+
 def _sanitize_committed_archive_piece(value) -> str:
     text = str(value or "").strip()
     if not text:
@@ -1033,6 +1143,10 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
     if not order:
         raise HTTPException(404, "找不到已發料訂單")
 
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        raise HTTPException(400, "請先載入主檔，才能下載已發料副檔")
+
     committed_files = db.get_merge_draft_files(draft_id)
     if file_id is not None:
         requested_files = [
@@ -1045,31 +1159,37 @@ def _rebuild_committed_merge_draft_files(draft: dict, *, file_id: int | None = N
 
     file_plans: list[dict] = []
     fallback_entries: list[dict] = []
-    for file_item in committed_files:
-        bom_file_id = str(file_item.get("bom_file_id") or "").strip()
-        bom = db.get_bom_file(bom_file_id) if bom_file_id else None
-        if not bom:
-            existing_path = Path(str(file_item.get("filepath") or ""))
-            if existing_path.exists():
-                fallback_entries.append({
-                    "path": existing_path,
-                    "download_name": _replace_po_in_filename(file_item.get("filename") or existing_path.name, order.get("po_number", "")),
-                })
-            continue
+    workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+    try:
+        ws = workbook.worksheets[0]
+        for file_item in committed_files:
+            bom_file_id = str(file_item.get("bom_file_id") or "").strip()
+            bom = db.get_bom_file(bom_file_id) if bom_file_id else None
+            if not bom:
+                existing_path = Path(str(file_item.get("filepath") or ""))
+                if existing_path.exists():
+                    fallback_entries.append({
+                        "path": existing_path,
+                        "download_name": _replace_po_in_filename(file_item.get("filename") or existing_path.name, order.get("po_number", "")),
+                    })
+                continue
 
-        file_plans.append({
-            "bom_file_id": bom_file_id,
-            "source_filename": str(file_item.get("source_filename") or bom.get("filename") or ""),
-            "source_format": str(file_item.get("source_format") or bom.get("source_format") or Path(str(bom.get("filename") or "")).suffix.lower()),
-            "model": str(file_item.get("model") or bom.get("model") or ""),
-            "group_model": str(file_item.get("group_model") or bom.get("group_model") or ""),
-            "po_number": str(order.get("po_number") or bom.get("po_number") or ""),
-            "order_qty": coerce_qty(order.get("order_qty")) or None,
-            "source_order_qty": coerce_qty(bom.get("order_qty")),
-            "carry_overs": file_item.get("carry_overs") or {},
-            "supplements": file_item.get("supplements") or {},
-            "purchase_parts": [],
-        })
+            carry_overs, supplements = _main_values_for_committed_file(ws, order, file_item, bom)
+            file_plans.append({
+                "bom_file_id": bom_file_id,
+                "source_filename": str(file_item.get("source_filename") or bom.get("filename") or ""),
+                "source_format": str(file_item.get("source_format") or bom.get("source_format") or Path(str(bom.get("filename") or "")).suffix.lower()),
+                "model": str(file_item.get("model") or bom.get("model") or ""),
+                "group_model": str(file_item.get("group_model") or bom.get("group_model") or ""),
+                "po_number": str(order.get("po_number") or bom.get("po_number") or ""),
+                "order_qty": coerce_qty(order.get("order_qty")) or None,
+                "source_order_qty": coerce_qty(bom.get("order_qty")),
+                "carry_overs": carry_overs,
+                "supplements": supplements,
+                "purchase_parts": [],
+            })
+    finally:
+        workbook.close()
 
     if not file_plans and fallback_entries:
         return fallback_entries

@@ -34,11 +34,30 @@ class MergeDraftDetailTests(unittest.TestCase):
 
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
 
-    def test_download_selected_committed_merge_drafts_rebuilds_from_committed_carry_overs(self):
+    def test_download_selected_committed_merge_drafts_rebuilds_from_main_batch_values(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             main_path = root / "main.xlsx"
-            main_path.write_bytes(b"main")
+            main_workbook = Workbook()
+            main_sheet = main_workbook.active
+            main_sheet.cell(row=1, column=1, value="料號")
+            main_sheet.cell(row=1, column=8, value="盤點")
+            main_sheet.cell(row=1, column=9, value="1-1")
+            main_sheet.cell(row=1, column=10, value="PO-1-1")
+            main_sheet.cell(row=1, column=11, value="MODEL-A")
+            main_sheet.cell(row=1, column=12, value="1-2")
+            main_sheet.cell(row=1, column=13, value="PO-1-2")
+            main_sheet.cell(row=1, column=14, value="MODEL-A")
+            main_sheet.cell(row=2, column=1, value="PART-1")
+            main_sheet.cell(row=2, column=8, value=120)
+            main_sheet.cell(row=2, column=9, value=20)
+            main_sheet.cell(row=2, column=10, value=60)
+            main_sheet.cell(row=2, column=11, value=80)
+            main_sheet.cell(row=2, column=12, value=0)
+            main_sheet.cell(row=2, column=13, value=30)
+            main_sheet.cell(row=2, column=14, value=50)
+            main_workbook.save(main_path)
+            main_workbook.close()
             source_path = root / "bom.xlsx"
 
             workbook = Workbook()
@@ -63,7 +82,7 @@ class MergeDraftDetailTests(unittest.TestCase):
             }
 
             with patch("app.services.merge_drafts.db.get_latest_committed_merge_draft_for_order", return_value={"id": 7, "order_id": 42, "status": "committed"}), \
-                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 42, "po_number": "4500059999", "model": "MODEL-A", "order_qty": 1}), \
+                 patch("app.services.merge_drafts.db.get_order", return_value={"id": 42, "code": "1-1", "po_number": "4500059999", "model": "MODEL-A", "order_qty": 1}), \
                  patch("app.services.merge_drafts.db.get_setting", side_effect=lambda key, default="": {
                      "main_file_path": str(main_path),
                  }.get(key, default)), \
@@ -78,8 +97,8 @@ class MergeDraftDetailTests(unittest.TestCase):
                      "source_format": ".xlsx",
                      "model": "MODEL-A",
                      "group_model": "MODEL-A",
-                     "carry_overs": {"PART-1": 120},
-                     "supplements": {"PART-1": 20},
+                     "carry_overs": {"PART-1": 999},
+                     "supplements": {"PART-1": 888},
                  }]), \
                  patch("app.services.merge_drafts.db.get_bom_components", return_value=[{
                      "part_number": "PART-1",
@@ -105,7 +124,7 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertNotEqual(entries[0]["path"], source_path)
         self.assertTrue(entries[0]["download_name"].startswith("4500059999_MODEL-A_"))
-        self.assertEqual(entries[0]["subdir"], "PO#4500059999 MODEL-A")
+        self.assertEqual(entries[0]["subdir"], "1-1 PO#4500059999 MODEL-A")
         self.assertEqual(mock_response.call_args.kwargs["archive_label"], "已發料副檔")
         mock_replace_draft.assert_not_called()
         mock_replace_files.assert_not_called()
