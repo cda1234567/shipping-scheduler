@@ -287,7 +287,9 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("_consolidateShortagesAcrossModels(shortagesByModel, allModels, {", body)
         self.assertIn("preserveOrderScopedParts: true", body)
         self.assertIn("preserveShortageDecisions: true", body)
+        self.assertIn("storedSupplementsByPart[partKey] = Math.max(storedSupplementsByPart[partKey] || 0, qty);", body)
         self.assertIn("storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;", body)
+        self.assertIn("if (isOrderScopedPart(partKey)) {", body)
         self.assertIn("shortages.push(...(shortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));", body)
         self.assertIn("csShortages.push(...(csShortagesByModel[model] || []).filter(item => shouldRenderRightPanelShortageItem(item, storedSupplementsByPart)));", body)
         self.assertNotIn("for (const item of (effective.shortages || []).filter(shouldRenderRightPanelShortageItem))", body)
@@ -856,6 +858,113 @@ console.log(JSON.stringify(results));
         self.assertIn(".app-version-chip", stylesheet)
         self.assertIn(".version-modal-box", stylesheet)
         self.assertIn(".version-section", stylesheet)
+
+    def test_right_panel_stored_supplements_do_not_sum_across_orders(self):
+        # Bug 1: EC 等共享 pool 料在 N 個 order 都缺料時，storedSupplementsByPart 累加會把
+        # 同一份 ST 補量重複計 N 次 → 補料欄位顯示 N × MOQ 而不是一個 MOQ。修正後非 order-scoped
+        # 料應走 Math.max 分支（ORDER_SCOPED 料另以累加分支處理 bug 4）。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        # 非 order-scoped 分支必須保留 Math.max
+        self.assertIn(
+            "storedSupplementsByPart[partKey] = Math.max(storedSupplementsByPart[partKey] || 0, qty);",
+            text,
+        )
+        # 累加分支必須被 isOrderScopedPart 守衛包住，不能無條件作用
+        match = re.search(
+            r"if \(isOrderScopedPart\(partKey\)\) \{\s*(?://[^\n]*\n\s*)*"
+            r"storedSupplementsByPart\[partKey\] = \(storedSupplementsByPart\[partKey\] \|\| 0\) \+ qty;",
+            text,
+        )
+        self.assertIsNotNone(match, "ORDER_SCOPED 累加必須在 isOrderScopedPart 分支內")
+
+    def test_right_panel_stored_supplements_sum_for_order_scoped_parts(self):
+        # Bug 4: ORDER_SCOPED 料（IC-M24 / IC-STM / IC-XC2C32）每筆 order 各自配 ST。
+        # 6-4~6-9 共補 1900 顆 IC-M24C02 時，若 storedSupplementsByPart 用 Math.max 只記 400，
+        # 右側補料明細會把剩 1500 顆判為缺料。修正後 ORDER_SCOPED 分支必須累加。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"function buildRightPanelShortageData\(\) \{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        # ORDER_SCOPED 分支累加
+        self.assertIn("if (isOrderScopedPart(partKey)) {", body)
+        self.assertIn(
+            "storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;",
+            body,
+        )
+        # else 分支必須仍是 Math.max（避免 bug 1 復發）
+        self.assertIn(
+            "storedSupplementsByPart[partKey] = Math.max(storedSupplementsByPart[partKey] || 0, qty);",
+            body,
+        )
+
+        # 模擬 6-4~6-9 IC-M24C02 補 400/400/400/200/300/200 → 累加 = 1900
+        # 確認分流邏輯能對 ORDER_SCOPED prefix 正確認 + 走累加路徑。
+        self.assertIn('const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];', text)
+        self.assertIn("function isOrderScopedPart(partNumber)", text)
+
+    def test_right_panel_supplement_qty_takes_max_of_stored_and_lookahead(self):
+        # Bug: 4 個 order 各缺 2000 (總缺 8000) 時，原本 stored>0 直接 return 4000，
+        # 漏掉 lookahead 累積需求 8000 → under-supply。
+        # 修正後 stored 與 lookahead 應該取較大者，確保補滿真正的跨 order 需求。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "if (storedQty > 0 || lookaheadSuggestedQty > 0) return Math.max(storedQty, lookaheadSuggestedQty);",
+            text,
+        )
+
+    def test_save_manual_moq_preserves_in_flight_modal_supplements_before_rerender(self):
+        # Bug: 改 MOQ 後 modal 重渲染會把使用者已輸入的補量蓋掉。
+        # 修正後在 re-render 前應呼叫 _collectModalSupplements 把當前輸入保存進
+        # _modalDraftBaseSupplements，避免被預設值覆蓋。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"async function saveManualMoq\([^)]*\) \{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn("_collectModalSupplements()", body)
+        self.assertIn("_modalDraftBaseSupplements", body)
+        # collect 一定要排在 showShortageModal 之前
+        collect_idx = body.index("_collectModalSupplements()")
+        render_idx = body.index("showShortageModal(_modalTargets)")
+        self.assertLess(collect_idx, render_idx)
+
+    def test_open_batch_merge_modal_stable_preserves_commit_after_save_flag(self):
+        # Bug: 「批次 Merge + 寫主檔」按下後，openBatchMergeDraftModalStable 的 retry
+        # 路徑會呼叫 closeShortageModal()，而那會把 _modalCommitAfterSave reset 成 false，
+        # 導致 modal 儲存時走 saveBatchDraftsFromModal 而不是 update-and-commit-drafts。
+        # 修正後 retry 前要先保存 flag、retry 後再還原。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"async function openBatchMergeDraftModalStable\([^)]*\) \{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn("const preservedCommitAfterSave = _modalCommitAfterSave;", body)
+        self.assertIn("_modalCommitAfterSave = preservedCommitAfterSave;", body)
+        preserve_idx = body.index("const preservedCommitAfterSave = _modalCommitAfterSave;")
+        close_idx = body.index("closeShortageModal();")
+        restore_idx = body.index("_modalCommitAfterSave = preservedCommitAfterSave;")
+        self.assertLess(preserve_idx, close_idx)
+        self.assertLess(close_idx, restore_idx)
 
     def test_edit_auth_assets_exist(self):
         root = Path(__file__).resolve().parents[1]

@@ -9,6 +9,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 import app.database as db
+from app.services.local_time import local_now
+
+
+class NowHelperTests(unittest.TestCase):
+    def test_now_returns_local_taipei_time(self):
+        before = local_now()
+        value = db._now()
+        after = local_now()
+
+        parsed = datetime.fromisoformat(value)
+        self.assertIsNone(parsed.tzinfo)
+        self.assertLessEqual(before - timedelta(seconds=1), parsed)
+        self.assertLessEqual(parsed, after + timedelta(seconds=1))
 
 
 class InMemoryDbTestCase(unittest.TestCase):

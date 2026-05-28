@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from contextlib import contextmanager
 
 from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR
+from .services.local_time import local_now
 
 DB_PATH = DATA_DIR / "system.db"
 _MANAGED_PATH_FALLBACKS = {
@@ -273,7 +274,7 @@ CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatche
 
 
 def _now() -> str:
-    return datetime.now().isoformat()
+    return local_now().isoformat()
 
 
 def _json_dumps(value) -> str:

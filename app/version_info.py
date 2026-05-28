@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.19.6"
-APP_RELEASED_AT = "2026-05-19"
-APP_HEADLINE = "多選下載已發料副檔更穩定。"
+APP_VERSION = "v2026.05.28.1"
+APP_RELEASED_AT = "2026-05-28"
+APP_HEADLINE = "補料明細誤算與發料單塗色修正。"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細誤算與發料單塗色修正",
+        "items": [
+            "右側補料明細的「補料」欄,同一顆 EC 料在 N 個訂單共享 ST 庫存時,跨訂單已存補量改取最大值,不再被加總成 4 倍 MOQ(EC-30009A 4000 一格被算成 16000 的問題)。",
+            "ORDER_SCOPED 料(IC-M24 / IC-STM / IC-XC2C32)維持跨訂單累加,6-4~6-9 各補對應量總計 1900 顆不再被算成 400 而誤跳紅字。",
+            "Lookahead 同料號跨訂單需求超過單筆 stored 補量時,getRightPanelSupplementQty 取兩者較大值,避免 4 個訂單各補 2000 但實際需 8000 時 under-supply。",
+            "補料 modal 內按「存」記住 MOQ 後重新渲染時,會先把當下已輸入的補量併入 _modalDraftBaseSupplements,輸入框不再被 server draft 預設值蓋掉。",
+            "批次 Merge + 寫主檔流程,modal 第一次顯示失敗 retry 時,_modalCommitAfterSave flag 不再被 closeShortageModal 重設成 false,確認按鈕走得到 update-and-commit-drafts 主檔寫入路徑。",
+            "DB 寫入時間從 UTC 改回 Asia/Taipei,_now() 改用 services.local_time.local_now();ST 庫存 audit log 等所有 changed_at / loaded_at 不再差 8 小時。",
+            "已發料區「生成發料單」橘色塗色回來:拆掉 dispatch.py 的 _build_highlight_st_inventory_stock 對 committed status 把 supplement_qty 加回 ST 庫存的補償,needs_purchase 直接看 raw ST 庫存。",
+        ],
+    },
     {
         "title": "多選副檔下載修正",
         "items": [

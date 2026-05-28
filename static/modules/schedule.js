@@ -1186,9 +1186,8 @@ function getRightPanelSupplementQty(item, storedSupplementsByPart = {}) {
   if (Number(item?.supplement_qty || 0) > 0) return Number(item?.supplement_qty || 0);
   const partKey = normalizePartKey(item?.part_number);
   const storedQty = Number(storedSupplementsByPart?.[partKey] || 0) || 0;
-  if (storedQty > 0) return storedQty;
   const lookaheadSuggestedQty = Number(item?._lookahead_suggested_qty || 0) || 0;
-  if (lookaheadSuggestedQty > 0) return lookaheadSuggestedQty;
+  if (storedQty > 0 || lookaheadSuggestedQty > 0) return Math.max(storedQty, lookaheadSuggestedQty);
   return Number(item?.suggested_qty || 0) || 0;
 }
 
@@ -1315,7 +1314,13 @@ function buildRightPanelShortageData() {
       const partKey = normalizePartKey(rawPart);
       const qty = Number(rawQty || 0) || 0;
       if (!partKey || qty <= 0) return;
-      storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;
+      if (isOrderScopedPart(partKey)) {
+        // ORDER_SCOPED 料每筆 order 各自配 ST，跨 order 應累加成 batch 總補量。
+        storedSupplementsByPart[partKey] = (storedSupplementsByPart[partKey] || 0) + qty;
+      } else {
+        // EC 等共享 pool 料：跨 order 共享 stock，避免單一 supplement 被算多次。
+        storedSupplementsByPart[partKey] = Math.max(storedSupplementsByPart[partKey] || 0, qty);
+      }
     });
   });
 
@@ -3326,6 +3331,8 @@ async function saveManualMoq(partNumber, input, button) {
     recalculate();
     updateStatusOnly();
     if (_modalTargets.length && document.getElementById("shortage-modal")?.style.display === "flex") {
+      const inFlightSupplements = _collectModalSupplements();
+      _modalDraftBaseSupplements = { ..._modalDraftBaseSupplements, ...inFlightSupplements };
       await showShortageModal(_modalTargets);
     }
     showToast(`${key} MOQ 已儲存`);
@@ -5724,7 +5731,9 @@ async function openBatchMergeDraftModalStable(targetIds, fallbackTargets = []) {
   const modal = document.getElementById("shortage-modal");
   if (modal?.style.display === "flex") return;
 
+  const preservedCommitAfterSave = _modalCommitAfterSave;
   closeShortageModal();
+  _modalCommitAfterSave = preservedCommitAfterSave;
   await waitForNextFrame();
   modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
   await showBatchMergeDraftModal(modalTargets);
