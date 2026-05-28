@@ -315,6 +315,47 @@ class ApiTests(unittest.TestCase):
         mock_batch_merge.assert_called_once_with([1, 2])
         mock_rebuild.assert_called_once_with([1, 2])
 
+    def test_batch_merge_without_reset_stored_keeps_persisted_decisions(self):
+        # 「批次 Merge + 寫主檔」走這條：不重算，保留 db 已存的 decisions/supplements
+        with patch("app.routers.schedule.db.batch_merge_orders"), \
+             patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 7}]), \
+             patch("app.routers.schedule.db.replace_order_decisions") as mock_clear_dec, \
+             patch("app.routers.schedule.db.replace_order_supplements") as mock_clear_sup, \
+             patch("app.routers.schedule.db.log_activity"), \
+             patch("app.routers.schedule.db.create_alert"):
+            response = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})
+
+        self.assertEqual(response.status_code, 200)
+        mock_clear_dec.assert_not_called()
+        mock_clear_sup.assert_not_called()
+
+    def test_batch_merge_with_reset_stored_clears_persisted_state_before_rebuild(self):
+        # 「批次 Merge」(重算) 走這條：清掉 db 已存的 decisions/supplements，再 rebuild
+        call_order = []
+        with patch("app.routers.schedule.db.batch_merge_orders",
+                   side_effect=lambda ids: call_order.append(("batch_merge", list(ids)))), \
+             patch("app.routers.schedule.db.replace_order_decisions",
+                   side_effect=lambda ids, allocations: call_order.append(("clear_dec", list(ids)))) as mock_clear_dec, \
+             patch("app.routers.schedule.db.replace_order_supplements",
+                   side_effect=lambda ids, allocations: call_order.append(("clear_sup", list(ids)))) as mock_clear_sup, \
+             patch("app.routers.schedule.rebuild_merge_drafts",
+                   side_effect=lambda ids: call_order.append(("rebuild", list(ids))) or [{"id": 7}]) as mock_rebuild, \
+             patch("app.routers.schedule.db.log_activity"), \
+             patch("app.routers.schedule.db.create_alert"):
+            response = self.client.post("/api/schedule/batch-merge", json={
+                "order_ids": [1, 2],
+                "reset_stored": True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        mock_clear_dec.assert_called_once_with([1, 2], {})
+        mock_clear_sup.assert_called_once_with([1, 2], {})
+        mock_rebuild.assert_called_once_with([1, 2])
+        # 清空必須發生在 rebuild 之前
+        clear_idx = min(i for i, (name, _) in enumerate(call_order) if name == "clear_dec")
+        rebuild_idx = next(i for i, (name, _) in enumerate(call_order) if name == "rebuild")
+        self.assertLess(clear_idx, rebuild_idx)
+
     def test_update_selected_schedule_drafts_allocates_supplements_per_order(self):
         with patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}), \
              patch("app.routers.schedule.build_order_supplement_allocations", return_value={
