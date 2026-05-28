@@ -12,7 +12,6 @@ const STATIC_EDIT_LOCK_SELECTORS = [
   "#btn-upload-schedule",
   "#btn-save-order",
   "#btn-batch-merge",
-  "#btn-batch-dispatch",
   "#btn-dedup-schedule",
   "#btn-create-folder",
   "#btn-save-bom-order",

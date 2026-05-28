@@ -59,7 +59,6 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
     document.getElementById("btn-batch-merge-commit")?.addEventListener("click", handleBatchMergeCommit);
-    document.getElementById("btn-batch-dispatch")?.addEventListener("click", handleBatchDispatch);
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
@@ -4388,53 +4387,6 @@ async function handleBatchMergeLegacyFlow() {
   }
 }
 
-async function handleBatchDispatch() {
-  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
-  if (!_checkedIds.size) { showToast("請先勾選要寫入主檔的訂單"); return; }
-  if (!targets.length) { showToast("目前勾選的訂單沒有可寫入主檔的項目"); return; }
-
-  const button = document.getElementById("btn-batch-dispatch");
-  const originalText = button?.textContent || "寫入主檔";
-  const confirmed = confirm(`確定要直接寫入主檔 ${targets.length} 筆訂單嗎？`);
-  if (!confirmed) return;
-  try {
-    if (button) {
-      button.disabled = true;
-      button.textContent = "寫入中...";
-    }
-    await withGlobalBusy(
-      async () => {
-        const result = await apiPost("/api/schedule/batch-dispatch", {
-          order_ids: targets.map(item => item.id),
-          decisions: _decisions,
-          order_supplements: _orderSupplementsByOrderId,
-        });
-        targets.forEach(item => _checkedIds.delete(item.id));
-        await Promise.all([refresh(), refreshCompleted()]);
-        if (_onRefreshMain) await _onRefreshMain();
-        const shortageCount = (result.shortages || []).length;
-        if (shortageCount > 0) {
-          showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
-          showPostDispatchShortages(result.shortages);
-        } else {
-          showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
-        }
-      },
-      {
-        title: "正在寫入主檔",
-        detail: `共 ${targets.length} 筆訂單，系統會依目前順序直接寫入主檔。`,
-      },
-    );
-  } catch (error) {
-    showToast("寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = originalText;
-    }
-  }
-}
-
 async function handleDeleteDraftLegacyV3(draftId, model) {
   if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
   try {
@@ -5667,7 +5619,10 @@ async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
         if (currentOrderIds.length) {
           await apiPost("/api/schedule/reorder", { order_ids: currentOrderIds });
         }
-        return apiPost("/api/schedule/batch-merge", { order_ids: targetIds });
+        return apiPost("/api/schedule/batch-merge", {
+          order_ids: targetIds,
+          reset_stored: !commitAfterModal,
+        });
       },
       {
         title: commitAfterModal ? "正在建立強制寫入副檔" : "正在批次建立副檔",

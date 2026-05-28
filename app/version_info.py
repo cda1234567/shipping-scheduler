@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.28.3"
+APP_VERSION = "v2026.05.28.4"
 APP_RELEASED_AT = "2026-05-28"
-APP_HEADLINE = "補料 modal 預設值不再跨訂單累加。"
+APP_HEADLINE = "批次 Merge 重算,拿掉「寫入主檔」按鈕。"
 APP_CHANGELOG = [
+    {
+        "title": "批次 Merge 重算 + 工作流精簡",
+        "items": [
+            "綠色「批次 Merge」按鈕現在會傳 reset_stored=True 給後端,清掉這批訂單舊的 decisions / supplements 後再 rebuild,modal 跳出來看到的是乾淨的 calc default,不會被上次手動填的值蓋住。",
+            "紅色「批次 Merge + 寫主檔」流程不變,保留 db 已存的 decisions / supplements 直接走完寫主檔。",
+            "舊的「寫入主檔」按鈕拿掉(HTML + JS + edit_auth selector + 相關 test 殘餘),工具列只剩兩條清楚流程。",
+        ],
+    },
     {
         "title": "補料 modal 預設值不再跨訂單累加",
         "items": [

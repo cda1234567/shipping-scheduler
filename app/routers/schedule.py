@@ -703,6 +703,11 @@ def batch_merge(req: BatchMergeRequest):
         raise HTTPException(400, "請選擇要 merge 的訂單")
     t0 = time.monotonic()
     db.batch_merge_orders(req.order_ids)
+    if req.reset_stored:
+        # 重算模式：忽略 db 已存的 decisions / supplements，讓 rebuild 從 calc + lookahead 重新算
+        db.replace_order_decisions(req.order_ids, {})
+        db.replace_order_supplements(req.order_ids, {})
+        log.info("[batch_merge] reset_stored=True, cleared decisions/supplements for %d orders", len(req.order_ids))
     log.info("[batch_merge] status updated, rebuilding drafts for %d orders...", len(req.order_ids))
     drafts = rebuild_merge_drafts(req.order_ids)
     log.info("[batch_merge] done in %.1fs, %d drafts created", time.monotonic() - t0, len(drafts))

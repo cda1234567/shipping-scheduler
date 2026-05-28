@@ -426,28 +426,38 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn('if (list) list.innerHTML = "";', schedule_module)
         self.assertIn('if (footer) footer.innerHTML = "";', schedule_module)
 
-    def test_write_main_button_dispatches_directly_without_preview_modal(self):
+    def test_batch_dispatch_button_and_handler_are_removed_from_frontend(self):
+        # 「寫入主檔」按鈕已拿掉：HTML 沒按鈕、schedule.js 沒 listener、edit_auth.js 沒鎖定 selector
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
+        edit_auth_module = (root / "static" / "modules" / "edit_auth.js").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="btn-batch-dispatch"', index_html)
+        self.assertNotIn('getElementById("btn-batch-dispatch")?.addEventListener', schedule_module)
+        self.assertNotIn('"#btn-batch-dispatch"', edit_auth_module)
+        # handleBatchDispatch 函式本體不存在
+        self.assertIsNone(re.search(
+            r"^async function handleBatchDispatch\(\) \{",
+            schedule_module,
+            re.M,
+        ))
+
+    def test_batch_merge_button_sends_reset_stored_true_and_commit_variant_sends_false(self):
+        # 「批次 Merge」(綠) 走重算 → reset_stored: true
+        # 「批次 Merge + 寫主檔」(紅) 不重算 → reset_stored: false
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
-        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="btn-batch-dispatch">寫入主檔</button>', index_html)
-        self.assertIn('id="modal-search-input"', index_html)
-        self.assertIn('id="modal-search-clear"', index_html)
         match = re.search(
-            r"async function handleBatchDispatch\(\) \{(?P<body>.*?)\n\}",
+            r"async function runBatchMergeWorkflow\([^)]*\) \{(?P<body>.*?)\n\}",
             schedule_module,
             re.S,
         )
         self.assertIsNotNone(match)
         body = match.group("body")
-        self.assertIn('const confirmed = confirm(`確定要直接寫入主檔 ${targets.length} 筆訂單嗎？`);', body)
-        self.assertIn('const result = await apiPost("/api/schedule/batch-dispatch", {', body)
-        self.assertIn("order_supplements: _orderSupplementsByOrderId,", body)
-        self.assertIn('button.textContent = "寫入中...";', body)
-        self.assertIn('title: "正在寫入主檔"', body)
-        self.assertNotIn("showWriteToMainModal(targets)", body)
-        self.assertNotIn("main-write-preview", body)
+        self.assertIn('apiPost("/api/schedule/batch-merge", {', body)
+        self.assertIn("reset_stored: !commitAfterModal,", body)
 
     def test_write_main_modal_footer_no_longer_offers_download_bom(self):
         root = Path(__file__).resolve().parents[1]
@@ -802,10 +812,6 @@ console.log(JSON.stringify(results));
         self.assertIn("export function hideToast()", api_module)
         self.assertIn("sticky: false", api_module)
         self.assertIn("tone-error", api_module)
-        self.assertIn('id="btn-batch-dispatch">寫入主檔</button>', index_html)
-        self.assertIn('const result = await apiPost("/api/schedule/batch-dispatch", {', schedule_module)
-        self.assertIn('button.textContent = "寫入中...";', schedule_module)
-        self.assertIn('title: "正在寫入主檔"', schedule_module)
 
     def test_desktop_icon_assets_are_wired_into_shell_and_html(self):
         root = Path(__file__).resolve().parents[1]

@@ -128,6 +128,7 @@ class UpdateDeliveryRequest(BaseModel):
 
 class BatchMergeRequest(BaseModel):
     order_ids: list[int]
+    reset_stored: bool = False
 
 
 class BatchDispatchRequest(BaseModel):
