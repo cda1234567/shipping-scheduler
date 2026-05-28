@@ -1983,7 +1983,10 @@ function buildStoredModalDraftState(targets) {
       if (orderPartKey) {
         storedOrderScopedSupplements[orderPartKey] = val;
       } else {
-        storedSupplements[pk] = (storedSupplements[pk] || 0) + val;
+        // EC 等共享 pool 料：跨 order 草稿應取 max，不能累加；
+        // 否則 modal 重開時 default_supplement 會被多個 order 的相同補料疊加，
+        // 算出超過實際需求的 MOQ 倍數（Bug 7）。
+        storedSupplements[pk] = Math.max(storedSupplements[pk] || 0, val);
       }
     });
   });

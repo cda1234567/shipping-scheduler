@@ -910,6 +910,36 @@ console.log(JSON.stringify(results));
         self.assertIn('const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];', text)
         self.assertIn("function isOrderScopedPart(partNumber)", text)
 
+    def test_modal_stored_supplements_do_not_sum_across_orders_for_shared_pool_parts(self):
+        # Bug 7: buildStoredModalDraftState 對 EC 等共享 pool 料原本是
+        # storedSupplements[pk] = (storedSupplements[pk] || 0) + val 跨 order 累加。
+        # 5 個 order 各存了 4000 EC-30009A 草稿後，modal 重開時 default_supplement
+        # 變 20000(實際 demand 11544、應為 12000)。鏡像 Bug 1 修法，
+        # 非 ORDER_SCOPED 分支必須改 Math.max；ORDER_SCOPED 仍用 =。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"function buildStoredModalDraftState\([^)]*\) \{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+
+        # 非 order-scoped 分支用 Math.max
+        self.assertIn(
+            "storedSupplements[pk] = Math.max(storedSupplements[pk] || 0, val);",
+            body,
+        )
+        # 不能殘留累加版本
+        self.assertNotIn(
+            "storedSupplements[pk] = (storedSupplements[pk] || 0) + val;",
+            body,
+        )
+        # ORDER_SCOPED 仍走 =（per-order key 不會撞名，不能累加成 N×）
+        self.assertIn("storedOrderScopedSupplements[orderPartKey] = val;", body)
+
     def test_right_panel_supplement_qty_takes_max_of_stored_and_lookahead(self):
         # Bug: 4 個 order 各缺 2000 (總缺 8000) 時，原本 stored>0 直接 return 4000，
         # 漏掉 lookahead 累積需求 8000 → under-supply。

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.28.2"
+APP_VERSION = "v2026.05.28.3"
 APP_RELEASED_AT = "2026-05-28"
-APP_HEADLINE = "補料 modal 改 MOQ 後保留輸入。"
+APP_HEADLINE = "補料 modal 預設值不再跨訂單累加。"
 APP_CHANGELOG = [
+    {
+        "title": "補料 modal 預設值不再跨訂單累加",
+        "items": [
+            "buildStoredModalDraftState 對 EC 等共享 ST pool 料,從跨 order draft 累加改成取 Math.max,跟右側面板 buildRightPanelShortageData 邏輯一致。",
+            "之前 5 個 order 各帶一份同料 4000 草稿時,modal 重開預設值被疊加成 20000(實際只需 12000);ORDER_SCOPED (IC-M24/IC-STM/IC-XC2C32) 維持 per-order 獨立,不受影響。",
+            "修正後 lookahead 仍會算跨訂單總缺向上取 MOQ,使用者在 6-1 一次補齊整批的流程繼續可用。",
+        ],
+    },
     {
         "title": "補料 modal 改 MOQ 後保留輸入",
         "items": [
