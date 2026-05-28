@@ -943,6 +943,27 @@ console.log(JSON.stringify(results));
         render_idx = body.index("showShortageModal(_modalTargets)")
         self.assertLess(collect_idx, render_idx)
 
+    def test_save_manual_moq_silent_saves_modal_drafts_before_rerender(self):
+        # Bug 2 補修: 光把 in-flight supplement merge 進 _modalDraftBaseSupplements 不夠，
+        # 因為 showShortageModal 重新渲染時 modal input 預設值是從 server _draftsByOrderId
+        # 透過 buildStoredModalDraftState 讀的，不會讀 _modalDraftBaseSupplements。
+        # 修正後必須先呼叫 saveBatchDraftsFromModal({ silent: true }) 把當下 modal 內所有
+        # supplement / decision 寫進 server，再 re-render，這樣 server draft 才會帶當前值。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        match = re.search(
+            r"async function saveManualMoq\([^)]*\) \{(?P<body>.*?)\n\}",
+            text,
+            re.S,
+        )
+        self.assertIsNotNone(match)
+        body = match.group("body")
+        self.assertIn("saveBatchDraftsFromModal({ silent: true })", body)
+        silent_save_idx = body.index("saveBatchDraftsFromModal({ silent: true })")
+        render_idx = body.index("showShortageModal(_modalTargets)")
+        self.assertLess(silent_save_idx, render_idx)
+
     def test_open_batch_merge_modal_stable_preserves_commit_after_save_flag(self):
         # Bug: 「批次 Merge + 寫主檔」按下後，openBatchMergeDraftModalStable 的 retry
         # 路徑會呼叫 closeShortageModal()，而那會把 _modalCommitAfterSave reset 成 false，

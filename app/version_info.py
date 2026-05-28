@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.28.1"
+APP_VERSION = "v2026.05.28.2"
 APP_RELEASED_AT = "2026-05-28"
-APP_HEADLINE = "補料明細誤算與發料單塗色修正。"
+APP_HEADLINE = "補料 modal 改 MOQ 後保留輸入。"
 APP_CHANGELOG = [
+    {
+        "title": "補料 modal 改 MOQ 後保留輸入",
+        "items": [
+            "saveManualMoq 內 MOQ patch 成功後、modal re-render 之前,先 saveBatchDraftsFromModal({silent:true}) 把當下 modal 補量/決策寫進 server draft,re-render 時 buildStoredModalDraftState 撈到的就是最新值,不再被 server 舊預設值覆蓋。",
+            "保留前一版的 _modalDraftBaseSupplements defensive merge 當第二道防線。",
+        ],
+    },
     {
         "title": "補料明細誤算與發料單塗色修正",
         "items": [

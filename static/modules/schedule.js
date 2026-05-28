@@ -3333,6 +3333,8 @@ async function saveManualMoq(partNumber, input, button) {
     if (_modalTargets.length && document.getElementById("shortage-modal")?.style.display === "flex") {
       const inFlightSupplements = _collectModalSupplements();
       _modalDraftBaseSupplements = { ..._modalDraftBaseSupplements, ...inFlightSupplements };
+      // Bug 2 root fix: 把當前 modal 內容 silent save 到 server，避免 re-render 時被 server draft 預設值蓋掉
+      try { await saveBatchDraftsFromModal({ silent: true }); } catch (_) {}
       await showShortageModal(_modalTargets);
     }
     showToast(`${key} MOQ 已儲存`);
