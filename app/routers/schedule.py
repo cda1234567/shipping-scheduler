@@ -929,11 +929,14 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
     failures: list[dict] = []
     all_shortages: list[dict] = []
 
+    # 先把每筆訂單對應的 active draft 找出來；找不到的直接收進 failures（前置檢查）。
+    draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
+    target_order_ids: list[int] = []
+    draft_id_by_order: dict[int, int] = {}
     for order_id in normalized_order_ids:
-        draft_id_map = db.get_active_merge_draft_ids_by_order_ids([order_id])
         draft_id = draft_id_map.get(order_id)
-        order = db.get_order(order_id) or {}
         if not draft_id:
+            order = db.get_order(order_id) or {}
             failures.append({
                 "order_id": order_id,
                 "po_number": order.get("po_number", ""),
@@ -941,9 +944,29 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
                 "message": "找不到可提交的副檔草稿",
             })
             continue
+        target_order_ids.append(order_id)
+        draft_id_by_order[order_id] = int(draft_id)
 
+    if target_order_ids:
         try:
-            plan = _resolve_draft_commit_plan(int(draft_id), main_path)
+            # 在「開始寫主檔之前」就把所有 context 一次載入完（此時主檔尚未被改），
+            # 之後 commit_dispatch_plan 內部依序寫入不會再重新做 mtime 檢查，
+            # 因此單一 plan 不會互相觸發「主檔內容已變更」。這跟 batch_dispatch 一致。
+            contexts = [
+                DispatchContext.from_value(
+                    _load_active_merge_draft_context(draft_id_by_order[order_id], main_path)
+                )
+                for order_id in target_order_ids
+            ]
+            plan = build_dispatch_plan(
+                main_path,
+                contexts,
+                preview_builder=preview_order_batches,
+                moq_map=_get_effective_moq(main_path),
+                st_inventory_stock=_get_st_inventory_stock(),
+                use_drafts=True,
+                supplement_allocations=build_context_supplement_allocations(contexts),
+            )
             result = commit_dispatch_plan(
                 plan,
                 merge_executor=merge_row_to_main,
@@ -952,29 +975,37 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
                 execute_dispatcher=_execute_dispatch,
                 snapshot_refresher=refresh_snapshot_from_main,
             )
-            successes.append({
-                "order_id": order_id,
-                "draft_id": int(draft_id),
-                "merged_parts": result.merged_parts,
-            })
+            for item in result.results:
+                item_order_id = int(item["order_id"])
+                successes.append({
+                    "order_id": item_order_id,
+                    "draft_id": draft_id_by_order.get(item_order_id),
+                    "merged_parts": int(item.get("merged_parts") or 0),
+                })
             all_shortages.extend(result.shortages)
         except HTTPException as exc:
-            failures.append({
-                "order_id": order_id,
-                "draft_id": int(draft_id),
-                "po_number": order.get("po_number", ""),
-                "model": order.get("model", ""),
-                "message": str(exc.detail),
-            })
+            # 單一 plan 是 all-or-nothing：任何一筆出錯 commit_dispatch_plan 會 rollback 全部並 raise。
+            # 把所有目標訂單收進 failures，回 success_count=0，不要讓 API 直接 500。
+            for order_id in target_order_ids:
+                order = db.get_order(order_id) or {}
+                failures.append({
+                    "order_id": order_id,
+                    "draft_id": draft_id_by_order.get(order_id),
+                    "po_number": order.get("po_number", ""),
+                    "model": order.get("model", ""),
+                    "message": str(exc.detail),
+                })
         except Exception as exc:
-            log.exception("[update_and_commit_drafts] order %s failed", order_id)
-            failures.append({
-                "order_id": order_id,
-                "draft_id": int(draft_id),
-                "po_number": order.get("po_number", ""),
-                "model": order.get("model", ""),
-                "message": str(exc),
-            })
+            log.exception("[update_and_commit_drafts] batch commit failed")
+            for order_id in target_order_ids:
+                order = db.get_order(order_id) or {}
+                failures.append({
+                    "order_id": order_id,
+                    "draft_id": draft_id_by_order.get(order_id),
+                    "po_number": order.get("po_number", ""),
+                    "model": order.get("model", ""),
+                    "message": str(exc),
+                })
 
     negative_shortages = _summarize_negative_shortages(all_shortages)
     db.log_activity(

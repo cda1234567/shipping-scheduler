@@ -2619,13 +2619,12 @@ async function handleModalUpdateAndCommitDrafts() {
     setModalDownloadProgress(true, "正在保存補料並寫入主檔...", "系統會先重建副檔，再逐筆強制寫入主檔。", 12);
     startModalProgressAnimation(92, 260);
     const result = await updateAndCommitBatchDraftsFromModal();
-    setModalDownloadProgress(true, "寫入主檔完成", "正在重新整理排程與主檔資料。", 100);
-    await new Promise(resolve => setTimeout(resolve, 220));
-    closeShortageModal();
-
     targetOrderIds.forEach(id => _checkedIds.delete(id));
+    setModalDownloadProgress(true, "寫入主檔完成,正在重新整理...", "正在重新整理排程與主檔資料。", 100);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    closeShortageModal();
 
     const negativeCount = (result?.negative_shortages || []).length;
     const failureCount = Number(result?.failure_count || 0);

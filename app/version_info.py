@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.28.4"
-APP_RELEASED_AT = "2026-05-28"
-APP_HEADLINE = "批次 Merge 重算,拿掉「寫入主檔」按鈕。"
+APP_VERSION = "v2026.05.29.1"
+APP_RELEASED_AT = "2026-05-29"
+APP_HEADLINE = "批次 Merge + 寫主檔 寫入加速,進度條真的完成才消失。"
 APP_CHANGELOG = [
+    {
+        "title": "批次 Merge + 寫主檔 加速與進度條修正",
+        "items": [
+            "紅色「批次 Merge + 寫主檔」的寫入路徑(update_and_commit_drafts)從逐筆 commit 改成一次把整批訂單組成單一 dispatch plan 呼叫 commit_dispatch_plan,10 筆寫入從約 117 秒降到約 69 秒,且原本只會成功 1 筆的問題一併修正成全部成功。",
+            "寫主檔流程的進度條改成:寫入完成後先把排程與主檔資料全部刷新(refresh / refreshCompleted / 主檔重載)完成,才關閉補料 modal,進度條會一路停在「寫入主檔完成,正在重新整理...」直到真的全部做完才消失,不再提早關閉讓畫面看起來像沒反應。",
+            "工具列維持兩條按鈕不變,沒有新增按鈕。",
+        ],
+    },
     {
         "title": "批次 Merge 重算 + 工作流精簡",
         "items": [
