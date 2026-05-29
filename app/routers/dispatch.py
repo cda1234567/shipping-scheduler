@@ -279,6 +279,40 @@ def _subtract_selected_committed_dispatch_records(
     return adjusted
 
 
+def _addback_committed_orders_st_consumption(
+    orders: list[dict],
+    st_inventory_stock: dict[str, float],
+) -> dict[str, float]:
+    """Mirror 主檔加回，避免重產已發料單時 ST 被自己扣到 0 而誤判缺料。"""
+    adjusted = {
+        _normalize_part_key(part): float(qty or 0)
+        for part, qty in (st_inventory_stock or {}).items()
+        if _normalize_part_key(part)
+    }
+
+    committed_ids: list[int] = []
+    for order in orders:
+        if not _is_committed_status(order):
+            continue
+        try:
+            committed_ids.append(int(order["id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if not committed_ids:
+        return adjusted
+
+    order_supplements = db.get_order_supplements(committed_ids)
+    for supplements in order_supplements.values():
+        for raw_part, raw_qty in (supplements or {}).items():
+            part = _normalize_part_key(raw_part)
+            if not part:
+                continue
+            adjusted[part] = adjusted.get(part, 0.0) + float(raw_qty or 0)
+
+    return adjusted
+
+
 def _build_dispatch_result_by_order(
     orders: list[dict],
     bom_map: dict[str, list[dict]],
@@ -290,7 +324,11 @@ def _build_dispatch_result_by_order(
             orders,
             dispatched_consumption,
         )
-        calc_results = calc_run(orders, bom_map, stock, moq, adjusted_dispatched_consumption, db.get_st_inventory_stock())
+        adjusted_st_inventory = _addback_committed_orders_st_consumption(
+            orders,
+            db.get_st_inventory_stock(),
+        )
+        calc_results = calc_run(orders, bom_map, stock, moq, adjusted_dispatched_consumption, adjusted_st_inventory)
         for result in calc_results:
             if result.get("order_id") is not None:
                 result_by_order[int(result["order_id"])] = result
@@ -316,11 +354,7 @@ async def generate(req: DispatchRequest, request: Request):
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
     active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
-    st_inventory_stock = {
-        _normalize_part_key(part): float(qty or 0)
-        for part, qty in db.get_st_inventory_stock().items()
-        if _normalize_part_key(part)
-    }
+    st_inventory_stock = _addback_committed_orders_st_consumption(orders, db.get_st_inventory_stock())
 
     today = local_now().strftime("%Y/%m/%d")
     groups = []

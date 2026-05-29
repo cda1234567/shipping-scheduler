@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.29.1"
+APP_VERSION = "v2026.05.29.2"
 APP_RELEASED_AT = "2026-05-29"
-APP_HEADLINE = "批次 Merge + 寫主檔 寫入加速,進度條真的完成才消失。"
+APP_HEADLINE = "重產已發料單 ST 庫存不再誤判缺料;下載檔名清理修正。"
 APP_CHANGELOG = [
+    {
+        "title": "重產已發料單 ST 誤判缺料 + 下載檔名清理修正",
+        "items": [
+            "重產已發料/已完成訂單的發料單時,ST 庫存沒有把該訂單自己扣掉的補料量加回,導致用被扣到 0 的當下 ST 庫存誤判成要採購(例:EC 料原本 ST 3000、某單發掉 3000 後 ST 變 0,重產該單發料單卻顯示缺料)。現在新增 _addback_committed_orders_st_consumption,從 order_supplements 把選取已發料訂單自己扣的 ST 加回,跟主檔庫存的 _subtract_selected_committed_dispatch_records 加回邏輯對稱,calc 與塗色判斷都吃修正後的 ST。",
+            "修正伺服器下載檔名清理 _safe_download_filename 在 Linux 上對含反斜線的路徑穿越檔名(如 ..\\檔名)會清成底線開頭(_檔名)的問題,改成同時把正斜線與反斜線都當分隔符取最後一段,結果為乾淨檔名。",
+        ],
+    },
     {
         "title": "批次 Merge + 寫主檔 加速與進度條修正",
         "items": [

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import shutil
 import re
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -14,13 +14,10 @@ SERVER_DOWNLOAD_DIR = Path("/app/user_downloads")
 
 def _safe_download_filename(filename: str) -> str:
     raw = str(filename or "").strip()
-    names = [
-        Path(raw).name,
-        PureWindowsPath(raw).name,
-        PurePosixPath(raw).name,
-    ]
-    name = next((item for item in names if item and item not in {".", ".."}), "download")
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip(" .")
+    name = re.split(r"[\\/]+", raw)[-1]
+    if not name or name in {".", ".."}:
+        name = "download"
+    name = re.sub(r'[:*?"<>|\x00-\x1f]+', "_", name).strip(" .")
     return name or "download"
 
 

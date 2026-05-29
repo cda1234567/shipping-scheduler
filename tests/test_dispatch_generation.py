@@ -403,7 +403,7 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=5).value, 0)
         wb.close()
 
-    def test_dispatch_generate_highlights_dispatched_order_supplement_using_raw_st_stock(self):
+    def test_dispatch_generate_addbacks_dispatched_order_st_consumption_before_highlight(self):
         orders = {
             1: {
                 "id": 1,
@@ -456,7 +456,7 @@ class DispatchGenerationTests(unittest.TestCase):
         ws = wb.active
         self.assertEqual(ws.cell(row=3, column=3).value, "IC-M24C02-WMN6TP-TAB")
         self.assertEqual(ws.cell(row=3, column=5).value, 400)
-        self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
+        self.assertNotEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
         self.assertEqual(ws.cell(row=4, column=3).value, "PART-NEG")
         self.assertEqual(ws.cell(row=4, column=5).value, 5000)
         self.assertEqual(ws["E4"].fill.fgColor.rgb, "FFFFC000")
