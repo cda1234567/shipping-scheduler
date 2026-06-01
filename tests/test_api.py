@@ -131,6 +131,14 @@ class ApiTests(unittest.TestCase):
             logout = self.client.post("/api/system/edit-auth/logout")
             self.assertEqual(logout.status_code, 200)
 
+    def test_edit_auth_allows_dispatch_form_download_without_login(self):
+        with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False), \
+             patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value={}):
+            response = self.client.post("/api/dispatch/generate", json={"order_ids": [1]})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "請先上傳 BOM 檔案")
+
     def test_schedule_rows_use_snapshot_cutoff_for_dispatched_consumption(self):
         with patch("app.routers.schedule.db.get_orders", side_effect=[[], []]), \
              patch("app.routers.schedule.db.get_setting", side_effect=lambda key, default="": default), \

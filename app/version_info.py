@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.05.29.2"
-APP_RELEASED_AT = "2026-05-29"
-APP_HEADLINE = "重產已發料單 ST 庫存不再誤判缺料;下載檔名清理修正。"
+APP_VERSION = "v2026.06.01.1"
+APP_RELEASED_AT = "2026-06-01"
+APP_HEADLINE = "已發料頁生成發料單恢復可用。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料頁生成發料單修正",
+        "items": [
+            "修正已發料頁按下「生成發料單」後沒有反應的問題。桌面版下載橋接會另外送出 HTTP 請求，無法帶到瀏覽器內的編輯登入 cookie；現在純下載用途的 /api/dispatch/generate 不再被唯讀權限攔下。",
+            "批次 Merge、扣帳、補料與其他會改動資料的 API 仍需登入編輯模式。",
+        ],
+    },
     {
         "title": "重產已發料單 ST 誤判缺料 + 下載檔名清理修正",
         "items": [
