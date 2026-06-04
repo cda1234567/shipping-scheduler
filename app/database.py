@@ -70,6 +70,21 @@ CREATE TABLE IF NOT EXISTS st_package_breakdowns (
     updated_at   TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS st_dispatch_consumptions (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    dispatch_session_id INTEGER NOT NULL REFERENCES dispatch_sessions(id) ON DELETE CASCADE,
+    order_id            INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    part_number         TEXT    NOT NULL DEFAULT '',
+    used_qty            REAL    NOT NULL DEFAULT 0,
+    stock_before        REAL    NOT NULL DEFAULT 0,
+    stock_after         REAL    NOT NULL DEFAULT 0,
+    package_before      TEXT    NOT NULL DEFAULT '',
+    package_after       TEXT    NOT NULL DEFAULT '',
+    consumed_at         TEXT    NOT NULL DEFAULT '',
+    rolled_back_at      TEXT    NOT NULL DEFAULT '',
+    UNIQUE(dispatch_session_id, part_number)
+);
+
 CREATE TABLE IF NOT EXISTS orders (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     po_number     TEXT    NOT NULL DEFAULT '',
@@ -230,6 +245,8 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_st_inventory_audit_part_changed ON st_inventory_audit_log(part_number, changed_at);
+CREATE INDEX IF NOT EXISTS idx_st_dispatch_consumptions_session ON st_dispatch_consumptions(dispatch_session_id, rolled_back_at);
+CREATE INDEX IF NOT EXISTS idx_st_dispatch_consumptions_order ON st_dispatch_consumptions(order_id, rolled_back_at);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
@@ -1025,6 +1042,114 @@ def get_st_inventory_taken_at() -> str:
     with get_conn() as conn:
         row = conn.execute("SELECT MAX(loaded_at) AS loaded_at FROM st_inventory_snapshot").fetchone()
     return (row["loaded_at"] if row and row["loaded_at"] else "") or ""
+
+
+def save_st_dispatch_consumptions(records: list[dict]) -> int:
+    normalized: list[dict] = []
+    now = _now()
+    for record in records or []:
+        try:
+            session_id = int(record.get("dispatch_session_id") or 0)
+            order_id = int(record.get("order_id") or 0)
+            used_qty = float(record.get("used_qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        part = str(record.get("part_number") or "").strip().upper()
+        if session_id <= 0 or order_id <= 0 or not part or used_qty <= 0:
+            continue
+        normalized.append({
+            "dispatch_session_id": session_id,
+            "order_id": order_id,
+            "part_number": part,
+            "used_qty": used_qty,
+            "stock_before": float(record.get("stock_before") or 0),
+            "stock_after": float(record.get("stock_after") or 0),
+            "package_before": str(record.get("package_before") or ""),
+            "package_after": str(record.get("package_after") or ""),
+            "consumed_at": str(record.get("consumed_at") or now),
+        })
+    if not normalized:
+        return 0
+
+    with get_conn() as conn:
+        for record in normalized:
+            conn.execute(
+                """
+                INSERT INTO st_dispatch_consumptions(
+                    dispatch_session_id, order_id, part_number, used_qty,
+                    stock_before, stock_after, package_before, package_after,
+                    consumed_at, rolled_back_at
+                )
+                VALUES(?,?,?,?,?,?,?,?,?, '')
+                ON CONFLICT(dispatch_session_id, part_number) DO UPDATE SET
+                    used_qty=excluded.used_qty,
+                    stock_before=excluded.stock_before,
+                    stock_after=excluded.stock_after,
+                    package_before=excluded.package_before,
+                    package_after=excluded.package_after,
+                    consumed_at=excluded.consumed_at,
+                    rolled_back_at=''
+                """,
+                (
+                    record["dispatch_session_id"],
+                    record["order_id"],
+                    record["part_number"],
+                    record["used_qty"],
+                    record["stock_before"],
+                    record["stock_after"],
+                    record["package_before"],
+                    record["package_after"],
+                    record["consumed_at"],
+                ),
+            )
+    return len(normalized)
+
+
+def get_st_dispatch_consumptions_for_sessions(
+    session_ids: list[int],
+    *,
+    active_only: bool = True,
+) -> list[dict]:
+    normalized_ids: list[int] = []
+    for session_id in session_ids or []:
+        try:
+            normalized_ids.append(int(session_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return []
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    sql = f"SELECT * FROM st_dispatch_consumptions WHERE dispatch_session_id IN ({placeholders})"
+    params: list[object] = normalized_ids
+    if active_only:
+        sql += " AND rolled_back_at=''"
+    sql += " ORDER BY id"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_st_dispatch_consumptions_rolled_back(consumption_ids: list[int]) -> int:
+    normalized_ids: list[int] = []
+    for consumption_id in consumption_ids or []:
+        try:
+            normalized_ids.append(int(consumption_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return 0
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE st_dispatch_consumptions SET rolled_back_at=? WHERE id IN ({placeholders}) AND rolled_back_at=''",
+            [_now()] + normalized_ids,
+        )
+    return int(cur.rowcount or 0)
 
 
 def get_snapshot_taken_at() -> str:

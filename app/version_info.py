@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.04.2"
+APP_VERSION = "v2026.06.04.3"
 APP_RELEASED_AT = "2026-06-04"
-APP_HEADLINE = "買料提醒窄欄版面可讀性修正。"
+APP_HEADLINE = "已發料退回會同步補回 ST 庫存。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料退回補回 ST 庫存",
+        "items": [
+            "發料扣 ST 庫存時新增每筆 dispatch session 的扣帳明細，記錄料號、扣量、ST 庫存前後值與包裝拆分文字前後值。",
+            "已發料退回時會依扣帳明細把 ST 庫存加回，並倒回 ST 包裝拆分文字；舊版發料若沒有扣帳明細，會用既有 order_supplements 做 ST 庫存補回。"
+        ],
+    },
     {
         "title": "買料提醒版面修正",
         "items": [

@@ -44,6 +44,7 @@ from ..services.dispatch_pipeline import (
     require_existing_main_path as _require_existing_main_path,
 )
 from ..services.inventory_restore_guard import ensure_dispatch_rollback_allowed
+from ..services.st_package_breakdowns import restore_st_package_consumptions
 from ..services.merge_drafts import (
     rebuild_merge_drafts,
     delete_merge_draft_and_refresh,
@@ -368,6 +369,7 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
     session_ids = [int(session["id"]) for session in normalized_sessions]
     db.delete_dispatch_records_for_orders(order_ids)
+    st_restore_result = restore_st_package_consumptions(session_ids, order_ids)
     db.mark_dispatch_sessions_rolled_back(session_ids)
 
     restored_orders = []
@@ -393,6 +395,7 @@ def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         "orders": restored_orders,
         "restored_draft_order_ids": restored_draft_orders,
         "restored_draft_count": len(restored_draft_orders),
+        **st_restore_result,
     }
 
 
