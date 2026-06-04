@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.01.1"
-APP_RELEASED_AT = "2026-06-01"
-APP_HEADLINE = "已發料頁生成發料單恢復可用。"
+APP_VERSION = "v2026.06.04.1"
+APP_RELEASED_AT = "2026-06-04"
+APP_HEADLINE = "買料提醒預設只看目前排程用料，減少舊料洗版。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒降噪",
+        "items": [
+            "右側買料提醒預設只顯示目前 pending / merged 排程 BOM 會用到的 IC / OC / UC 料號，不再把主檔所有低於 ST 安全線的舊料一起攤開。",
+            "保留「顯示全部」切換，可回頭查看舊安全庫存提醒；非目前排程料號會標示「非目前排程」。",
+            "匯出買料提醒會依目前畫面範圍輸出，避免一口氣匯出大量非當前排程項目。",
+        ],
+    },
     {
         "title": "已發料頁生成發料單修正",
         "items": [
