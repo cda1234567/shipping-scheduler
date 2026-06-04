@@ -697,13 +697,19 @@ console.log(JSON.stringify(results));
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
         self.assertIn("function buildMainPurchaseReminderPartKeys()", schedule_module)
+        self.assertIn("function buildActivePurchaseReminderPartKeys()", schedule_module)
         self.assertIn("[_vendors, _liveStock, _stock, _moq].forEach(source => {", schedule_module)
         self.assertIn("const mainPartKeys = buildMainPurchaseReminderPartKeys();", schedule_module)
+        self.assertIn("const activePartKeys = buildActivePurchaseReminderPartKeys();", schedule_module)
+        self.assertIn("if (!includeInactive && !_purchaseReminderShowAll && !activeDemand) continue;", schedule_module)
+        self.assertIn("已隱藏非目前排程", schedule_module)
+        self.assertIn("非目前排程", schedule_module)
+        self.assertIn("purchase-reminder-toggle-scope", schedule_module)
         self.assertIn("for (const key of mainPartKeys) {", schedule_module)
         self.assertIn("const currentStock = Number(_stStock?.[key] ?? 0);", schedule_module)
 
         match = re.search(
-            r"function\s+buildPurchaseReminderItems\(\)\s*\{(?P<body>.*?)\n\}",
+            r"function\s+buildPurchaseReminderItems\(options = \{\}\)\s*\{(?P<body>.*?)\n\}",
             schedule_module,
             re.S,
         )

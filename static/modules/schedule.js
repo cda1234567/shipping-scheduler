@@ -12,6 +12,7 @@ let _vendors = {};
 let _purchaseReminderStatuses = {};
 let _partFirstOrder = {};
 let _purchaseReminderCollapsed = { pending: false, notified: false, ignored: true };
+let _purchaseReminderShowAll = false;
 let _stStock = {};
 let _stDescriptions = {};
 let _dispatchedConsumption = {};
@@ -1622,13 +1623,32 @@ function buildMainPurchaseReminderPartKeys() {
   return [...keys].sort((a, b) => compareText(a, b));
 }
 
-function buildPurchaseReminderItems() {
+function buildActivePurchaseReminderPartKeys() {
+  const keys = new Set();
+  for (const row of Array.isArray(_rows) ? _rows : []) {
+    const modelKey = String(row?.model || "").trim().toUpperCase();
+    if (!modelKey) continue;
+    const bomEntry = _bomData?.[modelKey];
+    for (const comp of (bomEntry?.components || [])) {
+      const partKey = normalizePartKey(comp?.part_number);
+      if (partKey && isPurchaseReminderPart(partKey)) keys.add(partKey);
+    }
+  }
+  return keys;
+}
+
+function buildPurchaseReminderItems(options = {}) {
   if (!_stStock || !Object.keys(_stStock).length) return [];
 
+  const includeInactive = Boolean(options.includeInactive);
   const descLookup = buildPartDescriptionLookup();
   const items = [];
   const mainPartKeys = buildMainPurchaseReminderPartKeys();
+  const activePartKeys = buildActivePurchaseReminderPartKeys();
   for (const key of mainPartKeys) {
+    const activeDemand = activePartKeys.has(key);
+    if (!includeInactive && !_purchaseReminderShowAll && !activeDemand) continue;
+
     const currentStock = Number(_stStock?.[key] ?? 0);
     if (!Number.isFinite(currentStock)) continue;
 
@@ -1650,6 +1670,7 @@ function buildPurchaseReminderItems() {
       moq,
       suggested_qty: suggestedQty,
       status: currentStock <= 0 ? "ST 已見底" : "ST 低於安全線",
+      active_demand: activeDemand,
       notified: Boolean(_purchaseReminderStatuses?.[key]?.notified),
       notified_at: _purchaseReminderStatuses?.[key]?.notified_at || "",
       notification_note: _purchaseReminderStatuses?.[key]?.note || "",
@@ -4620,7 +4641,11 @@ function activateRightPanelTab(tabName) {
 function renderPurchaseReminderPanel() {
   _rightPanelActiveTab = "purchase";
   const scroll = document.getElementById("right-scroll");
-  const items = buildPurchaseReminderItems();
+  const allItems = buildPurchaseReminderItems({ includeInactive: true });
+  const hiddenInactiveCount = allItems.filter(item => !item.active_demand).length;
+  const items = _purchaseReminderShowAll
+    ? allItems
+    : allItems.filter(item => item.active_demand);
   const activeCount = getActivePurchaseReminderCount(items);
   const shortageCount = _rightPanelMode === "postDispatch"
     ? _postDispatchShortages.length
@@ -4632,7 +4657,11 @@ function renderPurchaseReminderPanel() {
 
   if (!scroll) return;
   if (!items.length) {
-    scroll.innerHTML = '<div class="no-shortage-msg">目前沒有 IC / OC / UC ST 買料提醒</div>';
+    const hiddenHtml = hiddenInactiveCount
+      ? `<div style="margin-top:8px"><button class="btn btn-secondary btn-xs purchase-reminder-toggle-scope" type="button">顯示全部 ${hiddenInactiveCount} 筆舊安全庫存提醒</button></div>`
+      : "";
+    scroll.innerHTML = `<div class="no-shortage-msg">目前排程沒有 IC / OC / UC ST 買料提醒${hiddenHtml}</div>`;
+    bindPurchaseReminderPanelActions(scroll, items);
     return;
   }
 
@@ -4644,8 +4673,9 @@ function renderPurchaseReminderPanel() {
   let html = `<div class="purchase-reminder-toolbar">
     <div>
       <div class="purchase-reminder-toolbar-title">IC / OC / UC ST 庫存見底</div>
-      <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}，已忽略 ${ignoredCount}</div>
+      <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}，已忽略 ${ignoredCount}${!_purchaseReminderShowAll && hiddenInactiveCount ? `，已隱藏非目前排程 ${hiddenInactiveCount}` : ""}</div>
     </div>
+    <button class="btn btn-secondary btn-xs purchase-reminder-toggle-scope" type="button">${_purchaseReminderShowAll ? "只看目前排程" : `顯示全部${hiddenInactiveCount ? ` ${hiddenInactiveCount}` : ""}`}</button>
     <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
   </div>`;
   if (pendingItems.length) {
@@ -4693,6 +4723,7 @@ function purchaseReminderItemHtml(item) {
   const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
   const notifiedTag = item.notified ? '<span class="purchase-reminder-tag is-notified">已通知採購</span>' : "";
   const ignoredTag = item.ignored ? '<span class="purchase-reminder-tag is-ignored">已忽略</span>' : "";
+  const inactiveTag = item.active_demand ? "" : '<span class="purchase-reminder-tag">非目前排程</span>';
   const noteHtml = item.notification_note
     ? `<div class="purchase-reminder-note">備註：${esc(item.notification_note)}</div>`
     : "";
@@ -4704,7 +4735,7 @@ function purchaseReminderItemHtml(item) {
     : "";
 
   return `<div class="shortage-item purchase-reminder-item ${item.notified ? "is-notified" : ""} ${item.ignored ? "is-ignored" : ""}" data-part="${esc(item.part_number)}">
-    <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${notifiedTag}${ignoredTag}</div>
+    <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${inactiveTag}${notifiedTag}${ignoredTag}</div>
     <div class="desc">${esc(item.description || "—")}</div>
     <div class="purchase-reminder-vendor-line">
       <span>廠商：<strong>${esc(normalizeVendorName(item.vendor))}</strong></span>
@@ -4745,6 +4776,10 @@ function bindPurchaseReminderPanelActions(scroll, items) {
   });
   scroll.querySelector(".purchase-reminder-export")?.addEventListener("click", () => {
     void exportPurchaseReminders(items);
+  });
+  scroll.querySelector(".purchase-reminder-toggle-scope")?.addEventListener("click", () => {
+    _purchaseReminderShowAll = !_purchaseReminderShowAll;
+    renderPurchaseReminderPanel();
   });
   scroll.querySelectorAll(".purchase-reminder-copy").forEach(btn => {
     btn.addEventListener("click", () => {
