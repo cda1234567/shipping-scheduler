@@ -11,7 +11,7 @@ from .. import database as db
 from .bom_quantity import build_effective_components
 from .main_reader import read_moq
 from .merge_to_main import merge_row_to_main, preview_order_batches
-from .st_package_breakdowns import consume_st_package_breakdowns
+from .st_package_breakdowns import consume_st_package_breakdowns, restore_st_package_consumptions
 from .shortage_rules import (
     filter_main_write_blocking_shortages,
     get_shortage_resulting_stock,
@@ -491,6 +491,7 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
     session_ids = [int(session["id"]) for session in normalized_sessions]
     db.delete_dispatch_records_for_orders(order_ids)
+    st_restore_result = restore_st_package_consumptions(session_ids, order_ids)
     db.mark_dispatch_sessions_rolled_back(session_ids)
 
     restored_orders = []
@@ -516,6 +517,7 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         "orders": restored_orders,
         "restored_draft_order_ids": restored_draft_orders,
         "restored_draft_count": len(restored_draft_orders),
+        **st_restore_result,
     }
 
 
@@ -568,7 +570,28 @@ def commit_dispatch_plan(
     if effective_supplement_allocations is not None:
         db.replace_order_supplements(plan.order_ids, effective_supplement_allocations)
     if effective_supplement_allocations:
-        consume_st_package_breakdowns(effective_supplement_allocations)
+        session_by_order_id = {
+            int(session["order_id"]): int(session["id"])
+            for session in processed_sessions
+            if session.get("order_id") is not None and session.get("id") is not None
+        }
+        st_consumption_records: list[dict] = []
+        for order_id in plan.order_ids:
+            order_allocations = effective_supplement_allocations.get(order_id) or {}
+            if not order_allocations:
+                continue
+            consume_result = consume_st_package_breakdowns({order_id: order_allocations})
+            session_id = session_by_order_id.get(order_id)
+            if not session_id:
+                continue
+            for detail in consume_result.get("details") or []:
+                st_consumption_records.append({
+                    "dispatch_session_id": session_id,
+                    "order_id": order_id,
+                    **detail,
+                })
+        if st_consumption_records:
+            db.save_st_dispatch_consumptions(st_consumption_records)
 
     if plan.use_drafts and committed_draft_ids:
         for draft_id in committed_draft_ids:

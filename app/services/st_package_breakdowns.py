@@ -158,25 +158,36 @@ def build_usage_by_part(allocations: dict[int, dict[str, float]] | None = None) 
 def consume_st_package_breakdowns(allocations: dict[int, dict[str, float]] | None = None) -> dict:
     usage_by_part = build_usage_by_part(allocations)
     if not usage_by_part:
-        return {"usage_by_part": {}, "stock_updates": {}, "package_updates": {}}
+        return {"usage_by_part": {}, "stock_updates": {}, "package_updates": {}, "details": []}
 
     st_stock = db.get_st_inventory_stock()
     package_rows = db.get_st_package_breakdowns(list(usage_by_part))
     stock_updates: dict[str, float] = {}
     package_updates: dict[str, str] = {}
+    details: list[dict] = []
     updated_at = local_now().isoformat(timespec="seconds")
 
     for part_number, used_qty in usage_by_part.items():
-        stock_updates[part_number] = round(float(st_stock.get(part_number) or 0) - used_qty, 6)
+        stock_before = float(st_stock.get(part_number) or 0)
+        stock_after = round(stock_before - used_qty, 6)
+        stock_updates[part_number] = stock_after
         existing = package_rows.get(part_number) or {}
         package_text = str(existing.get("package_text") or "")
-        if not package_text.strip():
-            continue
-        next_package_text = deduct_package_text(package_text, used_qty)
-        if next_package_text == package_text:
-            continue
-        db.save_st_package_breakdown(part_number, next_package_text, updated_at)
-        package_updates[part_number] = next_package_text
+        next_package_text = package_text
+        if package_text.strip():
+            next_package_text = deduct_package_text(package_text, used_qty)
+            if next_package_text != package_text:
+                db.save_st_package_breakdown(part_number, next_package_text, updated_at)
+                package_updates[part_number] = next_package_text
+        details.append({
+            "part_number": part_number,
+            "used_qty": round(float(used_qty or 0), 6),
+            "stock_before": stock_before,
+            "stock_after": stock_after,
+            "package_before": package_text,
+            "package_after": next_package_text,
+            "consumed_at": updated_at,
+        })
 
     if stock_updates:
         db.update_st_inventory_stock(stock_updates, reason="consume_st_package_breakdowns")
@@ -185,4 +196,72 @@ def consume_st_package_breakdowns(allocations: dict[int, dict[str, float]] | Non
         "usage_by_part": usage_by_part,
         "stock_updates": stock_updates,
         "package_updates": package_updates,
+        "details": details,
+    }
+
+
+def restore_st_package_consumptions(session_ids: list[int], order_ids: list[int]) -> dict:
+    consumption_rows = db.get_st_dispatch_consumptions_for_sessions(session_ids)
+    if not consumption_rows:
+        return _restore_legacy_order_supplements(order_ids)
+
+    stock = db.get_st_inventory_stock()
+    stock_updates: dict[str, float] = {}
+    package_updates: dict[str, str] = {}
+    restored_qty_by_part: dict[str, float] = {}
+
+    for row in reversed(consumption_rows):
+        part_number = str(row.get("part_number") or "").strip().upper()
+        used_qty = float(row.get("used_qty") or 0)
+        if not part_number or used_qty <= 0:
+            continue
+        current_qty = float(stock_updates.get(part_number, stock.get(part_number) or 0))
+        stock_updates[part_number] = round(current_qty + used_qty, 6)
+        restored_qty_by_part[part_number] = round(restored_qty_by_part.get(part_number, 0.0) + used_qty, 6)
+
+        package_before = str(row.get("package_before") or "")
+        package_after = str(row.get("package_after") or "")
+        if package_before != package_after:
+            db.save_st_package_breakdown(part_number, package_before)
+            package_updates[part_number] = package_before
+
+    if stock_updates:
+        db.update_st_inventory_stock(stock_updates, reason="rollback_dispatch_st_inventory")
+    restored_record_count = db.mark_st_dispatch_consumptions_rolled_back([
+        int(row["id"]) for row in consumption_rows if row.get("id") is not None
+    ])
+
+    return {
+        "st_restored": bool(stock_updates),
+        "st_restore_legacy": False,
+        "st_restore_count": restored_record_count,
+        "st_restored_qty_by_part": restored_qty_by_part,
+        "st_package_restore_count": len(package_updates),
+    }
+
+
+def _restore_legacy_order_supplements(order_ids: list[int]) -> dict:
+    supplements = db.get_order_supplements(order_ids)
+    usage_by_part = build_usage_by_part(supplements)
+    if not usage_by_part:
+        return {
+            "st_restored": False,
+            "st_restore_legacy": False,
+            "st_restore_count": 0,
+            "st_restored_qty_by_part": {},
+            "st_package_restore_count": 0,
+        }
+
+    stock = db.get_st_inventory_stock()
+    stock_updates = {
+        part_number: round(float(stock.get(part_number) or 0) + float(used_qty or 0), 6)
+        for part_number, used_qty in usage_by_part.items()
+    }
+    db.update_st_inventory_stock(stock_updates, reason="rollback_dispatch_st_inventory_legacy")
+    return {
+        "st_restored": True,
+        "st_restore_legacy": True,
+        "st_restore_count": len(usage_by_part),
+        "st_restored_qty_by_part": usage_by_part,
+        "st_package_restore_count": 0,
     }
