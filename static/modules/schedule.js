@@ -4671,12 +4671,14 @@ function renderPurchaseReminderPanel() {
   const notifiedCount = notifiedItems.length;
   const ignoredCount = ignoredItems.length;
   let html = `<div class="purchase-reminder-toolbar">
-    <div>
-      <div class="purchase-reminder-toolbar-title">IC / OC / UC ST 庫存見底</div>
+    <div class="purchase-reminder-toolbar-main">
+      <div class="purchase-reminder-toolbar-title">IC/OC/UC ST 買料提醒</div>
       <div class="purchase-reminder-toolbar-meta">待通知 ${activeCount}，已通知 ${notifiedCount}，已忽略 ${ignoredCount}${!_purchaseReminderShowAll && hiddenInactiveCount ? `，已隱藏非目前排程 ${hiddenInactiveCount}` : ""}</div>
     </div>
-    <button class="btn btn-secondary btn-xs purchase-reminder-toggle-scope" type="button">${_purchaseReminderShowAll ? "只看目前排程" : `顯示全部${hiddenInactiveCount ? ` ${hiddenInactiveCount}` : ""}`}</button>
-    <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
+    <div class="purchase-reminder-toolbar-actions">
+      <button class="btn btn-secondary btn-xs purchase-reminder-toggle-scope" type="button">${_purchaseReminderShowAll ? "只看目前排程" : `顯示全部${hiddenInactiveCount ? ` ${hiddenInactiveCount}` : ""}`}</button>
+      <button class="btn btn-primary btn-xs purchase-reminder-export" type="button">匯出 Excel</button>
+    </div>
   </div>`;
   if (pendingItems.length) {
     html += renderPurchaseReminderSection("待通知採購", pendingItems, { key: "pending", collapsible: true });

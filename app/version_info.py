@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.04.1"
+APP_VERSION = "v2026.06.04.2"
 APP_RELEASED_AT = "2026-06-04"
-APP_HEADLINE = "買料提醒預設只看目前排程用料，減少舊料洗版。"
+APP_HEADLINE = "買料提醒窄欄版面可讀性修正。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒版面修正",
+        "items": [
+            "修正右側買料提醒在窄欄中標題被擠成直排、工具按鈕與統計文字混在同一列的問題。",
+            "買料提醒工具列改成標題、統計與按鈕分區排列，卡片內廠商與操作按鈕也改成較適合窄欄閱讀的配置。",
+        ],
+    },
     {
         "title": "買料提醒降噪",
         "items": [
