@@ -1644,18 +1644,22 @@ function buildActivePurchaseReminderUsageMap() {
     const modelKey = model.toUpperCase();
     if (!modelKey) continue;
     const bomEntry = _bomData?.[modelKey];
-    const partKeys = new Set();
+    const orderQty = toSchedOrderQty(row);
+    const usageByPart = new Map();
     for (const comp of (bomEntry?.components || [])) {
       const partKey = normalizePartKey(comp?.part_number);
-      if (partKey && isPurchaseReminderPart(partKey)) partKeys.add(partKey);
+      if (!partKey || !isPurchaseReminderPart(partKey) || comp?.is_dash) continue;
+      const usedQty = effectiveNeededFromBomComp(comp, orderQty);
+      if (usedQty <= 0) continue;
+      usageByPart.set(partKey, roundShortageUiValue((usageByPart.get(partKey) || 0) + usedQty));
     }
-    if (!partKeys.size) continue;
+    if (!usageByPart.size) continue;
 
     const orderId = normalizeOrderId(row?.id);
     const code = String(row?.code || "").trim();
     const po = String(row?.po_number || "").trim();
     const shipDate = String(row?.ship_date || row?.delivery_date || "").trim();
-    for (const partKey of partKeys) {
+    for (const [partKey, usedQty] of usageByPart.entries()) {
       if (!usageMap.has(partKey)) usageMap.set(partKey, []);
       usageMap.get(partKey).push({
         order_id: Number.isInteger(orderId) ? orderId : null,
@@ -1663,6 +1667,7 @@ function buildActivePurchaseReminderUsageMap() {
         code,
         po_number: po,
         ship_date: shipDate,
+        used_qty: usedQty,
       });
     }
   }
@@ -4805,19 +4810,24 @@ function purchaseReminderUsedByHtml(usedBy) {
   if (!rows.length) {
     return '<div class="purchase-reminder-used-by is-empty">目前排程沒有使用中的機種</div>';
   }
+  const totalUsedQty = roundShortageUiValue(rows.reduce(
+    (sum, row) => sum + (Number(row?.used_qty || 0) || 0),
+    0,
+  ));
   const displayRows = rows.slice(0, 4);
   const chips = displayRows.map(row => {
     const model = String(row?.model || "").trim() || "未指定機種";
     const code = String(row?.code || "").trim();
     const po = String(row?.po_number || "").trim();
     const date = String(row?.ship_date || "").trim();
+    const usedQty = roundShortageUiValue(row?.used_qty || 0);
     const meta = [code, po ? `PO ${po}` : "", date].filter(Boolean).join(" / ");
-    return `<span class="purchase-reminder-used-chip">${esc(model)}${meta ? ` <em>${esc(meta)}</em>` : ""}</span>`;
+    return `<span class="purchase-reminder-used-chip">${esc(model)} <strong>用量 ${fmt(usedQty)}</strong>${meta ? ` <em>${esc(meta)}</em>` : ""}</span>`;
   }).join("");
   const more = rows.length > displayRows.length
     ? `<span class="purchase-reminder-used-more">另 ${rows.length - displayRows.length} 筆</span>`
     : "";
-  return `<div class="purchase-reminder-used-by"><span class="purchase-reminder-used-label">用到：</span>${chips}${more}</div>`;
+  return `<div class="purchase-reminder-used-by"><span class="purchase-reminder-used-label">用到：</span>${chips}${more}<span class="purchase-reminder-used-total">合計 ${fmt(totalUsedQty)}</span></div>`;
 }
 
 function bindPurchaseReminderPanelActions(scroll, items) {

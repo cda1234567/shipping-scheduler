@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.1"
+APP_VERSION = "v2026.06.05.2"
 APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "買料提醒顯示使用機種。"
+APP_HEADLINE = "買料提醒顯示機種使用量。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒顯示機種使用量",
+        "items": [
+            "買料提醒的使用機種清單會顯示每筆排程預計使用量，使用與缺料計算一致的 BOM 每板用量 × 排程數量 × 拋料率公式。",
+            "同一顆料在目前排程中的使用量會顯示合計，方便判斷採購量與影響範圍。"
+        ],
+    },
     {
         "title": "買料提醒顯示使用機種",
         "items": [

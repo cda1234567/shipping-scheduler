@@ -1306,9 +1306,23 @@ body.edit-auth-readonly #bom-upload-area {
   font-weight: 600;
   margin-left: 3px;
 }
-.purchase-reminder-used-more {
+.purchase-reminder-used-chip strong {
+  color: #b45309;
+  font-weight: 900;
+  margin-left: 3px;
+}
+.purchase-reminder-used-more,
+.purchase-reminder-used-total {
   background: #fef3c7;
   color: #92400e;
+}
+.purchase-reminder-used-total {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #fbbf24;
+  font-weight: 900;
+  padding: 1px 7px;
 }
 .purchase-reminder-toolbar {
   display: flex;
@@ -2358,6 +2372,14 @@ body.desktop-dark .purchase-reminder-used-more {
 }
 body.desktop-dark .purchase-reminder-used-chip em {
   color: #fcd34d;
+}
+body.desktop-dark .purchase-reminder-used-chip strong {
+  color: #fbbf24;
+}
+body.desktop-dark .purchase-reminder-used-total {
+  background: #451a03;
+  border-color: #b45309;
+  color: #fde68a;
 }
 body.desktop-dark .purchase-reminder-toolbar-title,
 body.desktop-dark .purchase-reminder-vendor-heading {
