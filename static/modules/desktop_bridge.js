@@ -799,8 +799,16 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
         if (result?.ok) {
           return result;
         }
+        throw new Error(result?.detail || result?.message || "伺服器下載沒有回傳儲存結果");
       }
+      throw new Error("伺服器下載沒有回傳儲存結果，請確認下載資料夾設定。");
     }
+    let message = `伺服器下載失敗 HTTP ${sRes.status}`;
+    try {
+      const payload = await sRes.json();
+      message = payload.detail || payload.message || message;
+    } catch (_) {}
+    throw new Error(message);
   }
 
   const response = await fetch(path, {

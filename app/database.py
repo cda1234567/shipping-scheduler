@@ -2338,6 +2338,44 @@ def get_merge_draft_files(draft_id: int) -> list[dict]:
     return items
 
 
+def get_merge_draft_files_for_drafts(draft_ids: list[int]) -> dict[int, list[dict]]:
+    normalized_ids: list[int] = []
+    for draft_id in draft_ids or []:
+        try:
+            normalized_ids.append(int(draft_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM merge_draft_files WHERE draft_id IN ({placeholders}) ORDER BY draft_id, id",
+            normalized_ids,
+        ).fetchall()
+        items = _repair_row_paths(
+            conn,
+            rows,
+            table="merge_draft_files",
+            column="filepath",
+            fallback_dirs=_MERGE_DRAFT_FILE_FALLBACK_DIRS,
+            recursive=True,
+        )
+
+    result: dict[int, list[dict]] = {draft_id: [] for draft_id in normalized_ids}
+    for item in items:
+        try:
+            draft_id = int(item.get("draft_id"))
+        except (TypeError, ValueError):
+            continue
+        item["carry_overs"] = _json_loads(item.get("carry_overs_json", ""), {})
+        item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        result.setdefault(draft_id, []).append(item)
+    return result
+
+
 def get_active_merge_drafts(order_ids: list[int] | None = None) -> list[dict]:
     normalized_ids = []
     for order_id in order_ids or []:
@@ -2438,6 +2476,51 @@ def get_latest_committed_merge_draft_for_order(order_id: int, committed_after: s
     result["decisions"] = _json_loads(result.get("decisions_json", ""), {})
     result["supplements"] = _json_loads(result.get("supplements_json", ""), {})
     result["shortages"] = _json_loads(result.get("shortages_json", ""), [])
+    return result
+
+
+def get_latest_committed_merge_drafts_for_orders(
+    order_ids: list[int],
+    committed_after: str = "",
+) -> dict[int, dict]:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(normalized_ids))
+    params: list[object] = list(normalized_ids)
+    where = f"order_id IN ({placeholders}) AND status='committed'"
+    if str(committed_after or "").strip():
+        where += " AND committed_at>=?"
+        params.append(str(committed_after).strip())
+
+    sql = (
+        "SELECT * FROM ("
+        "SELECT md.*, ROW_NUMBER() OVER (PARTITION BY order_id ORDER BY committed_at DESC, id DESC) AS rn "
+        "FROM merge_drafts md "
+        f"WHERE {where}"
+        ") WHERE rn=1"
+    )
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    result: dict[int, dict] = {}
+    for row in rows:
+        item = dict(row)
+        item.pop("rn", None)
+        item["decisions"] = _json_loads(item.get("decisions_json", ""), {})
+        item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        item["shortages"] = _json_loads(item.get("shortages_json", ""), [])
+        try:
+            result[int(item["order_id"])] = item
+        except (TypeError, ValueError):
+            continue
     return result
 
 
