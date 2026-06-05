@@ -1704,6 +1704,9 @@ function buildPurchaseReminderItems(options = {}) {
       vendor: normalizeVendorName(_vendors?.[key]),
       description: _stDescriptions?.[key] || descLookup[key] || "",
       current_stock: currentStock,
+      main_stock: Number.isFinite(Number(_liveStock?.[key]))
+        ? Number(_liveStock?.[key])
+        : (Number.isFinite(Number(_stock?.[key])) ? Number(_stock?.[key]) : 0),
       threshold,
       moq,
       suggested_qty: suggestedQty,
@@ -4759,6 +4762,7 @@ function renderPurchaseReminderSection(title, items, options = {}) {
 
 function purchaseReminderItemHtml(item) {
   const currentStock = roundShortageUiValue(item.current_stock);
+  const mainStock = roundShortageUiValue(item.main_stock || 0);
   const threshold = roundShortageUiValue(item.threshold);
   const moq = roundShortageUiValue(item.moq || 0);
   const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
@@ -4786,6 +4790,7 @@ function purchaseReminderItemHtml(item) {
     </div>
     <div class="amounts">
       <span class="amber">ST 庫存 ${fmt(currentStock)}</span>
+      <span class="green">主檔庫存 ${fmt(mainStock)}</span>
       <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
       ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
       <span class="blue">建議買 ${fmt(suggestedQty)}</span>
@@ -4984,6 +4989,7 @@ async function exportPurchaseReminders(items) {
     part_number: item.part_number,
     description: item.description || "",
     current_stock: Number(item.current_stock || 0) || 0,
+    main_stock: Number(item.main_stock || 0) || 0,
     threshold: Number(item.threshold || 0) || 0,
     moq: Number(item.moq || 0) || 0,
     suggested_qty: Number(item.suggested_qty || 0) || 0,

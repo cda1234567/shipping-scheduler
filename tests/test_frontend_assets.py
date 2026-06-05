@@ -714,6 +714,8 @@ console.log(JSON.stringify(results));
         self.assertIn("used_qty: usedQty,", schedule_module)
         self.assertIn("用量 ${fmt(usedQty)}", schedule_module)
         self.assertIn("合計 ${fmt(totalUsedQty)}", schedule_module)
+        self.assertIn("main_stock:", schedule_module)
+        self.assertIn("主檔庫存 ${fmt(mainStock)}", schedule_module)
         self.assertIn("purchase-reminder-toggle-scope", schedule_module)
         self.assertIn("for (const key of mainPartKeys) {", schedule_module)
         self.assertIn("const currentStock = Number(_stStock?.[key] ?? 0);", schedule_module)

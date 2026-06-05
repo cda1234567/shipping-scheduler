@@ -382,6 +382,7 @@ class PurchaseReminderExportItem(BaseModel):
     part_number: str = ""
     description: str = ""
     current_stock: float = 0
+    main_stock: float = 0
     threshold: float = 0
     moq: float = 0
     suggested_qty: float = 0
@@ -407,6 +408,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
                 "part_number": str(item.part_number or "").strip().upper(),
                 "description": str(item.description or "").strip(),
                 "current_stock": float(item.current_stock or 0),
+                "main_stock": float(item.main_stock or 0),
                 "threshold": float(item.threshold or 0),
                 "moq": float(item.moq or 0),
                 "suggested_qty": float(item.suggested_qty or 0),
@@ -432,7 +434,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
     thin = Side(style="thin", color="D9E2F3")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    ws.merge_cells("A1:J1")
+    ws.merge_cells("A1:K1")
     title = ws["A1"]
     title.value = "IC / OC / UC ST 買料提醒"
     title.font = Font(bold=True, color="FFFFFF", size=14)
@@ -442,7 +444,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
     ws["A2"] = f"匯出時間：{local_now().isoformat(timespec='minutes').replace('T', ' ')}"
     ws["A2"].font = Font(color="666666")
 
-    headers = ["廠商", "通知狀態", "料號", "說明", "ST 庫存", "安全線", "MOQ", "建議購買量", "通知時間", "備註"]
+    headers = ["廠商", "通知狀態", "料號", "說明", "ST 庫存", "主檔庫存", "安全線", "MOQ", "建議購買量", "通知時間", "備註"]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=4, column=col, value=header)
         cell.font = Font(bold=True)
@@ -458,6 +460,7 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
                 item["part_number"],
                 item["description"],
                 item["current_stock"],
+                item["main_stock"],
                 item["threshold"],
                 item["moq"],
                 item["suggested_qty"],
@@ -467,18 +470,18 @@ def _build_purchase_reminder_export(items: list[PurchaseReminderExportItem]) -> 
             for col, value in enumerate(values, start=1):
                 cell = ws.cell(row=row_idx, column=col, value=value)
                 cell.border = border
-                cell.alignment = Alignment(vertical="top", wrap_text=(col in {4, 10}))
+                cell.alignment = Alignment(vertical="top", wrap_text=(col in {4, 11}))
                 if item["notified"]:
                     cell.fill = notified_fill
-                elif col in {2, 5, 8}:
+                elif col in {2, 5, 9}:
                     cell.fill = warning_fill
-        ws.auto_filter.ref = f"A4:J{len(normalized_items) + 4}"
+        ws.auto_filter.ref = f"A4:K{len(normalized_items) + 4}"
     else:
-        ws.merge_cells("A5:J5")
+        ws.merge_cells("A5:K5")
         ws["A5"] = "目前沒有買料提醒。"
         ws["A5"].alignment = Alignment(horizontal="center")
 
-    widths = [18, 13, 24, 32, 12, 12, 10, 14, 18, 28]
+    widths = [18, 13, 24, 32, 12, 12, 12, 10, 14, 18, 28]
     for idx, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = width
     ws.freeze_panes = "A5"

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.2"
+APP_VERSION = "v2026.06.05.3"
 APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "買料提醒顯示機種使用量。"
+APP_HEADLINE = "買料提醒顯示主檔庫存。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒顯示主檔庫存",
+        "items": [
+            "買料提醒卡片會在 ST 庫存旁邊同步顯示主檔目前庫存，方便直接比較 ST 與主檔狀態。",
+            "買料提醒 Excel 匯出也新增「主檔庫存」欄位，下載後仍能保留同樣資訊。"
+        ],
+    },
     {
         "title": "買料提醒顯示機種使用量",
         "items": [

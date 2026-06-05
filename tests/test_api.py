@@ -2187,6 +2187,7 @@ class ApiTests(unittest.TestCase):
                         "part_number": "OC-200",
                         "description": "Spring",
                         "current_stock": 0,
+                        "main_stock": -50,
                         "threshold": 100,
                         "moq": 100,
                         "suggested_qty": 100,
@@ -2199,6 +2200,7 @@ class ApiTests(unittest.TestCase):
                         "part_number": "IC-100",
                         "description": "MCU",
                         "current_stock": 5,
+                        "main_stock": 120,
                         "threshold": 100,
                         "moq": 100,
                         "suggested_qty": 100,
@@ -2221,8 +2223,12 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(detail["A5"].value, "Vendor-A")
         self.assertEqual(detail["B5"].value, "待通知")
         self.assertEqual(detail["C5"].value, "IC-100")
+        self.assertEqual(detail["E5"].value, 5)
+        self.assertEqual(detail["F5"].value, 120)
         self.assertEqual(detail["A6"].value, "Vendor-B")
         self.assertEqual(detail["B6"].value, "已通知採購")
+        self.assertEqual(detail["E6"].value, 0)
+        self.assertEqual(detail["F6"].value, -50)
         self.assertEqual(summary["A2"].value, "Vendor-A")
         self.assertEqual(summary["B2"].value, 1)
         self.assertEqual(summary["A3"].value, "Vendor-B")
