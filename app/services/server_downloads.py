@@ -4,7 +4,7 @@ import shutil
 import re
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .. import database as db
@@ -61,17 +61,30 @@ def _server_save_json(saved_name: str) -> JSONResponse:
     return JSONResponse({"ok": True, "filename": saved_name, "directory": display_path})
 
 
+def _server_save_requested(request: Request) -> bool:
+    return request.query_params.get("server_save") == "1"
+
+
+def _ensure_server_save_available():
+    if db.get_setting("server_download_enabled") != "1":
+        raise HTTPException(400, "伺服器下載資料夾未啟用，請先到下載設定開啟。")
+    if not is_server_download_available():
+        display_path = db.get_setting("server_download_display_path") or "D:\\Download\\excel"
+        raise HTTPException(500, f"伺服器下載資料夾不可用，請確認 {display_path} 已掛載且可寫入。")
+
+
 def maybe_server_save_response(
     request: Request,
     file_path: str,
     filename: str,
     media_type: str,
 ) -> FileResponse | JSONResponse:
-    server_save = request.query_params.get("server_save") == "1"
-    if server_save and is_server_download_available() and db.get_setting("server_download_enabled") == "1":
+    if _server_save_requested(request):
+        _ensure_server_save_available()
         saved_name = save_to_user_downloads(file_path, filename)
         if saved_name:
             return _server_save_json(saved_name)
+        raise HTTPException(500, "檔案已產生，但寫入伺服器下載資料夾失敗。")
     return FileResponse(file_path, filename=filename, media_type=media_type)
 
 
@@ -80,9 +93,10 @@ def maybe_server_save_bytes_response(
     content: bytes,
     filename: str,
 ) -> JSONResponse | None:
-    server_save = request.query_params.get("server_save") == "1"
-    if server_save and is_server_download_available() and db.get_setting("server_download_enabled") == "1":
+    if _server_save_requested(request):
+        _ensure_server_save_available()
         saved_name = save_bytes_to_user_downloads(content, filename)
         if saved_name:
             return _server_save_json(saved_name)
+        raise HTTPException(500, "檔案已產生，但寫入伺服器下載資料夾失敗。")
     return None

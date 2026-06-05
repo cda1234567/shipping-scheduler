@@ -913,12 +913,17 @@ def get_committed_schedule_draft_map(order_ids: list[int]) -> dict[int, dict]:
     if not normalized_ids:
         return {}
 
+    draft_map = db.get_latest_committed_merge_drafts_for_orders(normalized_ids)
+    files_by_draft = db.get_merge_draft_files_for_drafts([
+        int(draft["id"]) for draft in draft_map.values() if draft.get("id") is not None
+    ])
+
     result: dict[int, dict] = {}
     for order_id in normalized_ids:
-        draft = db.get_latest_committed_merge_draft_for_order(order_id)
+        draft = draft_map.get(order_id)
         if not draft:
             continue
-        draft["files"] = db.get_merge_draft_files(int(draft["id"]))
+        draft["files"] = files_by_draft.get(int(draft["id"]), [])
         result[order_id] = _serialize_draft_summary(
             draft,
             decisions=draft.get("decisions", {}),

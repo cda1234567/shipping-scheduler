@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.3"
+APP_VERSION = "v2026.06.05.4"
 APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "買料提醒顯示主檔庫存。"
+APP_HEADLINE = "已發料下載與生成發料單不再卡住。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料下載與生成發料單不再卡住",
+        "items": [
+            "已發料頁的「生成發料單」與「副檔」下載改到背景 threadpool 執行，避免 Excel 產檔期間把其他 API、健康檢查或畫面刷新一起卡住。",
+            "已發料列表讀取副檔摘要改為批次查詢，減少逐筆訂單反覆查 DB 的等待時間。",
+            "伺服器下載模式下，若檔案沒有真的寫入下載資料夾，畫面會直接顯示失敗原因，不再安靜改走瀏覽器下載而讓人找不到檔案。"
+        ],
+    },
     {
         "title": "買料提醒顯示主檔庫存",
         "items": [

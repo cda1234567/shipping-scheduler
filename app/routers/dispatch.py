@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from .. import database as db
 from ..services.calculator import run as calc_run
@@ -336,8 +337,7 @@ def _build_dispatch_result_by_order(
     return result_by_order
 
 
-@router.post("/dispatch/generate")
-async def generate(req: DispatchRequest, request: Request):
+def _generate_dispatch_response(req: DispatchRequest, request: Request):
     bom_map = db.get_all_bom_components_by_model()
     if not bom_map:
         raise HTTPException(400, "請先上傳 BOM 檔案")
@@ -501,3 +501,8 @@ async def generate(req: DispatchRequest, request: Request):
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     return response
+
+
+@router.post("/dispatch/generate")
+async def generate(req: DispatchRequest, request: Request):
+    return await run_in_threadpool(lambda: _generate_dispatch_response(req, request))
