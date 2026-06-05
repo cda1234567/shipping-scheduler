@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.5"
+APP_VERSION = "v2026.06.05.6"
 APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "買料提醒納入主檔庫存。"
+APP_HEADLINE = "買料提醒忽略 -TAB OpenText 料。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒忽略 -TAB OpenText 料",
+        "items": [
+            "買料提醒新增 OpenText 料號規則：料號結尾為 -TAB 的 IC / OC / UC 料一律不列入提醒。",
+            "用新口徑重算後，IC / OC / UC、ST 庫存為 0、目前排程仍會用到且非 OpenText 的料，從 37 項降為 24 項。",
+            "TX2 這類未來風險料仍可另外用觀察清單管理，不會混進目前排程買料提醒。"
+        ],
+    },
     {
         "title": "買料提醒納入主檔庫存",
         "items": [

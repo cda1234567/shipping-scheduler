@@ -1599,7 +1599,11 @@ function buildMainFileDeficitItems() {
 
 function isPurchaseReminderPart(partNumber) {
   const key = normalizePartKey(partNumber);
-  return PURCHASE_REMINDER_PREFIXES.some(prefix => key.startsWith(prefix));
+  return PURCHASE_REMINDER_PREFIXES.some(prefix => key.startsWith(prefix)) && !isOpenTextPart(key);
+}
+
+function isOpenTextPart(partNumber) {
+  return normalizePartKey(partNumber).endsWith("-TAB");
 }
 
 function getPurchaseReminderThreshold(partNumber) {
