@@ -1692,25 +1692,37 @@ function buildPurchaseReminderItems(options = {}) {
 
     const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
     const threshold = getPurchaseReminderThreshold(key);
-    if (currentStock > threshold) continue;
+    const mainStock = Number.isFinite(Number(_liveStock?.[key]))
+      ? Number(_liveStock?.[key])
+      : (Number.isFinite(Number(_stock?.[key])) ? Number(_stock?.[key]) : 0);
+    const activeUsedQty = (activeUsageMap.get(key) || []).reduce(
+      (sum, row) => sum + (Number(row?.used_qty || 0) || 0),
+      0,
+    );
+    const combinedStock = currentStock + Math.max(0, mainStock);
+    const projectedAvailable = combinedStock - activeUsedQty;
+    if (projectedAvailable >= threshold) continue;
 
-    const neededToThreshold = Math.max(0, threshold - currentStock);
+    const neededToThreshold = Math.max(0, threshold - projectedAvailable);
     const suggestedQty = moq > 0
       ? Math.max(moq, Math.ceil(Math.max(neededToThreshold, 1) / moq) * moq)
       : Math.max(PURCHASE_REMINDER_FALLBACK_THRESHOLD, neededToThreshold);
+    const status = combinedStock <= 0
+      ? "可用庫存已見底"
+      : (combinedStock < threshold ? "可用庫存低於安全線" : "排程後低於安全線");
 
     items.push({
       part_number: key,
       vendor: normalizeVendorName(_vendors?.[key]),
       description: _stDescriptions?.[key] || descLookup[key] || "",
       current_stock: currentStock,
-      main_stock: Number.isFinite(Number(_liveStock?.[key]))
-        ? Number(_liveStock?.[key])
-        : (Number.isFinite(Number(_stock?.[key])) ? Number(_stock?.[key]) : 0),
+      main_stock: mainStock,
+      active_used_qty: activeUsedQty,
+      projected_available: projectedAvailable,
       threshold,
       moq,
       suggested_qty: suggestedQty,
-      status: currentStock <= 0 ? "ST 已見底" : "ST 低於安全線",
+      status,
       active_demand: activeDemand,
       notified: Boolean(_purchaseReminderStatuses?.[key]?.notified),
       notified_at: _purchaseReminderStatuses?.[key]?.notified_at || "",
@@ -4763,6 +4775,8 @@ function renderPurchaseReminderSection(title, items, options = {}) {
 function purchaseReminderItemHtml(item) {
   const currentStock = roundShortageUiValue(item.current_stock);
   const mainStock = roundShortageUiValue(item.main_stock || 0);
+  const activeUsedQty = roundShortageUiValue(item.active_used_qty || 0);
+  const projectedAvailable = roundShortageUiValue(item.projected_available ?? ((item.current_stock || 0) + Math.max(0, item.main_stock || 0) - activeUsedQty));
   const threshold = roundShortageUiValue(item.threshold);
   const moq = roundShortageUiValue(item.moq || 0);
   const suggestedQty = roundShortageUiValue(item.suggested_qty || 0);
@@ -4791,6 +4805,7 @@ function purchaseReminderItemHtml(item) {
     <div class="amounts">
       <span class="amber">ST 庫存 ${fmt(currentStock)}</span>
       <span class="green">主檔庫存 ${fmt(mainStock)}</span>
+      ${activeUsedQty > 0 ? `<span style="color:#6b7280">排程後可用 ${fmt(projectedAvailable)}</span>` : ""}
       <span style="color:#6b7280">安全線 ${fmt(threshold)}</span>
       ${moq > 0 ? `<span style="color:#8b5cf6">MOQ ${fmt(moq)}</span>` : ""}
       <span class="blue">建議買 ${fmt(suggestedQty)}</span>
@@ -4990,6 +5005,8 @@ async function exportPurchaseReminders(items) {
     description: item.description || "",
     current_stock: Number(item.current_stock || 0) || 0,
     main_stock: Number(item.main_stock || 0) || 0,
+    active_used_qty: Number(item.active_used_qty || 0) || 0,
+    projected_available: Number(item.projected_available || 0) || 0,
     threshold: Number(item.threshold || 0) || 0,
     moq: Number(item.moq || 0) || 0,
     suggested_qty: Number(item.suggested_qty || 0) || 0,

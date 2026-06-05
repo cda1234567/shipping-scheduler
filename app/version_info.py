@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.4"
+APP_VERSION = "v2026.06.05.5"
 APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "已發料下載與生成發料單不再卡住。"
+APP_HEADLINE = "買料提醒納入主檔庫存。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒納入主檔庫存",
+        "items": [
+            "IC / OC / UC 買料提醒改用 ST 庫存 + 主檔庫存 - 目前排程用量後的可用量判斷，不再只因 ST 剛好低於安全線就提醒。",
+            "買料提醒卡片新增「排程後可用」資訊，能直接看出是當下已不足，還是排程扣完後才低於安全線。",
+            "買料提醒 Excel 匯出同步新增「目前排程用量」與「排程後可用」欄位，方便採購判讀。"
+        ],
+    },
     {
         "title": "已發料下載與生成發料單不再卡住",
         "items": [
