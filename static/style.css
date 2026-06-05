@@ -1271,6 +1271,45 @@ body.edit-auth-readonly #bom-upload-area {
 .purchase-reminder-item .desc {
   color: #78716c;
 }
+.purchase-reminder-used-by {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 5px 0 6px;
+  color: #92400e;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.purchase-reminder-used-by.is-empty {
+  color: #a16207;
+}
+.purchase-reminder-used-label {
+  font-weight: 800;
+}
+.purchase-reminder-used-chip,
+.purchase-reminder-used-more {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  border-radius: 999px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+  font-weight: 700;
+  padding: 1px 7px;
+}
+.purchase-reminder-used-chip em {
+  min-width: 0;
+  color: #78716c;
+  font-style: normal;
+  font-weight: 600;
+  margin-left: 3px;
+}
+.purchase-reminder-used-more {
+  background: #fef3c7;
+  color: #92400e;
+}
 .purchase-reminder-toolbar {
   display: flex;
   align-items: flex-start;
@@ -2304,6 +2343,21 @@ body.desktop-dark .purchase-reminder-item.is-ignored .part {
 }
 body.desktop-dark .purchase-reminder-item .desc {
   color: #fef3c7;
+}
+body.desktop-dark .purchase-reminder-used-by {
+  color: #fde68a;
+}
+body.desktop-dark .purchase-reminder-used-by.is-empty {
+  color: #fbbf24;
+}
+body.desktop-dark .purchase-reminder-used-chip,
+body.desktop-dark .purchase-reminder-used-more {
+  background: #78350f;
+  border-color: #b45309;
+  color: #fde68a;
+}
+body.desktop-dark .purchase-reminder-used-chip em {
+  color: #fcd34d;
 }
 body.desktop-dark .purchase-reminder-toolbar-title,
 body.desktop-dark .purchase-reminder-vendor-heading {

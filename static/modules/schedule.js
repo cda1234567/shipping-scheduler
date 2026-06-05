@@ -1637,6 +1637,38 @@ function buildActivePurchaseReminderPartKeys() {
   return keys;
 }
 
+function buildActivePurchaseReminderUsageMap() {
+  const usageMap = new Map();
+  for (const row of Array.isArray(_rows) ? _rows : []) {
+    const model = String(row?.model || "").trim();
+    const modelKey = model.toUpperCase();
+    if (!modelKey) continue;
+    const bomEntry = _bomData?.[modelKey];
+    const partKeys = new Set();
+    for (const comp of (bomEntry?.components || [])) {
+      const partKey = normalizePartKey(comp?.part_number);
+      if (partKey && isPurchaseReminderPart(partKey)) partKeys.add(partKey);
+    }
+    if (!partKeys.size) continue;
+
+    const orderId = normalizeOrderId(row?.id);
+    const code = String(row?.code || "").trim();
+    const po = String(row?.po_number || "").trim();
+    const shipDate = String(row?.ship_date || row?.delivery_date || "").trim();
+    for (const partKey of partKeys) {
+      if (!usageMap.has(partKey)) usageMap.set(partKey, []);
+      usageMap.get(partKey).push({
+        order_id: Number.isInteger(orderId) ? orderId : null,
+        model,
+        code,
+        po_number: po,
+        ship_date: shipDate,
+      });
+    }
+  }
+  return usageMap;
+}
+
 function buildPurchaseReminderItems(options = {}) {
   if (!_stStock || !Object.keys(_stStock).length) return [];
 
@@ -1645,6 +1677,7 @@ function buildPurchaseReminderItems(options = {}) {
   const items = [];
   const mainPartKeys = buildMainPurchaseReminderPartKeys();
   const activePartKeys = buildActivePurchaseReminderPartKeys();
+  const activeUsageMap = buildActivePurchaseReminderUsageMap();
   for (const key of mainPartKeys) {
     const activeDemand = activePartKeys.has(key);
     if (!includeInactive && !_purchaseReminderShowAll && !activeDemand) continue;
@@ -1676,6 +1709,7 @@ function buildPurchaseReminderItems(options = {}) {
       notification_note: _purchaseReminderStatuses?.[key]?.note || "",
       ignored: Boolean(_purchaseReminderStatuses?.[key]?.ignored),
       ignored_at: _purchaseReminderStatuses?.[key]?.ignored_at || "",
+      used_by: activeUsageMap.get(key) || [],
     });
   }
 
@@ -4735,10 +4769,12 @@ function purchaseReminderItemHtml(item) {
   const ignoredAtHtml = item.ignored_at
     ? `<span style="color:#6b7280">忽略 ${esc(String(item.ignored_at).replace("T", " ").slice(0, 16))}</span>`
     : "";
+  const usedByHtml = purchaseReminderUsedByHtml(item.used_by);
 
   return `<div class="shortage-item purchase-reminder-item ${item.notified ? "is-notified" : ""} ${item.ignored ? "is-ignored" : ""}" data-part="${esc(item.part_number)}">
     <div class="part">${esc(item.part_number)} <span class="purchase-reminder-tag">${esc(item.status)}</span>${inactiveTag}${notifiedTag}${ignoredTag}</div>
     <div class="desc">${esc(item.description || "—")}</div>
+    ${usedByHtml}
     <div class="purchase-reminder-vendor-line">
       <span>廠商：<strong>${esc(normalizeVendorName(item.vendor))}</strong></span>
       <button class="btn btn-secondary btn-xs purchase-reminder-vendor-edit" type="button" data-part="${esc(item.part_number)}">改廠商</button>
@@ -4762,6 +4798,26 @@ function purchaseReminderItemHtml(item) {
       </button>
     </div>
   </div>`;
+}
+
+function purchaseReminderUsedByHtml(usedBy) {
+  const rows = Array.isArray(usedBy) ? usedBy : [];
+  if (!rows.length) {
+    return '<div class="purchase-reminder-used-by is-empty">目前排程沒有使用中的機種</div>';
+  }
+  const displayRows = rows.slice(0, 4);
+  const chips = displayRows.map(row => {
+    const model = String(row?.model || "").trim() || "未指定機種";
+    const code = String(row?.code || "").trim();
+    const po = String(row?.po_number || "").trim();
+    const date = String(row?.ship_date || "").trim();
+    const meta = [code, po ? `PO ${po}` : "", date].filter(Boolean).join(" / ");
+    return `<span class="purchase-reminder-used-chip">${esc(model)}${meta ? ` <em>${esc(meta)}</em>` : ""}</span>`;
+  }).join("");
+  const more = rows.length > displayRows.length
+    ? `<span class="purchase-reminder-used-more">另 ${rows.length - displayRows.length} 筆</span>`
+    : "";
+  return `<div class="purchase-reminder-used-by"><span class="purchase-reminder-used-label">用到：</span>${chips}${more}</div>`;
 }
 
 function bindPurchaseReminderPanelActions(scroll, items) {

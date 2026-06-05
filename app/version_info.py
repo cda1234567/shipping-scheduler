@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.04.3"
-APP_RELEASED_AT = "2026-06-04"
-APP_HEADLINE = "已發料退回會同步補回 ST 庫存。"
+APP_VERSION = "v2026.06.05.1"
+APP_RELEASED_AT = "2026-06-05"
+APP_HEADLINE = "買料提醒顯示使用機種。"
 APP_CHANGELOG = [
+    {
+        "title": "買料提醒顯示使用機種",
+        "items": [
+            "每張買料提醒卡片會列出目前排程中用到該料號的機種，並附上批次、PO 與出貨日。",
+            "同一顆料若影響多筆訂單，卡片會先顯示前幾筆並標示剩餘筆數，避免右側欄位過度擁擠。"
+        ],
+    },
     {
         "title": "已發料退回補回 ST 庫存",
         "items": [
