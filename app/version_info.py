@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.05.6"
-APP_RELEASED_AT = "2026-06-05"
-APP_HEADLINE = "買料提醒忽略 -TAB OpenText 料。"
+APP_VERSION = "v2026.06.08.1"
+APP_RELEASED_AT = "2026-06-08"
+APP_HEADLINE = "新增海運出貨模組。"
 APP_CHANGELOG = [
+    {
+        "title": "海運出貨模組",
+        "items": [
+            "新增「海運出貨」頁籤，可上傳海運 Excel，套用 OpenText 出貨淨重主檔後建立獨立海運批次。",
+            "海運明細可在畫面上調整箱號、箱數、每箱數量、淨重、毛重、材積與 HARMONIZED CODE；箱號預設保留空白，讓使用者手動 key。",
+            "匯出會直接套用 OPENTEXT 海運出貨單模板，保留原本欄寬、框線、合併儲存格與上下兩張出貨單版面。",
+        ],
+    },
     {
         "title": "買料提醒忽略 -TAB OpenText 料",
         "items": [
