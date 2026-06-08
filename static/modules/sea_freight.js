@@ -3,6 +3,8 @@ import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 let _shipments = [];
 let _current = null;
+let _packingSpecs = [];
+let _packingLoaded = false;
 
 export async function initSeaFreight() {
   document.getElementById("btn-sea-refresh")?.addEventListener("click", () => refreshSeaFreight());
@@ -12,6 +14,10 @@ export async function initSeaFreight() {
   document.getElementById("sea-file-input")?.addEventListener("change", handleUpload);
   document.getElementById("btn-sea-save")?.addEventListener("click", handleSave);
   document.getElementById("btn-sea-export")?.addEventListener("click", handleExport);
+  document.getElementById("btn-sea-packing")?.addEventListener("click", openPackingPanel);
+  document.getElementById("btn-sea-packing-close")?.addEventListener("click", closePackingPanel);
+  document.getElementById("btn-sea-packing-add")?.addEventListener("click", addPackingRow);
+  document.getElementById("sea-packing-search")?.addEventListener("input", renderPackingSpecs);
 }
 
 export async function refreshSeaFreight() {
@@ -199,5 +205,127 @@ async function handleExport() {
     showDownloadToast(result, "海運出貨單");
   } catch (error) {
     showToast(`匯出失敗：${error.message}`, { tone: "error", sticky: true });
+  }
+}
+
+async function openPackingPanel() {
+  const panel = document.getElementById("sea-packing-panel");
+  if (panel) panel.style.display = "";
+  if (!_packingLoaded) await loadPackingSpecs();
+}
+
+function closePackingPanel() {
+  const panel = document.getElementById("sea-packing-panel");
+  if (panel) panel.style.display = "none";
+}
+
+async function loadPackingSpecs() {
+  const body = document.getElementById("sea-packing-body");
+  if (body) body.innerHTML = '<tr><td colspan="8">載入中...</td></tr>';
+  try {
+    const data = await apiJson("/api/sea-freight/packing-specs");
+    _packingSpecs = data.specs || [];
+    _packingLoaded = true;
+    renderPackingSpecs();
+  } catch (error) {
+    if (body) body.innerHTML = '<tr><td colspan="8">包裝主檔載入失敗</td></tr>';
+    showToast(`包裝主檔載入失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+function renderPackingSpecs() {
+  const body = document.getElementById("sea-packing-body");
+  if (!body) return;
+  const query = (document.getElementById("sea-packing-search")?.value || "").trim().toLowerCase();
+  const specs = _packingSpecs.filter(spec => {
+    if (!query) return true;
+    return [spec.item_no, spec.packing_name, spec.vendor].some(value => String(value || "").toLowerCase().includes(query));
+  });
+  if (!specs.length) {
+    body.innerHTML = '<tr><td colspan="8">沒有符合的包裝資料</td></tr>';
+    return;
+  }
+  body.innerHTML = specs.map((spec, index) => `
+    <tr data-index="${_packingSpecs.indexOf(spec)}">
+      <td><input data-field="item_no" type="text" value="${esc(spec.item_no || "")}" ${spec._isNew ? "" : "readonly"}></td>
+      <td><input data-field="packing_name" type="text" value="${esc(spec.packing_name || "")}"></td>
+      <td><input data-field="per_box_qty" type="number" step="any" value="${Number(spec.per_box_qty || 0)}"></td>
+      <td><input data-field="net_weight" type="number" step="any" value="${Number(spec.net_weight || 0)}"></td>
+      <td><input data-field="gross_weight" type="number" step="any" value="${Number(spec.gross_weight || 0)}"></td>
+      <td><input data-field="volume" type="number" step="any" value="${Number(spec.volume || 0)}"></td>
+      <td><input data-field="vendor" type="text" value="${esc(spec.vendor || "")}"></td>
+      <td>
+        <button class="btn btn-primary btn-xs" type="button" data-action="save">存</button>
+        <button class="btn btn-danger btn-xs" type="button" data-action="delete">刪</button>
+      </td>
+    </tr>
+  `).join("");
+  body.querySelectorAll("button[data-action='save']").forEach(btn => {
+    btn.addEventListener("click", () => savePackingRow(btn.closest("tr")));
+  });
+  body.querySelectorAll("button[data-action='delete']").forEach(btn => {
+    btn.addEventListener("click", () => deletePackingRow(btn.closest("tr")));
+  });
+}
+
+function addPackingRow() {
+  _packingSpecs.unshift({
+    item_no: "",
+    packing_name: "",
+    per_box_qty: 0,
+    net_weight: 0,
+    gross_weight: 0,
+    volume: 0,
+    vendor: "",
+    _isNew: true,
+  });
+  const search = document.getElementById("sea-packing-search");
+  if (search) search.value = "";
+  renderPackingSpecs();
+}
+
+function readPackingRow(row) {
+  const spec = {};
+  row.querySelectorAll("input[data-field]").forEach(input => {
+    const field = input.dataset.field;
+    const numeric = ["per_box_qty", "net_weight", "gross_weight", "volume"].includes(field);
+    spec[field] = numeric ? Number(input.value || 0) : input.value.trim();
+  });
+  return spec;
+}
+
+async function savePackingRow(row) {
+  if (!row) return;
+  const index = Number(row.dataset.index || 0);
+  const spec = readPackingRow(row);
+  if (!spec.item_no) {
+    showToast("請輸入 ITEM NO", { tone: "error" });
+    return;
+  }
+  try {
+    await apiPut(`/api/sea-freight/packing-specs/${encodeURIComponent(spec.item_no)}`, spec);
+    _packingSpecs[index] = { ...spec };
+    showToast(`${spec.item_no} 包裝主檔已儲存`, { tone: "success" });
+    await loadPackingSpecs();
+  } catch (error) {
+    showToast(`儲存包裝主檔失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+async function deletePackingRow(row) {
+  if (!row) return;
+  const spec = readPackingRow(row);
+  if (!spec.item_no) {
+    _packingSpecs.splice(Number(row.dataset.index || 0), 1);
+    renderPackingSpecs();
+    return;
+  }
+  if (!confirm(`刪除 ${spec.item_no} 的包裝主檔？`)) return;
+  try {
+    await apiFetch(`/api/sea-freight/packing-specs/${encodeURIComponent(spec.item_no)}`, { method: "DELETE" });
+    showToast(`${spec.item_no} 包裝主檔已刪除`, { tone: "success" });
+    await loadPackingSpecs();
+  } catch (error) {
+    showToast(`刪除包裝主檔失敗：${error.message}`, { tone: "error" });
   }
 }

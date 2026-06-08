@@ -289,6 +289,17 @@ CREATE TABLE IF NOT EXISTS sea_harmonized_codes (
     updated_at      TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS sea_packing_specs (
+    item_no       TEXT PRIMARY KEY,
+    packing_name  TEXT NOT NULL DEFAULT '',
+    per_box_qty   REAL NOT NULL DEFAULT 0,
+    net_weight    REAL NOT NULL DEFAULT 0,
+    gross_weight  REAL NOT NULL DEFAULT 0,
+    volume        REAL NOT NULL DEFAULT 0,
+    vendor        TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_st_inventory_audit_part_changed ON st_inventory_audit_log(part_number, changed_at);
@@ -305,6 +316,7 @@ CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_i
 CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
 CREATE INDEX IF NOT EXISTS idx_sea_items_shipment ON sea_shipment_items(shipment_id, line_no);
+CREATE INDEX IF NOT EXISTS idx_sea_packing_name ON sea_packing_specs(packing_name);
 
 CREATE TABLE IF NOT EXISTS defective_batches (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2831,6 +2843,65 @@ def upsert_sea_harmonized_code(item_no: str, harmonized_code: str, note: str = "
             """,
             (item_no, harmonized_code, note, _now()),
         )
+
+
+def get_sea_packing_specs() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM sea_packing_specs
+            ORDER BY item_no COLLATE NOCASE
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def upsert_sea_packing_spec(spec: dict):
+    item_no = str(spec.get("item_no") or "").strip()
+    if not item_no:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO sea_packing_specs(
+                item_no, packing_name, per_box_qty, net_weight, gross_weight,
+                volume, vendor, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(item_no) DO UPDATE SET
+              packing_name=excluded.packing_name,
+              per_box_qty=excluded.per_box_qty,
+              net_weight=excluded.net_weight,
+              gross_weight=excluded.gross_weight,
+              volume=excluded.volume,
+              vendor=excluded.vendor,
+              updated_at=excluded.updated_at
+            """,
+            (
+                item_no,
+                str(spec.get("packing_name") or "").strip(),
+                float(spec.get("per_box_qty") or 0),
+                float(spec.get("net_weight") or 0),
+                float(spec.get("gross_weight") or 0),
+                float(spec.get("volume") or 0),
+                str(spec.get("vendor") or "").strip(),
+                _now(),
+            ),
+        )
+
+
+def upsert_sea_packing_specs(specs: list[dict]) -> int:
+    count = 0
+    for spec in specs:
+        if str(spec.get("item_no") or "").strip():
+            upsert_sea_packing_spec(spec)
+            count += 1
+    return count
+
+
+def delete_sea_packing_spec(item_no: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM sea_packing_specs WHERE item_no=?", (item_no,))
+        return cur.rowcount > 0
 
 
 def get_activity_logs_by_action(action: str, limit: int = 50) -> list[dict]:

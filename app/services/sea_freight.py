@@ -71,6 +71,7 @@ def _load_packing_specs(path: Path = PACKING_SPEC_TEMPLATE) -> list[dict]:
             "net_weight": _num(ws.cell(row, 6).value),
             "gross_weight": _num(ws.cell(row, 7).value),
             "volume": _num(ws.cell(row, 8).value),
+            "vendor": _text(ws.cell(row, 10).value),
         })
     return specs
 
@@ -79,7 +80,21 @@ def _find_spec(item_no: str, specs: list[dict]) -> dict | None:
     key = _upper(item_no)
     if not key:
         return None
-    return next((spec for spec in specs if key in spec["key"]), None)
+    return next((spec for spec in specs if key == _upper(spec.get("item_no"))), None) \
+        or next((spec for spec in specs if key in _upper(spec.get("packing_name") or spec.get("name"))), None)
+
+
+def _extract_item_no(name: str) -> str:
+    text = _upper(name)
+    patterns = [
+        r"\b[A-Z]{2}-[A-Z0-9]+(?:/[A-Z])?\b",
+        r"\bPB-\d+[A-Z]?\b",
+        r"\bPK-[A-Z0-9]+\b",
+    ]
+    matches: list[str] = []
+    for pattern in patterns:
+        matches.extend(re.findall(pattern, text))
+    return matches[-1] if matches else ""
 
 
 def _calc_boxes(qty: float, per_box_qty: float) -> tuple[int, float]:
@@ -90,11 +105,33 @@ def _calc_boxes(qty: float, per_box_qty: float) -> tuple[int, float]:
     return box_count, tail
 
 
-def parse_sea_order_file(path: str | Path, hs_codes: dict[str, str] | None = None) -> tuple[dict, list[dict]]:
+def load_packing_specs_from_template(path: Path = PACKING_SPEC_TEMPLATE) -> list[dict]:
+    specs = []
+    for spec in _load_packing_specs(path):
+        item_no = _extract_item_no(spec["name"])
+        if not item_no:
+            continue
+        specs.append({
+            "item_no": item_no,
+            "packing_name": spec["name"],
+            "per_box_qty": spec["per_box_qty"],
+            "net_weight": spec["net_weight"],
+            "gross_weight": spec["gross_weight"],
+            "volume": spec["volume"],
+            "vendor": spec.get("vendor", ""),
+        })
+    return specs
+
+
+def parse_sea_order_file(
+    path: str | Path,
+    hs_codes: dict[str, str] | None = None,
+    packing_specs: list[dict] | None = None,
+) -> tuple[dict, list[dict]]:
     hs_codes = hs_codes or {}
     workbook = load_workbook(path, data_only=True)
     ws = workbook.active
-    specs = _load_packing_specs()
+    specs = packing_specs if packing_specs is not None else load_packing_specs_from_template()
     items: list[dict] = []
 
     for row in range(2, ws.max_row + 1):
@@ -116,7 +153,7 @@ def parse_sea_order_file(path: str | Path, hs_codes: dict[str, str] | None = Non
             "qty": qty,
             "description": description,
             "delivery_date": _date_text(ws.cell(row, 8).value),
-            "packing_name": spec["name"] if spec else description,
+            "packing_name": spec.get("packing_name") or spec.get("name") if spec else description,
             "per_box_qty": per_box,
             "net_weight": float(spec["net_weight"]) if spec else 0,
             "gross_weight": float(spec["gross_weight"]) if spec else 0,

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.08.2"
+APP_VERSION = "v2026.06.08.3"
 APP_RELEASED_AT = "2026-06-08"
-APP_HEADLINE = "海運出貨明細 PO 可編輯。"
+APP_HEADLINE = "海運包裝主檔可編輯。"
 APP_CHANGELOG = [
+    {
+        "title": "海運包裝主檔可編輯",
+        "items": [
+            "海運出貨頁籤新增「包裝主檔」清單，可直接編輯 ITEM NO、品名、每箱數量、淨重、毛重、材積與廠商。",
+            "海運匯入時會優先使用網站內的包裝主檔；若資料庫尚未初始化，會自動從 opentext 出貨淨重 Excel 載入一次。",
+            "海運頁籤維持在主頁籤列最後一項，避免影響原本排程、BOM、分析與不良品操作位置。",
+        ],
+    },
     {
         "title": "海運出貨明細 PO 可編輯",
         "items": [

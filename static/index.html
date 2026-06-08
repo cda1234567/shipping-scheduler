@@ -450,8 +450,39 @@
           </div>
           <div class="sea-freight-actions">
             <button class="btn btn-secondary btn-sm" id="btn-sea-refresh">重新整理</button>
+            <button class="btn btn-secondary btn-sm" id="btn-sea-packing">包裝主檔</button>
             <button class="btn btn-primary btn-sm" id="btn-sea-upload">上傳海運 Excel</button>
             <input type="file" id="sea-file-input" accept=".xlsx,.xlsm" style="display:none">
+          </div>
+        </div>
+        <div id="sea-packing-panel" class="sea-packing-panel" style="display:none">
+          <div class="sea-packing-head">
+            <div>
+              <h4>包裝主檔</h4>
+              <div class="sea-freight-subtitle">海運匯入時會用這份清單匹配 ITEM NO；廠商包裝變更時可直接在這裡修改。</div>
+            </div>
+            <div class="sea-freight-actions">
+              <input id="sea-packing-search" class="sea-packing-search" type="text" placeholder="搜尋 ITEM NO / 品名 / 廠商">
+              <button class="btn btn-secondary btn-sm" id="btn-sea-packing-add">新增</button>
+              <button class="btn btn-secondary btn-sm" id="btn-sea-packing-close">關閉</button>
+            </div>
+          </div>
+          <div class="sea-packing-table-wrap">
+            <table class="sea-table sea-packing-table">
+              <thead>
+                <tr>
+                  <th>ITEM NO</th>
+                  <th>品名</th>
+                  <th>每箱</th>
+                  <th>N.W.</th>
+                  <th>G.W.</th>
+                  <th>材積</th>
+                  <th>廠商</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="sea-packing-body"></tbody>
+            </table>
           </div>
         </div>
         <div class="sea-freight-layout">
