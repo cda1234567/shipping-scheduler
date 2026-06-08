@@ -242,6 +242,53 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     created_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS sea_shipments (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename        TEXT NOT NULL DEFAULT '',
+    source_path     TEXT NOT NULL DEFAULT '',
+    customer        TEXT NOT NULL DEFAULT '',
+    cust_po         TEXT NOT NULL DEFAULT '',
+    shipment_date   TEXT NOT NULL DEFAULT '',
+    delivery_date   TEXT NOT NULL DEFAULT '',
+    maker           TEXT NOT NULL DEFAULT 'Andy',
+    mark_text       TEXT NOT NULL DEFAULT 'HILLIARD',
+    invoice_no      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS sea_shipment_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    shipment_id     INTEGER NOT NULL REFERENCES sea_shipments(id) ON DELETE CASCADE,
+    line_no         INTEGER NOT NULL DEFAULT 0,
+    order_date      TEXT NOT NULL DEFAULT '',
+    customer        TEXT NOT NULL DEFAULT '',
+    cust_po         TEXT NOT NULL DEFAULT '',
+    item_no         TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    price           REAL NOT NULL DEFAULT 0,
+    qty             REAL NOT NULL DEFAULT 0,
+    delivery_date   TEXT NOT NULL DEFAULT '',
+    packing_name    TEXT NOT NULL DEFAULT '',
+    per_box_qty     REAL NOT NULL DEFAULT 0,
+    net_weight      REAL NOT NULL DEFAULT 0,
+    gross_weight    REAL NOT NULL DEFAULT 0,
+    volume          REAL NOT NULL DEFAULT 0,
+    box_count       INTEGER NOT NULL DEFAULT 0,
+    tail_qty        REAL NOT NULL DEFAULT 0,
+    carton_no       TEXT NOT NULL DEFAULT '',
+    harmonized_code TEXT NOT NULL DEFAULT '',
+    match_status    TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS sea_harmonized_codes (
+    item_no          TEXT PRIMARY KEY,
+    harmonized_code TEXT NOT NULL DEFAULT '',
+    note            TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT ''
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_st_inventory_audit_part_changed ON st_inventory_audit_log(part_number, changed_at);
@@ -257,6 +304,7 @@ CREATE INDEX IF NOT EXISTS idx_purchase_reminder_notified ON purchase_reminder_s
 CREATE INDEX IF NOT EXISTS idx_merge_drafts_order_status ON merge_drafts(order_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_merge_draft_files_draft ON merge_draft_files(draft_id, id);
 CREATE INDEX IF NOT EXISTS idx_alerts_read ON alerts(is_read);
+CREATE INDEX IF NOT EXISTS idx_sea_items_shipment ON sea_shipment_items(shipment_id, line_no);
 
 CREATE TABLE IF NOT EXISTS defective_batches (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2596,7 +2644,192 @@ def log_activity(action: str, detail: str = ""):
 def get_activity_logs(limit: int = 100) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM activity_logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [dict(r) for r in rows]
+        return [dict(r) for r in rows]
+
+
+# ── Sea freight ───────────────────────────────────────────────────────────────
+
+def create_sea_shipment(meta: dict, items: list[dict]) -> int:
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO sea_shipments(
+                filename, source_path, customer, cust_po, shipment_date, delivery_date,
+                maker, mark_text, invoice_no, created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                meta.get("filename", ""),
+                meta.get("source_path", ""),
+                meta.get("customer", ""),
+                meta.get("cust_po", ""),
+                meta.get("shipment_date", ""),
+                meta.get("delivery_date", ""),
+                meta.get("maker", "Andy"),
+                meta.get("mark_text", "HILLIARD"),
+                meta.get("invoice_no", ""),
+                now,
+                now,
+            ),
+        )
+        shipment_id = int(cur.lastrowid)
+        for i, item in enumerate(items, start=1):
+            conn.execute(
+                """
+                INSERT INTO sea_shipment_items(
+                    shipment_id, line_no, order_date, customer, cust_po, item_no,
+                    description, price, qty, delivery_date, packing_name, per_box_qty,
+                    net_weight, gross_weight, volume, box_count, tail_qty, carton_no,
+                    harmonized_code, match_status, updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    shipment_id,
+                    i,
+                    item.get("order_date", ""),
+                    item.get("customer", ""),
+                    item.get("cust_po", ""),
+                    item.get("item_no", ""),
+                    item.get("description", ""),
+                    float(item.get("price") or 0),
+                    float(item.get("qty") or 0),
+                    item.get("delivery_date", ""),
+                    item.get("packing_name", ""),
+                    float(item.get("per_box_qty") or 0),
+                    float(item.get("net_weight") or 0),
+                    float(item.get("gross_weight") or 0),
+                    float(item.get("volume") or 0),
+                    int(item.get("box_count") or 0),
+                    float(item.get("tail_qty") or 0),
+                    item.get("carton_no", ""),
+                    item.get("harmonized_code", ""),
+                    item.get("match_status", ""),
+                    now,
+                ),
+            )
+        return shipment_id
+
+
+def list_sea_shipments(limit: int = 30) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.*,
+                   COUNT(i.id) AS item_count,
+                   COALESCE(SUM(i.box_count), 0) AS total_boxes,
+                   COALESCE(SUM((i.box_count - CASE WHEN i.tail_qty > 0 THEN 1 ELSE 0 END) * i.net_weight
+                       + CASE WHEN i.tail_qty > 0 AND i.per_box_qty > 0 THEN (i.net_weight * i.tail_qty / i.per_box_qty) ELSE 0 END), 0) AS total_net_weight,
+                   COALESCE(SUM((i.box_count - CASE WHEN i.tail_qty > 0 THEN 1 ELSE 0 END) * i.gross_weight
+                       + CASE WHEN i.tail_qty > 0 AND i.per_box_qty > 0 THEN (i.gross_weight * i.tail_qty / i.per_box_qty) ELSE 0 END), 0) AS total_gross_weight,
+                   COALESCE(SUM((i.box_count - CASE WHEN i.tail_qty > 0 THEN 1 ELSE 0 END) * i.volume
+                       + CASE WHEN i.tail_qty > 0 THEN i.volume ELSE 0 END), 0) AS total_volume
+            FROM sea_shipments s
+            LEFT JOIN sea_shipment_items i ON i.shipment_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_sea_shipment(shipment_id: int) -> dict | None:
+    with get_conn() as conn:
+        shipment = conn.execute("SELECT * FROM sea_shipments WHERE id=?", (shipment_id,)).fetchone()
+        if not shipment:
+            return None
+        items = conn.execute(
+            "SELECT * FROM sea_shipment_items WHERE shipment_id=? ORDER BY line_no, id",
+            (shipment_id,),
+        ).fetchall()
+        data = dict(shipment)
+        data["items"] = [dict(r) for r in items]
+        return data
+
+
+def update_sea_shipment(shipment_id: int, meta: dict, items: list[dict]) -> bool:
+    now = _now()
+    with get_conn() as conn:
+        existing = conn.execute("SELECT id FROM sea_shipments WHERE id=?", (shipment_id,)).fetchone()
+        if not existing:
+            return False
+        conn.execute(
+            """
+            UPDATE sea_shipments
+            SET customer=?, cust_po=?, shipment_date=?, delivery_date=?,
+                maker=?, mark_text=?, invoice_no=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                meta.get("customer", ""),
+                meta.get("cust_po", ""),
+                meta.get("shipment_date", ""),
+                meta.get("delivery_date", ""),
+                meta.get("maker", "Andy"),
+                meta.get("mark_text", "HILLIARD"),
+                meta.get("invoice_no", ""),
+                now,
+                shipment_id,
+            ),
+        )
+        for i, item in enumerate(items, start=1):
+            conn.execute(
+                """
+                UPDATE sea_shipment_items
+                SET line_no=?, qty=?, price=?, packing_name=?, per_box_qty=?,
+                    net_weight=?, gross_weight=?, volume=?, box_count=?, tail_qty=?,
+                    carton_no=?, harmonized_code=?, match_status=?, updated_at=?
+                WHERE id=? AND shipment_id=?
+                """,
+                (
+                    i,
+                    float(item.get("qty") or 0),
+                    float(item.get("price") or 0),
+                    item.get("packing_name", ""),
+                    float(item.get("per_box_qty") or 0),
+                    float(item.get("net_weight") or 0),
+                    float(item.get("gross_weight") or 0),
+                    float(item.get("volume") or 0),
+                    int(item.get("box_count") or 0),
+                    float(item.get("tail_qty") or 0),
+                    item.get("carton_no", ""),
+                    item.get("harmonized_code", ""),
+                    item.get("match_status", ""),
+                    now,
+                    int(item.get("id") or 0),
+                    shipment_id,
+                ),
+            )
+        return True
+
+
+def delete_sea_shipment(shipment_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM sea_shipments WHERE id=?", (shipment_id,))
+        return cur.rowcount > 0
+
+
+def get_sea_harmonized_codes() -> dict[str, str]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT item_no, harmonized_code FROM sea_harmonized_codes").fetchall()
+        return {str(r["item_no"]): str(r["harmonized_code"] or "") for r in rows}
+
+
+def upsert_sea_harmonized_code(item_no: str, harmonized_code: str, note: str = ""):
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO sea_harmonized_codes(item_no, harmonized_code, note, updated_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT(item_no) DO UPDATE SET
+              harmonized_code=excluded.harmonized_code,
+              note=excluded.note,
+              updated_at=excluded.updated_at
+            """,
+            (item_no, harmonized_code, note, _now()),
+        )
 
 
 def get_activity_logs_by_action(action: str, limit: int = 50) -> list[dict]:

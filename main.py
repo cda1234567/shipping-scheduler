@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import STATIC_DIR
 from app.database import init_db
-from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main_file, schedule, st_inventory, system
+from app.routers import alerts, analytics, bom, defectives, dispatch, logs, main_file, schedule, sea_freight, st_inventory, system
 from app.services.edit_auth import EDIT_AUTH_REQUIRED_MESSAGE, get_edit_auth_status, request_requires_edit_auth
 from app.services.db_backup import database_backup_scheduler
 from app.services.backup_cleanup import cleanup_old_backups
@@ -93,6 +93,7 @@ app.include_router(system.router, prefix="/api")
 app.include_router(st_inventory.router, prefix="/api")
 app.include_router(analytics.router, prefix="/api")
 app.include_router(defectives.router, prefix="/api")
+app.include_router(sea_freight.router, prefix="/api")
 
 app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 

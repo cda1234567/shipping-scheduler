@@ -3942,3 +3942,185 @@ body.desktop-dark .defective-skipped {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── Sea freight ─────────────────────────────────────────────────────────── */
+.sea-freight-shell {
+  height: calc(100vh - 118px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #f8fafc;
+}
+.sea-freight-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.sea-freight-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #0f172a;
+}
+.sea-freight-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+}
+.sea-freight-actions,
+.sea-editor-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sea-freight-layout {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px;
+}
+.sea-freight-list,
+.sea-freight-detail {
+  min-height: 0;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+.sea-freight-list {
+  padding: 10px;
+}
+.sea-freight-list-title {
+  margin: 2px 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #475569;
+}
+.sea-shipment-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+  padding: 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.sea-shipment-card:hover,
+.sea-shipment-card.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+.sea-shipment-main {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  word-break: break-word;
+}
+.sea-shipment-meta {
+  font-size: 11px;
+  color: #64748b;
+}
+.sea-freight-detail {
+  padding: 14px;
+}
+.sea-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.sea-editor-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 8px;
+}
+.sea-editor-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sea-editor-grid span {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+}
+.sea-editor-grid input,
+.sea-table input {
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.sea-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.sea-summary span {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 700;
+}
+.sea-summary .sea-warn {
+  background: #fff7ed;
+  color: #c2410c;
+}
+.sea-table-wrap {
+  max-height: calc(100vh - 300px);
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+.sea-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1280px;
+}
+.sea-table th,
+.sea-table td {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 7px 8px;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.sea-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #475569;
+  text-align: left;
+  font-weight: 800;
+}
+.sea-table td:nth-child(1),
+.sea-table td:nth-child(8),
+.sea-table td:nth-child(14) {
+  text-align: center;
+}
+@media (max-width: 1200px) {
+  .sea-freight-layout {
+    grid-template-columns: 1fr;
+  }
+  .sea-freight-list {
+    max-height: 180px;
+  }
+  .sea-editor-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}

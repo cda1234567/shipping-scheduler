@@ -18,10 +18,11 @@ MERGE_DRAFT_DIR = DATA_DIR / "merge_drafts"
 METADATA_FILE = DATA_DIR / "metadata.json"
 BACKUP_DIR    = DATA_DIR / "backups"
 ST_INVENTORY_DIR = DATA_DIR / "st_inventory"
+SEA_FREIGHT_DIR = DATA_DIR / "sea_freight"
 STATIC_DIR    = RESOURCE_DIR / "static"
 CONFIG_FILE   = get_config_file_path()
 
-for _d in [MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR, BACKUP_DIR, ST_INVENTORY_DIR]:
+for _d in [MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR, BACKUP_DIR, ST_INVENTORY_DIR, SEA_FREIGHT_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 

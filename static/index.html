@@ -111,6 +111,7 @@
       <button class="tab-btn" data-tab="backups-tab">備份</button>
       <button class="tab-btn" data-tab="analytics-tab">分析</button>
       <button class="tab-btn" data-tab="defectives-tab">不良品</button>
+      <button class="tab-btn" data-tab="sea-freight-tab">海運出貨</button>
     </div>
 
     <!-- ── Tab: 排程 ── -->
@@ -439,6 +440,72 @@
       </div>
     </div>
 
+    <!-- ── Tab: 海運出貨 ── -->
+    <div id="tab-sea-freight-tab" class="tab-content">
+      <div class="sea-freight-shell">
+        <div class="sea-freight-header">
+          <div>
+            <h3>海運出貨</h3>
+            <div class="sea-freight-subtitle">匯入海運明細，套用淨重主檔後輸出 OPENTEXT 出貨單格式。</div>
+          </div>
+          <div class="sea-freight-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-sea-refresh">重新整理</button>
+            <button class="btn btn-primary btn-sm" id="btn-sea-upload">上傳海運 Excel</button>
+            <input type="file" id="sea-file-input" accept=".xlsx,.xlsm" style="display:none">
+          </div>
+        </div>
+        <div class="sea-freight-layout">
+          <aside class="sea-freight-list">
+            <div class="sea-freight-list-title">批次</div>
+            <div id="sea-shipment-list"></div>
+          </aside>
+          <section class="sea-freight-detail">
+            <div id="sea-empty" class="no-shortage-msg">尚未選擇海運批次</div>
+            <div id="sea-editor" style="display:none">
+              <div class="sea-editor-head">
+                <div class="sea-editor-grid">
+                  <label><span>客戶</span><input id="sea-customer" type="text"></label>
+                  <label><span>Cust PO#</span><input id="sea-cust-po" type="text"></label>
+                  <label><span>日期</span><input id="sea-shipment-date" type="text"></label>
+                  <label><span>預交日期</span><input id="sea-delivery-date" type="text"></label>
+                  <label><span>Invoice No.</span><input id="sea-invoice-no" type="text"></label>
+                  <label><span>嘜頭</span><input id="sea-mark-text" type="text"></label>
+                </div>
+                <div class="sea-editor-actions">
+                  <button class="btn btn-secondary btn-sm" id="btn-sea-save">儲存</button>
+                  <button class="btn btn-success btn-sm" id="btn-sea-export">匯出出貨單</button>
+                </div>
+              </div>
+              <div id="sea-summary" class="sea-summary"></div>
+              <div class="sea-table-wrap">
+                <table class="sea-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>ITEM NO</th>
+                      <th>品名</th>
+                      <th>PO</th>
+                      <th>數量</th>
+                      <th>單價</th>
+                      <th>箱號</th>
+                      <th>箱數</th>
+                      <th>每箱</th>
+                      <th>N.W.</th>
+                      <th>G.W.</th>
+                      <th>材積</th>
+                      <th>HSC</th>
+                      <th>匹配</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sea-items-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /main-content -->
 
 </div><!-- /layout -->
@@ -532,6 +599,7 @@ import { initStPackages, refreshStPackages } from "/static/modules/st_packages.j
 import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
 import { initEditAuth } from "/static/modules/edit_auth.js";
+import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -550,6 +618,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "backups-tab") refreshDbBackupPanel();
     if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
     if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();
+    if (btn.dataset.tab === "sea-freight-tab") refreshSeaFreight();
   });
 });
 
@@ -801,6 +870,7 @@ async function init() {
   await initDbBackup({ reloadApp: () => refreshCurrentView({ skipDirtyConfirm: true }), autoLoad: false });
   try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
   try { await initDefectives(); } catch (e) { console.warn("initDefectives failed:", e); }
+  try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
   await finishBoot();
 }
 
