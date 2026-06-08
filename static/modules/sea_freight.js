@@ -116,7 +116,7 @@ function renderEditor() {
       <td>${index + 1}</td>
       <td>${esc(item.item_no || "")}</td>
       <td><input data-field="packing_name" type="text" value="${esc(item.packing_name || "")}"></td>
-      <td>${esc(item.cust_po || "")}</td>
+      <td><input data-field="cust_po" type="text" value="${esc(item.cust_po || "")}"></td>
       <td><input data-field="qty" type="number" step="any" value="${Number(item.qty || 0)}"></td>
       <td><input data-field="price" type="number" step="any" value="${Number(item.price || 0)}"></td>
       <td><input data-field="carton_no" type="text" value="${esc(item.carton_no || "")}" placeholder="手動輸入"></td>

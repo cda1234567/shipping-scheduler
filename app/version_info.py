@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.08.1"
+APP_VERSION = "v2026.06.08.2"
 APP_RELEASED_AT = "2026-06-08"
-APP_HEADLINE = "新增海運出貨模組。"
+APP_HEADLINE = "海運出貨明細 PO 可編輯。"
 APP_CHANGELOG = [
+    {
+        "title": "海運出貨明細 PO 可編輯",
+        "items": [
+            "海運出貨明細表的 PO 欄位改成可編輯，支援不同 PO 的品項合併在同一張海運出貨單。",
+            "儲存海運批次時會寫回每筆明細 PO，匯出 OPENTEXT 出貨單時每個品項會使用自己的 PO。",
+        ],
+    },
     {
         "title": "海運出貨模組",
         "items": [

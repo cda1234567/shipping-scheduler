@@ -2778,13 +2778,14 @@ def update_sea_shipment(shipment_id: int, meta: dict, items: list[dict]) -> bool
             conn.execute(
                 """
                 UPDATE sea_shipment_items
-                SET line_no=?, qty=?, price=?, packing_name=?, per_box_qty=?,
+                SET line_no=?, cust_po=?, qty=?, price=?, packing_name=?, per_box_qty=?,
                     net_weight=?, gross_weight=?, volume=?, box_count=?, tail_qty=?,
                     carton_no=?, harmonized_code=?, match_status=?, updated_at=?
                 WHERE id=? AND shipment_id=?
                 """,
                 (
                     i,
+                    item.get("cust_po", ""),
                     float(item.get("qty") or 0),
                     float(item.get("price") or 0),
                     item.get("packing_name", ""),
