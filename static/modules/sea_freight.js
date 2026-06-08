@@ -5,6 +5,8 @@ let _shipments = [];
 let _current = null;
 let _packingSpecs = [];
 let _packingLoaded = false;
+let _hscCodes = [];
+let _hscLoaded = false;
 
 export async function initSeaFreight() {
   document.getElementById("btn-sea-refresh")?.addEventListener("click", () => refreshSeaFreight());
@@ -18,6 +20,10 @@ export async function initSeaFreight() {
   document.getElementById("btn-sea-packing-close")?.addEventListener("click", closePackingPanel);
   document.getElementById("btn-sea-packing-add")?.addEventListener("click", addPackingRow);
   document.getElementById("sea-packing-search")?.addEventListener("input", renderPackingSpecs);
+  document.getElementById("btn-sea-hsc")?.addEventListener("click", openHscPanel);
+  document.getElementById("btn-sea-hsc-close")?.addEventListener("click", closeHscPanel);
+  document.getElementById("btn-sea-hsc-add")?.addEventListener("click", addHscRow);
+  document.getElementById("sea-hsc-search")?.addEventListener("input", renderHscCodes);
 }
 
 export async function refreshSeaFreight() {
@@ -327,5 +333,112 @@ async function deletePackingRow(row) {
     await loadPackingSpecs();
   } catch (error) {
     showToast(`刪除包裝主檔失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+async function openHscPanel() {
+  const panel = document.getElementById("sea-hsc-panel");
+  if (panel) panel.style.display = "";
+  if (!_hscLoaded) await loadHscCodes();
+}
+
+function closeHscPanel() {
+  const panel = document.getElementById("sea-hsc-panel");
+  if (panel) panel.style.display = "none";
+}
+
+async function loadHscCodes() {
+  const body = document.getElementById("sea-hsc-body");
+  if (body) body.innerHTML = '<tr><td colspan="4">載入中...</td></tr>';
+  try {
+    const data = await apiJson("/api/sea-freight/hsc-codes");
+    _hscCodes = data.codes || [];
+    _hscLoaded = true;
+    renderHscCodes();
+  } catch (error) {
+    if (body) body.innerHTML = '<tr><td colspan="4">HSC 主檔載入失敗</td></tr>';
+    showToast(`HSC 主檔載入失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+function renderHscCodes() {
+  const body = document.getElementById("sea-hsc-body");
+  if (!body) return;
+  const query = (document.getElementById("sea-hsc-search")?.value || "").trim().toLowerCase();
+  const codes = _hscCodes.filter(row => {
+    if (!query) return true;
+    return [row.item_no, row.harmonized_code, row.note].some(value => String(value || "").toLowerCase().includes(query));
+  });
+  if (!codes.length) {
+    body.innerHTML = '<tr><td colspan="4">沒有符合的 HSC 資料</td></tr>';
+    return;
+  }
+  body.innerHTML = codes.map(row => `
+    <tr data-index="${_hscCodes.indexOf(row)}">
+      <td><input data-field="item_no" type="text" value="${esc(row.item_no || "")}" ${row._isNew ? "" : "readonly"}></td>
+      <td><input data-field="harmonized_code" type="text" value="${esc(row.harmonized_code || "")}"></td>
+      <td><input data-field="note" type="text" value="${esc(row.note || "")}"></td>
+      <td>
+        <button class="btn btn-primary btn-xs" type="button" data-action="save">存</button>
+        <button class="btn btn-danger btn-xs" type="button" data-action="delete">刪</button>
+      </td>
+    </tr>
+  `).join("");
+  body.querySelectorAll("button[data-action='save']").forEach(btn => {
+    btn.addEventListener("click", () => saveHscRow(btn.closest("tr")));
+  });
+  body.querySelectorAll("button[data-action='delete']").forEach(btn => {
+    btn.addEventListener("click", () => deleteHscRow(btn.closest("tr")));
+  });
+}
+
+function addHscRow() {
+  _hscCodes.unshift({ item_no: "", harmonized_code: "", note: "", _isNew: true });
+  const search = document.getElementById("sea-hsc-search");
+  if (search) search.value = "";
+  renderHscCodes();
+}
+
+function readHscRow(row) {
+  const data = {};
+  row.querySelectorAll("input[data-field]").forEach(input => {
+    data[input.dataset.field] = input.value.trim();
+  });
+  return data;
+}
+
+async function saveHscRow(row) {
+  if (!row) return;
+  const index = Number(row.dataset.index || 0);
+  const data = readHscRow(row);
+  if (!data.item_no) {
+    showToast("請輸入 ITEM NO", { tone: "error" });
+    return;
+  }
+  try {
+    await apiPut(`/api/sea-freight/hsc-codes/${encodeURIComponent(data.item_no)}`, data);
+    _hscCodes[index] = { ...data };
+    showToast(`${data.item_no} HSC 已儲存`, { tone: "success" });
+    await loadHscCodes();
+  } catch (error) {
+    showToast(`儲存 HSC 失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+async function deleteHscRow(row) {
+  if (!row) return;
+  const data = readHscRow(row);
+  if (!data.item_no) {
+    _hscCodes.splice(Number(row.dataset.index || 0), 1);
+    renderHscCodes();
+    return;
+  }
+  if (!confirm(`刪除 ${data.item_no} 的 HSC？`)) return;
+  try {
+    await apiFetch(`/api/sea-freight/hsc-codes/${encodeURIComponent(data.item_no)}`, { method: "DELETE" });
+    showToast(`${data.item_no} HSC 已刪除`, { tone: "success" });
+    await loadHscCodes();
+  } catch (error) {
+    showToast(`刪除 HSC 失敗：${error.message}`, { tone: "error" });
   }
 }

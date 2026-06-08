@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from .. import database as db
 from ..services.sea_freight import (
     export_sea_shipment,
+    _infer_harmonized_code,
     load_packing_specs_from_template,
     parse_sea_order_file,
     save_uploaded_sea_file,
@@ -39,6 +40,12 @@ class SeaPackingSpecRequest(BaseModel):
     vendor: str = ""
 
 
+class SeaHscRequest(BaseModel):
+    item_no: str
+    harmonized_code: str = ""
+    note: str = ""
+
+
 def _ensure_packing_specs_seeded() -> list[dict]:
     specs = db.get_sea_packing_specs()
     if specs:
@@ -49,6 +56,24 @@ def _ensure_packing_specs_seeded() -> list[dict]:
         specs = db.get_sea_packing_specs()
         db.log_activity("sea_packing_seed", f"初始化海運包裝主檔 {len(specs)} 筆")
     return specs
+
+
+def _ensure_hsc_seeded() -> list[dict]:
+    codes = db.list_sea_harmonized_codes()
+    if codes:
+        return codes
+    specs = _ensure_packing_specs_seeded()
+    seeded = 0
+    for spec in specs:
+        item_no = str(spec.get("item_no") or "").strip()
+        packing_name = str(spec.get("packing_name") or "").strip()
+        code = _infer_harmonized_code(item_no, packing_name)
+        if item_no and code:
+            db.upsert_sea_harmonized_code(item_no, code, "系統依品名初始帶入")
+            seeded += 1
+    if seeded:
+        db.log_activity("sea_hsc_seed", f"初始化海運 HSC 主檔 {seeded} 筆")
+    return db.list_sea_harmonized_codes()
 
 
 @router.post("/upload")
@@ -63,7 +88,7 @@ async def upload_sea_freight(file: UploadFile = File(...)):
     try:
         meta, items = parse_sea_order_file(
             path,
-            db.get_sea_harmonized_codes(),
+            {row["item_no"]: row["harmonized_code"] for row in _ensure_hsc_seeded()},
             _ensure_packing_specs_seeded(),
         )
     except Exception as exc:
@@ -99,6 +124,31 @@ async def delete_packing_spec(item_no: str):
     if not ok:
         raise HTTPException(404, "找不到包裝主檔")
     db.log_activity("sea_packing_delete", f"{item_no} 包裝主檔已刪除")
+    return {"ok": True}
+
+
+@router.get("/hsc-codes")
+async def list_hsc_codes():
+    return {"codes": _ensure_hsc_seeded()}
+
+
+@router.put("/hsc-codes/{item_no}")
+async def update_hsc_code(item_no: str, req: SeaHscRequest):
+    saved_item_no = item_no.strip() or req.item_no.strip()
+    if not saved_item_no:
+        raise HTTPException(400, "請輸入 ITEM NO")
+    code = req.harmonized_code.strip()
+    db.upsert_sea_harmonized_code(saved_item_no, code, req.note.strip())
+    db.log_activity("sea_hsc_update", f"{saved_item_no} HSC -> {code}")
+    return {"ok": True, "code": {"item_no": saved_item_no, "harmonized_code": code, "note": req.note.strip()}}
+
+
+@router.delete("/hsc-codes/{item_no}")
+async def delete_hsc_code(item_no: str):
+    ok = db.delete_sea_harmonized_code(item_no)
+    if not ok:
+        raise HTTPException(404, "找不到 HSC 主檔")
+    db.log_activity("sea_hsc_delete", f"{item_no} HSC 已刪除")
     return {"ok": True}
 
 

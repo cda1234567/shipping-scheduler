@@ -451,6 +451,7 @@
           <div class="sea-freight-actions">
             <button class="btn btn-secondary btn-sm" id="btn-sea-refresh">重新整理</button>
             <button class="btn btn-secondary btn-sm" id="btn-sea-packing">包裝主檔</button>
+            <button class="btn btn-secondary btn-sm" id="btn-sea-hsc">HSC 主檔</button>
             <button class="btn btn-primary btn-sm" id="btn-sea-upload">上傳海運 Excel</button>
             <input type="file" id="sea-file-input" accept=".xlsx,.xlsm" style="display:none">
           </div>
@@ -482,6 +483,32 @@
                 </tr>
               </thead>
               <tbody id="sea-packing-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="sea-hsc-panel" class="sea-packing-panel" style="display:none">
+          <div class="sea-packing-head">
+            <div>
+              <h4>HSC 主檔</h4>
+              <div class="sea-freight-subtitle">海運匯入與匯出時會依 ITEM NO 帶出 HARMONIZED CODE。</div>
+            </div>
+            <div class="sea-freight-actions">
+              <input id="sea-hsc-search" class="sea-packing-search" type="text" placeholder="搜尋 ITEM NO / HSC / 備註">
+              <button class="btn btn-secondary btn-sm" id="btn-sea-hsc-add">新增</button>
+              <button class="btn btn-secondary btn-sm" id="btn-sea-hsc-close">關閉</button>
+            </div>
+          </div>
+          <div class="sea-packing-table-wrap">
+            <table class="sea-table sea-hsc-table">
+              <thead>
+                <tr>
+                  <th>ITEM NO</th>
+                  <th>HARMONIZED CODE</th>
+                  <th>備註</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="sea-hsc-body"></tbody>
             </table>
           </div>
         </div>

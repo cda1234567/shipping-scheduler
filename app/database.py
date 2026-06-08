@@ -2830,6 +2830,18 @@ def get_sea_harmonized_codes() -> dict[str, str]:
         return {str(r["item_no"]): str(r["harmonized_code"] or "") for r in rows}
 
 
+def list_sea_harmonized_codes() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT item_no, harmonized_code, note, updated_at
+            FROM sea_harmonized_codes
+            ORDER BY item_no COLLATE NOCASE
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def upsert_sea_harmonized_code(item_no: str, harmonized_code: str, note: str = ""):
     with get_conn() as conn:
         conn.execute(
@@ -2843,6 +2855,12 @@ def upsert_sea_harmonized_code(item_no: str, harmonized_code: str, note: str = "
             """,
             (item_no, harmonized_code, note, _now()),
         )
+
+
+def delete_sea_harmonized_code(item_no: str) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM sea_harmonized_codes WHERE item_no=?", (item_no,))
+        return cur.rowcount > 0
 
 
 def get_sea_packing_specs() -> list[dict]:

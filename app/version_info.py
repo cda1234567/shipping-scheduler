@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.08.3"
+APP_VERSION = "v2026.06.08.4"
 APP_RELEASED_AT = "2026-06-08"
-APP_HEADLINE = "海運包裝主檔可編輯。"
+APP_HEADLINE = "海運 HSC 主檔可編輯。"
 APP_CHANGELOG = [
+    {
+        "title": "海運 HSC 主檔可編輯",
+        "items": [
+            "海運出貨頁籤新增「HSC 主檔」，可直接新增、修改、刪除 ITEM NO 對應的 HARMONIZED CODE。",
+            "海運匯入時會優先依 HSC 主檔帶出 code；若主檔尚未初始化，會先用包裝主檔與既有規則建立預設清單。",
+            "儲存海運批次時，明細列修改過的 HSC 仍會同步回 HSC 主檔，方便下次出貨沿用。",
+        ],
+    },
     {
         "title": "海運包裝主檔可編輯",
         "items": [

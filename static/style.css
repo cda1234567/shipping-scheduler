@@ -4121,6 +4121,9 @@ body.desktop-dark .defective-skipped {
 .sea-packing-table {
   min-width: 980px;
 }
+.sea-hsc-table {
+  min-width: 720px;
+}
 .sea-packing-table input[readonly] {
   background: #f8fafc;
   color: #475569;
