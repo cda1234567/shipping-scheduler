@@ -1247,12 +1247,39 @@ def _rebuild_committed_merge_draft_files(
     ] + fallback_entries
 
 
+def _existing_committed_merge_draft_file_entries(
+    draft: dict,
+    *,
+    file_id: int | None = None,
+) -> list[dict]:
+    order = db.get_order(int(draft["order_id"])) or {}
+    po = order.get("po_number", "")
+    entries: list[dict] = []
+    for item in db.get_merge_draft_files(int(draft["id"])):
+        if file_id is not None:
+            try:
+                if int(item.get("id", -1)) != int(file_id):
+                    continue
+            except (TypeError, ValueError):
+                continue
+        file_path = Path(str(item.get("filepath") or ""))
+        if not file_path.exists():
+            continue
+        entries.append({
+            "path": file_path,
+            "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
+        })
+    return entries
+
+
 def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
     if draft.get("status") == "committed":
-        valid_files = _rebuild_committed_merge_draft_files(draft, file_id=file_id)
+        valid_files = _existing_committed_merge_draft_file_entries(draft, file_id=file_id)
+        if not valid_files:
+            valid_files = _rebuild_committed_merge_draft_files(draft, file_id=file_id)
         return _build_download_response(valid_files, archive_label="已發料副檔", request=request)
 
     order = db.get_order(int(draft["order_id"])) or {}
@@ -1322,16 +1349,32 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
 
     file_entries: list[dict] = []
     missing_orders: list[int] = []
+    drafts_to_rebuild: list[tuple[int, dict]] = []
+    for order_id in normalized_ids:
+        draft = db.get_latest_committed_merge_draft_for_order(order_id)
+        if not draft:
+            missing_orders.append(order_id)
+            continue
+        existing_entries = _existing_committed_merge_draft_file_entries(draft)
+        if existing_entries:
+            order = db.get_order(order_id) or {"id": order_id}
+            subdir = _format_committed_archive_subdir(order)
+            for entry in existing_entries:
+                entry["subdir"] = subdir
+            file_entries.extend(existing_entries)
+            continue
+        drafts_to_rebuild.append((order_id, draft))
+
+    if not drafts_to_rebuild:
+        if missing_orders:
+            raise HTTPException(404, "部分已發料訂單沒有可下載的副檔")
+        return _build_download_response(file_entries, archive_label="已發料副檔", request=request)
+
     workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
     try:
         ws = workbook.worksheets[0]
         main_context = _main_value_context(ws)
-        for order_id in normalized_ids:
-            draft = db.get_latest_committed_merge_draft_for_order(order_id)
-            if not draft:
-                missing_orders.append(order_id)
-                continue
-
+        for order_id, draft in drafts_to_rebuild:
             rebuilt_entries = _rebuild_committed_merge_draft_files(
                 draft,
                 main_ws=ws,

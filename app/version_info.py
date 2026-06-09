@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.08.4"
-APP_RELEASED_AT = "2026-06-08"
-APP_HEADLINE = "海運 HSC 主檔可編輯。"
+APP_VERSION = "v2026.06.09.1"
+APP_RELEASED_AT = "2026-06-09"
+APP_HEADLINE = "已發料副檔下載修正。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料副檔下載修正",
+        "items": [
+            "已發料頁籤的「下載副檔」屬於純下載操作，現在不再被唯讀/編輯登入保護擋住，桌面下載橋接器可直接產生並儲存檔案。",
+            "一般副檔批次下載也同步加入純下載白名單，避免 POST 下載端點被誤判成資料修改。",
+            "已發料副檔下載會優先直接打包當時已提交保存的副檔檔案，避免每次下載都重讀主檔並重建 Excel，造成長時間沒反應。",
+            "伺服器下載模式成功後若未設定顯示路徑，提示會明確顯示預設下載位置 D:\\Download\\excel，避免只看到檔名卻找不到檔案。",
+        ],
+    },
     {
         "title": "海運 HSC 主檔可編輯",
         "items": [

@@ -24,6 +24,8 @@ _EXEMPT_PATHS = {
     "/api/system/edit-auth/login",
     "/api/system/edit-auth/logout",
     "/api/dispatch/generate",
+    "/api/schedule/drafts/download",
+    "/api/schedule/completed/drafts/download",
     "/api/health",
 }
 

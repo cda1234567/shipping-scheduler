@@ -57,7 +57,7 @@ def save_bytes_to_user_downloads(content: bytes, filename: str) -> str | None:
 
 
 def _server_save_json(saved_name: str) -> JSONResponse:
-    display_path = db.get_setting("server_download_display_path") or ""
+    display_path = db.get_setting("server_download_display_path") or "D:\\Download\\excel"
     return JSONResponse({"ok": True, "filename": saved_name, "directory": display_path})
 
 
