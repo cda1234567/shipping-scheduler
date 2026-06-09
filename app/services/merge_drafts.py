@@ -1097,6 +1097,27 @@ def _model_tokens(*values) -> set[str]:
     return tokens
 
 
+def _score_main_batch_model_match(header_model: str, specific_tokens: set[str], fallback_tokens: set[str]) -> int:
+    header = normalize_part_key(header_model)
+    if not header:
+        return 0
+    for token in specific_tokens:
+        if not token:
+            continue
+        if header == token:
+            return 100
+        if token in header or header in token:
+            return 80
+    for token in fallback_tokens:
+        if not token:
+            continue
+        if header == token:
+            return 40
+        if token in header or header in token:
+            return 20
+    return 0
+
+
 def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> int | None:
     code = str(order.get("code") or "").strip()
     if not code:
@@ -1111,18 +1132,26 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
     if not candidates:
         return None
 
-    model_tokens = _model_tokens(
+    specific_tokens = _model_tokens(
         file_item.get("model"),
-        file_item.get("group_model"),
         (bom or {}).get("model"),
+    )
+    fallback_tokens = _model_tokens(
+        file_item.get("group_model"),
         (bom or {}).get("group_model"),
     )
+    best_col: int | None = None
+    best_score = 0
     for col in candidates:
         header_model = normalize_part_key(_main_context_header(context, col + 2) or _main_header_text(ws, col + 2))
-        if not header_model or not model_tokens:
+        if not header_model or (not specific_tokens and not fallback_tokens):
             continue
-        if header_model in model_tokens or any(token in header_model or header_model in token for token in model_tokens):
-            return col
+        score = _score_main_batch_model_match(header_model, specific_tokens, fallback_tokens)
+        if score > best_score:
+            best_col = col
+            best_score = score
+    if best_col is not None:
+        return best_col
     return candidates[0]
 
 
