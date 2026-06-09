@@ -1014,14 +1014,31 @@ def _main_stock_events(ws) -> list[dict[str, int | str]]:
 
 
 def _main_value_context(ws) -> dict:
+    part_col = cfg("excel.main_part_col", 0) + 1
+    header_values = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
     batch_cols_by_code: dict[str, list[int]] = {}
-    for col in range(1, ws.max_column + 1):
-        header = _main_header_text(ws, col)
+    events: list[dict[str, int | str]] = []
+    for col, raw_header in enumerate(header_values, start=1):
+        header = str(raw_header or "").strip()
         if re.match(r"^\d+-\d+$", header):
             batch_cols_by_code.setdefault(header, []).append(col)
+            events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
+        elif "回復" in header or "恢復" in header:
+            events.append({"kind": "reverse", "start_col": col, "balance_col": col + 1})
+        elif "扣帳" in header:
+            events.append({"kind": "deduct", "start_col": col, "balance_col": col + 1})
+    row_map: dict[str, int] = {}
+    row_values_by_part: dict[str, tuple] = {}
+    for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        part = normalize_part_key(row_values[part_col - 1] if len(row_values) >= part_col else None)
+        if part:
+            row_map[part] = row_idx
+            row_values_by_part[part] = tuple(row_values)
     return {
-        "row_map": _main_file_part_row_map(ws),
-        "events": _main_stock_events(ws),
+        "header_values": tuple(header_values),
+        "row_map": row_map,
+        "row_values_by_part": row_values_by_part,
+        "events": sorted(events, key=lambda item: int(item["start_col"])),
         "batch_cols_by_code": batch_cols_by_code,
         "components_by_bom": {},
     }
@@ -1045,6 +1062,29 @@ def _main_previous_stock_before_col(ws, row_idx: int, start_col: int, events: li
     fallback_col = 8
     value = _main_number(ws.cell(row=row_idx, column=fallback_col).value)
     return value if value is not None else 0.0
+
+
+def _main_row_value(row_values: tuple, col: int):
+    if col <= 0 or len(row_values) < col:
+        return None
+    return row_values[col - 1]
+
+
+def _main_previous_stock_before_col_from_values(row_values: tuple, start_col: int, events: list[dict[str, int | str]]) -> float:
+    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
+        value = _main_number(_main_row_value(row_values, int(event["balance_col"])))
+        if value is not None:
+            return value
+
+    value = _main_number(_main_row_value(row_values, 8))
+    return value if value is not None else 0.0
+
+
+def _main_context_header(context: dict | None, col: int) -> str:
+    headers = (context or {}).get("header_values") or ()
+    if col <= 0 or len(headers) < col:
+        return ""
+    return str(headers[col - 1] or "").strip()
 
 
 def _model_tokens(*values) -> set[str]:
@@ -1078,7 +1118,7 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
         (bom or {}).get("group_model"),
     )
     for col in candidates:
-        header_model = normalize_part_key(_main_header_text(ws, col + 2))
+        header_model = normalize_part_key(_main_context_header(context, col + 2) or _main_header_text(ws, col + 2))
         if not header_model or not model_tokens:
             continue
         if header_model in model_tokens or any(token in header_model or header_model in token for token in model_tokens):
@@ -1093,6 +1133,7 @@ def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict 
 
     context = context or _main_value_context(ws)
     row_map = context["row_map"]
+    row_values_by_part = context.get("row_values_by_part") or {}
     events = context["events"]
     components_by_bom = context.setdefault("components_by_bom", {})
     bom_file_id = str(file_item.get("bom_file_id") or "")
@@ -1106,11 +1147,16 @@ def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict 
         if not part or part in seen_parts:
             continue
         seen_parts.add(part)
+        row_values = row_values_by_part.get(part)
         row_idx = row_map.get(part)
-        if row_idx is None:
+        if row_values is None and row_idx is None:
             continue
-        carry_overs[part] = _main_previous_stock_before_col(ws, row_idx, batch_col, events)
-        supplements[part] = _main_number(ws.cell(row=row_idx, column=batch_col).value) or 0.0
+        if row_values is not None:
+            carry_overs[part] = _main_previous_stock_before_col_from_values(row_values, batch_col, events)
+            supplements[part] = _main_number(_main_row_value(row_values, batch_col)) or 0.0
+        else:
+            carry_overs[part] = _main_previous_stock_before_col(ws, row_idx, batch_col, events)
+            supplements[part] = _main_number(ws.cell(row=row_idx, column=batch_col).value) or 0.0
 
     if not carry_overs and not supplements:
         return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
@@ -1247,39 +1293,12 @@ def _rebuild_committed_merge_draft_files(
     ] + fallback_entries
 
 
-def _existing_committed_merge_draft_file_entries(
-    draft: dict,
-    *,
-    file_id: int | None = None,
-) -> list[dict]:
-    order = db.get_order(int(draft["order_id"])) or {}
-    po = order.get("po_number", "")
-    entries: list[dict] = []
-    for item in db.get_merge_draft_files(int(draft["id"])):
-        if file_id is not None:
-            try:
-                if int(item.get("id", -1)) != int(file_id):
-                    continue
-            except (TypeError, ValueError):
-                continue
-        file_path = Path(str(item.get("filepath") or ""))
-        if not file_path.exists():
-            continue
-        entries.append({
-            "path": file_path,
-            "download_name": _replace_po_in_filename(item.get("filename") or file_path.name, po),
-        })
-    return entries
-
-
 def download_merge_draft(draft_id: int, *, file_id: int | None = None, request: Request | None = None):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") not in ("active", "committed"):
         raise HTTPException(404, "找不到副檔草稿")
     if draft.get("status") == "committed":
-        valid_files = _existing_committed_merge_draft_file_entries(draft, file_id=file_id)
-        if not valid_files:
-            valid_files = _rebuild_committed_merge_draft_files(draft, file_id=file_id)
+        valid_files = _rebuild_committed_merge_draft_files(draft, file_id=file_id)
         return _build_download_response(valid_files, archive_label="已發料副檔", request=request)
 
     order = db.get_order(int(draft["order_id"])) or {}
@@ -1349,32 +1368,16 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
 
     file_entries: list[dict] = []
     missing_orders: list[int] = []
-    drafts_to_rebuild: list[tuple[int, dict]] = []
-    for order_id in normalized_ids:
-        draft = db.get_latest_committed_merge_draft_for_order(order_id)
-        if not draft:
-            missing_orders.append(order_id)
-            continue
-        existing_entries = _existing_committed_merge_draft_file_entries(draft)
-        if existing_entries:
-            order = db.get_order(order_id) or {"id": order_id}
-            subdir = _format_committed_archive_subdir(order)
-            for entry in existing_entries:
-                entry["subdir"] = subdir
-            file_entries.extend(existing_entries)
-            continue
-        drafts_to_rebuild.append((order_id, draft))
-
-    if not drafts_to_rebuild:
-        if missing_orders:
-            raise HTTPException(404, "部分已發料訂單沒有可下載的副檔")
-        return _build_download_response(file_entries, archive_label="已發料副檔", request=request)
-
     workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
     try:
         ws = workbook.worksheets[0]
         main_context = _main_value_context(ws)
-        for order_id, draft in drafts_to_rebuild:
+        for order_id in normalized_ids:
+            draft = db.get_latest_committed_merge_draft_for_order(order_id)
+            if not draft:
+                missing_orders.append(order_id)
+                continue
+
             rebuilt_entries = _rebuild_committed_merge_draft_files(
                 draft,
                 main_ws=ws,
