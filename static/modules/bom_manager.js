@@ -99,9 +99,8 @@ async function uploadBom(files) {
   if (groupModel) fd.append("group_model", groupModel);
 
   try {
-    const response = await fetch("/api/bom/upload", { method: "POST", body: fd });
+    const response = await apiFetch("/api/bom/upload", { method: "POST", body: fd });
     const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
 
     const saved = data.saved || [];
     const errors = data.errors || [];

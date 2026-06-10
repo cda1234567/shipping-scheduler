@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.09.2"
-APP_RELEASED_AT = "2026-06-09"
-APP_HEADLINE = "已發料副檔下載修正。"
+APP_VERSION = "v2026.06.10.1"
+APP_RELEASED_AT = "2026-06-10"
+APP_HEADLINE = "BOM 上傳登入流程修正。"
 APP_CHANGELOG = [
+    {
+        "title": "BOM 上傳登入流程修正",
+        "items": [
+            "BOM 管理的上傳/建立新 BOM 改用全站共用 apiFetch，遇到唯讀模式會正常跳出登入流程，不再直接 403 失敗。",
+            "原本 /api/bom/upload 後端仍需編輯權限，這次保留保護，只修正前端沒有接上登入 handler 的問題。",
+        ],
+    },
     {
         "title": "已發料副檔下載修正",
         "items": [
