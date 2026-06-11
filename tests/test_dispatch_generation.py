@@ -591,7 +591,7 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=6, column=5).value, 50)
         wb.close()
 
-    def test_dispatch_generate_aggregates_saved_supplements_from_later_orders_for_normal_parts(self):
+    def test_dispatch_generate_keeps_same_normal_part_separate_per_order(self):
         orders = {
             1: {
                 "id": 1,
@@ -655,8 +655,10 @@ class DispatchGenerationTests(unittest.TestCase):
         ws = wb.active
         self.assertEqual(ws.cell(row=1, column=1).value, "2-2")
         self.assertEqual(ws.cell(row=3, column=3).value, "EC-20080A")
-        self.assertEqual(ws.cell(row=3, column=5).value, 3000)
-        self.assertIsNone(ws.cell(row=4, column=1).value)
+        self.assertEqual(ws.cell(row=3, column=5).value, 1000)
+        self.assertEqual(ws.cell(row=4, column=1).value, "2-3")
+        self.assertEqual(ws.cell(row=6, column=3).value, "EC-20080A")
+        self.assertEqual(ws.cell(row=6, column=5).value, 3000)
         wb.close()
 
     def test_dispatch_generate_respects_reviewed_draft_parts_cleared_back_to_none(self):

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.11.1"
+APP_VERSION = "v2026.06.11.2"
 APP_RELEASED_AT = "2026-06-11"
-APP_HEADLINE = "排程分批出貨匯入修正。"
+APP_HEADLINE = "發料單照主檔預覽逐訂單列料。"
 APP_CHANGELOG = [
+    {
+        "title": "發料單照主檔預覽逐訂單列料",
+        "items": [
+            "生成發料單時，相同料號不再跨訂單合併到第一筆訂單。",
+            "同一料號出現在不同訂單時，會照主檔預覽的批次欄位邏輯各自列在自己的訂單區塊。",
+            "每筆訂單保留自己的補料量、缺料判斷與塗色，不再拿其他訂單的數量加總覆蓋。",
+        ],
+    },
     {
         "title": "排程分批出貨匯入修正",
         "items": [

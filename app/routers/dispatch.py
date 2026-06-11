@@ -15,7 +15,7 @@ from ..services.dispatch_form_generator import generate_dispatch_form
 from ..services.download_names import build_generated_filename
 from ..services.local_time import local_now
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
-from ..services.shortage_rules import is_order_scoped_shortage_part, summarize_requested_supply
+from ..services.shortage_rules import summarize_requested_supply
 from ..services.server_downloads import maybe_server_save_response
 
 router = APIRouter()
@@ -372,33 +372,6 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
         if context
     ]
 
-    first_order_by_part: dict[str, int] = {}
-    final_shortage_by_part: dict[str, dict] = {}
-    aggregated_supplement_by_part: dict[str, float] = {}
-    for context in order_contexts:
-        for part in context["candidate_parts"]:
-            decision = context["decisions"].get(part, "None")
-            has_explicit_supplement = part in context["stored_supplements"] or part in context["draft_supplements"]
-            supplement_qty = float(
-                context["stored_supplements"].get(part, context["draft_supplements"].get(part, 0)) or 0
-            )
-            shortage_item = context["shortages_by_part"].get(part)
-            if not _should_render_dispatch_item(
-                decision,
-                supplement_qty,
-                shortage_item,
-                reviewed_draft=bool(context.get("reviewed_draft")),
-                has_explicit_supplement=has_explicit_supplement,
-            ):
-                continue
-            if is_order_scoped_shortage_part(part):
-                continue
-            first_order_by_part.setdefault(part, context["order_id"])
-            if shortage_item:
-                final_shortage_by_part[part] = shortage_item
-            if has_explicit_supplement:
-                aggregated_supplement_by_part[part] = aggregated_supplement_by_part.get(part, 0.0) + supplement_qty
-
     for context in order_contexts:
         order = context["order"]
         items = []
@@ -410,8 +383,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                 context["stored_supplements"].get(part, context["draft_supplements"].get(part, 0)) or 0
             )
             shortage_item = context["shortages_by_part"].get(part)
-            use_order_scoped = is_order_scoped_shortage_part(part)
-            final_shortage = (shortage_item or {}) if use_order_scoped else (final_shortage_by_part.get(part) or shortage_item or {})
+            final_shortage = shortage_item or {}
             if not _should_render_dispatch_item(
                 decision,
                 supplement_qty,
@@ -420,8 +392,6 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                 has_explicit_supplement=has_explicit_supplement,
             ):
                 continue
-            if not use_order_scoped and first_order_by_part.get(part) != context["order_id"]:
-                continue
 
             description = (
                 context["descriptions"].get(part)
@@ -429,7 +399,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                 or (shortage_item or {}).get("description", "")
             )
             display_part = final_shortage.get("part_number") or (shortage_item or {}).get("part_number") or part
-            effective_supplement_qty = supplement_qty if use_order_scoped else float(aggregated_supplement_by_part.get(part, supplement_qty) or 0)
+            effective_supplement_qty = supplement_qty
 
             if decision == "Shortage":
                 items.append({
