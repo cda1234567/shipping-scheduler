@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.11.2"
+APP_VERSION = "v2026.06.11.3"
 APP_RELEASED_AT = "2026-06-11"
-APP_HEADLINE = "發料單照主檔預覽逐訂單列料。"
+APP_HEADLINE = "已發料發料單改以主檔批次補料為準。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料發料單改以主檔批次補料為準",
+        "items": [
+            "重產已發料/已完成訂單的發料單時，若主檔找得到該批次代號，補料數量會直接讀主檔批次補料欄。",
+            "主檔預覽沒有補料的料號，不會再因資料庫舊的 order_supplements 或重算建議量出現在發料單。",
+            "修正例如 6-2 主檔沒有 EC-80004A 2150pcs，但發料單仍印出舊補料量的情況。",
+        ],
+    },
     {
         "title": "發料單照主檔預覽逐訂單列料",
         "items": [

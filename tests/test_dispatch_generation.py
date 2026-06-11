@@ -10,7 +10,7 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 from main import app
-from app.routers.dispatch import _build_dispatch_result_by_order, _get_selected_orders
+from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _generate_dispatch_response, _get_selected_orders
 from app.services.dispatch_form_generator import generate_dispatch_form
 
 
@@ -224,6 +224,77 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertIn("EC-NEEDS", parts)
         self.assertEqual(ws.cell(row=3, column=5).value, 100)
         wb.close()
+
+    def test_dispatch_generate_committed_order_uses_main_batch_supplements_over_stale_db(self):
+        class DummyQueryParams:
+            def get(self, key, default=None):
+                return default
+
+        class DummyRequest:
+            query_params = DummyQueryParams()
+            headers = {}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.cell(row=1, column=4).value = "6-2"
+            ws.cell(row=2, column=1).value = "EC-80004A"
+            ws.cell(row=3, column=1).value = "EC-OK"
+            ws.cell(row=3, column=4).value = 100
+            wb.save(main_path)
+            wb.close()
+
+            order = {
+                "id": 62,
+                "status": "dispatched",
+                "po_number": "4500059234",
+                "model": "MODEL-A",
+                "code": "6-2",
+                "delivery_date": "2026-05-01",
+            }
+            bom_map = {
+                "MODEL-A": [
+                    {"part_number": "EC-80004A", "description": "Stale cap", "needed_qty": 1, "is_dash": 0},
+                    {"part_number": "EC-OK", "description": "Main cap", "needed_qty": 1, "is_dash": 0},
+                ],
+            }
+            calc_results = [
+                {
+                    "order_id": 62,
+                    "shortages": [
+                        {"part_number": "EC-80004A", "description": "Stale cap", "suggested_qty": 2150, "shortage_amount": 2150},
+                        {"part_number": "EC-OK", "description": "Main cap", "suggested_qty": 100, "shortage_amount": 100},
+                    ],
+                    "customer_material_shortages": [],
+                },
+            ]
+            captured = {}
+
+            def fake_generate(groups, out_path):
+                captured["groups"] = groups
+                Path(out_path).write_bytes(b"xlsx")
+                return out_path
+
+            with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+                 patch("app.routers.dispatch.db.get_order", return_value=order), \
+                 patch("app.routers.dispatch.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+                 patch("app.routers.dispatch.calc_run", return_value=calc_results), \
+                 patch("app.routers.dispatch.db.get_order_supplements", return_value={62: {"EC-80004A": 2150, "EC-OK": 100}}), \
+                 patch("app.routers.dispatch.db.get_decisions_for_order", return_value={
+                     "EC-80004A": "CreateRequirement",
+                     "EC-OK": "CreateRequirement",
+                 }), \
+                 patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={}), \
+                 patch("app.routers.dispatch.generate_dispatch_form", side_effect=fake_generate), \
+                 patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+                 patch("app.routers.dispatch.db.log_activity"):
+                _generate_dispatch_response(DispatchRequest(order_ids=[62], decisions={}), DummyRequest())
+
+        items = captured["groups"][0]["items"]
+        self.assertEqual([item["part"] for item in items], ["EC-OK"])
+        self.assertEqual(items[0]["qty"], 100)
 
     def test_dispatch_generate_5_1_ec_80004a_current_main_stock_plus_own_dispatch_record_is_enough(self):
         orders = [

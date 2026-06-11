@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
+import openpyxl
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -142,6 +144,7 @@ def _build_order_dispatch_context(
     saved_supplements: dict[int, dict[str, float]],
     decision_overrides: dict[str, str],
     bom_map: dict[str, list[dict]],
+    committed_main_supplements: dict[int, dict[str, float]] | None = None,
     active_draft: dict | None = None,
 ) -> dict | None:
     order_id = int(order["id"])
@@ -153,7 +156,12 @@ def _build_order_dispatch_context(
     descriptions = _build_component_description_map(components)
     bom_parts = set(descriptions)
     saved_decisions = db.get_decisions_for_order(order_id)
-    stored_order_supplements = saved_supplements.get(order_id, {})
+    use_main_supplements = committed_main_supplements is not None and order_id in committed_main_supplements
+    stored_order_supplements = (
+        committed_main_supplements.get(order_id, {})
+        if use_main_supplements
+        else saved_supplements.get(order_id, {})
+    )
     draft_supplements = {}
     if active_draft:
         for raw_part, raw_qty in (active_draft.get("supplements") or {}).items():
@@ -201,6 +209,7 @@ def _build_order_dispatch_context(
         "shortages_by_part": shortages_by_part,
         "candidate_parts": sorted(candidate_parts),
         "reviewed_draft": reviewed_draft,
+        "use_main_supplements": use_main_supplements,
     }
 
 
@@ -249,6 +258,87 @@ def _should_highlight_dispatch_qty(
 
 def _is_committed_status(order: dict) -> bool:
     return str(order.get("status") or "").strip().lower() in {"dispatched", "completed"}
+
+
+def _to_number(value) -> float:
+    if value is None or str(value).strip() == "":
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _load_committed_main_supplements(
+    orders: list[dict],
+    bom_map: dict[str, list[dict]],
+) -> dict[int, dict[str, float]]:
+    """Read committed order supplements from the live main file batch columns.
+
+    For dispatched/completed orders the main preview is the source of truth. If
+    a batch code exists in main, stale order_supplements must not reappear on
+    generated dispatch forms.
+    """
+    committed_orders = [order for order in orders if _is_committed_status(order)]
+    if not committed_orders:
+        return {}
+
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).exists():
+        return {}
+
+    try:
+        wb = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+    except Exception:
+        return {}
+
+    try:
+        ws = wb.worksheets[0]
+        first_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        batch_cols_by_code: dict[str, list[int]] = {}
+        for col_idx, value in enumerate(first_row, start=1):
+            code = str(value or "").strip()
+            if re.match(r"^\d+-\d+$", code):
+                batch_cols_by_code.setdefault(code, []).append(col_idx)
+
+        row_map: dict[str, int] = {}
+        for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+            if not row_values:
+                continue
+            part = _normalize_part_key(row_values[0] if len(row_values) >= 1 else "")
+            if part and part not in row_map:
+                row_map[part] = row_idx
+
+        result: dict[int, dict[str, float]] = {}
+        for order in committed_orders:
+            try:
+                order_id = int(order["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            code = str(order.get("code") or "").strip()
+            batch_cols = batch_cols_by_code.get(code)
+            if not batch_cols:
+                continue
+
+            model_key = _normalize_part_key(order.get("model"))
+            parts = [
+                _normalize_part_key(component.get("part_number"))
+                for component in bom_map.get(model_key, [])
+            ]
+            supplements: dict[str, float] = {}
+            for part in dict.fromkeys(part for part in parts if part):
+                row_idx = row_map.get(part)
+                if row_idx is None:
+                    continue
+                qty = 0.0
+                for col_idx in batch_cols:
+                    qty += _to_number(ws.cell(row=row_idx, column=col_idx).value)
+                if qty > 0:
+                    supplements[part] = qty
+            result[order_id] = supplements
+        return result
+    finally:
+        wb.close()
 
 
 def _subtract_selected_committed_dispatch_records(
@@ -354,6 +444,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
     decision_overrides = _normalize_decision_overrides(req.decisions)
     active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
+    committed_main_supplements = _load_committed_main_supplements(orders, bom_map)
     st_inventory_stock = _addback_committed_orders_st_consumption(orders, db.get_st_inventory_stock())
 
     today = local_now().strftime("%Y/%m/%d")
@@ -367,6 +458,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
             saved_supplements,
             decision_overrides,
             bom_map,
+            committed_main_supplements=committed_main_supplements,
             active_draft=active_drafts_by_order.get(int(order["id"])),
         )]
         if context
@@ -391,6 +483,8 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                 reviewed_draft=bool(context.get("reviewed_draft")),
                 has_explicit_supplement=has_explicit_supplement,
             ):
+                continue
+            if context.get("use_main_supplements") and supplement_qty <= 0 and decision != "Shortage":
                 continue
 
             description = (
