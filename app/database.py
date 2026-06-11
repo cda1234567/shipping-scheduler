@@ -1268,7 +1268,10 @@ def _split_model_keys(value: str) -> list[str]:
 
 
 def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
-    """合併共用 BOM 的行（如 T356789IU + T356789IU-U/A）。"""
+    """合併共用 BOM 的行（如 T356789IU + T356789IU-U/A）。
+
+    同 PO、同機種但不同出貨日要保留成不同訂單，避免分批出貨被合併。
+    """
     alias_map = _get_bom_model_groups()
     merged_rows: list[dict] = []
     merge_targets: dict[str, int] = {}
@@ -1276,10 +1279,11 @@ def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
     for r in rows:
         model_upper = (r.get("model") or "").strip().upper()
         po = str(r.get("po_number", ""))
+        ship_date = _order_date_key(r.get("ship_date"))
         primary = alias_map.get(model_upper)
 
         if primary:
-            merge_key = f"{po}|{primary}"
+            merge_key = f"{po}|{primary}|{ship_date}"
             if merge_key in merge_targets:
                 idx = merge_targets[merge_key]
                 target = merged_rows[idx]
@@ -1287,9 +1291,9 @@ def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
                 target["pcb"] = f"{target['pcb']} / {r.get('pcb', '')}"
                 continue
 
-        merge_key = f"{po}|{model_upper}"
+        merge_key = f"{po}|{model_upper}|{ship_date}"
         if merge_key in merge_targets:
-            # 同 PO+機種重複行 → 合併數量
+            # 同 PO+機種+出貨日重複行 → 合併數量
             idx = merge_targets[merge_key]
             target = merged_rows[idx]
             target["order_qty"] = (target.get("order_qty") or 0) + (r.get("order_qty") or 0)
@@ -1302,14 +1306,18 @@ def _merge_schedule_rows(rows: list[dict]) -> list[dict]:
     return merged_rows
 
 
-def _order_key(po, model) -> str:
-    """用 PO+機種 當唯一 key（同 PO 可有不同機種）。"""
-    return f"{str(po).strip()}|{str(model).strip().upper()}"
+def _order_date_key(value) -> str:
+    return str(value or "").strip()
+
+
+def _order_key(po, model, ship_date=None) -> str:
+    """用 PO+機種+出貨日 當排程唯一 key（同 PO/機種可分批出貨）。"""
+    return f"{str(po).strip()}|{str(model).strip().upper()}|{_order_date_key(ship_date)}"
 
 
 def upsert_orders_from_schedule(rows: list[dict]) -> dict:
     """從排程表解析結果批次寫入 orders 表。
-    自動比對已存在的 PO+機種（含已發料），不重複新增。
+    自動比對已存在的 PO+機種+出貨日（含已發料），不重複新增。
     保留使用者手動輸入的 code（編號）。
     回傳差異摘要 {added, updated, skipped, removed, diffs}。
     """
@@ -1318,17 +1326,17 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
     with get_conn() as conn:
         all_orders = conn.execute(
-            "SELECT id, po_number, model, pcb, order_qty, ship_date, status, code FROM orders"
+            "SELECT id, po_number, model, pcb, order_qty, ship_date, delivery_date, status, code FROM orders"
         ).fetchall()
 
-        # 用 PO+機種 當 key，同 PO 不同機種分開處理
+        # 用 PO+機種+出貨日 當 key，同 PO/機種不同出貨日分開處理
         existing_by_key: dict[str, dict] = {}
         for o in all_orders:
-            key = _order_key(o["po_number"], o["model"])
+            key = _order_key(o["po_number"], o["model"], o["ship_date"] or o["delivery_date"])
             existing_by_key[key] = dict(o)
 
         new_key_set = {
-            _order_key(r.get("po_number", ""), r.get("model", ""))
+            _order_key(r.get("po_number", ""), r.get("model", ""), r.get("ship_date"))
             for r in merged_rows
         }
 
@@ -1357,7 +1365,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
             if not po:
                 continue
 
-            key = _order_key(po, model)
+            key = _order_key(po, model, r.get("ship_date"))
             existing = existing_by_key.get(key)
 
             if existing and existing["status"] in ("dispatched", "completed"):
@@ -1400,7 +1408,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
                     updated_count += 1
                 continue
 
-            # 全新 PO+機種 → 新增
+            # 全新 PO+機種+出貨日 → 新增
             conn.execute(
                 "INSERT INTO orders(po_number, model, pcb, order_qty, balance_qty, "
                 "delivery_date, ship_date, status, code, remark, sort_order, row_index, "
@@ -1489,22 +1497,30 @@ def get_order_by_code(code: str) -> dict | None:
 
 
 def remove_duplicate_pending_orders() -> dict:
-    """移除 pending/merged 中與已發料 PO+機種 完全重複的訂單。回傳 {removed, duplicates}。"""
+    """移除 pending/merged 中與已發料 PO+機種+出貨日 完全重複的訂單。回傳 {removed, duplicates}。"""
     with get_conn() as conn:
         dispatched = conn.execute(
-            "SELECT po_number, model FROM orders WHERE status IN ('dispatched','completed')"
+            "SELECT po_number, model, ship_date, delivery_date FROM orders WHERE status IN ('dispatched','completed')"
         ).fetchall()
-        dispatched_keys = {_order_key(r["po_number"], r["model"]) for r in dispatched}
+        dispatched_keys = {
+            _order_key(r["po_number"], r["model"], r["ship_date"] or r["delivery_date"])
+            for r in dispatched
+        }
 
         pending_orders = conn.execute(
-            "SELECT id, po_number, model FROM orders WHERE status IN ('pending','merged')"
+            "SELECT id, po_number, model, ship_date, delivery_date FROM orders WHERE status IN ('pending','merged')"
         ).fetchall()
 
         duplicates: list[dict] = []
         for order in pending_orders:
-            key = _order_key(order["po_number"], order["model"])
+            key = _order_key(order["po_number"], order["model"], order["ship_date"] or order["delivery_date"])
             if key in dispatched_keys:
-                duplicates.append({"id": order["id"], "po_number": str(order["po_number"]).strip(), "model": order["model"]})
+                duplicates.append({
+                    "id": order["id"],
+                    "po_number": str(order["po_number"]).strip(),
+                    "model": order["model"],
+                    "ship_date": order["ship_date"] or order["delivery_date"] or "",
+                })
 
         if duplicates:
             dup_ids = [d["id"] for d in duplicates]

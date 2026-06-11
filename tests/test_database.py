@@ -344,6 +344,100 @@ class OrderSupplementTests(InMemoryDbTestCase):
 
 
 class OrderReloadTests(InMemoryDbTestCase):
+    def test_upsert_orders_keeps_same_po_model_with_different_ship_dates(self):
+        db.upsert_orders_from_schedule([
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 10,
+                "balance_qty": None,
+                "ship_date": "2026-03-12",
+                "remark": "",
+                "row_index": 2,
+                "code": "",
+            },
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 20,
+                "balance_qty": None,
+                "ship_date": "2026-03-19",
+                "remark": "",
+                "row_index": 3,
+                "code": "",
+            },
+        ])
+
+        rows = self.conn.execute(
+            "SELECT po_number, model, order_qty, ship_date FROM orders ORDER BY ship_date"
+        ).fetchall()
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["ship_date"] for row in rows], ["2026-03-12", "2026-03-19"])
+        self.assertEqual([row["order_qty"] for row in rows], [10, 20])
+
+    def test_upsert_orders_still_merges_same_po_model_same_ship_date(self):
+        db.upsert_orders_from_schedule([
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 10,
+                "balance_qty": None,
+                "ship_date": "2026-03-12",
+                "remark": "",
+                "row_index": 2,
+                "code": "",
+            },
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-B",
+                "order_qty": 20,
+                "balance_qty": None,
+                "ship_date": "2026-03-12",
+                "remark": "",
+                "row_index": 3,
+                "code": "",
+            },
+        ])
+
+        rows = self.conn.execute(
+            "SELECT pcb, order_qty, ship_date FROM orders"
+        ).fetchall()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ship_date"], "2026-03-12")
+        self.assertEqual(rows[0]["order_qty"], 30)
+        self.assertEqual(rows[0]["pcb"], "PCB-A / PCB-B")
+
+    def test_remove_duplicate_pending_orders_matches_ship_date(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1001', 'MODEL-A', 'PCB', 1, '2026-03-12', '2026-03-12', 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1001', 'MODEL-A', 'PCB', 1, '2026-03-12', '2026-03-12', 'pending', 1, 2, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1001', 'MODEL-A', 'PCB', 1, '2026-03-19', '2026-03-19', 'pending', 2, 3, 'n', 'n', '')"
+        )
+
+        result = db.remove_duplicate_pending_orders()
+        remaining = self.conn.execute(
+            "SELECT status, ship_date FROM orders ORDER BY ship_date, status"
+        ).fetchall()
+
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual([(row["status"], row["ship_date"]) for row in remaining], [
+            ("dispatched", "2026-03-12"),
+            ("pending", "2026-03-19"),
+        ])
+
     def test_upsert_orders_clears_pending_decisions_before_rebuild(self):
         self.conn.execute(
             "INSERT INTO orders(po_number, model, pcb, order_qty, status, sort_order, row_index, created_at, updated_at, folder) "

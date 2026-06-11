@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.10.1"
-APP_RELEASED_AT = "2026-06-10"
-APP_HEADLINE = "BOM 上傳登入流程修正。"
+APP_VERSION = "v2026.06.11.1"
+APP_RELEASED_AT = "2026-06-11"
+APP_HEADLINE = "排程分批出貨匯入修正。"
 APP_CHANGELOG = [
+    {
+        "title": "排程分批出貨匯入修正",
+        "items": [
+            "上傳排程表時，同一訂單、同一機種但不同出貨日會保留成不同訂單卡，不再被合併成同一筆。",
+            "同一訂單、同一機種且同一出貨日的重複列仍會合併數量，保留原本整理排程資料的行為。",
+            "清理重複排程時也改為比對出貨日，避免不同出貨日的未發料訂單被已發料訂單誤刪。",
+        ],
+    },
     {
         "title": "BOM 上傳登入流程修正",
         "items": [
