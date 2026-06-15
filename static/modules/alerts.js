@@ -2,12 +2,16 @@ import { apiJson, apiPost, esc } from "./api.js";
 
 let _alerts = [];
 let _unreadCount = 0;
+let _alertsInitialized = false;
 
-export async function initAlerts() {
-  document.getElementById("btn-mark-all-read")?.addEventListener("click", markAllRead);
-  await refreshAlerts();
-  // 每 30 秒自動檢查
-  setInterval(refreshAlerts, 30000);
+export async function initAlerts({ autoLoad = true } = {}) {
+  if (!_alertsInitialized) {
+    document.getElementById("btn-mark-all-read")?.addEventListener("click", markAllRead);
+    // 每 30 秒自動檢查
+    setInterval(refreshAlerts, 30000);
+    _alertsInitialized = true;
+  }
+  if (autoLoad) await refreshAlerts();
 }
 
 export async function refreshAlerts() {

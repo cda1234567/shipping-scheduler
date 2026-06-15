@@ -651,10 +651,33 @@ console.log(JSON.stringify(results));
         self.assertIn('import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";', index_html)
         self.assertIn('if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();', index_html)
         self.assertIn("export async function onDefectivesTabActivated()", defectives_module)
-        self.assertIn("await refreshDefectives({ collapseAll: true });", defectives_module)
+        self.assertIn("await Promise.all([", defectives_module)
+        self.assertIn("refreshDefectives({ collapseAll: true }),", defectives_module)
         self.assertIn("const collapseAll = Boolean(options?.collapseAll);", defectives_module)
         self.assertIn("_collapsed.clear();", defectives_module)
         self.assertIn("_batches.forEach(batch => _collapsed.add(batch.id));", defectives_module)
+        self.assertIn("loadOverrunModelOptions(),", defectives_module)
+
+    def test_boot_does_not_wait_for_secondary_tab_data(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        bom_module = (root / "static" / "modules" / "bom_manager.js").read_text(encoding="utf-8")
+        alerts_module = (root / "static" / "modules" / "alerts.js").read_text(encoding="utf-8")
+        defectives_module = (root / "static" / "modules" / "defectives.js").read_text(encoding="utf-8")
+
+        init_body = index_html.split("async function init() {", 1)[1].split("\nfunction setStatus", 1)[0]
+        before_finish, after_finish = init_body.split("await finishBoot();", 1)
+
+        self.assertNotIn('apiJson("/api/schedule/rows")', before_finish)
+        self.assertIn("initBomManager(async () => { await refreshSchedule(); }, { autoLoad: false });", before_finish)
+        self.assertIn("await initAlerts({ autoLoad: false });", before_finish)
+        self.assertIn("await initDefectives({ autoLoad: false });", before_finish)
+        self.assertNotIn("await renderBomGroups();", before_finish)
+        self.assertIn('runBootBackground("renderBomGroups", renderBomGroups);', after_finish)
+        self.assertIn('runBootBackground("refreshAlerts", refreshAlerts);', after_finish)
+        self.assertIn("export function initBomManager(onRefreshCallback, { autoLoad = true } = {})", bom_module)
+        self.assertIn("export async function initAlerts({ autoLoad = true } = {})", alerts_module)
+        self.assertIn("export async function initDefectives({ autoLoad = true } = {})", defectives_module)
 
     def test_desktop_bridge_uses_regular_browser_downloads_for_web_mode(self):
         root = Path(__file__).resolve().parents[1]

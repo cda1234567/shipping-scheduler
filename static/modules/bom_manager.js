@@ -8,7 +8,7 @@ let _editorBom = null;
 let _historyBom = null;
 let _bomOrderDirty = false;
 
-export function initBomManager(onRefreshCallback) {
+export function initBomManager(onRefreshCallback, { autoLoad = true } = {}) {
   _onRefresh = onRefreshCallback;
 
   const uploadArea = document.getElementById("bom-upload-area");
@@ -41,7 +41,7 @@ export function initBomManager(onRefreshCallback) {
   bindEditorModal();
   bindHistoryModal();
   setBomOrderDirty(false);
-  renderBomGroups();
+  if (autoLoad) void renderBomGroups();
 }
 
 function setBomOrderDirty(dirty) {

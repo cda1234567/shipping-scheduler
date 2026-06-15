@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.11.3"
-APP_RELEASED_AT = "2026-06-11"
-APP_HEADLINE = "已發料發料單改以主檔批次補料為準。"
+APP_VERSION = "v2026.06.15.1"
+APP_RELEASED_AT = "2026-06-15"
+APP_HEADLINE = "重新整理時先顯示排程，其他頁面改為背景載入。"
 APP_CHANGELOG = [
+    {
+        "title": "首頁重新整理加速",
+        "items": [
+            "首頁不再重複讀取排程摘要與 BOM 清單，排程資料完成後就會先顯示畫面。",
+            "BOM 管理清單與提醒改成背景載入，不再讓非首頁功能卡住整頁轉圈。",
+            "不良品的 BOM 機種選項延後到切入不良品頁時讀取，減少首次載入等待。",
+        ],
+    },
     {
         "title": "已發料發料單改以主檔批次補料為準",
         "items": [

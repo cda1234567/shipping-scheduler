@@ -714,6 +714,12 @@ async function finishBoot() {
   document.body.classList.remove("app-loading");
 }
 
+function runBootBackground(label, task) {
+  Promise.resolve()
+    .then(task)
+    .catch(error => console.warn(`${label} failed:`, error));
+}
+
 function failBoot(error) {
   document.body.classList.add("app-boot-failed");
   setBootProgress(100, `載入失敗：${error?.message || "未知錯誤"}`);
@@ -903,33 +909,23 @@ async function init() {
   await nextFrame();
   await initStPackages({ autoLoad: false });
 
-  setBootProgress(58, "正在讀取排程摘要...");
-  try {
-    const d = await apiJson("/api/schedule/rows");
-    if (d.rows?.length) {
-      const at = (d.loaded_at || "").slice(5, 16);
-      const fn = d.filename || "";
-      setStatus("schedule-status", fn ? `${fn}\n${d.rows.length} 筆 (${at})` : `${d.rows.length} 筆 (${at})`, "ok");
-    }
-  } catch (_) {}
-
-  setBootProgress(70, "正在載入 BOM 管理...");
+  setBootProgress(62, "正在準備其他功能...");
   await nextFrame();
-  initBomManager(async () => { await refreshSchedule(); });
-  await renderBomGroups();
+  initBomManager(async () => { await refreshSchedule(); }, { autoLoad: false });
+  await initAlerts({ autoLoad: false });
+  await initDbBackup({ reloadApp: () => refreshCurrentView({ skipDirtyConfirm: true }), autoLoad: false });
+  try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
+  try { await initDefectives({ autoLoad: false }); } catch (e) { console.warn("initDefectives failed:", e); }
+  try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
 
-  setBootProgress(84, "正在建立排程畫面...");
+  setBootProgress(78, "正在建立排程畫面...");
   await nextFrame();
   await initSchedule(handleMainMutation);
 
-  setBootProgress(94, "正在同步提醒與紀錄...");
-  await nextFrame();
-  await initAlerts();
-  await initDbBackup({ reloadApp: () => refreshCurrentView({ skipDirtyConfirm: true }), autoLoad: false });
-  try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
-  try { await initDefectives(); } catch (e) { console.warn("initDefectives failed:", e); }
-  try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
   await finishBoot();
+
+  runBootBackground("renderBomGroups", renderBomGroups);
+  runBootBackground("refreshAlerts", refreshAlerts);
 }
 
 function setStatus(id, text, cls) {

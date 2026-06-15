@@ -7,7 +7,7 @@ let _resolutionContext = null;
 const _collapsed = new Set();
 const _skippedMap = new Map();  // batch_id → [part_number, ...]
 
-export async function initDefectives() {
+export async function initDefectives({ autoLoad = true } = {}) {
   document.getElementById("btn-import-defective")?.addEventListener("click", handleImport);
   document.getElementById("btn-overrun-import")?.addEventListener("click", handleOverrunImportPicker);
   document.getElementById("btn-overrun-preview")?.addEventListener("click", () => void handleOverrunPreview());
@@ -29,7 +29,7 @@ export async function initDefectives() {
     document.getElementById(id)?.addEventListener("input", invalidateOverrunPreview);
   });
 
-  await loadOverrunModelOptions();
+  if (autoLoad) await loadOverrunModelOptions();
   renderOverrunPreview();
 }
 
@@ -49,7 +49,10 @@ export async function refreshDefectives(options = {}) {
 }
 
 export async function onDefectivesTabActivated() {
-  await refreshDefectives({ collapseAll: true });
+  await Promise.all([
+    loadOverrunModelOptions(),
+    refreshDefectives({ collapseAll: true }),
+  ]);
 }
 
 // ── Excel 匯入 ──────────────────────────────────────────────────────────────
