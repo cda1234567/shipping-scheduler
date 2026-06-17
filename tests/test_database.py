@@ -413,6 +413,78 @@ class OrderReloadTests(InMemoryDbTestCase):
         self.assertEqual(rows[0]["order_qty"], 30)
         self.assertEqual(rows[0]["pcb"], "PCB-A / PCB-B")
 
+    def test_upsert_orders_matches_single_rescheduled_row_against_dispatched_order(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1001', 'MODEL-A', 'PCB-A', 10, '2026-03-12', '2026-03-12', 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+
+        result = db.upsert_orders_from_schedule([
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 10,
+                "balance_qty": None,
+                "ship_date": "2026-03-19",
+                "remark": "",
+                "row_index": 2,
+                "code": "",
+            },
+        ])
+        rows = self.conn.execute(
+            "SELECT status, ship_date FROM orders ORDER BY id"
+        ).fetchall()
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "dispatched")
+        self.assertEqual(rows[0]["ship_date"], "2026-03-12")
+        self.assertEqual(result["diffs"][0]["type"], "skipped_changed")
+        self.assertEqual(result["diffs"][0]["changes"][0]["field"], "ship_date")
+
+    def test_upsert_orders_allows_extra_split_date_when_dispatched_date_is_still_present(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('1001', 'MODEL-A', 'PCB-A', 10, '2026-03-12', '2026-03-12', 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+
+        result = db.upsert_orders_from_schedule([
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 10,
+                "balance_qty": None,
+                "ship_date": "2026-03-12",
+                "remark": "",
+                "row_index": 2,
+                "code": "",
+            },
+            {
+                "po_number": "1001",
+                "model": "MODEL-A",
+                "pcb": "PCB-A",
+                "order_qty": 20,
+                "balance_qty": None,
+                "ship_date": "2026-03-19",
+                "remark": "",
+                "row_index": 3,
+                "code": "",
+            },
+        ])
+        rows = self.conn.execute(
+            "SELECT status, order_qty, ship_date FROM orders ORDER BY ship_date, status"
+        ).fetchall()
+
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual([(row["status"], row["order_qty"], row["ship_date"]) for row in rows], [
+            ("dispatched", 10, "2026-03-12"),
+            ("pending", 20, "2026-03-19"),
+        ])
+
     def test_remove_duplicate_pending_orders_matches_ship_date(self):
         self.conn.execute(
             "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "

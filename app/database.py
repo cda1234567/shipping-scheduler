@@ -1315,6 +1315,11 @@ def _order_key(po, model, ship_date=None) -> str:
     return f"{str(po).strip()}|{str(model).strip().upper()}|{_order_date_key(ship_date)}"
 
 
+def _order_base_key(po, model) -> str:
+    """用 PO+機種 比對已發料訂單的交期變更。"""
+    return f"{str(po).strip()}|{str(model).strip().upper()}"
+
+
 def upsert_orders_from_schedule(rows: list[dict]) -> dict:
     """從排程表解析結果批次寫入 orders 表。
     自動比對已存在的 PO+機種+出貨日（含已發料），不重複新增。
@@ -1331,14 +1336,25 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
         # 用 PO+機種+出貨日 當 key，同 PO/機種不同出貨日分開處理
         existing_by_key: dict[str, dict] = {}
+        dispatched_by_base_key: dict[str, dict] = {}
         for o in all_orders:
             key = _order_key(o["po_number"], o["model"], o["ship_date"] or o["delivery_date"])
-            existing_by_key[key] = dict(o)
+            existing = dict(o)
+            existing_by_key[key] = existing
+            if existing["status"] in ("dispatched", "completed"):
+                dispatched_by_base_key.setdefault(
+                    _order_base_key(existing["po_number"], existing["model"]),
+                    existing,
+                )
 
         new_key_set = {
             _order_key(r.get("po_number", ""), r.get("model", ""), r.get("ship_date"))
             for r in merged_rows
         }
+        new_base_key_counts: dict[str, int] = {}
+        for r in merged_rows:
+            base_key = _order_base_key(r.get("po_number", ""), r.get("model", ""))
+            new_base_key_counts[base_key] = new_base_key_counts.get(base_key, 0) + 1
 
         added_count = 0
         updated_count = 0
@@ -1367,6 +1383,13 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
             key = _order_key(po, model, r.get("ship_date"))
             existing = existing_by_key.get(key)
+            base_key = _order_base_key(po, model)
+            if (
+                not existing
+                and new_base_key_counts.get(base_key, 0) == 1
+                and base_key in dispatched_by_base_key
+            ):
+                existing = dispatched_by_base_key[base_key]
 
             if existing and existing["status"] in ("dispatched", "completed"):
                 changes = _compare_order_fields(existing, r)
