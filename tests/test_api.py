@@ -2422,6 +2422,9 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["supplement_synced"])
+        self.assertEqual(response.json()["supplement_sync_reason"], "synced")
+        self.assertEqual(response.json()["batch_context"]["batch_code"], "5-1")
+        self.assertEqual(response.json()["batch_context"]["batch_col"], 9)
         mock_get_order.assert_called_once_with("5-1")
         mock_get_supplements.assert_called_once_with([42])
         mock_replace.assert_called_once_with(
@@ -2623,6 +2626,9 @@ class ApiTests(unittest.TestCase):
 
                 self.assertEqual(response.status_code, 200)
                 self.assertFalse(response.json()["supplement_synced"])
+                self.assertEqual(response.json()["supplement_sync_reason"], "not_supplement_column")
+                self.assertEqual(response.json()["batch_context"]["batch_code"], "5-1")
+                self.assertEqual(response.json()["batch_context"]["batch_col"], 9)
                 mock_get_order.assert_not_called()
                 mock_replace.assert_not_called()
 

@@ -48,11 +48,11 @@ def find_batch_cols(ws) -> list[int]:
 
 
 def find_batch_col_for_cell(ws, col: int) -> int | None:
-    """回傳 cell 所屬批次起始欄；只接受補料欄或用量欄。"""
+    """回傳 cell 所屬批次起始欄；接受補料欄、用量欄與結餘欄。"""
     for batch_col in reversed(find_batch_cols(ws)):
-        if col in {batch_col, batch_col + 1}:
+        if col in {batch_col, batch_col + 1, batch_col + 2}:
             return batch_col
-        if col > batch_col + 1:
+        if col > batch_col + 2:
             return None
     return None
 

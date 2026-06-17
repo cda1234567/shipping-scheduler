@@ -242,28 +242,48 @@ def _main_cell_write_value(ws, *, row: int, col: int, value):
 
 def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value) -> dict:
     """主檔補料欄是唯一真相；手動改補料 cell 後同步 order_supplements。"""
-    result = {"supplement_synced": False, "st_inventory_synced": False}
+    result = {
+        "supplement_synced": False,
+        "st_inventory_synced": False,
+        "supplement_sync_reason": "not_batch_area",
+        "batch_context": None,
+    }
     if row <= 1:
+        result["supplement_sync_reason"] = "header_row"
         return result
 
     batch_first_col = find_batch_col_for_cell(ws, col)
-    if batch_first_col != col:
+    if batch_first_col is None:
         return result
 
     batch_code = str(ws.cell(row=1, column=batch_first_col).value or "").strip()
+    result["batch_context"] = {
+        "batch_col": batch_first_col,
+        "batch_code": batch_code,
+        "part_number": str(ws.cell(row=row, column=1).value or "").strip().upper(),
+        "edited_col": col,
+    }
+    if batch_first_col != col:
+        result["supplement_sync_reason"] = "not_supplement_column"
+        return result
+
     if not _re_main.match(r"^\d+-\d+$", batch_code):
+        result["supplement_sync_reason"] = "invalid_batch_code"
         return result
 
     part_number = str(ws.cell(row=row, column=1).value or "").strip().upper()
     if not part_number:
+        result["supplement_sync_reason"] = "missing_part_number"
         return result
 
     supplement_qty = _to_supplement_qty(value)
     if supplement_qty is None:
+        result["supplement_sync_reason"] = "invalid_supplement_qty"
         return result
 
     order = db.get_order_by_code(batch_code)
     if not order or order.get("id") is None:
+        result["supplement_sync_reason"] = "order_not_found"
         return result
 
     order_id = int(order["id"])
@@ -272,6 +292,7 @@ def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value)
         _merge_supplement_updates(order_id, part_number, supplement_qty),
     )
     result["supplement_synced"] = True
+    result["supplement_sync_reason"] = "synced"
 
     old_supplement_qty = _to_supplement_qty(old_value)
     if old_supplement_qty is None or not _is_committed_status(order.get("status")):
@@ -682,5 +703,7 @@ async def edit_main_cell(req: EditCellRequest):
         "affected_cells": recalc_result.get("affected_cells") or [],
         "supplement_synced": supplement_sync["supplement_synced"],
         "st_inventory_synced": supplement_sync["st_inventory_synced"],
+        "supplement_sync_reason": supplement_sync.get("supplement_sync_reason"),
+        "batch_context": supplement_sync.get("batch_context"),
         "schedule_refresh_required": schedule_refresh_required,
     }

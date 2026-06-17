@@ -346,10 +346,20 @@ function mountLuckysheet(payload) {
                 scheduleRefreshMessage = "，但排程重新整理失敗";
               }
             }
+            const syncReason = json.supplement_sync_reason || "";
+            const batchContext = json.batch_context || null;
+            const isBatchArea = Boolean(batchContext && batchContext.batch_code);
+            const isNotSupplementCol = syncReason === "not_supplement_column";
+            const isSupplementSynced = json.supplement_synced === true;
+            const syncMessage = isSupplementSynced
+              ? "，補料已同步到發料單"
+              : (isBatchArea && isNotSupplementCol
+                ? `，這格不是補料欄；補料請改 ${batchContext.batch_code} 的第 ${batchContext.batch_col} 欄`
+                : "");
             if (affectedCells.length > 0) {
-              showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell${scheduleRefreshMessage}`);
+              showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell${syncMessage}${scheduleRefreshMessage}`);
             } else {
-              showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}${scheduleRefreshMessage}`);
+              showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}${syncMessage}${scheduleRefreshMessage}`);
             }
           } else {
             showToast(`儲存失敗：${json?.detail || ""}`, "error");
