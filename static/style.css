@@ -2109,6 +2109,68 @@ body.desktop-dark .main-preview-cell-input {
   background: #ffffff;
 }
 
+.main-preview-v2-save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 150px;
+  max-width: 320px;
+  min-height: 30px;
+  border: 1px solid #d1fae5;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #047857;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 5px 10px;
+  white-space: normal;
+}
+
+.main-preview-v2-save-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #10b981;
+}
+
+.main-preview-v2-save-status.is-working {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.main-preview-v2-save-status.is-working .main-preview-v2-save-dot {
+  background: #2563eb;
+  animation: main-preview-v2-pulse 0.9s ease-in-out infinite;
+}
+
+.main-preview-v2-save-status.is-warn {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.main-preview-v2-save-status.is-warn .main-preview-v2-save-dot {
+  background: #f97316;
+}
+
+.main-preview-v2-save-status.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.main-preview-v2-save-status.is-error .main-preview-v2-save-dot {
+  background: #ef4444;
+}
+
+@keyframes main-preview-v2-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
 .main-preview-v2-meta-wrap {
   display: flex;
   min-width: 0;
@@ -2646,6 +2708,30 @@ body.desktop-dark .main-preview-v2-empty {
 
 body.desktop-dark .main-preview-v2-title {
   color: #eff6ff;
+}
+
+body.desktop-dark .main-preview-v2-save-status {
+  border-color: rgba(16, 185, 129, 0.35);
+  background: rgba(6, 78, 59, 0.28);
+  color: #86efac;
+}
+
+body.desktop-dark .main-preview-v2-save-status.is-working {
+  border-color: rgba(96, 165, 250, 0.38);
+  background: rgba(30, 64, 175, 0.26);
+  color: #93c5fd;
+}
+
+body.desktop-dark .main-preview-v2-save-status.is-warn {
+  border-color: rgba(251, 146, 60, 0.42);
+  background: rgba(124, 45, 18, 0.26);
+  color: #fdba74;
+}
+
+body.desktop-dark .main-preview-v2-save-status.is-error {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.26);
+  color: #fca5a5;
 }
 
 body.desktop-dark .main-preview-v2-meta {

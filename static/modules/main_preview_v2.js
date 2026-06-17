@@ -15,6 +15,7 @@ let _lastLoadedAt = "";
 let _partLocations = {};
 let _batchLocations = {};
 let _keyboardScrollBound = false;
+let _saveStatusTimer = null;
 
 export async function navigateToPart(partNumber, batchCode = "") {
   const key = String(partNumber || "").trim().toUpperCase();
@@ -98,6 +99,25 @@ function saveLayoutPart(prefix, sheetName, idx, value) {
 function updateWrapButtonLabel() {
   const btn = document.getElementById("btn-main-preview-v2-toggle-wrap");
   if (btn) btn.textContent = `標題列換行: ${_wrapEnabled ? "開" : "關"}`;
+}
+
+function setSaveStatus(text, tone = "ok", duration = 0) {
+  const el = document.getElementById("main-preview-v2-save-status");
+  if (!el) return;
+  if (_saveStatusTimer) {
+    clearTimeout(_saveStatusTimer);
+    _saveStatusTimer = null;
+  }
+  el.classList.toggle("is-working", tone === "working");
+  el.classList.toggle("is-warn", tone === "warn");
+  el.classList.toggle("is-error", tone === "error");
+  const textEl = el.querySelector("span:last-child");
+  if (textEl) textEl.textContent = text || "已同步";
+  if (duration > 0) {
+    _saveStatusTimer = setTimeout(() => {
+      setSaveStatus("已同步", "ok");
+    }, duration);
+  }
 }
 
 export function initMainPreviewV2() {
@@ -318,6 +338,7 @@ function mountLuckysheet(payload) {
         } else if (newValue !== null && newValue !== undefined) {
           value = String(newValue);
         }
+        setSaveStatus(`R${row}C${col} 儲存中，正在重算後續結餘`, "working");
         apiPatch("/api/main-file/cell", {
           sheet: _activeSheet,
           row,
@@ -356,15 +377,26 @@ function mountLuckysheet(payload) {
               : (isBatchArea && isNotSupplementCol
                 ? `，這格不是補料欄；補料請改 ${batchContext.batch_code} 的第 ${batchContext.batch_col} 欄`
                 : "");
+            if (isSupplementSynced) {
+              setSaveStatus(`R${row}C${col} 已儲存，補料已同步`, "ok", 6000);
+            } else if (isBatchArea && isNotSupplementCol) {
+              setSaveStatus(`R${row}C${col} 已儲存，但不是補料欄`, "warn", 9000);
+            } else if (affectedCells.length > 0) {
+              setSaveStatus(`R${row}C${col} 已儲存，已重算 ${affectedCells.length} 格`, "ok", 6000);
+            } else {
+              setSaveStatus(`R${row}C${col} 已儲存`, "ok", 4500);
+            }
             if (affectedCells.length > 0) {
               showToast(`已寫入並重算 ${affectedCells.length} 個結餘 cell${syncMessage}${scheduleRefreshMessage}`);
             } else {
               showToast(`已修改 R${row}C${col}: ${json.old_value ?? ""} → ${json.new_value ?? value}${syncMessage}${scheduleRefreshMessage}`);
             }
           } else {
+            setSaveStatus(`R${row}C${col} 儲存失敗`, "error", 9000);
             showToast(`儲存失敗：${json?.detail || ""}`, "error");
           }
         }).catch(err => {
+          setSaveStatus(`R${row}C${col} 儲存失敗`, "error", 9000);
           showToast(`儲存失敗：${err.message}`, "error");
         });
       },
