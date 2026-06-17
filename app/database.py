@@ -1384,12 +1384,17 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
             key = _order_key(po, model, r.get("ship_date"))
             existing = existing_by_key.get(key)
             base_key = _order_base_key(po, model)
+            dispatched_existing = dispatched_by_base_key.get(base_key)
             if (
-                not existing
+                (not existing or existing["status"] not in ("dispatched", "completed"))
                 and new_base_key_counts.get(base_key, 0) == 1
-                and base_key in dispatched_by_base_key
+                and dispatched_existing
             ):
-                existing = dispatched_by_base_key[base_key]
+                if existing and existing["status"] in ("pending", "merged"):
+                    conn.execute("DELETE FROM decisions WHERE order_id = ?", (existing["id"],))
+                    conn.execute("DELETE FROM order_supplements WHERE order_id = ?", (existing["id"],))
+                    conn.execute("DELETE FROM orders WHERE id = ?", (existing["id"],))
+                existing = dispatched_existing
 
             if existing and existing["status"] in ("dispatched", "completed"):
                 changes = _compare_order_fields(existing, r)

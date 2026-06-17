@@ -444,6 +444,79 @@ class OrderReloadTests(InMemoryDbTestCase):
         self.assertEqual(result["diffs"][0]["type"], "skipped_changed")
         self.assertEqual(result["diffs"][0]["changes"][0]["field"], "ship_date")
 
+    def test_upsert_orders_prefers_dispatched_match_when_rescheduled_date_has_cancelled_order(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500058826', 'TX2', 'PCB-A1133', 300, '2026-05-08', '2026-05-08', 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, balance_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500058826', 'TX2', 'PCB-A1133', 300, 40, '2026-07-03', '2026-07-03', 'cancelled', 1, 2, 'n', 'n', '')"
+        )
+
+        result = db.upsert_orders_from_schedule([
+            {
+                "po_number": "4500058826",
+                "model": "TX2",
+                "pcb": "PCB-A1133",
+                "order_qty": 300,
+                "balance_qty": 40,
+                "ship_date": "2026-07-03",
+                "remark": "",
+                "row_index": 4,
+                "code": "",
+            },
+        ])
+        rows = self.conn.execute(
+            "SELECT status, ship_date FROM orders WHERE po_number='4500058826' ORDER BY id"
+        ).fetchall()
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual([(row["status"], row["ship_date"]) for row in rows], [
+            ("dispatched", "2026-05-08"),
+            ("cancelled", "2026-07-03"),
+        ])
+
+    def test_upsert_orders_removes_pending_duplicate_when_base_dispatched_match_exists(self):
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500058826', 'TX2', 'PCB-A1133', 300, '2026-05-08', '2026-05-08', 'dispatched', 0, 1, 'n', 'n', '')"
+        )
+        self.conn.execute(
+            "INSERT INTO orders(po_number, model, pcb, order_qty, balance_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "
+            "VALUES('4500058826', 'TX2', 'PCB-A1133', 300, 40, '2026-07-03', '2026-07-03', 'pending', 1, 2, 'n', 'n', '')"
+        )
+        pending_id = self.conn.execute(
+            "SELECT id FROM orders WHERE status='pending'"
+        ).fetchone()["id"]
+        db.save_decision(pending_id, "part-1", "Shortage")
+
+        result = db.upsert_orders_from_schedule([
+            {
+                "po_number": "4500058826",
+                "model": "TX2",
+                "pcb": "PCB-A1133",
+                "order_qty": 300,
+                "balance_qty": 40,
+                "ship_date": "2026-07-03",
+                "remark": "",
+                "row_index": 4,
+                "code": "",
+            },
+        ])
+        rows = self.conn.execute(
+            "SELECT status, ship_date FROM orders WHERE po_number='4500058826' ORDER BY id"
+        ).fetchall()
+        decision_count = self.conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual([(row["status"], row["ship_date"]) for row in rows], [
+            ("dispatched", "2026-05-08"),
+        ])
+        self.assertEqual(decision_count, 0)
+
     def test_upsert_orders_allows_extra_split_date_when_dispatched_date_is_still_present(self):
         self.conn.execute(
             "INSERT INTO orders(po_number, model, pcb, order_qty, ship_date, delivery_date, status, sort_order, row_index, created_at, updated_at, folder) "

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.06.17.1"
+APP_VERSION = "v2026.06.17.2"
 APP_RELEASED_AT = "2026-06-17"
-APP_HEADLINE = "排程上傳恢復比對已發料訂單交期變更。"
+APP_HEADLINE = "排程上傳修正已發料旁有取消單時仍重複載入。"
 APP_CHANGELOG = [
+    {
+        "title": "已發料旁有取消單不再重複載入",
+        "items": [
+            "修正同一 PO、同一機種已發料後，若新交期那天曾有取消單，重新上傳排程仍被載成 pending 的問題。",
+            "下一次上傳同一份排程時，系統會清掉這類已誤建的 pending/merged 重複訂單。",
+            "以 4500058826 / TX2 這類已發料改交期案例補上資料庫測試。",
+        ],
+    },
     {
         "title": "排程上傳恢復比對已發料",
         "items": [
