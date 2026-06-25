@@ -1000,6 +1000,20 @@ def _main_header_text(ws, col: int) -> str:
     return str(ws.cell(row=1, column=col).value or "").strip()
 
 
+def _main_adjustment_balance_col(ws, col: int) -> int:
+    next_header = _main_header_text(ws, col + 1)
+    if next_header in {"使用數量", "扣帳數量", "用量"}:
+        return col + 2
+    return col + 1
+
+
+def _main_adjustment_balance_col_from_headers(headers: tuple, col: int) -> int:
+    next_header = str(headers[col] or "").strip() if len(headers) > col else ""
+    if next_header in {"使用數量", "扣帳數量", "用量"}:
+        return col + 2
+    return col + 1
+
+
 def _main_stock_events(ws) -> list[dict[str, int | str]]:
     events: list[dict[str, int | str]] = []
     for col in range(1, ws.max_column + 1):
@@ -1007,9 +1021,9 @@ def _main_stock_events(ws) -> list[dict[str, int | str]]:
         if re.match(r"^\d+-\d+$", header):
             events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
         elif "回復" in header or "恢復" in header:
-            events.append({"kind": "reverse", "start_col": col, "balance_col": col + 1})
+            events.append({"kind": "reverse", "start_col": col, "balance_col": _main_adjustment_balance_col(ws, col)})
         elif "扣帳" in header:
-            events.append({"kind": "deduct", "start_col": col, "balance_col": col + 1})
+            events.append({"kind": "deduct", "start_col": col, "balance_col": _main_adjustment_balance_col(ws, col)})
     return sorted(events, key=lambda item: int(item["start_col"]))
 
 
@@ -1024,9 +1038,9 @@ def _main_value_context(ws) -> dict:
             batch_cols_by_code.setdefault(header, []).append(col)
             events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
         elif "回復" in header or "恢復" in header:
-            events.append({"kind": "reverse", "start_col": col, "balance_col": col + 1})
+            events.append({"kind": "reverse", "start_col": col, "balance_col": _main_adjustment_balance_col_from_headers(tuple(header_values), col)})
         elif "扣帳" in header:
-            events.append({"kind": "deduct", "start_col": col, "balance_col": col + 1})
+            events.append({"kind": "deduct", "start_col": col, "balance_col": _main_adjustment_balance_col_from_headers(tuple(header_values), col)})
     row_map: dict[str, int] = {}
     row_values_by_part: dict[str, tuple] = {}
     for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):

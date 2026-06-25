@@ -251,6 +251,47 @@ class MainFileRecalcTests(unittest.TestCase):
         finally:
             wb.close()
 
+    def test_recalculates_through_three_column_adjustment_blocks(self):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        try:
+            ws.cell(row=1, column=1).value = "料號"
+            ws.cell(row=1, column=8).value = "盤點"
+            ws.cell(row=1, column=9).value = "1-1"
+            ws.cell(row=1, column=10).value = "PO-1-1"
+            ws.cell(row=1, column=11).value = "MODEL-1-1"
+            ws.cell(row=1, column=12).value = "不良品扣帳"
+            ws.cell(row=1, column=13).value = "使用數量"
+            ws.cell(row=1, column=14).value = "05/19 10:00"
+            ws.cell(row=1, column=15).value = "1-2"
+            ws.cell(row=1, column=16).value = "PO-1-2"
+            ws.cell(row=1, column=17).value = "MODEL-1-2"
+
+            ws.cell(row=2, column=1).value = "PART-1"
+            ws.cell(row=2, column=8).value = 100
+            ws.cell(row=2, column=9).value = 10
+            ws.cell(row=2, column=10).value = 30
+            ws.cell(row=2, column=11).value = 80
+            ws.cell(row=2, column=13).value = 25
+            ws.cell(row=2, column=14).value = 55
+            ws.cell(row=2, column=15).value = 5
+            ws.cell(row=2, column=16).value = 20
+            ws.cell(row=2, column=17).value = 40
+
+            ws.cell(row=2, column=13).value = 30
+            result = recalc_batch_balances_for_cell(ws, row=2, col=13)
+
+            self.assertEqual(
+                result["affected_cells"],
+                [
+                    {"row": 2, "col": 14, "value": 50},
+                    {"row": 2, "col": 17, "value": 35},
+                ],
+            )
+            self.assertEqual(result["current_stock"], 35)
+        finally:
+            wb.close()
+
     def test_recalculates_through_defective_reverse_columns(self):
         wb = openpyxl.Workbook()
         ws = wb.active

@@ -214,11 +214,15 @@ class OverrunDeductionTests(InMemoryDbTestCase):
             try:
                 result_ws = result_wb.active
                 self.assertEqual(result_ws.cell(row=1, column=5).value, "加工多打扣帳")
-                self.assertEqual(result_ws.cell(row=1, column=7).value, "加工多打回復")
-                self.assertEqual(result_ws.cell(row=2, column=5).value, 25)
-                self.assertEqual(result_ws.cell(row=2, column=6).value, 75)
-                self.assertEqual(result_ws.cell(row=2, column=7).value, 25)
-                self.assertEqual(result_ws.cell(row=2, column=8).value, 100)
+                self.assertEqual(result_ws.cell(row=1, column=6).value, "使用數量")
+                self.assertEqual(result_ws.cell(row=1, column=8).value, "加工多打回復")
+                self.assertEqual(result_ws.cell(row=1, column=9).value, "使用數量")
+                self.assertIsNone(result_ws.cell(row=2, column=5).value)
+                self.assertEqual(result_ws.cell(row=2, column=6).value, 25)
+                self.assertEqual(result_ws.cell(row=2, column=7).value, 75)
+                self.assertEqual(result_ws.cell(row=2, column=8).value, 25)
+                self.assertIsNone(result_ws.cell(row=2, column=9).value)
+                self.assertEqual(result_ws.cell(row=2, column=10).value, 100)
             finally:
                 result_wb.close()
 
@@ -249,7 +253,8 @@ class OverrunDeductionTests(InMemoryDbTestCase):
                 inventory_ws = result_wb["主檔"]
                 summary_ws = result_wb["摘要"]
                 self.assertEqual(inventory_ws.cell(row=1, column=5).value, "加工多打扣帳")
-                self.assertEqual(inventory_ws.cell(row=2, column=6).value, 75)
+                self.assertEqual(inventory_ws.cell(row=1, column=6).value, "使用數量")
+                self.assertEqual(inventory_ws.cell(row=2, column=7).value, 75)
                 self.assertIsNone(summary_ws.cell(row=1, column=2).value)
             finally:
                 result_wb.close()
@@ -284,11 +289,12 @@ class OverrunDeductionTests(InMemoryDbTestCase):
                 result_ws = result_wb.active
                 self.assertEqual(result_ws.column_dimensions["E"].width, 24)
                 self.assertEqual(result_ws.column_dimensions["F"].width, 24)
+                self.assertEqual(result_ws.column_dimensions["G"].width, 24)
                 self.assertEqual(result_ws.cell(row=2, column=5).number_format, "#,##0.0")
                 self.assertTrue(result_ws.cell(row=2, column=5).font.italic)
                 self.assertIsNone(result_ws.cell(row=2, column=5).fill.fill_type)
-                self.assertEqual(result_ws.cell(row=2, column=6).border.left.style, "thin")
-                self.assertIsNone(result_ws.cell(row=2, column=6).fill.fill_type)
+                self.assertEqual(result_ws.cell(row=2, column=7).border.left.style, "thin")
+                self.assertIsNone(result_ws.cell(row=2, column=7).fill.fill_type)
                 self.assertTrue(result_ws.cell(row=1, column=1).alignment.wrap_text)
                 self.assertTrue(result_ws.cell(row=1, column=5).alignment.wrap_text)
             finally:

@@ -6,6 +6,7 @@ from typing import Any
 _BATCH_CODE_RE = re.compile(r"^\d+-\d+$")
 _DEDUCT_HEADER_KEYWORDS = ("扣帳",)
 _REVERSE_HEADER_KEYWORDS = ("回復", "恢復")
+_ADJUSTMENT_USAGE_HEADERS = {"使用數量", "扣帳數量", "用量"}
 _PART_COL = 1
 _STOCK_FALLBACK_COL = 8
 
@@ -69,6 +70,14 @@ def _adjustment_kind(header: str) -> str | None:
     return None
 
 
+def _adjustment_balance_col(ws, start_col: int) -> int:
+    """新不良品/多打是 3 欄一組；舊資料仍是 2 欄一組。"""
+    next_header = _header_text(ws, start_col + 1)
+    if next_header in _ADJUSTMENT_USAGE_HEADERS:
+        return start_col + 2
+    return start_col + 1
+
+
 def _stock_events(ws) -> list[dict[str, int | str]]:
     """找出會影響庫存 running balance 的欄位事件。"""
     events: list[dict[str, int | str]] = []
@@ -87,7 +96,7 @@ def _stock_events(ws) -> list[dict[str, int | str]]:
             events.append({
                 "kind": adjustment_kind,
                 "start_col": col,
-                "balance_col": col + 1,
+                "balance_col": _adjustment_balance_col(ws, col),
             })
 
     return sorted(events, key=lambda item: int(item["start_col"]))
@@ -99,8 +108,11 @@ def _event_for_cell(events: list[dict[str, int | str]], col: int) -> dict[str, i
         start_col = int(event["start_col"])
         if kind == "batch" and col in {start_col, start_col + 1}:
             return event
-        if kind in {"deduct", "reverse"} and col == start_col:
-            return event
+        if kind in {"deduct", "reverse"}:
+            if int(event["balance_col"]) == start_col + 2 and col in {start_col, start_col + 1}:
+                return event
+            if col == start_col:
+                return event
         if col > int(event["balance_col"]):
             return None
     return None
@@ -203,15 +215,26 @@ def recalc_batch_balances_for_cell(
             usage = _to_number(usage_cell.value) or 0.0
             previous = previous - usage + supplement
         else:
-            qty_cell = ws.cell(row=row, column=event_col)
-            if _is_blank(qty_cell.value) and _is_blank(balance_cell.value):
+            supply_cell = ws.cell(row=row, column=event_col)
+            usage_cell = ws.cell(row=row, column=event_col + 1)
+            has_usage_column = int(event["balance_col"]) == event_col + 2
+            if (
+                _is_blank(supply_cell.value)
+                and (not has_usage_column or _is_blank(usage_cell.value))
+                and _is_blank(balance_cell.value)
+            ):
                 continue
 
-            qty = _to_number(qty_cell.value) or 0.0
-            if kind == "reverse":
-                previous = previous + qty
+            if has_usage_column:
+                supply = _to_number(supply_cell.value) or 0.0
+                usage = _to_number(usage_cell.value) or 0.0
+                previous = previous - usage + supply
             else:
-                previous = previous - qty
+                qty = _to_number(supply_cell.value) or 0.0
+                if kind == "reverse":
+                    previous = previous + qty
+                else:
+                    previous = previous - qty
 
         value = _display_number(previous)
         balance_cell.value = value

@@ -114,10 +114,11 @@ def _copy_column_layout(ws, source_col: int, target_col: int):
         target_cell.border = copy(source_cell.border)
 
 
-def _prepare_new_entry_columns(ws, max_col: int, col_delta: int, col_stock: int):
+def _prepare_new_entry_columns(ws, max_col: int, col_supply: int, col_usage: int, col_stock: int):
     source_stock_col = max_col
     source_delta_col = max_col - 1 if max_col - 1 >= STOCK_SEARCH_START_COL else source_stock_col
-    _copy_column_layout(ws, source_delta_col, col_delta)
+    _copy_column_layout(ws, source_delta_col, col_supply)
+    _copy_column_layout(ws, source_delta_col, col_usage)
     _copy_column_layout(ws, source_stock_col, col_stock)
 
 
@@ -128,7 +129,7 @@ def deduct_defectives_from_main(
     entry_header: str = "不良品扣帳",
 ) -> dict:
     """
-    在主檔新增 2 欄扣帳：扣帳數量 + 扣帳後庫存。
+    在主檔新增 3 欄扣帳：補料/加回 + 使用/扣帳 + 扣帳後庫存。
 
     回傳 {"backup_path", "deducted_count", "skipped_parts", "results"}。
     """
@@ -143,17 +144,24 @@ def deduct_defectives_from_main(
     part_row_map = _build_part_row_map(ws)
     max_col = ws.max_column
 
-    col_deduct = max_col + 1
-    col_stock = max_col + 2
-    _prepare_new_entry_columns(ws, max_col, col_deduct, col_stock)
+    col_supply = max_col + 1
+    col_deduct = max_col + 2
+    col_stock = max_col + 3
+    _prepare_new_entry_columns(ws, max_col, col_supply, col_deduct, col_stock)
 
     # 寫表頭
     ts_label = local_now().strftime("%m/%d %H:%M")
-    deduct_header = ws.cell(row=1, column=col_deduct)
+    deduct_header = ws.cell(row=1, column=col_supply)
     deduct_header.value = str(entry_header or "不良品扣帳").strip() or "不良品扣帳"
     deduct_header.font = HEADER_FONT
     deduct_header.fill = HEADER_FILL
     deduct_header.alignment = CENTER_ALIGN
+
+    usage_header = ws.cell(row=1, column=col_deduct)
+    usage_header.value = "使用數量"
+    usage_header.font = HEADER_FONT
+    usage_header.fill = HEADER_FILL
+    usage_header.alignment = CENTER_ALIGN
 
     stock_header = ws.cell(row=1, column=col_stock)
     stock_header.value = ts_label
@@ -175,6 +183,9 @@ def deduct_defectives_from_main(
         deduct_qty = float(item["defective_qty"])
         new_stock = _round_away(current_stock - deduct_qty)
 
+        supply_cell = ws.cell(row=row_idx, column=col_supply)
+        supply_cell.value = None
+        clear_cell_fill(supply_cell)
         deduct_cell = ws.cell(row=row_idx, column=col_deduct)
         deduct_cell.value = _round_away(deduct_qty)
         clear_cell_fill(deduct_cell)
@@ -215,7 +226,7 @@ def reverse_defectives_from_main(
     將已扣帳的數量加回主檔（刪除批次時用）。
 
     items: [{part_number, defective_qty}]
-    在主檔新增 2 欄：回復數量 + 回復後庫存。
+    在主檔新增 3 欄：補料/加回 + 使用/扣帳 + 回復後庫存。
     回傳 {"backup_path", "reversed_count", "skipped_parts", "results"}。
     """
     if not items:
@@ -230,8 +241,9 @@ def reverse_defectives_from_main(
     max_col = ws.max_column
 
     col_reverse = max_col + 1
-    col_stock = max_col + 2
-    _prepare_new_entry_columns(ws, max_col, col_reverse, col_stock)
+    col_usage = max_col + 2
+    col_stock = max_col + 3
+    _prepare_new_entry_columns(ws, max_col, col_reverse, col_usage, col_stock)
 
     ts_label = local_now().strftime("%m/%d %H:%M")
     reverse_header = ws.cell(row=1, column=col_reverse)
@@ -239,6 +251,12 @@ def reverse_defectives_from_main(
     reverse_header.font = HEADER_FONT
     reverse_header.fill = REVERSE_HEADER_FILL
     reverse_header.alignment = CENTER_ALIGN
+
+    usage_header = ws.cell(row=1, column=col_usage)
+    usage_header.value = "使用數量"
+    usage_header.font = HEADER_FONT
+    usage_header.fill = REVERSE_HEADER_FILL
+    usage_header.alignment = CENTER_ALIGN
 
     stock_header = ws.cell(row=1, column=col_stock)
     stock_header.value = ts_label
@@ -263,6 +281,9 @@ def reverse_defectives_from_main(
         reverse_cell = ws.cell(row=row_idx, column=col_reverse)
         reverse_cell.value = _round_away(reverse_qty)
         clear_cell_fill(reverse_cell)
+        usage_cell = ws.cell(row=row_idx, column=col_usage)
+        usage_cell.value = None
+        clear_cell_fill(usage_cell)
         stock_cell = ws.cell(row=row_idx, column=col_stock)
         stock_cell.value = new_stock
         if new_stock < 0:
