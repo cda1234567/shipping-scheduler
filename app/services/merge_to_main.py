@@ -19,6 +19,7 @@ from openpyxl.formula.translate import Translator
 from ..config import cfg
 from ..models import calc_suggested_qty
 from .local_time import local_now
+from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -545,7 +546,7 @@ def supplement_part_in_main(
     supplement_qty: float,
     backup_dir: str | None = None,
 ) -> dict:
-    """對主檔中指定料號補料：直接在缺料欄位加上補料量，並連帶更新右邊所有欄位。"""
+    """對主檔中指定料號補料，寫入對應補料欄並重算後續結存。"""
     if supplement_qty <= 0:
         return {"ok": False, "message": "補料數量必須大於 0"}
 
@@ -570,16 +571,26 @@ def supplement_part_in_main(
 
         current_stock = _try_float(ws.cell(row=row_idx, column=stock_col).value) or 0.0
         new_stock = current_stock + supplement_qty
+        supplement_col = None
 
-        # 直接更新缺料欄位的庫存值
-        ws.cell(row=row_idx, column=stock_col).value = new_stock
-
-        # 右邊如果還有數值欄位（後續 dispatch 的結存），也一併加上補料量
-        for col_idx in range(stock_col + 1, max_col + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            val = _try_float(cell.value)
-            if val is not None:
-                cell.value = val + supplement_qty
+        event = find_latest_supplement_event_for_row(ws, row_idx)
+        if event is not None:
+            supplement_col = int(event["start_col"])
+            supplement_cell = ws.cell(row=row_idx, column=supplement_col)
+            existing_supplement = _try_float(supplement_cell.value) or 0.0
+            supplement_cell.value = _format_main_supplement_value(existing_supplement + supplement_qty)
+            recalc_result = recalc_batch_balances_for_cell(ws, row=row_idx, col=supplement_col)
+            recalculated_stock = _try_float(recalc_result.get("current_stock"))
+            if recalculated_stock is not None:
+                new_stock = recalculated_stock
+        else:
+            # 尚無可辨識的批次欄時保留舊行為，至少讓庫存能正確補回。
+            ws.cell(row=row_idx, column=stock_col).value = new_stock
+            for col_idx in range(stock_col + 1, max_col + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                val = _try_float(cell.value)
+                if val is not None:
+                    cell.value = val + supplement_qty
 
         ensure_main_header_wrap(ws)
         workbook.save(main_path)
@@ -592,5 +603,6 @@ def supplement_part_in_main(
         "stock_before": current_stock,
         "supplement_qty": supplement_qty,
         "stock_after": new_stock,
+        "supplement_col": supplement_col,
         "backup_path": backup_path,
     }

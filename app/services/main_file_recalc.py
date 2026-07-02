@@ -102,6 +102,20 @@ def _stock_events(ws) -> list[dict[str, int | str]]:
     return sorted(events, key=lambda item: int(item["start_col"]))
 
 
+def find_latest_supplement_event_for_row(ws, row: int) -> dict[str, int | str] | None:
+    """找該列最右側可安全寫入補料的庫存事件。"""
+    for event in reversed(_stock_events(ws)):
+        start_col = int(event["start_col"])
+        balance_col = int(event["balance_col"])
+        if _to_number(ws.cell(row=row, column=balance_col).value) is None:
+            continue
+
+        kind = str(event["kind"])
+        if kind == "batch" or balance_col == start_col + 2 or kind == "reverse":
+            return event
+    return None
+
+
 def _event_for_cell(events: list[dict[str, int | str]], col: int) -> dict[str, int | str] | None:
     for event in reversed(events):
         kind = str(event["kind"])
