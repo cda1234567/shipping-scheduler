@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.02.1"
+APP_VERSION = "v2026.07.02.2"
 APP_RELEASED_AT = "2026-07-02"
-APP_HEADLINE = "右側補主檔會寫入對應補料欄並重算結存。"
+APP_HEADLINE = "分析頁排除 EC-1 與 EC-2 系列料號。"
 APP_CHANGELOG = [
+    {
+        "title": "分析頁排除大量 EC 料",
+        "items": [
+            "發料趨勢不再顯示所有以 EC-1、EC-2 開頭的料號，避免圖表被大量常用料佔滿。",
+            "常用料件排行也會在排名前先排除 EC-1、EC-2 系列，空出的名額會顯示其他料號。",
+            "EC-3 以上及 IC、OC、UC 等其他料號維持原本統計。",
+        ],
+    },
     {
         "title": "右側補料寫入主檔位置修正",
         "items": [

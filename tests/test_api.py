@@ -104,6 +104,36 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["order_supplements"], {"1": {"PART-1": 1000}})
         self.assertEqual(data["order_supplement_details"], {"1": {"PART-1": {"supplement_qty": 1000, "note": "補急單", "updated_at": "2026-04-02T10:00:00"}}})
 
+    def test_analytics_trend_excludes_ec_1_and_ec_2_parts(self):
+        rows = [
+            {"period": "2026-07", "part_number": "EC-10001A", "total_qty": 9000},
+            {"period": "2026-07", "part_number": "ec-20001a", "total_qty": 8000},
+            {"period": "2026-07", "part_number": "EC-30001A", "total_qty": 7000},
+            {"period": "2026-07", "part_number": "UC-50001A", "total_qty": 6000},
+        ]
+        with patch("app.routers.analytics.db.get_dispatch_trend", return_value=rows):
+            response = self.client.get("/api/analytics/dispatch-trend?period=month")
+
+        self.assertEqual(response.status_code, 200)
+        labels = [item["label"] for item in response.json()["chart_data"]["datasets"]]
+        self.assertEqual(labels, ["EC-30001A", "UC-50001A"])
+
+    def test_analytics_top_parts_excludes_ec_1_and_ec_2_parts(self):
+        parts = [
+            {"part_number": "EC-10001A", "total_qty": 9000},
+            {"part_number": "EC-20001A", "total_qty": 8000},
+            {"part_number": "EC-30001A", "total_qty": 7000},
+            {"part_number": "IC-10001A", "total_qty": 6000},
+        ]
+        with patch("app.routers.analytics.db.get_top_dispatched_parts", return_value=parts):
+            response = self.client.get("/api/analytics/top-parts?limit=20&months=6")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["part_number"] for item in response.json()["parts"]],
+            ["EC-30001A", "IC-10001A"],
+        )
+
     def test_edit_auth_blocks_mutating_api_until_login(self):
         with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False):
             blocked = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})

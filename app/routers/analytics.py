@@ -12,6 +12,11 @@ from ..services.schedule_parser import parse_schedule
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
+def _is_hidden_analysis_part(part_number: object) -> bool:
+    part = str(part_number or "").strip().upper()
+    return part.startswith(("EC-1", "EC-2"))
+
+
 # ── 發料趨勢 ──────────────────────────────────────────────────────────────────
 
 @router.get("/dispatch-trend")
@@ -24,6 +29,8 @@ async def dispatch_trend(period: str = "month"):
     for row in raw:
         p = row["period"]
         part = row["part_number"]
+        if _is_hidden_analysis_part(part):
+            continue
         qty = float(row["total_qty"] or 0)
         if p not in periods_set:
             periods_set[p] = {}
@@ -51,7 +58,12 @@ async def dispatch_trend(period: str = "month"):
 
 @router.get("/top-parts")
 async def top_parts(limit: int = 20, months: int = 6):
-    return {"parts": db.get_top_dispatched_parts(limit, months)}
+    parts = db.get_top_dispatched_parts(limit, months)
+    visible_parts = [
+        item for item in parts
+        if not _is_hidden_analysis_part(item.get("part_number"))
+    ]
+    return {"parts": visible_parts[:limit]}
 
 
 # ── 發料歷史統計 ──────────────────────────────────────────────────────────────

@@ -3164,6 +3164,8 @@ def get_dispatch_trend(period: str = "month") -> list[dict]:
                        decision
                 FROM dispatch_records
                 WHERE dispatched_at != ''
+                  AND UPPER(TRIM(part_number)) NOT LIKE 'EC-1%'
+                  AND UPPER(TRIM(part_number)) NOT LIKE 'EC-2%'
                 GROUP BY period, part_number, decision
                 ORDER BY period DESC, total_qty DESC""",
         ).fetchall()
@@ -3180,6 +3182,8 @@ def get_top_dispatched_parts(limit: int = 20, months: int = 6) -> list[dict]:
                       COUNT(*) AS record_count
                FROM dispatch_records
                WHERE dispatched_at >= ? AND decision != 'Shortage'
+                 AND UPPER(TRIM(part_number)) NOT LIKE 'EC-1%'
+                 AND UPPER(TRIM(part_number)) NOT LIKE 'EC-2%'
                GROUP BY part_number
                ORDER BY total_qty DESC
                LIMIT ?""",
