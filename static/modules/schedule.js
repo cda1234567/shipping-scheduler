@@ -1144,12 +1144,13 @@ function buildShortageScopeList(rows = []) {
       key: meta._row_group_key,
       label: meta._row_group_label,
       po_number: meta._po_number,
+      order_id: meta._order_id,
     });
   }
   return scopes;
 }
 
-function shortageGroupHeadingHtml(label, poNumber = "", { compact = false } = {}) {
+function shortageGroupHeadingHtml(label, poNumber = "", { compact = false, sampleControlHtml = "" } = {}) {
   const safeLabel = esc(label || "未指定機種");
   const poText = String(poNumber || "").trim();
   const poHtml = poText
@@ -1160,7 +1161,16 @@ function shortageGroupHeadingHtml(label, poNumber = "", { compact = false } = {}
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0 4px;font-size:11px;font-weight:600;color:#6b7280"><span>${safeLabel}</span>${poHtml}</div>`;
   }
 
-  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937"><span>${safeLabel}</span>${poHtml}</div>`;
+  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937"><span>${safeLabel}</span><span style="display:flex;align-items:center;gap:10px">${poHtml}${sampleControlHtml}</span></div>`;
+}
+
+function sampleOrderCheckboxHtml(scope = {}) {
+  const orderId = normalizeOrderId(scope.order_id);
+  if (!Number.isInteger(orderId)) return "";
+  return `<label style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:#374151;white-space:nowrap">
+    <input type="checkbox" class="sample-order-flag" data-order-id="${orderId}">
+    打樣（此單 EC 料不強制補到 100）
+  </label>`;
 }
 
 function buildShortageItemsForRow(row, items = []) {
@@ -2431,6 +2441,7 @@ function applyModalSearchFilter(rawQuery = "") {
   sectionNodes.forEach(section => {
     const rowNodes = [...section.querySelectorAll(".shortage-item, .draft-preview-row")];
     const sectionMatches = query && getModalSearchableText(section).includes(query);
+    const sampleHidden = section.dataset.sampleHidden === "1";
     let sectionVisibleRows = 0;
     totalRows += rowNodes.length;
 
@@ -2444,7 +2455,7 @@ function applyModalSearchFilter(rawQuery = "") {
       }
     });
 
-    section.style.display = (!query || sectionMatches || sectionVisibleRows > 0) ? "" : "none";
+    section.style.display = !sampleHidden && (!query || sectionMatches || sectionVisibleRows > 0) ? "" : "none";
   });
 
   if (query && totalRows > 0 && visibleRows === 0) {
@@ -3015,7 +3026,9 @@ async function showWriteToMainModal(targets) {
       ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
     for (const scope of visibleScopes) {
       html += `<section class="modal-shortage-section" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
-      html += shortageGroupHeadingHtml(scope.label, scope.po_number);
+      html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
+        sampleControlHtml: sampleOrderCheckboxHtml(scope),
+      });
       html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
       html += (shortagesByScope[scope.key] || []).map(item => modalShortageItem(item, false)).join("");
       html += "</section>";
@@ -3025,6 +3038,7 @@ async function showWriteToMainModal(targets) {
   list.innerHTML = html;
   configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
   bindShortageEditors(list);
+  bindSampleOrderFlags(list);
 
   bindMoqEditors(list);
   bindShortageMoqBadgeEditors(list);
@@ -3168,9 +3182,10 @@ function modalShortageItem(s, isCS) {
 
 const MODAL_PK_NO_WARNING_PREFIXES = ["PK-50070"];
 
-function getModalRequiredMinStock(partNumber) {
+function getModalRequiredMinStock(partNumber, ignoreEcMin = false) {
   const normalized = normalizePartKey(partNumber);
   if (normalized.startsWith("EC-6")) return 0;
+  if (ignoreEcMin && normalized.startsWith("EC-")) return 0;
   if (normalized.startsWith("EC-")) return 100;
   // PK 包材類結存 < 1 視為缺料；例外清單的 PK 料維持 0 門檻
   if (normalized.startsWith("PK-")) {
@@ -3180,17 +3195,17 @@ function getModalRequiredMinStock(partNumber) {
   return 0;
 }
 
-function calculateModalShortageAmount(partNumber, endingStock) {
-  const requiredMin = getModalRequiredMinStock(partNumber);
+function calculateModalShortageAmount(partNumber, endingStock, ignoreEcMin = false) {
+  const requiredMin = getModalRequiredMinStock(partNumber, ignoreEcMin);
   return Math.max(0, requiredMin - Number(endingStock || 0));
 }
 
-function calculateModalCurrentOrderShortageAmount(partNumber, availableBefore, neededQty) {
+function calculateModalCurrentOrderShortageAmount(partNumber, availableBefore, neededQty, ignoreEcMin = false) {
   if (isOrderScopedPart(partNumber)) {
     return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
   }
   const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
-  return calculateModalShortageAmount(partNumber, endingStock);
+  return calculateModalShortageAmount(partNumber, endingStock, ignoreEcMin);
 }
 
 function buildModalShortageAmountsHtml(shortage) {
@@ -3245,6 +3260,16 @@ function getModalCardOrderIndex(card) {
   return Number.isFinite(index) ? index : Number.MAX_SAFE_INTEGER;
 }
 
+function isSampleScopeEnabledForCard(card) {
+  const section = card?.closest(".modal-shortage-section");
+  return Boolean(section?.querySelector(".sample-order-flag")?.checked);
+}
+
+function isEcMinIgnoredPart(partNumber) {
+  const partKey = normalizePartKey(partNumber);
+  return partKey.startsWith("EC-") && !partKey.startsWith("EC-6");
+}
+
 function buildModalCardDerivedState(card, currentStock) {
   const partKey = normalizePartKey(card?.dataset.part);
   const prevQtyCs = Number(card?.dataset.prevQtyCs || 0);
@@ -3255,7 +3280,8 @@ function buildModalCardDerivedState(card, currentStock) {
   const checkbox = card?.querySelector(".shortage-mark");
   const supplementQty = checkbox?.checked ? 0 : Math.max(0, Number(input?.value || 0) || 0);
   const availableBefore = Number(currentStock || 0) + prevQtyCs;
-  const shortageAmount = calculateModalCurrentOrderShortageAmount(partKey, availableBefore, neededQty);
+  const ignoreEcMin = isSampleScopeEnabledForCard(card);
+  const shortageAmount = calculateModalCurrentOrderShortageAmount(partKey, availableBefore, neededQty, ignoreEcMin);
   const suggestion = buildShortageSupplySuggestion(partKey, shortageAmount, moq, stStockQty);
   const resultingStock = Number(currentStock || 0) + prevQtyCs + supplementQty - neededQty;
   return {
@@ -3305,8 +3331,12 @@ function refreshModalShortageCascadeForPart(list, part) {
     const previewState = buildModalCardDerivedState(card, runningCurrent);
     let rawQty = Math.max(0, Number(input?.value || 0) || 0);
 
+    const sampleClearedEcMin = isSampleScopeEnabledForCard(card)
+      && isEcMinIgnoredPart(partKey)
+      && previewState.shortage_amount <= 0;
+
     // 非 order-scoped 料號：上游補料已覆蓋時，自動清零下游的補料 input
-    if (index > 0 && !isOrderScopedPart(partKey) && previewState.shortage_amount <= 0 && rawQty > 0) {
+    if (((index > 0 && !isOrderScopedPart(partKey)) || sampleClearedEcMin) && previewState.shortage_amount <= 0 && rawQty > 0) {
       if (input && document.activeElement !== input) {
         input.value = "0";
         rawQty = 0;
@@ -3379,8 +3409,20 @@ function refreshModalShortageCascade(list, part = null) {
   });
 
   bindShortageMoqBadgeEditors(list);
+  updateModalSampleSectionVisibility(list);
   const searchInput = document.getElementById("modal-search-input");
   applyModalSearchFilter(searchInput?.value || "");
+}
+
+function updateModalSampleSectionVisibility(list) {
+  if (!list) return;
+  list.querySelectorAll(".modal-shortage-section").forEach(section => {
+    const hasVisibleCard = [...section.querySelectorAll(".shortage-item")]
+      .some(card => card.dataset.flowHidden !== "1");
+    const checked = Boolean(section.querySelector(".sample-order-flag")?.checked);
+    section.dataset.sampleHidden = hasVisibleCard || checked ? "0" : "1";
+    section.style.display = section.dataset.sampleHidden === "1" ? "none" : "";
+  });
 }
 
 function closeShortageModal() {
@@ -3961,6 +4003,7 @@ async function handleModalWriteMain() {
   const modalDecisions = _collectModalDecisions();
   const orderSupplements = _collectModalOrderSupplements();
   const orderDecisions = _collectModalOrderDecisions();
+  const sampleOrderIds = collectModalSampleOrderIds();
 
   try {
     setModalDownloadProgress(true, "正在保存缺料決策...", "先保存這次要寫入主檔的缺料與補料內容。", 10);
@@ -3978,6 +4021,7 @@ async function handleModalWriteMain() {
       supplements,
       order_decisions: orderDecisions,
       order_supplements: orderSupplements,
+      sample_order_ids: sampleOrderIds,
     });
 
     _modalTargets.forEach(item => _checkedIds.delete(item.id));
@@ -5683,6 +5727,31 @@ function bindShortageEditors(list) {
   });
 
   refreshModalShortageCascade(list);
+}
+
+function bindSampleOrderFlags(list) {
+  if (!list) return;
+  list.querySelectorAll(".sample-order-flag").forEach(checkbox => {
+    checkbox.addEventListener("change", () => {
+      const section = checkbox.closest(".modal-shortage-section");
+      const partKeys = [...section?.querySelectorAll(".shortage-item[data-part]") || []]
+        .map(card => normalizePartKey(card.dataset.part))
+        .filter(Boolean);
+      if (!partKeys.length) {
+        updateModalSampleSectionVisibility(list);
+        return;
+      }
+      [...new Set(partKeys)].forEach(partKey => refreshModalShortageCascade(list, partKey));
+    });
+  });
+}
+
+function collectModalSampleOrderIds() {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return [];
+  return [...list.querySelectorAll(".sample-order-flag:checked")]
+    .map(checkbox => normalizeOrderId(checkbox.dataset.orderId))
+    .filter(Number.isInteger);
 }
 
 // ── Toolbar actions ───────────────────────────────────────────────────────────

@@ -41,11 +41,13 @@ def is_order_scoped_shortage_part(part_number: str) -> bool:
     return any(part_key.startswith(prefix) for prefix in ORDER_SCOPED_PART_PREFIXES)
 
 
-def get_min_ending_stock(part_number: str) -> float:
+def get_min_ending_stock(part_number: str, ignore_ec_min: bool = False) -> float:
     part_key = normalize_part_key(part_number)
     if is_ec_low_stock_warning_exempt(part_key):
         return 0.0
     if part_key.startswith(EC_PART_PREFIX):
+        if ignore_ec_min:
+            return 0.0
         return EC_MIN_ENDING_STOCK
     # PK 包材類結存 < 1 視為缺料（無法再拆）；例外清單的 PK 料維持 0。
     if part_key.startswith(PK_MIN_ENDING_PREFIX):
@@ -55,16 +57,21 @@ def get_min_ending_stock(part_number: str) -> float:
     return 0.0
 
 
-def calculate_shortage_amount(part_number: str, ending_stock: float) -> float:
-    required_min = get_min_ending_stock(part_number)
+def calculate_shortage_amount(part_number: str, ending_stock: float, ignore_ec_min: bool = False) -> float:
+    required_min = get_min_ending_stock(part_number, ignore_ec_min=ignore_ec_min)
     return max(0.0, float(required_min) - float(ending_stock or 0))
 
 
-def calculate_current_order_shortage_amount(part_number: str, available_before: float, needed_qty: float) -> float:
+def calculate_current_order_shortage_amount(
+    part_number: str,
+    available_before: float,
+    needed_qty: float,
+    ignore_ec_min: bool = False,
+) -> float:
     if is_order_scoped_shortage_part(part_number):
         return max(0.0, float(needed_qty or 0) - max(0.0, float(available_before or 0)))
     ending_stock = float(available_before or 0) - float(needed_qty or 0)
-    return calculate_shortage_amount(part_number, ending_stock)
+    return calculate_shortage_amount(part_number, ending_stock, ignore_ec_min=ignore_ec_min)
 
 
 def _ceil_to_moq(qty: float, moq: float) -> float:

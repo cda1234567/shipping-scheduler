@@ -292,6 +292,7 @@ def _build_preview_for_batches(
         created_main_parts.add(part_upper)
 
     for batch in batches:
+        ignore_ec_min = bool(batch.get("is_sample"))
         remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
         batch_decisions = _normalize_decisions(batch.get("decisions") or decisions)
         planned_groups: list[dict] = []
@@ -328,7 +329,12 @@ def _build_preview_for_batches(
                 available_before = current_stock + prev_qty_cs
                 supplement_qty = 0.0
                 ending_without_supplement = available_before - needed_qty
-                shortage_before = calculate_current_order_shortage_amount(part_upper, available_before, needed_qty)
+                shortage_before = calculate_current_order_shortage_amount(
+                    part_upper,
+                    available_before,
+                    needed_qty,
+                    ignore_ec_min=ignore_ec_min,
+                )
                 if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part_upper, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part_upper, 0))
                     remaining_supplements[part_upper] = 0.0
@@ -337,7 +343,12 @@ def _build_preview_for_batches(
                 available_after_supply = current_stock + effective_h
                 # 永遠扣帳（即使缺料也照扣，讓庫存反映真實狀態）
                 ending_stock = available_after_supply - needed_qty
-                shortage_after = calculate_current_order_shortage_amount(part_upper, available_after_supply, needed_qty)
+                shortage_after = calculate_current_order_shortage_amount(
+                    part_upper,
+                    available_after_supply,
+                    needed_qty,
+                    ignore_ec_min=ignore_ec_min,
+                )
                 f_value = _round_away(needed_qty)
 
                 running_stock[part_upper] = ending_stock
@@ -496,6 +507,7 @@ def merge_row_to_main(
     groups: list[dict],
     decisions: dict[str, str],
     supplements: dict[str, float] | None = None,
+    is_sample: bool = False,
     backup_dir: str | None = None,
 ) -> dict:
     backup_path = backup_main_file(main_path, backup_dir) if backup_dir else None
@@ -509,6 +521,7 @@ def merge_row_to_main(
                 "model": groups[0].get("bom_model", "") if groups else "",
                 "groups": groups,
                 "supplements": supplements or {},
+                "is_sample": bool(is_sample),
             }],
             _normalize_decisions(decisions),
         )

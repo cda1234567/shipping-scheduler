@@ -138,11 +138,13 @@ class BatchDispatchRequest(BaseModel):
     order_decisions: dict[str, dict[str, str]] = Field(default_factory=dict)
     order_supplements: dict[str, dict[str, float]] = Field(default_factory=dict)
     order_supplement_notes: dict[str, dict[str, str]] = Field(default_factory=dict)
+    sample_order_ids: list[int] = Field(default_factory=list)
 
 
 class DecisionRequest(BaseModel):
     decisions: dict[str, str] = Field(default_factory=dict)
     supplements: dict[str, float] = Field(default_factory=dict)
+    is_sample: bool = False
 
 
 class RowCodeRequest(BaseModel):

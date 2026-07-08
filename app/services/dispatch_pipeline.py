@@ -33,6 +33,7 @@ class DispatchContext:
     decisions: dict[str, str] = field(default_factory=dict)
     supplements: dict[str, float] = field(default_factory=dict)
     draft: dict | None = None
+    is_sample: bool = False
 
     @property
     def order_id(self) -> int:
@@ -45,6 +46,7 @@ class DispatchContext:
             "groups": self.groups,
             "supplements": dict(self.supplements),
             "decisions": dict(self.decisions),
+            "is_sample": bool(self.is_sample),
         }
 
     @classmethod
@@ -59,6 +61,7 @@ class DispatchContext:
                 decisions=normalize_decisions(value.get("decisions")),
                 supplements=normalize_supplements(value.get("supplements")),
                 draft=dict(value.get("draft") or {}) or None,
+                is_sample=bool(value.get("is_sample")),
             )
         raise TypeError("Unsupported dispatch context value")
 
@@ -406,6 +409,7 @@ def execute_dispatch_context(
         groups=item.groups,
         decisions=item.decisions,
         supplements=item.supplements,
+        is_sample=item.is_sample,
         backup_dir=backup_dir,
     )
 
@@ -544,6 +548,7 @@ def commit_dispatch_plan(
                     plan.main_path,
                     context.decisions,
                     context.supplements,
+                    is_sample=context.is_sample,
                 )
             else:
                 result = execute_dispatch_context(

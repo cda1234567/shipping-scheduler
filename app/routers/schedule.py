@@ -247,7 +247,8 @@ def _apply_request_overrides_to_contexts(
 
     scoped_decisions = _normalize_order_decisions(req.order_decisions)
     scoped_supplements = _normalize_order_supplements(req.order_supplements)
-    if not scoped_decisions and not scoped_supplements:
+    sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
+    if not scoped_decisions and not scoped_supplements and not sample_order_ids:
         return normalized_contexts, build_context_supplement_allocations(normalized_contexts)
 
     updated_contexts: list[DispatchContext] = []
@@ -281,6 +282,7 @@ def _apply_request_overrides_to_contexts(
             all_components=context.all_components,
             decisions=decisions,
             supplements=supplements,
+            is_sample=order_id in sample_order_ids,
         ))
 
     return updated_contexts, build_context_supplement_allocations(updated_contexts)
@@ -293,6 +295,7 @@ def _execute_dispatch(
     main_path: str,
     decisions: dict[str, str],
     supplements: dict[str, float] | None = None,
+    is_sample: bool = False,
 ) -> dict:
     return execute_dispatch_context(
         DispatchContext(
@@ -301,6 +304,7 @@ def _execute_dispatch(
             all_components=all_components,
             decisions=decisions,
             supplements=supplements or {},
+            is_sample=is_sample,
         ),
         main_path,
         merge_executor=merge_row_to_main,
@@ -410,6 +414,7 @@ def _resolve_single_order_dispatch_plan(order_id: int, req: DecisionRequest, mai
         all_components=all_components,
         decisions=decisions,
         supplements=supplements,
+        is_sample=bool(req.is_sample),
     )
     supplement_allocations = (
         build_order_supplement_allocations([order_id], supplements)
@@ -427,6 +432,7 @@ def _resolve_single_order_dispatch_plan(order_id: int, req: DecisionRequest, mai
 
 
 def _resolve_batch_dispatch_plan(req: BatchDispatchRequest, normalized_order_ids: list[int], main_path: str):
+    sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
     draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
     missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
     if missing_orders and draft_id_map:
@@ -465,6 +471,7 @@ def _resolve_batch_dispatch_plan(req: BatchDispatchRequest, normalized_order_ids
                 all_components=all_components,
                 decisions=decision_allocations.get(int(order["id"]), {}),
                 supplements=supplement_allocations.get(int(order["id"]), {}),
+                is_sample=int(order["id"]) in sample_order_ids,
             ))
         use_drafts = False
 
