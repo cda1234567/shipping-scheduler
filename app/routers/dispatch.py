@@ -62,6 +62,18 @@ def _get_selected_orders(order_ids: list[int]) -> list[dict]:
     return selected_orders
 
 
+def _sort_orders_by_batch_code(orders: list[dict]) -> list[dict]:
+    def sort_key(indexed_order: tuple[int, dict]) -> tuple[int, int, int] | tuple[int, int]:
+        index, order = indexed_order
+        code = str(order.get("code") or "").strip()
+        if re.match(r"^\d+-\d+$", code):
+            major, minor = code.split("-", 1)
+            return (0, int(major), int(minor))
+        return (1, index)
+
+    return [order for _, order in sorted(enumerate(orders), key=sort_key)]
+
+
 def _load_shortage_inputs() -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
     main_path = str(db.get_setting("main_file_path") or "").strip()
     if not main_path or not Path(main_path).exists():
@@ -439,6 +451,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
     orders = _get_selected_orders(requested_ids)
     if not orders:
         raise HTTPException(400, "勾選的訂單沒有可生成的待處理內容")
+    orders = _sort_orders_by_batch_code(orders)
 
     result_by_order = _build_dispatch_result_by_order(orders, bom_map)
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])

@@ -28,6 +28,7 @@ let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
 let _completedCheckedIds = new Set();
+let _completedLastCheckedId = null;
 let _scheduleInitialized = false;
 let _batchMergeInFlight = false;
 let _modalProgressTimer = null;
@@ -65,6 +66,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
     document.getElementById("btn-completed-download-drafts")?.addEventListener("click", handleCompletedDownloadDrafts);
     document.getElementById("btn-completed-gen-dispatch")?.addEventListener("click", handleCompletedGenerateDispatch);
+    document.getElementById("completed-select-all")?.addEventListener("change", handleCompletedSelectAllChange);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
     document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
       btn.addEventListener("click", () => activateRightPanelTab(btn.dataset.rightPanelTab));
@@ -127,6 +129,15 @@ export function getCheckedOrderIds() {
 function getCompletedCheckedOrderIds() {
   const validIds = new Set(_completedRows.map(row => normalizeOrderId(row?.id)).filter(Number.isInteger));
   return [..._completedCheckedIds].filter(id => validIds.has(id));
+}
+
+function getRenderedCompletedCheckControls() {
+  return Array.from(document.querySelectorAll("#completed-scroll .completed-order-check"))
+    .map(checkbox => ({
+      checkbox,
+      id: normalizeOrderId(checkbox.dataset.orderId),
+    }))
+    .filter(item => Number.isInteger(item.id));
 }
 
 export function clearCheckedOrderIds(orderIds) {
@@ -194,6 +205,86 @@ function isCompletedFolderCollapsed(folderName) {
 function setCompletedFolderCollapsed(folderName, collapsed) {
   _completedFolderCollapsedState[completedFolderStateKey(folderName)] = Boolean(collapsed);
   saveCompletedFolderCollapsedState();
+}
+
+function normalizeCompletedFolderPath(value) {
+  return String(value || "")
+    .split("/")
+    .map(part => part.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+function validateCompletedFolderPath(folderName) {
+  const raw = String(folderName || "").trim();
+  if (!raw) return "請輸入資料夾名稱";
+  const parts = raw.split("/").map(part => part.trim());
+  if (parts.some(part => !part)) return "資料夾路徑不可有空白層級";
+  if (parts.length > 3) return "資料夾最多 3 層";
+  return "";
+}
+
+function compareCompletedFolderName(a, b) {
+  return String(a || "").localeCompare(String(b || ""), "zh-Hant", { numeric: true, sensitivity: "base" });
+}
+
+function buildCompletedFolderTree(rows = _completedRows, folders = _completedFolders) {
+  const root = { name: "", path: "", rows: [], children: new Map(), totalCount: 0, depth: 0 };
+  const ensureNode = (folderPath) => {
+    const normalized = normalizeCompletedFolderPath(folderPath);
+    if (!normalized) return root;
+    let current = root;
+    const parts = normalized.split("/");
+    let path = "";
+    for (const part of parts) {
+      path = path ? `${path}/${part}` : part;
+      if (!current.children.has(part)) {
+        current.children.set(part, { name: part, path, rows: [], children: new Map(), totalCount: 0, depth: current.depth + 1 });
+      }
+      current = current.children.get(part);
+    }
+    return current;
+  };
+
+  for (const folder of folders || []) ensureNode(folder);
+  for (const row of rows || []) {
+    const folder = normalizeCompletedFolderPath(row?.folder);
+    ensureNode(folder).rows.push(row);
+  }
+
+  const updateTotals = (node) => {
+    node.totalCount = node.rows.length;
+    node.sortedChildren = [...node.children.values()].sort((a, b) => compareCompletedFolderName(a.name, b.name));
+    for (const child of node.sortedChildren) {
+      node.totalCount += updateTotals(child);
+    }
+    return node.totalCount;
+  };
+  updateTotals(root);
+  return root;
+}
+
+function flattenCompletedFolderTree(node) {
+  const folders = [];
+  const visit = (current) => {
+    for (const child of current.sortedChildren || []) {
+      folders.push({ path: child.path, depth: child.depth });
+      visit(child);
+    }
+  };
+  visit(node);
+  return folders;
+}
+
+function completedFolderHasChildren(folderName, tree) {
+  const normalized = normalizeCompletedFolderPath(folderName);
+  if (!normalized) return false;
+  let current = tree;
+  for (const part of normalized.split("/")) {
+    current = current?.children?.get(part);
+    if (!current) return false;
+  }
+  return Boolean(current.children?.size);
 }
 
 function loadCompletedDraftPanelCollapsedState() {
@@ -659,7 +750,13 @@ async function loadCompletedRows() {
     _completedDraftsByOrderId = d.committed_merge_drafts || {};
     const validIds = new Set(_completedRows.map(row => normalizeOrderId(row?.id)).filter(Number.isInteger));
     _completedCheckedIds = new Set([..._completedCheckedIds].filter(id => validIds.has(id)));
-  } catch (_) { _completedRows = []; _completedFolders = []; _completedDraftsByOrderId = {}; }
+    if (!validIds.has(_completedLastCheckedId)) _completedLastCheckedId = null;
+  } catch (_) {
+    _completedRows = [];
+    _completedFolders = [];
+    _completedDraftsByOrderId = {};
+    _completedLastCheckedId = null;
+  }
 }
 
 // ── Calculation ───────────────────────────────────────────────────────────────
@@ -3958,13 +4055,13 @@ function renderCompletedTab() {
   const container = document.getElementById("completed-scroll");
   if (!container) return;
 
-  if (!_completedRows.length) {
+  if (!_completedRows.length && !_completedFolders.length) {
     container.innerHTML = '<div class="empty-state">尚無已發料的排程列</div>';
     updateCompletedToolbarState();
     return;
   }
 
-  // 按 folder 分組，每組依 code (X-X) 自然排序
+  // 每個資料夾的直屬訂單依 code (X-X) 自然排序
   const parseCodeSort = (code) => {
     if (!code) return [Number.MAX_SAFE_INTEGER];
     return String(code).split("-").map(seg => {
@@ -3972,13 +4069,8 @@ function renderCompletedTab() {
       return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
     });
   };
-  const grouped = {};
-  for (const r of _completedRows) {
-    const folder = r.folder || "";
-    if (!grouped[folder]) grouped[folder] = [];
-    grouped[folder].push(r);
-  }
-  for (const rows of Object.values(grouped)) {
+  const folderTree = buildCompletedFolderTree();
+  const sortRowsByCode = (rows) => {
     rows.sort((a, b) => {
       const ac = parseCodeSort(a.code);
       const bc = parseCodeSort(b.code);
@@ -3990,22 +4082,26 @@ function renderCompletedTab() {
       }
       return 0;
     });
-  }
+  };
+  const sortNodeRows = (node) => {
+    sortRowsByCode(node.rows || []);
+    for (const child of node.sortedChildren || []) sortNodeRows(child);
+  };
+  sortNodeRows(folderTree);
 
   // 所有資料夾選項（給下拉用）
-  const allFolders = _completedFolders.slice();
+  const allFolders = flattenCompletedFolderTree(folderTree);
 
   container.innerHTML = "";
 
-  // 先渲染有名字的資料夾
-  for (const folderName of allFolders) {
-    if (!grouped[folderName]) continue;
-    container.appendChild(buildFolderSection(folderName, grouped[folderName], allFolders));
+  // 先渲染有名字的資料夾樹
+  for (const node of folderTree.sortedChildren || []) {
+    container.appendChild(buildFolderSection(node, allFolders, folderTree));
   }
 
   // 最後渲染未歸檔
-  if (grouped[""]) {
-    container.appendChild(buildFolderSection("", grouped[""], allFolders));
+  if (folderTree.rows.length) {
+    container.appendChild(buildFolderSection(folderTree, allFolders, folderTree));
   }
   updateCompletedToolbarState();
 }
@@ -4013,27 +4109,55 @@ function renderCompletedTab() {
 function updateCompletedToolbarState() {
   const count = getCompletedCheckedOrderIds().length;
   const countEl = document.getElementById("completed-selected-count");
+  const selectAll = document.getElementById("completed-select-all");
+  const renderedChecks = getRenderedCompletedCheckControls();
+  const renderedCheckedCount = renderedChecks.filter(item => _completedCheckedIds.has(item.id)).length;
   if (countEl) countEl.textContent = count ? `已選 ${count} 筆` : "";
+  if (selectAll) {
+    selectAll.checked = renderedChecks.length > 0 && renderedCheckedCount === renderedChecks.length;
+    selectAll.indeterminate = renderedCheckedCount > 0 && renderedCheckedCount < renderedChecks.length;
+    selectAll.disabled = renderedChecks.length === 0;
+  }
   document.getElementById("btn-completed-download-drafts")?.toggleAttribute("disabled", count === 0);
   document.getElementById("btn-completed-gen-dispatch")?.toggleAttribute("disabled", count === 0);
 }
 
-function buildFolderSection(folderName, rows, allFolders) {
+function handleCompletedSelectAllChange(event) {
+  const checked = Boolean(event.currentTarget?.checked);
+  const renderedChecks = getRenderedCompletedCheckControls();
+  for (const item of renderedChecks) {
+    item.checkbox.checked = checked;
+    if (checked) {
+      _completedCheckedIds.add(item.id);
+    } else {
+      _completedCheckedIds.delete(item.id);
+    }
+  }
+  if (!checked) _completedLastCheckedId = null;
+  updateCompletedToolbarState();
+}
+
+function buildFolderSection(folderNode, allFolders, folderTree) {
   const section = document.createElement("div");
   section.className = "completed-folder-section";
 
+  const folderName = folderNode.path || "";
+  const rows = folderNode.rows || [];
   const isUnsorted = !folderName;
-  const label = isUnsorted ? "未歸檔" : folderName;
+  const label = isUnsorted ? "未歸檔" : folderNode.name;
   const isCollapsed = isCompletedFolderCollapsed(folderName);
+  const totalCount = isUnsorted ? rows.length : folderNode.totalCount;
+  const depth = isUnsorted ? 0 : Math.max(0, (folderNode.depth || 1) - 1);
 
   // 標題列
   const header = document.createElement("div");
   header.className = "completed-folder-header";
+  if (depth) header.style.paddingLeft = `${14 + depth * 18}px`;
   header.innerHTML = `
     <span class="folder-toggle" style="cursor:pointer;user-select:none">${isCollapsed ? "▶" : "▼"}</span>
     <span class="folder-name">${esc(label)}</span>
-    <span style="font-size:11px;color:#8e8e93;margin-left:4px">(${rows.length})</span>
-    ${!isUnsorted ? `<button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="margin-left:auto;background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
+    <span style="font-size:11px;color:#8e8e93;margin-left:4px">(${totalCount})</span>
+    ${!isUnsorted ? `<button class="btn-folder-add-child" title="新增子資料夾" style="margin-left:auto;background:none;border:none;color:#2563eb;font-size:14px;cursor:pointer;padding:2px 6px">＋</button><button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
   section.appendChild(header);
 
   // 卡片容器
@@ -4042,6 +4166,9 @@ function buildFolderSection(folderName, rows, allFolders) {
   if (isCollapsed) body.style.display = "none";
   for (const r of rows) {
     body.appendChild(buildCompletedCard(r, allFolders));
+  }
+  for (const child of folderNode.sortedChildren || []) {
+    body.appendChild(buildFolderSection(child, allFolders, folderTree));
   }
   section.appendChild(body);
 
@@ -4054,14 +4181,35 @@ function buildFolderSection(folderName, rows, allFolders) {
     setCompletedFolderCollapsed(folderName, nextCollapsed);
   });
 
+  // 新增子資料夾
+  const addChildBtn = header.querySelector(".btn-folder-add-child");
+  if (addChildBtn) {
+    addChildBtn.addEventListener("click", () => {
+      const input = document.getElementById("new-folder-name");
+      if (!input) return;
+      input.value = `${folderName}/`;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }
+
   // 刪除資料夾
   const delBtn = header.querySelector(".btn-folder-delete");
   if (delBtn) {
     delBtn.addEventListener("click", async () => {
+      if (completedFolderHasChildren(folderName, folderTree)) {
+        showToast("請先刪除或清空子資料夾");
+        return;
+      }
       if (!confirm(`確定刪除資料夾「${folderName}」？訂單會移回未歸檔。`)) return;
       try {
         delete _completedFolderCollapsedState[completedFolderStateKey(folderName)];
         saveCompletedFolderCollapsedState();
+        if (!rows.length) {
+          _completedFolders = _completedFolders.filter(item => normalizeCompletedFolderPath(item) !== folderName);
+          renderCompletedTab();
+          return;
+        }
         await apiFetch(`/api/schedule/folders/${encodeURIComponent(folderName)}`, { method: "DELETE" });
         await refreshCompleted();
       } catch (e) { showToast("失敗：" + e.message); }
@@ -4083,10 +4231,11 @@ function buildCompletedCard(r, allFolders) {
   const checked = Number.isInteger(orderId) && _completedCheckedIds.has(orderId);
 
   // 資料夾下拉選項
-  const currentFolder = r.folder || "";
+  const currentFolder = normalizeCompletedFolderPath(r.folder);
   let folderOptions = `<option value=""${currentFolder === "" ? " selected" : ""}>未歸檔</option>`;
   for (const f of allFolders) {
-    folderOptions += `<option value="${esc(f)}"${currentFolder === f ? " selected" : ""}>${esc(f)}</option>`;
+    const indent = "　".repeat(Math.max(0, (f.depth || 1) - 1));
+    folderOptions += `<option value="${esc(f.path)}"${currentFolder === f.path ? " selected" : ""}>${indent}${esc(f.path)}</option>`;
   }
 
   const draftToggleHtml = draft
@@ -4119,14 +4268,30 @@ function buildCompletedCard(r, allFolders) {
     </div>
     ${draftHtml}`;
 
-  div.querySelector(".completed-order-check")?.addEventListener("change", event => {
-    const id = normalizeOrderId(event.currentTarget?.dataset.orderId);
+  div.querySelector(".completed-order-check")?.addEventListener("click", event => {
+    const checkbox = event.currentTarget;
+    const id = normalizeOrderId(checkbox?.dataset.orderId);
     if (!Number.isInteger(id)) return;
-    if (event.currentTarget.checked) {
+    const renderedChecks = getRenderedCompletedCheckControls();
+    const currentIndex = renderedChecks.findIndex(item => item.id === id);
+    const lastIndex = renderedChecks.findIndex(item => item.id === _completedLastCheckedId);
+    if (event.shiftKey && currentIndex >= 0 && lastIndex >= 0) {
+      const start = Math.min(currentIndex, lastIndex);
+      const end = Math.max(currentIndex, lastIndex);
+      for (const item of renderedChecks.slice(start, end + 1)) {
+        item.checkbox.checked = checkbox.checked;
+        if (checkbox.checked) {
+          _completedCheckedIds.add(item.id);
+        } else {
+          _completedCheckedIds.delete(item.id);
+        }
+      }
+    } else if (checkbox.checked) {
       _completedCheckedIds.add(id);
     } else {
       _completedCheckedIds.delete(id);
     }
+    _completedLastCheckedId = id;
     updateCompletedToolbarState();
   });
 
@@ -4236,9 +4401,11 @@ async function handleCompletedGenerateDispatch() {
 
 async function handleCreateFolder() {
   const input = document.getElementById("new-folder-name");
-  const name = (input?.value || "").trim();
-  if (!name) { showToast("請輸入資料夾名稱"); return; }
-  if (_completedFolders.includes(name)) { showToast("資料夾已存在"); return; }
+  const validationMessage = validateCompletedFolderPath(input?.value || "");
+  if (validationMessage) { showToast(validationMessage); return; }
+  const name = normalizeCompletedFolderPath(input?.value || "");
+  const existingFolders = new Set(flattenCompletedFolderTree(buildCompletedFolderTree()).map(item => item.path));
+  if (existingFolders.has(name)) { showToast("資料夾已存在"); return; }
 
   // 直接建立：把一筆假訂單移過去再移回來太蠢，直接在前端記住
   // 實際上建立資料夾 = 有訂單被移進去才會出現
