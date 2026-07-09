@@ -1059,6 +1059,156 @@ def get_st_inventory_audit_log(part_number: str | None = None, limit: int = 200)
     ]
 
 
+def get_st_inventory_upload_baselines(
+    cutoff_at: str,
+    part_numbers: list[str] | None = None,
+) -> dict[str, dict]:
+    """取得每個料號在 cutoff 前最近一次 ST 盤點上傳數量。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return {}
+    normalized_parts = [
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ]
+    normalized_parts = list(dict.fromkeys(normalized_parts))
+
+    sql = """
+        SELECT id, part_number, new_qty, changed_at
+        FROM st_inventory_audit_log
+        WHERE reason='st_inventory_upload'
+          AND changed_at<=?
+    """
+    params: list[object] = [cutoff]
+    if normalized_parts:
+        placeholders = ",".join("?" * len(normalized_parts))
+        sql += f" AND part_number IN ({placeholders})"
+        params.extend(normalized_parts)
+    sql += " ORDER BY part_number, changed_at DESC, id DESC"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    baselines: dict[str, dict] = {}
+    for row in rows:
+        part = str(row["part_number"] or "").strip().upper()
+        if not part or part in baselines:
+            continue
+        baselines[part] = {
+            "part_number": part,
+            "baseline_qty": float(row["new_qty"] or 0),
+            "aligned_at": str(row["changed_at"] or ""),
+            "audit_log_id": int(row["id"]),
+        }
+    return baselines
+
+
+def get_st_inventory_audit_deltas(
+    cutoff_at: str,
+    *,
+    after_at: str | None = None,
+    part_numbers: list[str] | None = None,
+    exclude_reason: str = "st_reconcile_adjustment",
+) -> list[dict]:
+    """取得截止日前 ST audit delta；after_at 為開區間。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return []
+    normalized_parts = [
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ]
+    normalized_parts = list(dict.fromkeys(normalized_parts))
+
+    sql = """
+        SELECT id, part_number, old_qty, new_qty, delta, reason, actor, changed_at
+        FROM st_inventory_audit_log
+        WHERE changed_at<=?
+          AND delta IS NOT NULL
+    """
+    params: list[object] = [cutoff]
+    if after_at:
+        sql += " AND changed_at>?"
+        params.append(str(after_at))
+    if exclude_reason:
+        sql += " AND reason<>?"
+        params.append(str(exclude_reason))
+    if normalized_parts:
+        placeholders = ",".join("?" * len(normalized_parts))
+        sql += f" AND part_number IN ({placeholders})"
+        params.extend(normalized_parts)
+    sql += " ORDER BY changed_at, id"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "part_number": str(row["part_number"] or "").strip().upper(),
+            "old_qty": None if row["old_qty"] is None else float(row["old_qty"]),
+            "new_qty": float(row["new_qty"] or 0),
+            "delta": float(row["delta"] or 0),
+            "reason": str(row["reason"] or ""),
+            "actor": str(row["actor"] or ""),
+            "changed_at": str(row["changed_at"] or ""),
+        }
+        for row in rows
+    ]
+
+
+def get_st_dispatch_consumptions_as_of(
+    cutoff_at: str,
+    part_numbers: list[str] | None = None,
+) -> list[dict]:
+    """取得截止日時仍有效的 ST 發料消耗明細。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return []
+    normalized_parts = [
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ]
+    normalized_parts = list(dict.fromkeys(normalized_parts))
+
+    sql = """
+        SELECT
+            id, dispatch_session_id, order_id, part_number, used_qty,
+            stock_before, stock_after, package_before, package_after,
+            consumed_at, rolled_back_at
+        FROM st_dispatch_consumptions
+        WHERE consumed_at<=?
+          AND (rolled_back_at='' OR rolled_back_at>?)
+    """
+    params: list[object] = [cutoff, cutoff]
+    if normalized_parts:
+        placeholders = ",".join("?" * len(normalized_parts))
+        sql += f" AND part_number IN ({placeholders})"
+        params.extend(normalized_parts)
+    sql += " ORDER BY part_number, consumed_at, id"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "id": int(row["id"]),
+            "dispatch_session_id": int(row["dispatch_session_id"] or 0),
+            "order_id": int(row["order_id"] or 0),
+            "part_number": str(row["part_number"] or "").strip().upper(),
+            "used_qty": float(row["used_qty"] or 0),
+            "stock_before": float(row["stock_before"] or 0),
+            "stock_after": float(row["stock_after"] or 0),
+            "package_before": str(row["package_before"] or ""),
+            "package_after": str(row["package_after"] or ""),
+            "consumed_at": str(row["consumed_at"] or ""),
+            "rolled_back_at": str(row["rolled_back_at"] or ""),
+        }
+        for row in rows
+    ]
+
+
 def get_st_package_breakdowns(part_numbers: list[str] | None = None) -> dict[str, dict]:
     normalized_parts = [
         str(part).strip().upper()
