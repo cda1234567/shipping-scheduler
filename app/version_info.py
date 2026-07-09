@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.10.1"
+APP_VERSION = "v2026.07.10.2"
 APP_RELEASED_AT = "2026-07-10"
-APP_HEADLINE = "缺料計算統一由後端計算，前後端數字不再不同步"
+APP_HEADLINE = "批次 Merge 合併成一顆＋兩個選項，打樣狀態全流程一致"
 APP_CHANGELOG = [
+    {
+        "title": "批次 Merge 選項合併",
+        "items": [
+            "出貨排程工具列只保留一顆批次 Merge，重算補料與同時寫主檔改成兩個可記憶的勾選選項。",
+            "重算補料會先警告，避免不小心清掉已手填的補料或缺料決策。",
+            "打樣勾選會存進副檔，重新開啟工作區、下載副檔、寫主檔與生成發料單時都會沿用同一個打樣規則。",
+        ],
+    },
     {
         "title": "算料工作區後端統一計算",
         "items": [

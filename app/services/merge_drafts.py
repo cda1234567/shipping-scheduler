@@ -165,6 +165,8 @@ def _sanitize_resolved_shortage_decisions(
     running_stock: dict[str, float],
     decisions: dict[str, str] | None = None,
     supplements: dict[str, float] | None = None,
+    *,
+    ignore_ec_min: bool = False,
 ) -> dict[str, str]:
     sanitized = _normalize_decisions(decisions)
     normalized_supplements = _normalize_supplements(supplements)
@@ -177,12 +179,18 @@ def _sanitize_resolved_shortage_decisions(
         prev_qty_cs = float(summary.get("prev_qty_cs") or 0)
         needed_qty = float(summary.get("needed_qty") or 0)
         available_before = current_stock + prev_qty_cs
-        shortage_before = calculate_current_order_shortage_amount(part, available_before, needed_qty)
+        shortage_before = calculate_current_order_shortage_amount(
+            part,
+            available_before,
+            needed_qty,
+            ignore_ec_min=ignore_ec_min,
+        )
         planned_supplement = float(normalized_supplements.get(part, 0) or 0)
         shortage_with_planned_supply = calculate_current_order_shortage_amount(
             part,
             available_before + planned_supplement,
             needed_qty,
+            ignore_ec_min=ignore_ec_min,
         )
 
         if shortage_before <= 0 or (planned_supplement > 0 and shortage_with_planned_supply <= 0):
@@ -475,6 +483,7 @@ def _plan_order_draft(
     st_inventory_stock = st_inventory_stock or {}
     decisions = _normalize_decisions(decisions if decisions is not None else draft.get("decisions"))
     remaining_supplements = _normalize_supplements(supplements if supplements is not None else draft.get("supplements"))
+    ignore_ec_min = bool(draft.get("is_sample"))
     file_plans: list[dict] = []
     shortages: list[dict] = []
     schedule_order_qty = coerce_qty(order.get("order_qty"))
@@ -520,6 +529,7 @@ def _plan_order_draft(
             running_stock,
             decisions,
             remaining_supplements,
+            ignore_ec_min=ignore_ec_min,
         )
 
         for part, summary in part_totals.items():
@@ -531,7 +541,12 @@ def _plan_order_draft(
 
             available_before = current_stock + prev_qty_cs
             ending_without_supplement = available_before - needed_qty
-            shortage_before = calculate_current_order_shortage_amount(part, available_before, needed_qty)
+            shortage_before = calculate_current_order_shortage_amount(
+                part,
+                available_before,
+                needed_qty,
+                ignore_ec_min=ignore_ec_min,
+            )
             supplement_qty = 0.0
             if decision != "Shortage" and remaining_supplements.get(part, 0) > 0:
                 supplement_qty = float(remaining_supplements.get(part, 0))
@@ -546,7 +561,12 @@ def _plan_order_draft(
                 shortage_after = shortage_before
             else:
                 ending_stock = available_after_supply - needed_qty
-                shortage_after = calculate_current_order_shortage_amount(part, available_after_supply, needed_qty)
+                shortage_after = calculate_current_order_shortage_amount(
+                    part,
+                    available_after_supply,
+                    needed_qty,
+                    ignore_ec_min=ignore_ec_min,
+                )
 
             running_stock[part] = ending_stock
 
@@ -679,6 +699,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
         normalized_overrides[int(order_id)] = {
             "decisions": _normalize_decisions((payload or {}).get("decisions")),
             "supplements": _normalize_supplements((payload or {}).get("supplements")),
+            "is_sample": bool((payload or {}).get("is_sample")),
         }
 
     persisted_decisions_by_order = _get_persisted_decision_map(normalized_ids)
@@ -691,6 +712,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
         payload = normalized_overrides.get(raw_order_id, {})
         decisions = payload.get("decisions", persisted_decisions_by_order.get(raw_order_id, {}))
         supplements = payload.get("supplements", persisted_supplements_by_order.get(raw_order_id, {}))
+        is_sample = bool(payload.get("is_sample", existing.get("is_sample", False)))
         db.replace_merge_draft(
             order_id=raw_order_id,
             main_file_path=main_path,
@@ -699,6 +721,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             decisions=decisions,
             supplements=supplements,
             shortages=existing.get("shortages", []),
+            is_sample=is_sample,
         )
 
     t0 = time.monotonic()
@@ -758,6 +781,7 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
             decisions=effective_decisions,
             supplements=effective_supplements,
             shortages=plan["shortages"],
+            is_sample=bool(draft.get("is_sample")),
         )
         refreshed = db.get_active_merge_draft_for_order(int(order["id"]))
         if not refreshed:
@@ -886,6 +910,7 @@ def _serialize_draft_summary(
         "main_loaded_at": draft.get("main_loaded_at", ""),
         "updated_at": draft.get("updated_at", ""),
         "committed_at": draft.get("committed_at", ""),
+        "is_sample": bool(draft.get("is_sample")),
         "supplements": _normalize_supplements(supplements or {}),
         "decisions": _normalize_decisions(decisions or {}),
         "shortages": draft.get("shortages", []),
@@ -967,6 +992,7 @@ def get_draft_detail(draft_id: int) -> dict:
             "main_loaded_at": draft.get("main_loaded_at", ""),
             "updated_at": draft.get("updated_at", ""),
             "committed_at": draft.get("committed_at", ""),
+            "is_sample": bool(draft.get("is_sample")),
             "supplements": supplements,
             "decisions": decisions,
             "shortages": draft.get("shortages", []),

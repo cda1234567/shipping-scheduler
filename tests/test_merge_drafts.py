@@ -564,6 +564,27 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(shortage["suggested_qty"], 11.0)
         self.assertEqual(plan["file_plans"][0]["purchase_parts"], [])
 
+    def test_plan_order_draft_sample_ignores_ec_minimum_stock(self):
+        order = {"id": 23, "code": "3-S", "model": "MODEL-SAMPLE"}
+        draft = {"decisions": {}, "supplements": {}, "is_sample": True}
+        bom_files = [{"id": "bom-sample", "model": "MODEL-SAMPLE", "group_model": "MODEL-SAMPLE"}]
+        running_stock = {"EC-20080A": 99.0}
+        moq_map = {"EC-20080A": 1000.0}
+        components = [{
+            "part_number": "EC-20080A",
+            "description": "Sample cap",
+            "needed_qty": 1,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with patch("app.services.merge_drafts.db.get_bom_components", return_value=components):
+            plan = merge_drafts._plan_order_draft(order, draft, bom_files, running_stock, moq_map)
+
+        self.assertEqual(plan["shortages"], [])
+        self.assertEqual(plan["file_plans"][0]["supplements"], {})
+        self.assertEqual(running_stock["EC-20080A"], 98.0)
+
     def test_plan_order_draft_marks_manual_supplement_orange_when_qty_exceeds_st_stock(self):
         order = {"id": 24, "code": "3-3", "model": "MODEL-MANUAL"}
         draft = {"decisions": {}, "supplements": {"PART-MANUAL": 20000}}

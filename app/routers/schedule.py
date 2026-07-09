@@ -346,7 +346,7 @@ def _apply_request_overrides_to_contexts(
             all_components=context.all_components,
             decisions=decisions,
             supplements=supplements,
-            is_sample=order_id in sample_order_ids,
+            is_sample=(order_id in sample_order_ids) if sample_order_ids else bool(context.is_sample),
         ))
 
     return updated_contexts, build_context_supplement_allocations(updated_contexts)
@@ -438,6 +438,7 @@ def _load_active_merge_draft_context(draft_id: int, main_path: str):
         all_components=all_components,
         decisions=_normalize_decisions(db.get_order_decisions([order_id]).get(order_id, {})),
         supplements=_normalize_supplements((db.get_order_supplements([order_id]).get(order_id) or {})),
+        is_sample=bool(draft.get("is_sample")),
     )
 
 
@@ -648,6 +649,10 @@ def _apply_batch_draft_updates(req: BatchDispatchRequest) -> tuple[list[int], li
     )
     db.replace_order_decisions(normalized_order_ids, decision_allocations)
     db.replace_order_supplements(normalized_order_ids, supplement_allocations)
+    db.set_merge_draft_sample_flags(
+        normalized_order_ids,
+        set(_normalize_order_ids(req.sample_order_ids)),
+    )
     refreshed = rebuild_merge_drafts(normalized_order_ids)
     drafts = get_schedule_draft_map()
     return normalized_order_ids, refreshed, drafts

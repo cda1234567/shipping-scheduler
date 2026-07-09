@@ -10,7 +10,8 @@ import openpyxl
 from fastapi.testclient import TestClient
 
 from main import app
-from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _generate_dispatch_response, _get_selected_orders
+from app.routers import bom as bom_router
+from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _build_order_dispatch_context, _generate_dispatch_response, _get_selected_orders
 from app.services.dispatch_form_generator import generate_dispatch_form
 
 
@@ -59,6 +60,70 @@ class DispatchGenerationTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=3, column=3).value, "PART-ZERO")
             self.assertEqual(ws.cell(row=3, column=5).value, 0)
             wb.close()
+
+    def test_bom_dispatch_download_sample_draft_ignores_ec_minimum_stock(self):
+        target_boms = [{"id": "bom-sample", "model": "MODEL-S", "group_model": "MODEL-S"}]
+        order = {
+            "id": 7,
+            "status": "merged",
+            "po_number": "PO-S",
+            "model": "MODEL-S",
+            "order_qty": 1,
+        }
+        components = [{
+            "part_number": "EC-20080A",
+            "description": "Sample cap",
+            "needed_qty": 1,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with patch("app.routers.bom._build_dispatch_running_stock", return_value={"EC-20080A": 99.0}), \
+             patch("app.routers.bom.db.get_st_inventory_stock", return_value={}), \
+             patch("app.routers.bom.db.get_bom_components", return_value=components), \
+             patch("app.routers.bom.db.get_order", return_value=order), \
+             patch("app.routers.bom.db.get_active_merge_draft_for_order", return_value={"is_sample": 1}):
+            _, computed_supplements, _, _, _ = bom_router._build_order_based_export_values(
+                target_boms,
+                [7],
+                {"EC-20080A": 1000},
+                order_supplements={7: {"EC-20080A": 1000}},
+            )
+
+        self.assertEqual(computed_supplements["bom-sample"].get("EC-20080A", 0), 0)
+
+    def test_dispatch_generation_sample_draft_does_not_fallback_to_ec_suggestion(self):
+        order = {"id": 8, "status": "merged", "model": "MODEL-S", "code": "S-1"}
+        result_by_order = {
+            8: {
+                "shortages": [{
+                    "part_number": "EC-20080A",
+                    "description": "Sample cap",
+                    "suggested_qty": 1000,
+                    "shortage_amount": 2,
+                }],
+                "customer_material_shortages": [],
+            },
+        }
+        active_draft = {
+            "order_id": 8,
+            "is_sample": True,
+            "decisions": {},
+            "supplements": {},
+            "shortages": [],
+        }
+
+        with patch("app.routers.dispatch.db.get_decisions_for_order", return_value={}):
+            context = _build_order_dispatch_context(
+                order,
+                result_by_order,
+                saved_supplements={8: {}},
+                decision_overrides={},
+                bom_map={"MODEL-S": [{"part_number": "EC-20080A", "description": "Sample cap"}]},
+                active_draft=active_draft,
+            )
+
+        self.assertEqual(context["candidate_parts"], [])
 
     def test_dispatch_generate_uses_selected_orders_saved_supplements_and_sample_layout(self):
         orders = {

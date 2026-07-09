@@ -147,7 +147,7 @@ def _get_active_reviewed_drafts_by_order(order_ids: list[int]) -> dict[int, dict
 def _is_reviewed_active_draft(draft: dict | None) -> bool:
     if not draft:
         return False
-    return bool((draft.get("decisions") or {}) or (draft.get("supplements") or {}))
+    return bool(draft.get("is_sample") or (draft.get("decisions") or {}) or (draft.get("supplements") or {}))
 
 
 def _build_order_dispatch_context(

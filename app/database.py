@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS merge_drafts (
     decisions_json    TEXT    NOT NULL DEFAULT '{}',
     supplements_json  TEXT    NOT NULL DEFAULT '{}',
     shortages_json    TEXT    NOT NULL DEFAULT '[]',
+    is_sample          INTEGER NOT NULL DEFAULT 0,
     created_at        TEXT    NOT NULL DEFAULT '',
     updated_at        TEXT    NOT NULL DEFAULT '',
     committed_at      TEXT    NOT NULL DEFAULT '',
@@ -480,6 +481,8 @@ def init_db():
         draft_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_drafts)").fetchall()]
         if draft_cols and "main_file_mtime_ns" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
+        if draft_cols and "is_sample" not in draft_cols:
+            conn.execute("ALTER TABLE merge_drafts ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0")
         supplement_cols = [r[1] for r in conn.execute("PRAGMA table_info(order_supplements)").fetchall()]
         if supplement_cols and "note" not in supplement_cols:
             conn.execute("ALTER TABLE order_supplements ADD COLUMN note TEXT NOT NULL DEFAULT ''")
@@ -2338,6 +2341,7 @@ def replace_merge_draft(
     decisions: dict[str, str] | None = None,
     supplements: dict[str, float] | None = None,
     shortages: list[dict] | None = None,
+    is_sample: bool = False,
 ) -> dict:
     now = _now()
     with get_conn() as conn:
@@ -2351,7 +2355,7 @@ def replace_merge_draft(
             conn.execute(
                 "UPDATE merge_drafts SET "
                 "main_file_path=?, main_file_mtime_ns=?, main_loaded_at=?, "
-                "decisions_json=?, supplements_json=?, shortages_json=?, updated_at=?, deleted_at='' "
+                "decisions_json=?, supplements_json=?, shortages_json=?, is_sample=?, updated_at=?, deleted_at='' "
                 "WHERE id=?",
                 (
                     main_file_path,
@@ -2360,6 +2364,7 @@ def replace_merge_draft(
                     _json_dumps(decisions or {}),
                     _json_dumps(supplements or {}),
                     _json_dumps(shortages or []),
+                    1 if is_sample else 0,
                     now,
                     draft_id,
                 ),
@@ -2368,8 +2373,8 @@ def replace_merge_draft(
             cur = conn.execute(
                 "INSERT INTO merge_drafts("
                 "order_id, status, main_file_path, main_file_mtime_ns, main_loaded_at, "
-                "decisions_json, supplements_json, shortages_json, created_at, updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "decisions_json, supplements_json, shortages_json, is_sample, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     order_id,
                     "active",
@@ -2379,6 +2384,7 @@ def replace_merge_draft(
                     _json_dumps(decisions or {}),
                     _json_dumps(supplements or {}),
                     _json_dumps(shortages or []),
+                    1 if is_sample else 0,
                     now,
                     now,
                 ),
@@ -2396,11 +2402,42 @@ def replace_merge_draft(
         "decisions": dict(decisions or {}),
         "supplements": dict(supplements or {}),
         "shortages": list(shortages or []),
+        "is_sample": bool(is_sample),
         "created_at": created_at,
         "updated_at": now,
         "committed_at": "",
         "deleted_at": "",
     }
+
+
+def set_merge_draft_sample_flags(order_ids: list[int], sample_order_ids: set[int] | list[int]) -> int:
+    normalized_ids: list[int] = []
+    for order_id in order_ids or []:
+        try:
+            normalized_ids.append(int(order_id))
+        except (TypeError, ValueError):
+            continue
+    normalized_ids = list(dict.fromkeys(normalized_ids))
+    if not normalized_ids:
+        return 0
+
+    sample_ids = set()
+    for order_id in sample_order_ids or []:
+        try:
+            sample_ids.add(int(order_id))
+        except (TypeError, ValueError):
+            continue
+
+    updated = 0
+    now = _now()
+    with get_conn() as conn:
+        for order_id in normalized_ids:
+            cur = conn.execute(
+                "UPDATE merge_drafts SET is_sample=?, updated_at=? WHERE order_id=? AND status='active'",
+                (1 if order_id in sample_ids else 0, now, order_id),
+            )
+            updated += int(cur.rowcount or 0)
+    return updated
 
 
 def replace_merge_draft_files(draft_id: int, files: list[dict]):

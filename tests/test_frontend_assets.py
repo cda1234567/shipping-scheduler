@@ -454,12 +454,15 @@ class FrontendAssetTests(unittest.TestCase):
             re.M,
         ))
 
-    def test_batch_merge_button_sends_reset_stored_true_and_commit_variant_sends_false(self):
-        # 「批次 Merge」(綠) 走重算 → reset_stored: true
-        # 「批次 Merge + 寫主檔」(紅) 不重算 → reset_stored: false
+    def test_batch_merge_button_uses_checkbox_options_for_reset_and_commit(self):
+        # 批次 Merge 只剩一顆按鈕，reset_stored 與寫主檔由兩個 checkbox 控制。
         root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
+        self.assertIn('id="batch-merge-reset-stored"', index_html)
+        self.assertIn('id="batch-merge-commit"', index_html)
+        self.assertNotIn('id="btn-batch-merge-commit"', index_html)
         match = re.search(
             r"async function runBatchMergeWorkflow\([^)]*\) \{(?P<body>.*?)\n\}",
             schedule_module,
@@ -468,7 +471,9 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIsNotNone(match)
         body = match.group("body")
         self.assertIn('apiPost("/api/schedule/batch-merge", {', body)
-        self.assertIn("reset_stored: !commitAfterModal,", body)
+        self.assertIn("const { resetStored, commitAfterModal } = getBatchMergeOptions();", body)
+        self.assertIn("reset_stored: resetStored,", body)
+        self.assertIn("countStoredDraftInputsForTargets", body)
 
     def test_write_main_modal_footer_no_longer_offers_download_bom(self):
         root = Path(__file__).resolve().parents[1]

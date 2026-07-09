@@ -611,6 +611,7 @@ class BomDispatchDownloadRequest(BaseModel):
     order_ids: List[int] = Field(default_factory=list)
     supplements: Dict[str, float]
     order_supplements: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    sample_order_ids: List[int] = Field(default_factory=list)
     header_overrides: Dict[str, Dict[str, str]] = Field(default_factory=dict)
     carry_overs: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
@@ -655,6 +656,7 @@ def _build_order_based_export_values(
     order_ids: list[int],
     supplements: dict[str, float],
     order_supplements: dict[int, dict[str, float]] | None = None,
+    sample_order_ids: list[int] | None = None,
 ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]], dict[str, set[str]], dict[str, float], dict[str, dict]]:
     if not order_ids or not target_boms:
         return {}, {}, {}, {}, {}
@@ -680,6 +682,13 @@ def _build_order_based_export_values(
         }
         for order_id, part_map in (order_supplements or {}).items()
     }
+    request_sample_ids = {int(order_id) for order_id in (sample_order_ids or [])}
+    draft_sample_ids = {
+        int(order_id)
+        for order_id in order_ids
+        if bool((db.get_active_merge_draft_for_order(int(order_id)) or {}).get("is_sample"))
+    }
+    effective_sample_ids = request_sample_ids or draft_sample_ids
 
     for order_id in order_ids:
         order = db.get_order(int(order_id))
@@ -689,6 +698,7 @@ def _build_order_based_export_values(
         order_model = _normalize_lookup_key(order.get("model"))
         if not order_model:
             continue
+        ignore_ec_min = int(order_id) in effective_sample_ids
         remaining_order_supplements = dict(normalized_order_supplements.get(int(order_id), {}))
 
         matched_boms = [bom for bom in target_boms if order_model in _get_bom_match_keys(bom)]
@@ -733,11 +743,16 @@ def _build_order_based_export_values(
                     available_before
                     - float(totals.get("needed_qty") or 0)
                 )
-                shortage_without_supplement = calculate_shortage_amount(part, ending_without_supplement)
+                shortage_without_supplement = calculate_shortage_amount(
+                    part,
+                    ending_without_supplement,
+                    ignore_ec_min=ignore_ec_min,
+                )
                 current_order_shortage = calculate_current_order_shortage_amount(
                     part,
                     available_before,
                     float(totals.get("needed_qty") or 0),
+                    ignore_ec_min=ignore_ec_min,
                 )
 
                 supplement_qty = 0.0
@@ -949,11 +964,16 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
         req.order_ids,
         supplements,
         order_supplements=effective_order_supplements,
+        sample_order_ids=req.sample_order_ids,
     )
     if req.order_ids:
         db.replace_order_supplements(
             req.order_ids,
             effective_order_supplements,
+        )
+        db.set_merge_draft_sample_flags(
+            req.order_ids,
+            {int(order_id) for order_id in req.sample_order_ids},
         )
     output_files: list[tuple[str, io.BytesIO]] = []
 

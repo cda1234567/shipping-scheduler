@@ -56,6 +56,8 @@ let _lastShortagePanelData = { shortages: [], csShortages: [], mainDeficits: [] 
 const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];
 const PURCHASE_REMINDER_PREFIXES = ["IC-", "OC-", "UC-"];
 const PURCHASE_REMINDER_FALLBACK_THRESHOLD = 100;
+const BATCH_MERGE_RESET_STORAGE_KEY = "shippingScheduler.batchMerge.resetStored";
+const BATCH_MERGE_COMMIT_STORAGE_KEY = "shippingScheduler.batchMerge.commit";
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -64,7 +66,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
-    document.getElementById("btn-batch-merge-commit")?.addEventListener("click", handleBatchMergeCommit);
+    initBatchMergeOptions();
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
@@ -611,6 +613,56 @@ function normalizeOrderSupplementDetailState(orderSupplementDetails = {}) {
     }
   }
   return normalized;
+}
+
+function readStoredBoolean(key, fallback = false) {
+  try {
+    const value = localStorage.getItem(key);
+    if (value === null) return fallback;
+    return value === "1" || value === "true";
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function writeStoredBoolean(key, value) {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch (_) {}
+}
+
+function getBatchMergeOptions() {
+  return {
+    resetStored: Boolean(document.getElementById("batch-merge-reset-stored")?.checked),
+    commitAfterModal: Boolean(document.getElementById("batch-merge-commit")?.checked),
+  };
+}
+
+function formatBatchMergeMode({ resetStored = false, commitAfterModal = false } = {}) {
+  const resetText = resetStored ? "重算補料" : "沿用補料";
+  const commitText = commitAfterModal ? "寫主檔" : "只建副檔";
+  return `模式：${resetText}＋${commitText}`;
+}
+
+function updateBatchMergeModeLabel() {
+  const label = document.getElementById("batch-merge-mode");
+  if (label) label.textContent = formatBatchMergeMode(getBatchMergeOptions());
+}
+
+function initBatchMergeOptions() {
+  const resetInput = document.getElementById("batch-merge-reset-stored");
+  const commitInput = document.getElementById("batch-merge-commit");
+  if (resetInput) resetInput.checked = readStoredBoolean(BATCH_MERGE_RESET_STORAGE_KEY, false);
+  if (commitInput) commitInput.checked = readStoredBoolean(BATCH_MERGE_COMMIT_STORAGE_KEY, false);
+  resetInput?.addEventListener("change", () => {
+    writeStoredBoolean(BATCH_MERGE_RESET_STORAGE_KEY, resetInput.checked);
+    updateBatchMergeModeLabel();
+  });
+  commitInput?.addEventListener("change", () => {
+    writeStoredBoolean(BATCH_MERGE_COMMIT_STORAGE_KEY, commitInput.checked);
+    updateBatchMergeModeLabel();
+  });
+  updateBatchMergeModeLabel();
 }
 
 function getStoredOrderSupplementQty(orderId, partNumber) {
@@ -2569,6 +2621,7 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
   const decisions = _collectModalDecisions();
   const orderSupplements = _collectModalOrderSupplements();
   const orderDecisions = _collectModalOrderDecisions();
+  const sampleOrderIds = collectModalSampleOrderIds();
   await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
   Object.entries(decisions).forEach(([part, decision]) => {
     setLocalDecision(part, decision);
@@ -2580,6 +2633,7 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
     supplements,
     order_decisions: orderDecisions,
     order_supplements: orderSupplements,
+    sample_order_ids: sampleOrderIds,
   });
   await refreshScheduleOnly();
   if (!silent) showToast("補料已寫入副檔");
@@ -2736,7 +2790,11 @@ async function showBatchMergeDraftModal(targets) {
   _modalDraftBaseDecisions = {};
   _modalDraftBaseSupplements = {};
   _modalDraftVisibleParts = [];
-  _modalResetStored = !commitAfterSave;
+  _modalResetStored = Boolean(_modalResetStored);
+  const modeText = formatBatchMergeMode({
+    resetStored: _modalResetStored,
+    commitAfterModal: commitAfterSave,
+  });
 
   const { list, footer } = ensureCalcWorkspaceReady(
     _modalCommitAfterSave ? "批次 Merge 並寫入主檔" : "批次 Merge 補料確認",
@@ -2760,6 +2818,7 @@ async function showBatchMergeDraftModal(targets) {
         <div id="modal-download-progress-fill" class="modal-progress-fill"></div>
       </div>
     </div>
+    <div class="batch-merge-mode">${modeText}</div>
     <button id="modal-save-draft" class="btn btn-success btn-sm">${commitAfterSave ? "確認補料並寫主檔" : "確認補料"}</button>
     <button id="modal-download-bom" class="btn btn-primary btn-sm">確認補料並下載副檔</button>
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
@@ -3937,6 +3996,7 @@ async function handleModalDownloadBom() {
   const orderSupplements = _collectModalOrderSupplements();
   const orderDecisions = _collectModalOrderDecisions();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  const sampleOrderIds = collectModalSampleOrderIds();
   const headerOverrides = buildModalHeaderOverrides();
 
   try {
@@ -3958,6 +4018,7 @@ async function handleModalDownloadBom() {
         order_ids: targetOrderIds,
         supplements,
         order_supplements: orderSupplements,
+        sample_order_ids: sampleOrderIds,
         header_overrides: headerOverrides,
       },
     });
@@ -5845,14 +5906,24 @@ async function submitManualSupplement() {
 
 // Safe overrides for draft workbench rendering.
 async function handleBatchMerge() {
-  await runBatchMergeWorkflow({ commitAfterModal: false });
+  await runBatchMergeWorkflow();
 }
 
-async function handleBatchMergeCommit() {
-  await runBatchMergeWorkflow({ commitAfterModal: true });
+function countStoredDraftInputsForTargets(targets = []) {
+  const seen = new Set();
+  for (const row of targets || []) {
+    const orderId = normalizeOrderId(row?.id);
+    if (!Number.isInteger(orderId)) continue;
+    const draft = _draftsByOrderId?.[orderId] || {};
+    Object.keys(normalizeDecisionMap(draft.decisions || {})).forEach(part => seen.add(`${orderId}:${part}:d`));
+    Object.keys(normalizeSupplementMap(draft.supplements || {})).forEach(part => seen.add(`${orderId}:${part}:s`));
+    Object.keys(normalizeSupplementMap(_orderSupplementsByOrderId?.[orderId] || {})).forEach(part => seen.add(`${orderId}:${part}:os`));
+  }
+  return seen.size;
 }
 
-async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
+async function runBatchMergeWorkflow() {
+  const { resetStored, commitAfterModal } = getBatchMergeOptions();
   if (_batchMergeInFlight) {
     showToast("批次 merge 進行中，請稍候");
     return;
@@ -5890,14 +5961,20 @@ async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
     });
     return;
   }
+  if (resetStored) {
+    const storedCount = countStoredDraftInputsForTargets(mergeableTargets);
+    if (storedCount > 0 && !confirm(`重算會清掉你手填的 ${storedCount} 筆補料，確定？`)) {
+      return;
+    }
+  }
 
-  const button = document.getElementById(commitAfterModal ? "btn-batch-merge-commit" : "btn-batch-merge");
-  const originalText = button?.textContent || (commitAfterModal ? "批次 Merge + 寫主檔" : "批次 Merge");
+  const button = document.getElementById("btn-batch-merge");
+  const originalText = button?.textContent || "批次 Merge";
   _batchMergeInFlight = true;
   try {
     if (button) {
       button.disabled = true;
-      button.textContent = commitAfterModal ? "建立副檔中..." : "建立中...";
+      button.textContent = "建立中...";
     }
     const targetIds = mergeableTargets.map(row => row.id);
     const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);
@@ -5910,11 +5987,11 @@ async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
         }
         return apiPost("/api/schedule/batch-merge", {
           order_ids: targetIds,
-          reset_stored: !commitAfterModal,
+          reset_stored: resetStored,
         });
       },
       {
-        title: commitAfterModal ? "正在建立強制寫入副檔" : "正在批次建立副檔",
+        title: "正在批次建立副檔",
         detail: `共 ${mergeableTargets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
       },
     );
@@ -5937,6 +6014,7 @@ async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
     }
     try {
       _modalCommitAfterSave = commitAfterModal;
+      _modalResetStored = resetStored;
       await openBatchMergeDraftModalStable(targetIds, targets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
