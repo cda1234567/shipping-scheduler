@@ -3564,7 +3564,7 @@ async function handleCommitDraft(draftId, model) {
 
   try {
     const result = await apiPost(`/api/schedule/drafts/${draftId}/commit`);
-    showToast(`已依副檔寫入主檔，merge ${result.merged_parts} 筆`, { tone: "success" });
+    showDispatchReconcileToast(result, `已依副檔寫入主檔，merge ${result.merged_parts} 筆`, { tone: "success" });
     _checkedIds.delete(result.order_id);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();

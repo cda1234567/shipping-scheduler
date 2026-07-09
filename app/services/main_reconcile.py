@@ -80,6 +80,14 @@ def verify_main_write(main_path: str, plan_rows: list[dict]) -> dict:
             expected_f = _try_float(row.get("f_value")) or 0.0
             expected_j = _try_float(row.get("j_value")) or 0.0
             current_stock = _try_float(row.get("current_stock")) or 0.0
+            effective_h_raw = _try_float(row.get("effective_h_raw"))
+            if effective_h_raw is None:
+                effective_h_raw = expected_h
+            needed_qty_raw = _try_float(row.get("needed_qty_raw"))
+            if needed_qty_raw is None:
+                needed_qty_raw = _try_float(row.get("needed_qty"))
+            if needed_qty_raw is None:
+                needed_qty_raw = expected_f
 
             actual_h = _try_float(ws.cell(row=row_idx, column=col_h).value)
             actual_f = _try_float(ws.cell(row=row_idx, column=col_f).value)
@@ -93,10 +101,8 @@ def verify_main_write(main_path: str, plan_rows: list[dict]) -> dict:
                 if not _same_number(expected, actual):
                     mismatches.append(_mismatch(part, "cell", column, expected, actual))
 
-            actual_h_num = actual_h or 0.0
-            actual_f_num = actual_f or 0.0
             actual_j_num = actual_j or 0.0
-            conserved_j = _round_away(current_stock + actual_h_num - actual_f_num)
+            conserved_j = _round_away(current_stock + effective_h_raw - needed_qty_raw)
             if not _same_number(conserved_j, actual_j_num):
                 mismatches.append(_mismatch(part, "conservation", "J", conserved_j, actual_j_num))
 
