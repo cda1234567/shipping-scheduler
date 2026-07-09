@@ -15,6 +15,8 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 
 from ..config import cfg
+from .. import database as db
+from ..snapshot_sync import refresh_snapshot_from_main
 from .local_time import local_now
 from .xls_reader import open_workbook_any
 from .merge_to_main import (
@@ -307,4 +309,61 @@ def reverse_defectives_from_main(
         "reversed_count": len(results),
         "skipped_parts": skipped,
         "results": results,
+    }
+
+
+OVERRUN_DEDUCT_HEADER = "加工多打扣帳"
+DEFECTIVE_DEDUCT_HEADER = "不良品扣帳"
+
+
+def replay_defectives_after(main_path: str, cutoff: str) -> dict:
+    records = db.get_defective_records_after(cutoff)
+    if not records:
+        refresh_snapshot_from_main(main_path)
+        return {"replayed_batches": 0, "replayed_records": 0, "skipped_parts": []}
+
+    grouped: list[dict] = []
+    batch_map: dict[int, dict] = {}
+    for row in records:
+        batch_id = int(row.get("batch_id") or 0)
+        if batch_id not in batch_map:
+            batch_map[batch_id] = {"batch_id": batch_id, "records": []}
+            grouped.append(batch_map[batch_id])
+        batch_map[batch_id]["records"].append(row)
+
+    replayed_batches = 0
+    replayed_records = 0
+    skipped_parts: list[str] = []
+    for group in grouped:
+        items = [
+            {
+                "part_number": row.get("part_number"),
+                "description": row.get("description", ""),
+                "defective_qty": row.get("defective_qty"),
+            }
+            for row in group["records"]
+            if float(row.get("defective_qty") or 0) > 0 and str(row.get("part_number") or "").strip()
+        ]
+        if not items:
+            continue
+
+        is_overrun = any(
+            str(row.get("action_taken") or "").strip() == OVERRUN_DEDUCT_HEADER
+            for row in group["records"]
+        )
+        result = deduct_defectives_from_main(
+            main_path,
+            items,
+            backup_dir=None,
+            entry_header=OVERRUN_DEDUCT_HEADER if is_overrun else DEFECTIVE_DEDUCT_HEADER,
+        )
+        replayed_batches += 1
+        replayed_records += int(result.get("deducted_count") or 0)
+        skipped_parts.extend(result.get("skipped_parts") or [])
+
+    refresh_snapshot_from_main(main_path)
+    return {
+        "replayed_batches": replayed_batches,
+        "replayed_records": replayed_records,
+        "skipped_parts": skipped_parts,
     }

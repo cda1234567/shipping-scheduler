@@ -89,7 +89,41 @@ def _get_st_inventory_stock() -> dict[str, float]:
     return db.get_st_inventory_stock()
 
 
-def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict, dict, list[dict]]:
+def _build_wiped_defectives(cutoff: str) -> list[dict]:
+    batches = db.get_defective_batch_summaries_after(cutoff)
+    if not batches:
+        return []
+
+    records_by_batch: dict[int, list[dict]] = {}
+    action_by_batch: dict[int, str] = {}
+    records = db.get_defective_records_after(cutoff)
+    for row in records:
+        batch_id = int(row.get("batch_id") or 0)
+        records_by_batch.setdefault(batch_id, []).append({
+            "part_number": row.get("part_number", ""),
+            "defective_qty": row.get("defective_qty", 0),
+        })
+        action = str(row.get("action_taken") or "").strip()
+        if action and batch_id not in action_by_batch:
+            action_by_batch[batch_id] = action
+
+    wiped = []
+    for batch in batches:
+        batch_id = int(batch.get("id") or 0)
+        items = records_by_batch.get(batch_id, [])
+        if not items:
+            continue
+        wiped.append({
+            "batch_id": batch_id,
+            "filename": batch.get("filename", ""),
+            "imported_at": batch.get("imported_at", ""),
+            "action_taken": action_by_batch.get(batch_id, "不良品扣帳"),
+            "items": items,
+        })
+    return wiped
+
+
+def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict, dict, list[dict], list[dict], str]:
     order = db.get_order(order_id)
     if not order:
         raise HTTPException(404, "找不到此訂單")
@@ -122,7 +156,10 @@ def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict
     if not affected_orders:
         raise HTTPException(400, "找不到可反悔的訂單資料")
 
-    return order, session, affected_orders
+    cutoff = str(tail_sessions[0].get("dispatched_at") or "")
+    wiped_defectives = _build_wiped_defectives(cutoff) if force and cutoff else []
+
+    return order, session, affected_orders, wiped_defectives, cutoff
 
 
 def _merge_order_decision_allocations(
@@ -1119,19 +1156,21 @@ def commit_schedule_draft(draft_id: int):
 
 @router.get("/schedule/orders/{order_id}/rollback-preview")
 async def rollback_order_preview(order_id: int, force: bool = False):
-    _, session, affected_orders = _build_rollback_preview(order_id, force=force)
+    _, session, affected_orders, wiped_defectives, cutoff = _build_rollback_preview(order_id, force=force)
     return {
         "ok": True,
         "count": len(affected_orders),
         "backup_path": session.get("backup_path", ""),
         "orders": affected_orders,
         "forced": force,
+        "wiped_defectives": wiped_defectives,
+        "replay_cutoff": cutoff if force and wiped_defectives else "",
     }
 
 
 @router.post("/schedule/orders/{order_id}/rollback")
 async def rollback_order(order_id: int, force: bool = False):
-    order, session, affected_orders = _build_rollback_preview(order_id, force=force)
+    order, session, affected_orders, wiped_defectives, cutoff = _build_rollback_preview(order_id, force=force)
     tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
     result = _rollback_dispatch_sessions(tail_sessions)
     db.log_activity(
@@ -1141,7 +1180,14 @@ async def rollback_order(order_id: int, force: bool = False):
             f"{'強制' if force else ''}反悔，共 {len(affected_orders)} 筆，主檔已還原"
         ),
     )
-    return {"ok": True, "forced": force, **result}
+    replay_cutoff = cutoff if force and wiped_defectives else ""
+    return {
+        "ok": True,
+        "forced": force,
+        "wiped_defectives": wiped_defectives,
+        "replay_cutoff": replay_cutoff,
+        **result,
+    }
 
 
 # ── Reorder / Sort ────────────────────────────────────────────────────────────

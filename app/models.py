@@ -259,3 +259,7 @@ class DefectiveImportConfirmRequest(BaseModel):
     batch_id: Optional[int] = None
     source_filename: str = ""
     items: list[DefectiveImportConfirmItem] = Field(default_factory=list)
+
+
+class DefectiveReplayRequest(BaseModel):
+    cutoff: str

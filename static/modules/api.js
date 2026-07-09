@@ -84,10 +84,20 @@ export function showToast(msg, options = {}) {
 
   const messageEl = t.querySelector(".toast-message");
   const closeBtn = t.querySelector(".toast-close");
+  t.querySelectorAll(".toast-action").forEach(el => el.remove());
   if (messageEl) {
     messageEl.textContent = msg;
   } else {
     t.textContent = msg;
+  }
+
+  if (config.action && config.action.label && typeof config.action.onClick === "function") {
+    const actionBtn = document.createElement("button");
+    actionBtn.type = "button";
+    actionBtn.className = "toast-action";
+    actionBtn.textContent = config.action.label;
+    actionBtn.onclick = config.action.onClick;
+    t.insertBefore(actionBtn, closeBtn || null);
   }
 
   t.classList.remove("tone-error", "tone-success");

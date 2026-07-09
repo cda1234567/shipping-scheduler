@@ -3073,6 +3073,28 @@ def get_defective_batch_summaries_after(imported_after: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_defective_records_after(created_after: str) -> list[dict]:
+    cutoff = str(created_after or "").strip()
+    if not cutoff:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.*,
+                b.filename AS batch_filename,
+                b.imported_at AS batch_imported_at,
+                b.note AS batch_note
+            FROM defective_records r
+            JOIN defective_batches b ON b.id = r.batch_id
+            WHERE r.created_at>? AND r.status IN ('open', 'confirmed')
+            ORDER BY b.imported_at, r.created_at, r.id
+            """,
+            (cutoff,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_defective_batch_summaries_after_id(batch_id: int) -> list[dict]:
     try:
         normalized_id = int(batch_id)

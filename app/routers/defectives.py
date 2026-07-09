@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from .. import database as db
 from ..config import BACKUP_DIR
 from ..models import (
+    DefectiveReplayRequest,
     DefectiveImportConfirmRequest,
     OverrunDeductionRequest,
     OverrunImportConfirmRequest,
@@ -18,9 +19,11 @@ from ..models import (
 from ..services.defective_deduction import (
     parse_defective_excel,
     deduct_defectives_from_main,
+    replay_defectives_after,
     reverse_defectives_from_main,
 )
-from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed
+from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed
+from ..services.merge_to_main import backup_main_file
 from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.overrun_deduction import (
     apply_overrun_import_confirmations,
@@ -774,6 +777,21 @@ async def import_overrun_detail(file: UploadFile = File(...)):
         "title": parsed.get("title", ""),
         "mo_info": parsed.get("mo_info", ""),
     }
+
+
+@router.post("/replay-after-rollback")
+async def replay_after_rollback(req: DefectiveReplayRequest):
+    main_path = _require_main_path()
+    cutoff = str(req.cutoff or "").strip()
+    ensure_defective_replay_allowed(cutoff)
+    backup_main_file(main_path, str(BACKUP_DIR))
+    result = replay_defectives_after(main_path, cutoff)
+    _refresh_active_merge_drafts_after_main_change()
+    db.log_activity(
+        "補回退回不良品扣帳",
+        f"{cutoff} 之後：補回 {result['replayed_batches']} 批 / {result['replayed_records']} 筆",
+    )
+    return {"ok": True, **result}
 
 
 @router.delete("/batches/{batch_id}")

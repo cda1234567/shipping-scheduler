@@ -230,6 +230,8 @@ function compareCompletedFolderName(a, b) {
 
 function buildCompletedFolderTree(rows = _completedRows, folders = _completedFolders) {
   const root = { name: "", path: "", rows: [], children: new Map(), totalCount: 0, depth: 0 };
+  const seenFolderPaths = new Set();
+  const seenOrderKeys = new Set();
   const ensureNode = (folderPath) => {
     const normalized = normalizeCompletedFolderPath(folderPath);
     if (!normalized) return root;
@@ -246,8 +248,19 @@ function buildCompletedFolderTree(rows = _completedRows, folders = _completedFol
     return current;
   };
 
-  for (const folder of folders || []) ensureNode(folder);
+  for (const folder of folders || []) {
+    const normalized = normalizeCompletedFolderPath(folder);
+    if (!normalized || seenFolderPaths.has(normalized)) continue;
+    seenFolderPaths.add(normalized);
+    ensureNode(normalized);
+  }
   for (const row of rows || []) {
+    const id = normalizeOrderId(row?.id);
+    const key = Number.isInteger(id)
+      ? `id:${id}`
+      : `row:${String(row?.code || "")}|${String(row?.po_number || "")}|${String(row?.model || "")}`;
+    if (seenOrderKeys.has(key)) continue;
+    seenOrderKeys.add(key);
     const folder = normalizeCompletedFolderPath(row?.folder);
     ensureNode(folder).rows.push(row);
   }
@@ -274,6 +287,15 @@ function flattenCompletedFolderTree(node) {
   };
   visit(node);
   return folders;
+}
+
+function appendCompletedFolderSection(container, folderNode, allFolders, folderTree, renderedFolderPaths) {
+  const folderName = normalizeCompletedFolderPath(folderNode?.path);
+  if (folderName) {
+    if (renderedFolderPaths.has(folderName)) return;
+    renderedFolderPaths.add(folderName);
+  }
+  container.appendChild(buildFolderSection(folderNode, allFolders, folderTree, renderedFolderPaths));
 }
 
 function completedFolderHasChildren(folderName, tree) {
@@ -4137,15 +4159,16 @@ function renderCompletedTab() {
   const allFolders = flattenCompletedFolderTree(folderTree);
 
   container.innerHTML = "";
+  const renderedFolderPaths = new Set();
 
   // 先渲染有名字的資料夾樹
   for (const node of folderTree.sortedChildren || []) {
-    container.appendChild(buildFolderSection(node, allFolders, folderTree));
+    appendCompletedFolderSection(container, node, allFolders, folderTree, renderedFolderPaths);
   }
 
   // 最後渲染未歸檔
   if (folderTree.rows.length) {
-    container.appendChild(buildFolderSection(folderTree, allFolders, folderTree));
+    container.appendChild(buildFolderSection(folderTree, allFolders, folderTree, renderedFolderPaths));
   }
   updateCompletedToolbarState();
 }
@@ -4181,7 +4204,7 @@ function handleCompletedSelectAllChange(event) {
   updateCompletedToolbarState();
 }
 
-function buildFolderSection(folderNode, allFolders, folderTree) {
+function buildFolderSection(folderNode, allFolders, folderTree, renderedFolderPaths = new Set()) {
   const section = document.createElement("div");
   section.className = "completed-folder-section";
 
@@ -4212,7 +4235,7 @@ function buildFolderSection(folderNode, allFolders, folderTree) {
     body.appendChild(buildCompletedCard(r, allFolders));
   }
   for (const child of folderNode.sortedChildren || []) {
-    body.appendChild(buildFolderSection(child, allFolders, folderTree));
+    appendCompletedFolderSection(body, child, allFolders, folderTree, renderedFolderPaths);
   }
   section.appendChild(body);
 
@@ -4464,6 +4487,66 @@ function isRollbackBlockedMessage(message) {
   return String(message || "").includes("後面已有其他庫存異動");
 }
 
+function flattenWipedDefectives(wipedDefectives) {
+  const rows = [];
+  for (const batch of (wipedDefectives || [])) {
+    for (const item of (batch.items || [])) {
+      rows.push({
+        batchId: batch.batch_id,
+        filename: batch.filename || "",
+        importedAt: batch.imported_at || "",
+        actionTaken: batch.action_taken || "不良品扣帳",
+        partNumber: item.part_number || "",
+        defectiveQty: Number(item.defective_qty || 0),
+      });
+    }
+  }
+  return rows;
+}
+
+function buildWipedDefectivesWarning(wipedDefectives) {
+  const rows = flattenWipedDefectives(wipedDefectives);
+  if (!rows.length) return "";
+  const lines = rows.map((item, index) => {
+    const date = item.importedAt ? item.importedAt.slice(0, 10) : "時間未知";
+    const type = item.actionTaken === "加工多打扣帳" ? "加工多打" : "不良品";
+    return `${index + 1}. ${item.partNumber} × ${fmt(item.defectiveQty)}（${date} 匯入，${type}）`;
+  });
+  return `\n\n⚠ 這次退回會沖掉以下不良品/加工多打扣帳，共 ${rows.length} 筆：\n${lines.join("\n")}`;
+}
+
+async function replayDefectivesAfterRollback(cutoff, expectedCount, actionButton = null) {
+  const originalText = actionButton?.textContent || "";
+  if (actionButton) {
+    actionButton.disabled = true;
+    actionButton.textContent = "補回中…";
+  }
+  try {
+    const result = await apiPost("/api/defectives/replay-after-rollback", { cutoff });
+    hideToast();
+    showToast(
+      `已補回 ${result.replayed_records || 0} 筆不良品/加工多打扣帳，共 ${result.replayed_batches || 0} 批`,
+      { tone: "success", duration: 5000 }
+    );
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    const retryLabel = originalText || `補回 ${expectedCount || 0} 筆不良品`;
+    if (actionButton) {
+      actionButton.disabled = false;
+      actionButton.textContent = retryLabel;
+    }
+    showToast(`補回 ${expectedCount || 0} 筆不良品失敗：${error.message}`, {
+      tone: "error",
+      sticky: true,
+      action: {
+        label: retryLabel,
+        onClick: (event) => replayDefectivesAfterRollback(cutoff, expectedCount, event.currentTarget),
+      },
+    });
+  }
+}
+
 async function handleRollbackDispatch(orderId, trigger) {
   if (!Number.isInteger(orderId)) return;
 
@@ -4487,8 +4570,9 @@ async function handleRollbackDispatch(orderId, trigger) {
       const forceAffectedHint = Number(preview.count || 0) > 1
         ? "\n\n這次強制退回會連同後面已發料的訂單一起退回。"
         : "";
+      const wipedWarning = buildWipedDefectivesWarning(preview.wiped_defectives || []);
       const forcedConfirmed = confirm(
-        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要強制退回，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要強制退回嗎？`
+        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要強制退回，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}${wipedWarning}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要強制退回嗎？`
       );
       if (!forcedConfirmed) return;
       forceDelete = true;
@@ -4512,7 +4596,19 @@ async function handleRollbackDispatch(orderId, trigger) {
       ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
       : "";
     const actionLabel = result.forced ? "已強制退回" : "已退回";
-    showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
+    const replayRows = flattenWipedDefectives(result.wiped_defectives || []);
+    if (result.replay_cutoff) {
+      showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, {
+        sticky: true,
+        tone: "success",
+        action: {
+          label: `補回 ${replayRows.length} 筆不良品`,
+          onClick: (event) => replayDefectivesAfterRollback(result.replay_cutoff, replayRows.length, event.currentTarget),
+        },
+      });
+    } else {
+      showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
+    }
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {

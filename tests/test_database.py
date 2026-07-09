@@ -52,6 +52,43 @@ class InMemoryDbTestCase(unittest.TestCase):
         self.conn.close()
 
 
+class DefectiveRecordsAfterTests(InMemoryDbTestCase):
+    def test_get_defective_records_after_filters_cutoff_and_sorts(self):
+        self.conn.execute(
+            "INSERT INTO defective_batches(id, filename, imported_at, note) VALUES(?,?,?,?)",
+            (1, "early.xlsx", "2026-07-08T08:00:00", ""),
+        )
+        self.conn.execute(
+            "INSERT INTO defective_batches(id, filename, imported_at, note) VALUES(?,?,?,?)",
+            (2, "batch-b.xlsx", "2026-07-08T10:00:00", ""),
+        )
+        self.conn.execute(
+            "INSERT INTO defective_batches(id, filename, imported_at, note) VALUES(?,?,?,?)",
+            (3, "batch-a.xlsx", "2026-07-08T09:00:00", ""),
+        )
+        rows = [
+            (1, 1, "PART-OLD", 1, "不良品扣帳", "open", "2026-07-08T08:30:00"),
+            (2, 2, "PART-B", 2, "不良品扣帳", "open", "2026-07-08T10:05:00"),
+            (3, 3, "PART-A2", 4, "加工多打扣帳", "confirmed", "2026-07-08T09:10:00"),
+            (4, 3, "PART-A1", 3, "加工多打扣帳", "open", "2026-07-08T09:05:00"),
+            (5, 2, "PART-CLOSED", 5, "不良品扣帳", "closed", "2026-07-08T10:02:00"),
+        ]
+        self.conn.executemany(
+            """
+            INSERT INTO defective_records
+                (id, batch_id, part_number, defective_qty, action_taken, status, created_at)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            rows,
+        )
+
+        result = db.get_defective_records_after("2026-07-08T09:00:00")
+
+        self.assertEqual([row["part_number"] for row in result], ["PART-A1", "PART-A2", "PART-B"])
+        self.assertEqual(result[0]["batch_filename"], "batch-a.xlsx")
+        self.assertEqual(result[2]["batch_imported_at"], "2026-07-08T10:00:00")
+
+
 class SnapshotTests(InMemoryDbTestCase):
     def test_save_snapshot_keeps_parts_that_only_have_moq(self):
         db.save_snapshot({"AAA": 5}, {"AAA": 8, "BBB": 12})

@@ -3072,6 +3072,20 @@ body.desktop-dark .defective-skipped {
 .toast-close:hover {
   background: rgba(255, 255, 255, 0.2);
 }
+.toast-action {
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 10px;
+}
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
 
 @keyframes busy-spin {
   to { transform: rotate(360deg); }
