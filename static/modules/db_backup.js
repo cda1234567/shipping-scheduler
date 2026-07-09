@@ -1,10 +1,11 @@
-import { apiJson, apiPost, apiPut, showToast, esc } from "./api.js";
+import { apiFetch, apiJson, apiPost, apiPut, showToast, esc } from "./api.js";
 
 let _reloadApp = null;
 let _selectedBackupName = "";
 let _overview = null;
 let _busy = false;
 let _initialized = false;
+let _reconcileBusy = false;
 
 export async function initDbBackup({ reloadApp, autoLoad = false } = {}) {
   _reloadApp = typeof reloadApp === "function" ? reloadApp : null;
@@ -17,6 +18,7 @@ export async function initDbBackup({ reloadApp, autoLoad = false } = {}) {
   document.getElementById("btn-save-db-backup-settings")?.addEventListener("click", handleSaveSettings);
   document.getElementById("btn-db-backup-refresh")?.addEventListener("click", refreshDbBackupPanel);
   document.getElementById("btn-db-backup-restore")?.addEventListener("click", handleRestoreBackup);
+  document.getElementById("btn-st-reconcile-preview")?.addEventListener("click", handleStReconcilePreview);
   document.getElementById("db-backup-list")?.addEventListener("change", event => {
     const radio = event.target?.closest?.("input[name='db-backup-item']");
     if (!radio) return;
@@ -52,6 +54,12 @@ function setBusy(nextBusy) {
     const el = document.getElementById(id);
     if (el) el.disabled = _busy;
   });
+}
+
+function setReconcileBusy(nextBusy) {
+  _reconcileBusy = Boolean(nextBusy);
+  const btn = document.getElementById("btn-st-reconcile-preview");
+  if (btn) btn.disabled = _reconcileBusy;
 }
 
 function renderBackupSummary(overview) {
@@ -232,6 +240,133 @@ async function handleRestoreBackup() {
     showToast(`還原資料庫備份失敗：${error.message}`);
     setBusy(false);
   }
+}
+
+async function handleStReconcilePreview() {
+  if (_reconcileBusy) return;
+
+  const fileInput = document.getElementById("st-reconcile-file");
+  const cutoffInput = document.getElementById("st-reconcile-cutoff");
+  const statusEl = document.getElementById("st-reconcile-status");
+  const file = fileInput?.files?.[0];
+  const cutoffDate = String(cutoffInput?.value || "").trim();
+  if (!file) {
+    showToast("請先選擇加工廠盤點表");
+    return;
+  }
+  if (!cutoffDate) {
+    showToast("請輸入盤點截止日");
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("cutoff_date", cutoffDate);
+  setReconcileBusy(true);
+  if (statusEl) {
+    statusEl.className = "file-status";
+    statusEl.innerHTML = "<span>試算中...</span>";
+  }
+  try {
+    const res = await apiFetch("/api/reconcile/st/preview", { method: "POST", body: fd });
+    const report = await res.json();
+    renderStReconcileReport(report);
+    showToast("盤點對帳試算完成", { tone: "success" });
+  } catch (error) {
+    if (statusEl) {
+      statusEl.className = "file-status warn";
+      statusEl.innerHTML = `<span>${esc(error.message)}</span>`;
+    }
+    renderStReconcileReport(null);
+    showToast(`盤點對帳試算失敗：${error.message}`);
+  } finally {
+    setReconcileBusy(false);
+  }
+}
+
+function renderStReconcileReport(report) {
+  const statusEl = document.getElementById("st-reconcile-status");
+  const assumptionsEl = document.getElementById("st-reconcile-assumptions");
+  const resultEl = document.getElementById("st-reconcile-result");
+  if (!resultEl) return;
+  if (!report) {
+    if (assumptionsEl) assumptionsEl.innerHTML = "";
+    resultEl.innerHTML = "";
+    return;
+  }
+
+  const parts = Array.isArray(report.parts) ? report.parts : [];
+  const summary = report.summary || {};
+  if (statusEl) {
+    const diffCount = parts.filter(row => row.category !== "無差異").length;
+    statusEl.className = diffCount ? "file-status warn" : "file-status ok";
+    statusEl.innerHTML = `<span>${esc(report.cutoff_date)}，共 ${parts.length} 個料號，需確認 ${diffCount} 個</span>`;
+  }
+  if (assumptionsEl) {
+    assumptionsEl.innerHTML = (report.assumptions || [])
+      .map(text => `<div class="st-reconcile-assumption">${esc(text)}</div>`)
+      .join("");
+  }
+
+  const order = ["我有單他沒有", "他有單我沒入", "同單數量不符", "無法歸因淨差", "無差異"];
+  const groups = new Map(order.map(category => [category, []]));
+  for (const row of parts) {
+    const category = row.category || "無法歸因淨差";
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(row);
+  }
+
+  resultEl.innerHTML = order.map(category => {
+    const rows = groups.get(category) || [];
+    const count = Number(summary[category] ?? rows.length);
+    return `
+      <section class="st-reconcile-group">
+        <div class="st-reconcile-group-head">
+          <h4>${esc(category)}</h4>
+          <span class="tag ${category === "無差異" ? "tag-converted" : "tag-pending"}">${count} 筆</span>
+        </div>
+        ${rows.length ? renderStReconcileTable(rows) : '<div class="db-backup-empty">沒有資料</div>'}
+      </section>
+    `;
+  }).join("");
+}
+
+function renderStReconcileTable(rows) {
+  return `
+    <div class="st-reconcile-table-wrap">
+      <table class="st-inventory-table st-reconcile-table">
+        <thead>
+          <tr>
+            <th>料號</th>
+            <th>描述</th>
+            <th>盤點數</th>
+            <th>理論庫存</th>
+            <th>差異</th>
+            <th>備註</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(row => `
+            <tr>
+              <td class="st-reconcile-part">${esc(row.part_number)}</td>
+              <td>${esc(row.description || "")}</td>
+              <td class="num">${formatMaybeNumber(row.physical)}</td>
+              <td class="num">${formatMaybeNumber(row.theoretical)}</td>
+              <td class="num ${Number(row.diff || 0) < 0 ? "is-negative" : Number(row.diff || 0) > 0 ? "is-positive" : ""}">${formatMaybeNumber(row.diff)}</td>
+              <td>${(row.notes || []).map(note => `<div>${esc(note)}</div>`).join("")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function formatMaybeNumber(value) {
+  if (value === null || value === undefined || value === "") return "待拆分";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return esc(value);
+  return Number.isInteger(number) ? String(number) : number.toFixed(3).replace(/\.?0+$/, "");
 }
 
 function formatDateTime(value) {

@@ -26,6 +26,7 @@ _EXEMPT_PATHS = {
     "/api/dispatch/generate",
     "/api/schedule/drafts/download",
     "/api/schedule/completed/drafts/download",
+    "/api/reconcile/st/preview",
     "/api/health",
 }
 

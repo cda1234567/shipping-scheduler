@@ -351,6 +351,77 @@ body {
   line-height: 1.5;
   color: #8e8e93;
 }
+.st-reconcile-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.st-reconcile-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 160px auto;
+  gap: 8px;
+  align-items: end;
+}
+.st-reconcile-file-field input {
+  padding: 5px 8px;
+}
+.st-reconcile-assumptions {
+  display: grid;
+  gap: 6px;
+}
+.st-reconcile-assumption {
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+}
+.st-reconcile-result {
+  display: grid;
+  gap: 12px;
+}
+.st-reconcile-group {
+  display: grid;
+  gap: 8px;
+}
+.st-reconcile-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.st-reconcile-group-head h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #374151;
+}
+.st-reconcile-table-wrap {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+}
+.st-reconcile-table th:nth-child(3),
+.st-reconcile-table th:nth-child(4),
+.st-reconcile-table th:nth-child(5),
+.st-reconcile-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.st-reconcile-part {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 700;
+}
+.st-reconcile-table .is-negative {
+  color: #dc2626;
+  font-weight: 700;
+}
+.st-reconcile-table .is-positive {
+  color: #2563eb;
+  font-weight: 700;
+}
 
 /* ── Buttons ────────────────────────────── */
 .btn {
@@ -2621,6 +2692,27 @@ body.desktop-dark .db-backup-toggle {
 body.desktop-dark .db-backup-card {
   background: #0f172a;
   border-color: #243041;
+}
+body.desktop-dark .st-reconcile-assumption {
+  background: #451a03;
+  border-color: #78350f;
+  color: #fde68a;
+}
+body.desktop-dark .st-reconcile-group-head h4 {
+  color: #e5e7eb;
+}
+body.desktop-dark .st-reconcile-table-wrap,
+body.desktop-dark .st-reconcile-table {
+  background: #0f172a;
+  border-color: #243041;
+}
+body.desktop-dark .st-reconcile-table th {
+  background: #111827;
+  color: #e5e7eb;
+}
+body.desktop-dark .st-reconcile-table td {
+  border-bottom-color: #243041;
+  color: #e5e7eb;
 }
 body.desktop-dark .db-backup-empty {
   background: #0f172a;

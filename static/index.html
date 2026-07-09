@@ -359,6 +359,28 @@
             <div id="db-backup-list" class="db-backup-list"></div>
           </section>
         </div>
+        <section class="db-backup-card st-reconcile-card">
+          <div class="db-backup-list-header">
+            <div>
+              <div class="db-backup-modal-title">盤點對帳（試算）</div>
+              <div class="desktop-status-meta">上傳加工廠盤點表並選擇截止日，只產生唯讀對帳報告。</div>
+            </div>
+          </div>
+          <div class="st-reconcile-form">
+            <label class="db-backup-field st-reconcile-file-field">
+              <span>盤點表</span>
+              <input type="file" id="st-reconcile-file" accept=".xlsx,.xls,.xlsm">
+            </label>
+            <label class="db-backup-field">
+              <span>截止日</span>
+              <input type="date" id="st-reconcile-cutoff">
+            </label>
+            <button class="btn btn-primary btn-sm" id="btn-st-reconcile-preview" type="button">試算</button>
+          </div>
+          <div id="st-reconcile-status" class="file-status">選擇盤點表與截止日後可試算對帳。</div>
+          <div id="st-reconcile-assumptions" class="st-reconcile-assumptions"></div>
+          <div id="st-reconcile-result" class="st-reconcile-result"></div>
+        </section>
       </div>
     </div>
 
