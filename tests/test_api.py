@@ -1074,8 +1074,9 @@ class ApiTests(unittest.TestCase):
                     "order_id": 1,
                     "model": "MODEL-A",
                     "groups": [{"components": []}],
-                    "supplements": {"PART-1": 3000},
+                    "supplements": {"PART-1": 3000.0},
                     "decisions": {"PART-1": "CreateRequirement"},
+                    "is_sample": False,
                 },
                 {
                     "order_id": 2,
@@ -1083,6 +1084,7 @@ class ApiTests(unittest.TestCase):
                     "groups": [{"components": []}],
                     "supplements": {},
                     "decisions": {},
+                    "is_sample": False,
                 },
             ],
         )
@@ -1252,6 +1254,7 @@ class ApiTests(unittest.TestCase):
                     "groups": groups_a,
                     "supplements": {"PART-A": 800},
                     "decisions": {"PART-A": "Shortage"},
+                    "is_sample": False,
                 },
                 {
                     "order_id": 2,
@@ -1259,6 +1262,7 @@ class ApiTests(unittest.TestCase):
                     "groups": groups_b,
                     "supplements": {"PART-B": 1200},
                     "decisions": {"PART-B": "CreateRequirement"},
+                    "is_sample": False,
                 },
             ]
 

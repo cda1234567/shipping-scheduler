@@ -236,8 +236,8 @@ class FrontendAssetTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
 
-        self.assertIn("export function getRequiredMinStock(partNumber)", calculator_module)
-        self.assertIn("export function calculateShortageAmount(partNumber, endingStock)", calculator_module)
+        self.assertIn("export function getRequiredMinStock(partNumber, ignoreEcMin = false)", calculator_module)
+        self.assertIn("export function calculateShortageAmount(partNumber, endingStock, ignoreEcMin = false)", calculator_module)
         self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
         self.assertIn('if (normalized.startsWith("EC-")) return 100;', calculator_module)
         self.assertIn('if (normalized.startsWith("PK-")) {', calculator_module)
