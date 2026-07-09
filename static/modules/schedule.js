@@ -2521,10 +2521,46 @@ function configureModalSearch({
   applyModalSearchFilter("");
 }
 
+function activateCalcWorkspace() {
+  const tabButton = document.querySelector('.tab-btn[data-tab="calc-workspace"]');
+  if (tabButton) {
+    tabButton.click();
+    return;
+  }
+  document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.remove("active"));
+  document.querySelectorAll(".tab-content").forEach(content => content.classList.remove("active"));
+  document.getElementById("tab-calc-workspace")?.classList.add("active");
+}
+
+function isCalcWorkspaceActive() {
+  return document.getElementById("tab-calc-workspace")?.classList.contains("active");
+}
+
+function setCalcWorkspaceTitle(title, subtitle = "") {
+  const titleEl = document.getElementById("modal-title");
+  const subtitleEl = document.getElementById("modal-subtitle");
+  if (titleEl) titleEl.textContent = title || "算料工作區";
+  if (subtitleEl) subtitleEl.textContent = subtitle || "從出貨排程按「批次 Merge」或「生成發料單」開始";
+}
+
+function ensureCalcWorkspaceReady(title, subtitle = "") {
+  activateCalcWorkspace();
+  setCalcWorkspaceTitle(title, subtitle);
+  const closeBtn = document.getElementById("modal-close");
+  const clearBtn = document.getElementById("modal-clear-workspace");
+  if (closeBtn) closeBtn.onclick = closeShortageModal;
+  if (clearBtn) clearBtn.onclick = clearCalcWorkspace;
+  return {
+    list: document.getElementById("modal-shortage-list"),
+    footer: document.getElementById("modal-footer"),
+  };
+}
+
 async function showDraftModal(draftId, { readOnly = false, fileId = null } = {}) {
-  const modal = document.getElementById("shortage-modal");
-  const list = document.getElementById("modal-shortage-list");
-  const footer = document.getElementById("modal-footer");
+  const { list, footer } = ensureCalcWorkspaceReady(
+    readOnly ? "副檔預覽" : "副檔補料工作區",
+    readOnly ? "檢視已存副檔內容，可下載副檔。" : "編輯副檔補料內容，可儲存或下載副檔。",
+  );
   const detail = await apiJson(`/api/schedule/drafts/${draftId}`);
   const draft = detail.draft || {};
   const order = detail.order || {};
@@ -2625,17 +2661,17 @@ async function showDraftModal(draftId, { readOnly = false, fileId = null } = {})
     }
   });
   document.getElementById("modal-cancel")?.addEventListener("click", closeShortageModal);
-  document.getElementById("modal-close").onclick = closeShortageModal;
-  modal.style.display = "flex";
 }
 
 async function showShortageModal(targets) {
+  _modalDraftId = null;
   _modalTargets = targets;
   _modalMode = "download";
   _modalPreviewShortages = [];
-  const modal = document.getElementById("shortage-modal");
-  const list = document.getElementById("modal-shortage-list");
-  const footer = document.getElementById("modal-footer");
+  const { list, footer } = ensureCalcWorkspaceReady(
+    "確認補料並下載 BOM",
+    `共 ${targets.length} 筆訂單，補料內容會寫入下載的 BOM 副本。`,
+  );
 
   // 查詢對應的 BOM 檔案
   const models = [...new Set(targets.map(t => t.model).filter(Boolean))];
@@ -2737,8 +2773,6 @@ async function showShortageModal(targets) {
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-download-bom").onclick = handleModalDownloadBom;
   document.getElementById("modal-cancel").onclick = closeShortageModal;
-  document.getElementById("modal-close").onclick = closeShortageModal;
-  modal.style.display = "flex";
 }
 
 async function saveBatchDraftsFromModal({ silent = false } = {}) {
@@ -2825,18 +2859,30 @@ async function handleModalUpdateAndCommitDrafts() {
   }
 
   try {
-    setModalDownloadProgress(true, "正在保存補料並寫入主檔...", "系統會先重建副檔，再逐筆強制寫入主檔。", 12);
+    setModalDownloadProgress(true, "正在保存補料並寫入主檔...", `共 ${targetOrderIds.length} 筆訂單，系統會先重建副檔再寫入 live 主檔；可先切到其他分頁。`, 12);
     startModalProgressAnimation(92, 260);
     const result = await updateAndCommitBatchDraftsFromModal();
     targetOrderIds.forEach(id => _checkedIds.delete(id));
-    setModalDownloadProgress(true, "寫入主檔完成,正在重新整理...", "正在重新整理排程與主檔資料。", 100);
+    const negativeCount = (result?.negative_shortages || []).length;
+    const failureCount = Number(result?.failure_count || 0);
+    if (failureCount > 0) {
+      setModalDownloadProgress(
+        true,
+        "寫入主檔有失敗項目",
+        formatWorkspaceFailureDetail(result),
+        100,
+        { tone: "error", lockUi: false },
+      );
+      showToast(`強制寫入完成但有 ${failureCount} 筆失敗，請回算料工作區查看明細`, { sticky: true, tone: "error" });
+      await Promise.all([refresh(), refreshCompleted()]);
+      return;
+    }
+
+    setModalDownloadProgress(true, "寫入主檔完成，正在重新整理...", "正在重新整理排程與主檔資料。", 100);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
     await new Promise(resolve => setTimeout(resolve, 200));
-    closeShortageModal();
 
-    const negativeCount = (result?.negative_shortages || []).length;
-    const failureCount = Number(result?.failure_count || 0);
     const message = `已強制寫入 ${result?.success_count || result?.count || 0} 筆，失敗 ${failureCount} 筆，負庫存 ${negativeCount} 項`;
     showToast(message, { tone: failureCount ? "error" : "success", sticky: failureCount > 0, duration: 6000 });
     if (negativeCount > 0) {
@@ -2844,9 +2890,16 @@ async function handleModalUpdateAndCommitDrafts() {
     } else if (result?.shortages?.length) {
       showPostDispatchShortages(result.shortages);
     }
+    if (isCalcWorkspaceActive()) closeShortageModal();
   } catch (error) {
     showToast("強制寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
-    setModalDownloadProgress(false, "", "", 0);
+    setModalDownloadProgress(
+      true,
+      "強制寫入主檔失敗",
+      formatWorkspaceFailureDetail(error),
+      100,
+      { tone: "error", lockUi: false },
+    );
   }
 }
 
@@ -2893,12 +2946,13 @@ async function showBatchMergeDraftModal(targets) {
   _modalDraftBaseSupplements = {};
   _modalDraftVisibleParts = [];
 
-  const modal = document.getElementById("shortage-modal");
-  const list = document.getElementById("modal-shortage-list");
-  const footer = document.getElementById("modal-footer");
-  if (!modal || !list || !footer) {
-    console.error("[showBatchMergeDraftModal] DOM elements missing:", { modal: !!modal, list: !!list, footer: !!footer });
-    throw new Error("補料 modal DOM 元素遺失");
+  const { list, footer } = ensureCalcWorkspaceReady(
+    _modalCommitAfterSave ? "批次 Merge 並寫入主檔" : "批次 Merge 補料確認",
+    `共 ${targets.length} 筆訂單，可先確認補料、儲存副檔或下載副檔。`,
+  );
+  if (!list || !footer) {
+    console.error("[showBatchMergeDraftModal] DOM elements missing:", { list: !!list, footer: !!footer });
+    throw new Error("算料工作區 DOM 元素遺失");
   }
   const {
     shortagesByScope,
@@ -2983,17 +3037,17 @@ async function showBatchMergeDraftModal(targets) {
   document.getElementById("modal-save-draft").onclick = handleModalSaveDrafts;
   document.getElementById("modal-download-bom").onclick = handleModalDownloadDrafts;
   document.getElementById("modal-cancel").onclick = closeShortageModal;
-  document.getElementById("modal-close").onclick = closeShortageModal;
-  modal.style.display = "flex";
 }
 
 async function showWriteToMainModal(targets) {
+  _modalDraftId = null;
   _modalTargets = targets;
   _modalMode = "write";
 
-  const modal = document.getElementById("shortage-modal");
-  const list = document.getElementById("modal-shortage-list");
-  const footer = document.getElementById("modal-footer");
+  const { list, footer } = ensureCalcWorkspaceReady(
+    "寫入主檔前確認",
+    `共 ${targets.length} 筆訂單，寫入期間可自由切換分頁。`,
+  );
   const targetOrderIds = (targets || []).map(item => item.id).filter(Number.isInteger);
   const models = [...new Set((targets || []).map(item => item.model).filter(Boolean))];
 
@@ -3080,8 +3134,6 @@ async function showWriteToMainModal(targets) {
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-write-main").onclick = handleModalWriteMain;
   document.getElementById("modal-cancel").onclick = closeShortageModal;
-  document.getElementById("modal-close").onclick = closeShortageModal;
-  modal.style.display = "flex";
 }
 
 function computeShortageResultingStock(shortage, supplementQty = undefined) {
@@ -3448,15 +3500,20 @@ function updateModalSampleSectionVisibility(list) {
 }
 
 function closeShortageModal() {
+  document.querySelector('.tab-btn[data-tab="schedule"]')?.click();
+}
+
+function clearCalcWorkspace() {
   stopModalProgressAnimation();
   setModalDownloadProgress(false, "", "", 0);
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");
   const footer = document.getElementById("modal-footer");
   if (modal) modal.style.display = "none";
-  if (list) list.innerHTML = "";
+  if (list) list.innerHTML = '<div class="calc-workspace-empty">從出貨排程按「批次 Merge」或「生成發料單」開始</div>';
   if (footer) footer.innerHTML = "";
   configureModalSearch({ enabled: false });
+  setCalcWorkspaceTitle("算料工作區", "從出貨排程按「批次 Merge」或「生成發料單」開始");
   _modalTargets = [];
   _modalBomFiles = [];
   _modalCarryOversByModel = {};
@@ -3571,12 +3628,20 @@ async function saveManualMoq(partNumber, input, button) {
     _moq[key] = moqValue;
     recalculate();
     updateStatusOnly();
-    if (_modalTargets.length && document.getElementById("shortage-modal")?.style.display === "flex") {
+    if (_modalTargets.length && document.getElementById("modal-shortage-list")) {
       const inFlightSupplements = _collectModalSupplements();
       _modalDraftBaseSupplements = { ..._modalDraftBaseSupplements, ...inFlightSupplements };
       // Bug 2 root fix: 把當前 modal 內容 silent save 到 server，避免 re-render 時被 server draft 預設值蓋掉
       try { await saveBatchDraftsFromModal({ silent: true }); } catch (_) {}
-      await showShortageModal(_modalTargets);
+      if (_modalMode === "write") {
+        await showWriteToMainModal(_modalTargets);
+      } else if (_modalDraftId) {
+        await showDraftModal(_modalDraftId, { readOnly: _modalDraftReadOnly });
+      } else if (_modalMode === "mergeCommit" || _modalCommitAfterSave) {
+        await showBatchMergeDraftModal(_modalTargets);
+      } else {
+        await showShortageModal(_modalTargets);
+      }
     }
     showToast(`${key} MOQ 已儲存`);
   } catch (e) {
@@ -3944,24 +4009,17 @@ function stopModalProgressAnimation() {
 
 function setModalProgressPercent(percent) {
   const value = Math.max(0, Math.min(100, Math.round(Number(percent) || 0)));
+  const progress = document.getElementById("modal-download-progress");
   const fill = document.getElementById("modal-download-progress-fill");
   const percentLabel = document.getElementById("modal-download-percent");
   _modalProgressValue = value;
-  if (fill) fill.style.width = `${value}%`;
-  if (percentLabel) percentLabel.textContent = `${value}%`;
+  if (fill && !progress?.classList.contains("is-indeterminate")) fill.style.width = `${value}%`;
+  if (percentLabel) percentLabel.textContent = value >= 100 ? "完成" : "處理中";
 }
 
 function startModalProgressAnimation(targetPercent, intervalMs = 180) {
   stopModalProgressAnimation();
-  _modalProgressTimer = setInterval(() => {
-    if (_modalProgressValue >= targetPercent) {
-      stopModalProgressAnimation();
-      return;
-    }
-    const remaining = targetPercent - _modalProgressValue;
-    const step = remaining > 18 ? 4 : remaining > 8 ? 2 : 1;
-    setModalProgressPercent(_modalProgressValue + step);
-  }, intervalMs);
+  setModalProgressPercent(Math.min(Number(targetPercent) || 0, 99));
 }
 
 function setModalDownloadProgress(active, statusText = "", detailText = "", percent = null, options = {}) {
@@ -3983,11 +4041,15 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   if (status && statusText) status.textContent = statusText;
   if (detail && detailText) detail.textContent = detailText;
   if (progress) {
-    progress.classList.remove("is-error", "is-success");
+    progress.classList.remove("is-error", "is-success", "is-indeterminate");
     if (config.tone === "error") progress.classList.add("is-error");
     if (config.tone === "success") progress.classList.add("is-success");
+    if (active && config.tone !== "error" && config.tone !== "success") progress.classList.add("is-indeterminate");
   }
   if (percent != null) setModalProgressPercent(percent);
+  const percentLabel = document.getElementById("modal-download-percent");
+  if (percentLabel && config.tone === "error") percentLabel.textContent = "失敗";
+  if (percentLabel && config.tone === "success") percentLabel.textContent = "完成";
 
   if (saveBtn) {
     if (!saveBtn.dataset.idleText) saveBtn.dataset.idleText = saveBtn.textContent || "儲存";
@@ -4005,13 +4067,35 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
     writeBtn.disabled = Boolean(config.lockUi);
     writeBtn.textContent = active ? "寫入中..." : "寫入主檔";
   }
-  if (cancelBtn) cancelBtn.disabled = Boolean(config.lockUi);
-  if (closeBtn) closeBtn.disabled = Boolean(config.lockUi);
   if (!active) {
     stopModalProgressAnimation();
     setModalProgressPercent(percent ?? 0);
-    if (progress) progress.classList.remove("is-error", "is-success");
+    if (progress) progress.classList.remove("is-error", "is-success", "is-indeterminate");
   }
+}
+
+function formatWorkspaceFailureDetail(resultOrError) {
+  const result = resultOrError || {};
+  const lines = [];
+  const failures = Array.isArray(result.failures) ? result.failures : [];
+  const negativeShortages = Array.isArray(result.negative_shortages) ? result.negative_shortages : [];
+  failures.slice(0, 12).forEach(item => {
+    const label = item?.order_label || item?.order_id || item?.po_number || "訂單";
+    const message = item?.error || item?.message || item?.detail || "寫入失敗";
+    lines.push(`${label}: ${message}`);
+  });
+  negativeShortages.slice(0, 12).forEach(item => {
+    const part = item?.part_number || item?.part || "料號";
+    const order = item?.batch_code || item?.order_code || item?.order_id || "";
+    const shortage = item?.shortage_amount ?? item?.shortage ?? item?.resulting_stock ?? "";
+    lines.push(`${order ? `${order} ` : ""}${part}: 負庫存/缺料 ${shortage}`);
+  });
+  if (result?.message && !lines.length) lines.push(result.message);
+  if (resultOrError instanceof Error && !lines.length) lines.push(resultOrError.message);
+  if (!lines.length) lines.push("後端未回傳明細，請查看操作紀錄或伺服器日誌。");
+  const omitted = failures.length + negativeShortages.length - lines.length;
+  if (omitted > 0) lines.push(`另有 ${omitted} 筆未列出。`);
+  return lines.join("\n");
 }
 
 async function handleModalWriteMain() {
@@ -4035,7 +4119,7 @@ async function handleModalWriteMain() {
       setLocalDecision(part, decision);
     });
 
-    setModalDownloadProgress(true, "正在寫入主檔...", "系統會依目前選取訂單順序，將內容寫入 live 主檔。", 46);
+    setModalDownloadProgress(true, "正在寫入主檔...", `共 ${targetOrderIds.length} 筆訂單，可能需要一段時間；可先切到其他分頁，完成後會通知。`, 46);
     startModalProgressAnimation(92, 220);
     const result = await apiPost("/api/schedule/batch-dispatch", {
       order_ids: targetOrderIds,
@@ -4051,7 +4135,6 @@ async function handleModalWriteMain() {
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
     await new Promise(resolve => setTimeout(resolve, 200));
-    closeShortageModal();
     const shortageCount = (result.shortages || []).length;
     if (shortageCount > 0) {
       showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
@@ -4059,12 +4142,13 @@ async function handleModalWriteMain() {
     } else {
       showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
     }
+    if (isCalcWorkspaceActive()) closeShortageModal();
   } catch (error) {
     stopModalProgressAnimation();
     setModalDownloadProgress(
       true,
       "寫入主檔失敗",
-      error.message,
+      formatWorkspaceFailureDetail(error),
       100,
       { tone: "error", lockUi: false },
     );
@@ -4091,7 +4175,7 @@ async function handleModalDownloadBom() {
     });
 
     const bomIds = _modalBomFiles.map(f => f.id);
-    setModalDownloadProgress(true, "正在產生並下載 BOM...", `共 ${bomIds.length} 份 BOM，請稍候。`, 42);
+    setModalDownloadProgress(true, "正在產生並下載 BOM...", `共 ${bomIds.length} 份 BOM，正在寫入補料量並打包；可先切到其他分頁。`, 42);
     startModalProgressAnimation(92, 220);
     const result = await desktopDownload({
       path: "/api/bom/dispatch-download",
@@ -6112,11 +6196,7 @@ async function runBatchMergeWorkflow({ commitAfterModal = false } = {}) {
       await openBatchMergeDraftModalStable(targetIds, targets);
     } catch (modalError) {
       console.error("[handleBatchMerge] showBatchMergeDraftModal failed:", modalError);
-      showToast("補料 modal 開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
-    } finally {
-      if (document.getElementById("shortage-modal")?.style.display !== "flex") {
-        _modalCommitAfterSave = false;
-      }
+      showToast("算料工作區開啟失敗: " + modalError.message, { sticky: true, tone: "error" });
     }
   } catch (error) {
     console.error("[handleBatchMerge] batch merge failed:", error);
@@ -6142,27 +6222,8 @@ function buildBatchMergeModalTargets(targetIds, fallbackTargets = []) {
 }
 
 async function openBatchMergeDraftModalStable(targetIds, fallbackTargets = []) {
-  await waitForNextFrame();
-  await waitForNextFrame();
-
-  let modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
+  const modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
   await showBatchMergeDraftModal(modalTargets);
-  await waitForNextFrame();
-
-  const modal = document.getElementById("shortage-modal");
-  if (modal?.style.display === "flex") return;
-
-  const preservedCommitAfterSave = _modalCommitAfterSave;
-  closeShortageModal();
-  _modalCommitAfterSave = preservedCommitAfterSave;
-  await waitForNextFrame();
-  modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);
-  await showBatchMergeDraftModal(modalTargets);
-  await waitForNextFrame();
-
-  if (modal?.style.display !== "flex") {
-    throw new Error("補料 modal 沒有成功顯示");
-  }
 }
 
 function buildDraftPanelHtml(draft) {

@@ -904,6 +904,52 @@ body.edit-auth-readonly #bom-upload-area {
   padding: 12px 20px; border-top: 1px solid #e5e5ea;
   display: flex; gap: 10px; justify-content: flex-end; align-items: flex-end;
 }
+.calc-workspace-shell {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 58px);
+  min-height: 0;
+  background: #f8fafc;
+}
+.calc-workspace-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+.calc-workspace-title {
+  margin: 0;
+  font-size: 17px;
+  color: #111827;
+}
+.calc-workspace-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+.calc-workspace-toolbar:empty {
+  display: none;
+}
+.calc-workspace-body {
+  min-height: 0;
+}
+.calc-workspace-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  margin: 18px;
+  color: #64748b;
+  font-size: 14px;
+  background: #fff;
+}
 .desktop-footer .spacer { flex: 1; }
 .desktop-status-card {
   background: #f8fafc;
@@ -2861,6 +2907,32 @@ input[type="file"] { display: none; }
   border-radius: 999px;
   background: linear-gradient(90deg, #2563eb, #38bdf8);
   transition: width 0.18s ease-out;
+}
+.modal-progress-shell.is-indeterminate .modal-progress-percent {
+  min-width: 48px;
+}
+.modal-progress-shell.is-indeterminate .modal-progress-bar {
+  overflow: hidden;
+}
+.modal-progress-shell.is-indeterminate .modal-progress-fill {
+  width: 42%;
+  animation: modal-progress-indeterminate 1.15s ease-in-out infinite;
+}
+.modal-progress-shell.is-indeterminate .modal-progress-label::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -2px;
+  border-radius: 999px;
+  border: 2px solid rgba(37, 99, 235, 0.22);
+  border-top-color: #2563eb;
+  animation: busy-spin 0.8s linear infinite;
+}
+@keyframes modal-progress-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(240%); }
 }
 .modal-progress-shell.is-error .modal-progress-label {
   color: #b91c1c;

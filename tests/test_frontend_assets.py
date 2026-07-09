@@ -418,12 +418,15 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("function buildBatchMergeModalTargets(targetIds, fallbackTargets = [])", schedule_module)
         self.assertIn("async function openBatchMergeDraftModalStable(targetIds, fallbackTargets = [])", schedule_module)
         self.assertIn("await waitForNextFrame();", schedule_module)
-        self.assertIn('if (modal?.style.display !== "flex") {', schedule_module)
-        self.assertIn('throw new Error("補料 modal 沒有成功顯示");', schedule_module)
+        self.assertIn("function ensureCalcWorkspaceReady(title, subtitle = \"\")", schedule_module)
+        self.assertIn("activateCalcWorkspace();", schedule_module)
+        self.assertNotIn('if (modal?.style.display !== "flex") {', schedule_module)
+        self.assertNotIn('throw new Error("補料 modal 沒有成功顯示");', schedule_module)
         self.assertIn("_modalDraftBaseDecisions = {};", schedule_module)
         self.assertIn("_modalDraftBaseSupplements = {};", schedule_module)
         self.assertIn("_modalDraftVisibleParts = [];", schedule_module)
-        self.assertIn('if (list) list.innerHTML = "";', schedule_module)
+        self.assertIn("function clearCalcWorkspace()", schedule_module)
+        self.assertIn("calc-workspace-empty", schedule_module)
         self.assertIn('if (footer) footer.innerHTML = "";', schedule_module)
 
     def test_batch_dispatch_button_and_handler_are_removed_from_frontend(self):
@@ -1050,11 +1053,9 @@ console.log(JSON.stringify(results));
         render_idx = body.index("showShortageModal(_modalTargets)")
         self.assertLess(silent_save_idx, render_idx)
 
-    def test_open_batch_merge_modal_stable_preserves_commit_after_save_flag(self):
-        # Bug: 「批次 Merge + 寫主檔」按下後，openBatchMergeDraftModalStable 的 retry
-        # 路徑會呼叫 closeShortageModal()，而那會把 _modalCommitAfterSave reset 成 false，
-        # 導致 modal 儲存時走 saveBatchDraftsFromModal 而不是 update-and-commit-drafts。
-        # 修正後 retry 前要先保存 flag、retry 後再還原。
+    def test_open_batch_merge_modal_stable_renders_workspace_once(self):
+        # 算料已搬到工作區分頁，不再使用 overlay 掛載 retry；
+        # openBatchMergeDraftModalStable 只依目前順序重建 target 並渲染一次。
         schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
         text = schedule_module.read_text(encoding="utf-8")
 
@@ -1065,13 +1066,10 @@ console.log(JSON.stringify(results));
         )
         self.assertIsNotNone(match)
         body = match.group("body")
-        self.assertIn("const preservedCommitAfterSave = _modalCommitAfterSave;", body)
-        self.assertIn("_modalCommitAfterSave = preservedCommitAfterSave;", body)
-        preserve_idx = body.index("const preservedCommitAfterSave = _modalCommitAfterSave;")
-        close_idx = body.index("closeShortageModal();")
-        restore_idx = body.index("_modalCommitAfterSave = preservedCommitAfterSave;")
-        self.assertLess(preserve_idx, close_idx)
-        self.assertLess(close_idx, restore_idx)
+        self.assertIn("const modalTargets = buildBatchMergeModalTargets(targetIds, fallbackTargets);", body)
+        self.assertIn("await showBatchMergeDraftModal(modalTargets);", body)
+        self.assertNotIn("closeShortageModal();", body)
+        self.assertNotIn("preservedCommitAfterSave", body)
 
     def test_edit_auth_assets_exist(self):
         root = Path(__file__).resolve().parents[1]

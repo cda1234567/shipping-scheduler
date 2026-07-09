@@ -104,6 +104,7 @@
       <button class="tab-btn" data-tab="st-inventory">ST 庫存</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
+      <button class="tab-btn" data-tab="calc-workspace">算料工作區</button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
       <button class="tab-btn" data-tab="st-packages-tab">無MOQ包裝</button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
@@ -165,6 +166,30 @@
           <button class="btn btn-primary btn-sm" id="btn-create-folder" style="padding:3px 10px;font-size:12px">建立</button>
         </div>
         <div id="completed-scroll"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 算料工作區 ── -->
+    <div id="tab-calc-workspace" class="tab-content">
+      <div class="calc-workspace-shell">
+        <div class="calc-workspace-head">
+          <div>
+            <h3 id="modal-title" class="calc-workspace-title">算料工作區</h3>
+            <div id="modal-subtitle" class="modal-subtitle">從出貨排程按「批次 Merge」或「生成發料單」開始</div>
+          </div>
+          <span class="spacer"></span>
+          <button id="modal-clear-workspace" class="btn btn-secondary btn-sm" type="button">清除工作區</button>
+          <button id="modal-close" class="btn btn-secondary btn-sm" type="button">離開工作區</button>
+        </div>
+        <div id="modal-footer" class="modal-footer calc-workspace-toolbar"></div>
+        <div id="modal-search-wrap" class="modal-search-wrap" style="display:none">
+          <input id="modal-search-input" class="modal-search-input" type="text" placeholder="搜尋料號 / 說明 / 機種">
+          <button id="modal-search-clear" class="btn btn-secondary btn-sm" type="button">清除</button>
+          <span id="modal-search-meta" class="modal-search-meta"></span>
+        </div>
+        <div id="modal-shortage-list" class="modal-body calc-workspace-body">
+          <div class="calc-workspace-empty">從出貨排程按「批次 Merge」或「生成發料單」開始</div>
+        </div>
       </div>
     </div>
 
@@ -1044,17 +1069,17 @@ init().catch(error => {
   <div class="modal-box">
     <div class="modal-header">
       <h3 style="margin:0;font-size:16px">補料決策</h3>
-      <button id="modal-close" class="modal-close-btn">&times;</button>
+      <button class="modal-close-btn" type="button">&times;</button>
     </div>
-    <div id="modal-search-wrap" class="modal-search-wrap" style="display:none">
-      <input id="modal-search-input" class="modal-search-input" type="text" placeholder="搜尋料號 / 說明 / 機種">
-      <button id="modal-search-clear" class="btn btn-secondary btn-sm" type="button">清除</button>
-      <span id="modal-search-meta" class="modal-search-meta"></span>
+    <div class="modal-search-wrap" style="display:none">
+      <input class="modal-search-input" type="text" placeholder="搜尋料號 / 說明 / 機種">
+      <button class="btn btn-secondary btn-sm" type="button">清除</button>
+      <span class="modal-search-meta"></span>
     </div>
-    <div id="modal-shortage-list" class="modal-body"></div>
-    <div id="modal-footer" class="modal-footer">
-      <button id="modal-dispatch-all" class="btn btn-success btn-sm">全部扣帳</button>
-      <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>
+    <div class="modal-body"></div>
+    <div class="modal-footer">
+      <button class="btn btn-success btn-sm">全部扣帳</button>
+      <button class="btn btn-secondary btn-sm">取消</button>
     </div>
   </div>
 </div>
