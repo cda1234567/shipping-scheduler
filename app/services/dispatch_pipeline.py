@@ -16,6 +16,7 @@ from .shortage_rules import (
     filter_main_write_blocking_shortages,
     get_shortage_resulting_stock,
     is_ec_part,
+    is_order_scoped_shortage_part,
 )
 from .merge_drafts import (
     _ensure_editable_bom_for_draft,
@@ -95,12 +96,108 @@ class DispatchPlan:
         ]
 
     def to_preview_response(self) -> dict:
+        scopes = self._build_preview_scopes()
+        shared_parts = self._build_shared_preview_parts(scopes)
         return {
             "ok": True,
             "count": len(self.contexts),
             "merged_parts": self.merged_parts,
             "shortages": self.shortages,
+            "scopes": scopes,
+            "shared_parts": shared_parts,
+            "blocking_count": len(filter_main_write_blocking_shortages(self.shortages)),
         }
+
+    def _build_preview_scopes(self) -> list[dict]:
+        shortages_by_order: dict[int, list[dict]] = {}
+        for item in self.shortages:
+            try:
+                order_id = int(item.get("order_id"))
+            except (TypeError, ValueError):
+                continue
+            shortages_by_order.setdefault(order_id, []).append(self._normalize_preview_shortage(item))
+
+        scopes: list[dict] = []
+        for context in self.contexts:
+            order = context.order or {}
+            first_group = (context.groups or [{}])[0] or {}
+            order_id = context.order_id
+            scopes.append({
+                "order_id": order_id,
+                "batch_code": order.get("code") or first_group.get("batch_code", ""),
+                "model": order.get("model", ""),
+                "po_number": str(order.get("po_number") or first_group.get("po_number") or ""),
+                "is_sample": bool(context.is_sample),
+                "shortages": shortages_by_order.get(order_id, []),
+            })
+        return scopes
+
+    def _normalize_preview_shortage(self, item: dict) -> dict:
+        normalized = dict(item)
+        normalized.setdefault("default_supplement", normalized.get("supplement_qty", 0))
+        normalized.setdefault("lookahead_shortage_amount", normalized.get("shortage_amount", 0))
+        normalized.setdefault("lookahead_suggested_qty", normalized.get("suggested_qty", 0))
+        normalized.setdefault("lookahead_st_available_qty", normalized.get("st_available_qty", 0))
+        normalized.setdefault("lookahead_purchase_needed_qty", normalized.get("purchase_needed_qty", 0))
+        normalized.setdefault("lookahead_purchase_suggested_qty", normalized.get("purchase_suggested_qty", 0))
+        normalized.setdefault("lookahead_needs_purchase", normalized.get("needs_purchase", False))
+        normalized.setdefault("prev_qty_cs", normalized.get("prev_qty_cs", 0))
+        normalized.setdefault("st_stock_qty", normalized.get("st_stock_qty", 0))
+        normalized.setdefault("is_customer_material", bool(normalized.get("is_customer_material", False)))
+        return normalized
+
+    def _build_shared_preview_parts(self, scopes: list[dict]) -> list[dict]:
+        shared: dict[str, dict] = {}
+        order_lookup = {context.order_id: context for context in self.contexts}
+        for scope in scopes:
+            order_id = int(scope.get("order_id") or 0)
+            context = order_lookup.get(order_id)
+            for item in scope.get("shortages") or []:
+                part = str(item.get("part_number") or "").strip().upper()
+                if not part or is_order_scoped_shortage_part(part):
+                    continue
+                current = shared.setdefault(part, {
+                    **dict(item),
+                    "part_number": part,
+                    "needed": 0.0,
+                    "prev_qty_cs": 0.0,
+                    "shortage_amount": 0.0,
+                    "supplement_qty": 0.0,
+                    "default_supplement": 0.0,
+                    "lookahead_shortage_amount": 0.0,
+                    "lookahead_suggested_qty": 0.0,
+                    "order_ids": [],
+                    "batch_codes": [],
+                    "scopes": [],
+                })
+                current["needed"] += float(item.get("needed") or 0)
+                current["prev_qty_cs"] += float(item.get("prev_qty_cs") or 0)
+                current["shortage_amount"] = max(float(current.get("shortage_amount") or 0), float(item.get("shortage_amount") or 0))
+                current["supplement_qty"] = max(float(current.get("supplement_qty") or 0), float(item.get("supplement_qty") or 0))
+                current["default_supplement"] = max(float(current.get("default_supplement") or 0), float(item.get("default_supplement") or item.get("supplement_qty") or 0))
+                current["lookahead_shortage_amount"] = max(
+                    float(current.get("lookahead_shortage_amount") or 0),
+                    float(item.get("lookahead_shortage_amount") or item.get("shortage_amount") or 0),
+                )
+                current["lookahead_suggested_qty"] = max(
+                    float(current.get("lookahead_suggested_qty") or 0),
+                    float(item.get("lookahead_suggested_qty") or item.get("suggested_qty") or 0),
+                )
+                if order_id and order_id not in current["order_ids"]:
+                    current["order_ids"].append(order_id)
+                batch_code = str(scope.get("batch_code") or item.get("batch_code") or "").strip()
+                if batch_code and batch_code not in current["batch_codes"]:
+                    current["batch_codes"].append(batch_code)
+                current["scopes"].append({
+                    "order_id": order_id,
+                    "batch_code": batch_code,
+                    "model": context.order.get("model", "") if context else scope.get("model", ""),
+                    "po_number": scope.get("po_number", ""),
+                    "needed": item.get("needed", 0),
+                    "shortage_amount": item.get("shortage_amount", 0),
+                    "resulting_stock": item.get("resulting_stock"),
+                })
+        return sorted(shared.values(), key=lambda item: str(item.get("part_number") or ""))
 
 
 @dataclass

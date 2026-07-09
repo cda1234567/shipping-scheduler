@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.09.4"
-APP_RELEASED_AT = "2026-07-09"
-APP_HEADLINE = "修正批次寫入時 EC 補料被整批忽略的問題"
+APP_VERSION = "v2026.07.10.1"
+APP_RELEASED_AT = "2026-07-10"
+APP_HEADLINE = "缺料計算統一由後端計算，前後端數字不再不同步"
 APP_CHANGELOG = [
+    {
+        "title": "算料工作區後端統一計算",
+        "items": [
+            "批次 Merge、下載 BOM 與寫入主檔前確認都改用同一個後端 calc-preview 計算，畫面只負責顯示結果。",
+            "共用池料號改成一顆料只顯示一列補料輸入，整批只補一次，不會在多張訂單重複要求補同一顆料。",
+            "改補料、勾缺料或勾打樣時，工作區會 debounce 重新向後端取得 preview，避免前後端數字不同步。",
+        ],
+    },
     {
         "title": "EC 補料送出保護",
         "items": [

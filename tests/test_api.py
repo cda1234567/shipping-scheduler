@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import ANY, call, patch
 
@@ -1182,6 +1183,205 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["shortages"][0]["batch_code"], "1-3")
         mock_rebuild.assert_called_once_with([1])
 
+    def test_calc_preview_reset_stored_switches_between_draft_and_request_state(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+            draft_context = {
+                "draft": {"id": 11, "order_id": 1},
+                "order": {"id": 1, "model": "MODEL-A", "code": "1-1", "po_number": "4500059001"},
+                "groups": [{"batch_code": "1-1", "po_number": "4500059001", "bom_model": "MODEL-A", "components": []}],
+                "all_components": [],
+                "decisions": {"PART-OLD": "Shortage"},
+                "supplements": {"PART-OLD": 1000},
+            }
+            fresh_context = (
+                {"id": 1, "model": "MODEL-A", "code": "1-1", "po_number": "4500059001", "status": "merged"},
+                [{"batch_code": "1-1", "po_number": "4500059001", "bom_model": "MODEL-A", "components": []}],
+                [],
+            )
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11}), \
+                 patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}]), \
+                 patch("app.routers.schedule._load_active_merge_draft_context", return_value=draft_context), \
+                 patch("app.routers.schedule._prepare_dispatch_context", return_value=fresh_context), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={}), \
+                 patch("app.routers.schedule.build_order_decision_allocations", return_value={1: {"PART-NEW": "CreateRequirement"}}), \
+                 patch("app.routers.schedule.build_order_supplement_allocations", return_value={1: {"PART-NEW": 2000}}), \
+                 patch("app.routers.schedule.preview_order_batches", return_value={"merged_parts": 1, "shortages": []}) as mock_preview:
+                keep_response = self.client.post("/api/schedule/calc-preview", json={
+                    "order_ids": [1],
+                    "decisions": {"part-new": "CreateRequirement"},
+                    "supplements": {"part-new": 2000},
+                    "reset_stored": False,
+                })
+                reset_response = self.client.post("/api/schedule/calc-preview", json={
+                    "order_ids": [1],
+                    "decisions": {"part-new": "CreateRequirement"},
+                    "supplements": {"part-new": 2000},
+                    "reset_stored": True,
+                })
+
+        self.assertEqual(keep_response.status_code, 200)
+        self.assertEqual(reset_response.status_code, 200)
+        self.assertEqual(mock_preview.call_args_list[0].args[1][0]["decisions"], {
+            "PART-OLD": "Shortage",
+            "PART-NEW": "CreateRequirement",
+        })
+        self.assertEqual(mock_preview.call_args_list[0].args[1][0]["supplements"], {
+            "PART-OLD": 1000.0,
+            "PART-NEW": 2000,
+        })
+        self.assertEqual(mock_preview.call_args_list[1].args[1][0]["decisions"], {"PART-NEW": "CreateRequirement"})
+        self.assertEqual(mock_preview.call_args_list[1].args[1][0]["supplements"], {"PART-NEW": 2000})
+
+    def test_calc_preview_scopes_include_batch_code_and_shared_parts_one_row(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+            context_a = (
+                {"id": 1, "po_number": "4500059001", "model": "MODEL-A", "code": "8-1", "status": "merged"},
+                [{"batch_code": "8-1", "po_number": "4500059001", "bom_model": "MODEL-A", "components": []}],
+                [],
+            )
+            context_b = (
+                {"id": 2, "po_number": "4500059002", "model": "MODEL-B", "code": "8-2", "status": "merged"},
+                [{"batch_code": "8-2", "po_number": "4500059002", "bom_model": "MODEL-B", "components": []}],
+                [],
+            )
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={}), \
+                 patch("app.routers.schedule._prepare_dispatch_context", side_effect=[context_a, context_b]), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={"EC-30009A": 2000}), \
+                 patch("app.routers.schedule.preview_order_batches", return_value={
+                     "merged_parts": 2,
+                     "shortages": [
+                         {
+                             "order_id": 1,
+                             "batch_code": "8-1",
+                             "po_number": "4500059001",
+                             "model": "MODEL-A",
+                             "part_number": "EC-30009A",
+                             "description": "CAP",
+                             "current_stock": 30,
+                             "prev_qty_cs": 0,
+                             "needed": 4000,
+                             "shortage_amount": 70,
+                             "supplement_qty": 0,
+                             "moq": 2000,
+                             "suggested_qty": 2000,
+                             "decision": "None",
+                             "resulting_stock": 30,
+                         },
+                         {
+                             "order_id": 2,
+                             "batch_code": "8-2",
+                             "po_number": "4500059002",
+                             "model": "MODEL-B",
+                             "part_number": "EC-30009A",
+                             "description": "CAP",
+                             "current_stock": -3970,
+                             "prev_qty_cs": 0,
+                             "needed": 1000,
+                             "shortage_amount": 5070,
+                             "supplement_qty": 0,
+                             "moq": 2000,
+                             "suggested_qty": 6000,
+                             "decision": "None",
+                             "resulting_stock": -4970,
+                         },
+                     ],
+                 }):
+                response = self.client.post("/api/schedule/calc-preview", json={"order_ids": [1, 2]})
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual([scope["batch_code"] for scope in data["scopes"]], ["8-1", "8-2"])
+        self.assertEqual(len(data["shared_parts"]), 1)
+        shared = data["shared_parts"][0]
+        self.assertEqual(shared["part_number"], "EC-30009A")
+        self.assertEqual(shared["order_ids"], [1, 2])
+        self.assertEqual(shared["batch_codes"], ["8-1", "8-2"])
+        self.assertEqual(shared["needed"], 5000.0)
+        self.assertEqual(shared["shortage_amount"], 5070.0)
+        self.assertEqual(shared["lookahead_suggested_qty"], 6000.0)
+
+    def test_calc_preview_sample_order_ids_marks_scope_and_zeroes_ec_gap(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(main_path, [("EC-30009A", 1000, 50)])
+            context = (
+                {"id": 1, "po_number": "4500059001", "model": "MODEL-A", "code": "S-1", "status": "merged"},
+                [{
+                    "batch_code": "S-1",
+                    "po_number": "4500059001",
+                    "bom_model": "MODEL-A",
+                    "components": [{"part_number": "EC-30009A", "description": "CAP", "needed_qty": 1, "prev_qty_cs": 0}],
+                }],
+                [{"part_number": "EC-30009A"}],
+            )
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={}), \
+                 patch("app.routers.schedule._prepare_dispatch_context", return_value=context), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={"EC-30009A": 1000}), \
+                 patch("app.routers.schedule._get_st_inventory_stock", return_value={}):
+                normal = self.client.post("/api/schedule/calc-preview", json={"order_ids": [1]})
+                sample = self.client.post("/api/schedule/calc-preview", json={"order_ids": [1], "sample_order_ids": [1]})
+
+        self.assertEqual(normal.status_code, 200)
+        self.assertEqual(sample.status_code, 200)
+        self.assertEqual(normal.json()["shortages"][0]["part_number"], "EC-30009A")
+        self.assertEqual(normal.json()["shortages"][0]["shortage_amount"], 51.0)
+        self.assertEqual(sample.json()["shortages"], [])
+        self.assertTrue(sample.json()["scopes"][0]["is_sample"])
+
+    def test_calc_preview_uses_backend_shortage_rules_for_ec_ec6_and_pk(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(main_path, [
+                ("EC-30009A", 1000, 50),
+                ("EC-60001A", 1000, 50),
+                ("PK-10001A", 100, 0.5),
+                ("PK-50070A", 100, 0.5),
+            ])
+            context = (
+                {"id": 1, "po_number": "4500059001", "model": "MODEL-A", "code": "R-1", "status": "merged"},
+                [{
+                    "batch_code": "R-1",
+                    "po_number": "4500059001",
+                    "bom_model": "MODEL-A",
+                    "components": [
+                        {"part_number": "EC-30009A", "description": "EC", "needed_qty": 1, "prev_qty_cs": 0},
+                        {"part_number": "EC-60001A", "description": "EC6", "needed_qty": 1, "prev_qty_cs": 0},
+                        {"part_number": "PK-10001A", "description": "PK", "needed_qty": 0.1, "prev_qty_cs": 0},
+                        {"part_number": "PK-50070A", "description": "PK exempt", "needed_qty": 0.1, "prev_qty_cs": 0},
+                    ],
+                }],
+                [],
+            )
+
+            with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={}), \
+                 patch("app.routers.schedule._prepare_dispatch_context", return_value=context), \
+                 patch("app.routers.schedule._get_effective_moq", return_value={
+                     "EC-30009A": 1000,
+                     "EC-60001A": 1000,
+                     "PK-10001A": 100,
+                     "PK-50070A": 100,
+                 }), \
+                 patch("app.routers.schedule._get_st_inventory_stock", return_value={}):
+                response = self.client.post("/api/schedule/calc-preview", json={"order_ids": [1]})
+
+        self.assertEqual(response.status_code, 200)
+        by_part = {item["part_number"]: item for item in response.json()["shortages"]}
+        self.assertAlmostEqual(by_part["EC-30009A"]["shortage_amount"], 51.0)
+        self.assertNotIn("EC-60001A", by_part)
+        self.assertAlmostEqual(by_part["PK-10001A"]["shortage_amount"], 0.6)
+        self.assertNotIn("PK-50070A", by_part)
+
     def test_batch_dispatch_passes_allocated_supplements_to_each_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
@@ -1866,6 +2066,115 @@ class ApiTests(unittest.TestCase):
             self.assertIsNone(ws.cell(row=2, column=9).value)
             self.assertEqual(ws.cell(row=2, column=10).value, 30)
             self.assertEqual(ws.cell(row=2, column=11).value, 90)
+            wb.close()
+
+    def test_update_and_commit_drafts_real_write_keeps_flat_ec_allocation_numbers(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            backup_dir = Path(temp_dir) / "backups"
+            self._build_main_workbook(main_path, [("EC-001", 500, 120)])
+
+            groups_a = [{
+                "batch_code": "8-1",
+                "po_number": "4500059001",
+                "bom_model": "MODEL-A",
+                "components": [{
+                    "part_number": "EC-001",
+                    "description": "EC part",
+                    "is_dash": False,
+                    "needed_qty": 30,
+                    "prev_qty_cs": 0,
+                }],
+            }]
+            groups_b = [{
+                "batch_code": "8-2",
+                "po_number": "4500059002",
+                "bom_model": "MODEL-B",
+                "components": [{
+                    "part_number": "EC-001",
+                    "description": "EC part",
+                    "is_dash": False,
+                    "needed_qty": 30,
+                    "prev_qty_cs": 0,
+                }],
+            }]
+            all_components = [{
+                "part_number": "EC-001",
+                "description": "EC part",
+                "needed_qty": 30,
+                "prev_qty_cs": 0,
+                "is_dash": 0,
+            }]
+            context_a = {
+                "draft": {"id": 11, "order_id": 1},
+                "order": {"id": 1, "po_number": "4500059001", "model": "MODEL-A", "code": "8-1", "status": "merged"},
+                "groups": groups_a,
+                "all_components": all_components,
+                "decisions": {"EC-001": "CreateRequirement"},
+                "supplements": {},
+            }
+            context_b = {
+                "draft": {"id": 12, "order_id": 2},
+                "order": {"id": 2, "po_number": "4500059002", "model": "MODEL-B", "code": "8-2", "status": "merged"},
+                "groups": groups_b,
+                "all_components": all_components,
+                "decisions": {"EC-001": "CreateRequirement"},
+                "supplements": {},
+            }
+
+            def fake_get_order(order_id):
+                return {
+                    1: {"id": 1, "po_number": "4500059001", "model": "MODEL-A", "code": "8-1", "status": "merged"},
+                    2: {"id": 2, "po_number": "4500059002", "model": "MODEL-B", "code": "8-2", "status": "merged"},
+                }.get(order_id)
+
+            with ExitStack() as stack:
+                stack.enter_context(patch("app.routers.schedule.db.get_setting", return_value=str(main_path)))
+                stack.enter_context(patch("app.services.order_supplements.db.get_setting", return_value=str(main_path)))
+                stack.enter_context(patch("app.routers.schedule.BACKUP_DIR", backup_dir))
+                stack.enter_context(patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}))
+                stack.enter_context(patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]))
+                stack.enter_context(patch("app.routers.schedule._load_active_merge_draft_context", side_effect=[context_a, context_b]))
+                stack.enter_context(patch("app.routers.schedule._get_effective_moq", return_value={"EC-001": 500}))
+                stack.enter_context(patch("app.routers.schedule.db.get_st_inventory_stock", return_value={}))
+                stack.enter_context(patch("app.services.order_supplements.db.get_all_bom_components_by_model", return_value={
+                    "MODEL-A": all_components,
+                    "MODEL-B": all_components,
+                }))
+                stack.enter_context(patch("app.services.order_supplements.db.get_order", side_effect=fake_get_order))
+                stack.enter_context(patch("app.routers.schedule.db.save_dispatch_session", side_effect=[
+                    {"id": 21, "order_id": 1},
+                    {"id": 22, "order_id": 2},
+                ]))
+                stack.enter_context(patch("app.routers.schedule.db.save_dispatch_records"))
+                stack.enter_context(patch("app.routers.schedule.db.update_order"))
+                stack.enter_context(patch("app.routers.schedule.db.replace_order_decisions"))
+                stack.enter_context(patch("app.routers.schedule.db.replace_order_supplements"))
+                stack.enter_context(patch("app.routers.schedule.db.mark_merge_draft_committed"))
+                stack.enter_context(patch("app.routers.schedule.db.get_active_merge_drafts", return_value=[]))
+                stack.enter_context(patch("app.routers.schedule.db.save_st_dispatch_consumptions"))
+                stack.enter_context(patch("app.routers.schedule.refresh_snapshot_from_main"))
+                stack.enter_context(patch("app.routers.schedule.db.log_activity"))
+                response = self.client.post("/api/schedule/update-and-commit-drafts", json={
+                    "order_ids": [1, 2],
+                    "decisions": {"ec-001": "CreateRequirement"},
+                    "supplements": {"ec-001": 500},
+                })
+
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["success_count"], 2)
+            self.assertEqual(data["merged_parts"], 2)
+            self.assertEqual(data["shortages"], [])
+
+            wb = openpyxl.load_workbook(main_path, data_only=True)
+            ws = wb.active
+            self.assertEqual(ws.cell(row=2, column=9).value, 500)
+            self.assertEqual(ws.cell(row=2, column=10).value, 30)
+            self.assertEqual(ws.cell(row=2, column=11).value, 590)
+            self.assertIsNone(ws.cell(row=2, column=12).value)
+            self.assertEqual(ws.cell(row=2, column=13).value, 30)
+            self.assertEqual(ws.cell(row=2, column=14).value, 560)
             wb.close()
 
     def test_rollback_preview_returns_tail_orders(self):

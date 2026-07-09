@@ -160,7 +160,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertNotIn('aria-label="編輯 MOQ">編</button>', schedule_module)
         self.assertIn("shortage?._lookahead_purchase_suggested_qty", schedule_module)
         self.assertIn("shortage?._lookahead_st_available_qty", schedule_module)
-        self.assertIn("calculateModalShortageAmount(partNumber, resultingStock) > 0", schedule_module)
+        self.assertIn("function hasRemainingShortageForResultingStock(partNumber, resultingStock) {", schedule_module)
+        self.assertIn("return Number.isFinite(resultingStock) && resultingStock < 0;", schedule_module)
         self.assertIn("return hasRemainingShortageForResultingStock(shortage?.part_number, resultingStock);", schedule_module)
         self.assertIn("const isNegative = hasRemainingShortageForResultingStock(card?.dataset.part, resultingStock);", schedule_module)
         self.assertNotIn("s.purchase_needed_qty ?? s.shortage_amount ?? 0", schedule_module)
@@ -236,22 +237,21 @@ class FrontendAssetTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
 
-        self.assertIn("export function getRequiredMinStock(partNumber, ignoreEcMin = false)", calculator_module)
-        self.assertIn("export function calculateShortageAmount(partNumber, endingStock, ignoreEcMin = false)", calculator_module)
-        self.assertIn('if (normalized.startsWith("EC-6")) return 0;', calculator_module)
-        self.assertIn('if (normalized.startsWith("EC-")) return 100;', calculator_module)
-        self.assertIn('if (normalized.startsWith("PK-")) {', calculator_module)
-        self.assertIn('const PK_NO_WARNING_PREFIXES = ["PK-50070"];', calculator_module)
+        self.assertNotIn("export function getRequiredMinStock", calculator_module)
+        self.assertNotIn("export function calculateShortageAmount", calculator_module)
+        self.assertIn('if (normalized.startsWith("EC-6")) requiredMin = 0;', calculator_module)
+        self.assertIn('else if (normalized.startsWith("EC-")) requiredMin = 100;', calculator_module)
+        self.assertIn('else if (normalized.startsWith("PK-")) requiredMin = normalized.startsWith("PK-50070") ? 0 : 1;', calculator_module)
 
     def test_right_panel_includes_main_stock_shortage_rule_items_without_duplicates(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
-        self.assertIn('import { calculate, calculateShortageAmount, getRequiredMinStock } from "./calculator.js";', schedule_module)
+        self.assertIn('import { calculate } from "./calculator.js";', schedule_module)
         self.assertIn("function buildMainStockNegativeItems()", schedule_module)
         self.assertIn("for (const [part, stockQty] of Object.entries(_stock))", schedule_module)
-        self.assertIn("const threshold = getRequiredMinStock(key);", schedule_module)
-        self.assertIn("const shortageAmount = calculateShortageAmount(key, currentStock);", schedule_module)
+        self.assertIn("const threshold = getDisplayMinStock(key);", schedule_module)
+        self.assertIn("const shortageAmount = calculateDisplayShortageAmount(key, currentStock);", schedule_module)
         self.assertIn('vendor: normalizeVendorName(_vendors?.[key]),', schedule_module)
         self.assertIn("_row_code: firstOrderCode", schedule_module)
         self.assertIn('_row_group_label: "主檔層級缺料"', schedule_module)
@@ -362,12 +362,13 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("每次下載前都會先跳出另存新檔", desktop_bridge)
         self.assertIn("之後每次下載都會先詢問位置", desktop_bridge)
 
-    def test_batch_merge_modal_rebuilds_raw_shortages_before_reapplying_stored_inputs(self):
+    def test_calc_workspace_uses_backend_preview_instead_of_frontend_raw_modal_calc(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
-        self.assertIn("function buildRawModalShortageGroups(targets)", schedule_module)
-        self.assertIn("calculate(targetRows, _bomData, _stock, _moq, _dispatchedConsumption, _stStock, {})", schedule_module)
+        self.assertNotIn("function buildRawModalShortageGroups(targets)", schedule_module)
+        self.assertIn('apiJson("/api/schedule/calc-preview"', schedule_module)
+        self.assertIn("function renderSharedPreviewParts(sharedParts = [])", schedule_module)
 
         batch_modal_match = re.search(
             r"async function showBatchMergeDraftModal\(targets\) \{(?P<body>.*?)\n\}",
@@ -376,7 +377,7 @@ class FrontendAssetTests(unittest.TestCase):
         )
         self.assertIsNotNone(batch_modal_match)
         batch_body = batch_modal_match.group("body")
-        self.assertIn("buildRawModalShortageGroups(targets)", batch_body)
+        self.assertIn("refreshModalCalcPreview({ immediate: true, resetStored: _modalResetStored })", batch_body)
         self.assertNotIn("_calcResults.forEach", batch_body)
 
         shortage_modal_match = re.search(
@@ -386,11 +387,18 @@ class FrontendAssetTests(unittest.TestCase):
         )
         self.assertIsNotNone(shortage_modal_match)
         shortage_body = shortage_modal_match.group("body")
-        self.assertIn("buildRawModalShortageGroups(targets)", shortage_body)
+        self.assertIn("refreshModalCalcPreview({ immediate: true, resetStored: false })", shortage_body)
         self.assertNotIn("_calcResults.forEach", shortage_body)
-        self.assertIn("preserveShortageDecisions: true", shortage_body)
-        self.assertIn("preserveShortageDecisions: true", batch_body)
         self.assertIn("function bindShortageEditors(list)", schedule_module)
+        self.assertIn("async function refreshModalCalcPreview({ immediate = false, resetStored = _modalResetStored } = {})", schedule_module)
+        self.assertIn("const preview = await fetchModalCalcPreview({", schedule_module)
+        self.assertIn("renderModalCalcPreview(preview, { focusState });", schedule_module)
+        self.assertIn("_modalPreviewDebounceTimer = setTimeout(() => {", schedule_module)
+        self.assertIn("_modalPreviewDebounceTimer = null;", schedule_module)
+        self.assertIn("void run();", schedule_module)
+        self.assertIn("}, 250);", schedule_module)
+        self.assertIn("if (_modalPreviewAbortController) _modalPreviewAbortController.abort();", schedule_module)
+        self.assertNotIn("buildRawModalShortageGroups", schedule_module)
         self.assertIn("syncDraftPartControls(list, partKey, {", schedule_module)
 
     def test_batch_merge_rebuilds_all_checked_pending_or_merged_targets_in_current_order(self):
@@ -972,34 +980,24 @@ console.log(JSON.stringify(results));
         self.assertIn("function isOrderScopedPart(partNumber)", text)
 
     def test_modal_stored_supplements_do_not_sum_across_orders_for_shared_pool_parts(self):
-        # Bug 7: buildStoredModalDraftState 對 EC 等共享 pool 料原本是
-        # storedSupplements[pk] = (storedSupplements[pk] || 0) + val 跨 order 累加。
-        # 5 個 order 各存了 4000 EC-30009A 草稿後，modal 重開時 default_supplement
-        # 變 20000(實際 demand 11544、應為 12000)。鏡像 Bug 1 修法，
-        # 非 ORDER_SCOPED 分支必須改 Math.max；ORDER_SCOPED 仍用 =。
+        # Bug 7 的正確性現在由後端 calc-preview/分配邏輯保證，API 測試已有覆蓋。
+        # 這裡只守前端資產：不能恢復已刪除的 stored modal draft 聚合路徑，
+        # 避免 EC 等共享 pool 料再次在前端跨 order 累加成 N 倍。
         schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
         text = schedule_module.read_text(encoding="utf-8")
 
-        match = re.search(
-            r"function buildStoredModalDraftState\([^)]*\) \{(?P<body>.*?)\n\}",
-            text,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        body = match.group("body")
+        self.assertNotIn("function buildStoredModalDraftState", text)
+        self.assertNotIn("function _applyStoredToShortages", text)
+        self.assertNotIn("buildStoredModalDraftState(", text)
+        self.assertNotIn("_applyStoredToShortages(", text)
+        self.assertNotIn("storedSupplements[pk] = (storedSupplements[pk] || 0) + val;", text)
+        self.assertNotIn("storedOrderScopedSupplements[orderPartKey] = val;", text)
 
-        # 非 order-scoped 分支用 Math.max
-        self.assertIn(
-            "storedSupplements[pk] = Math.max(storedSupplements[pk] || 0, val);",
-            body,
-        )
-        # 不能殘留累加版本
-        self.assertNotIn(
-            "storedSupplements[pk] = (storedSupplements[pk] || 0) + val;",
-            body,
-        )
-        # ORDER_SCOPED 仍走 =（per-order key 不會撞名，不能累加成 N×）
-        self.assertIn("storedOrderScopedSupplements[orderPartKey] = val;", body)
+        self.assertIn('apiJson("/api/schedule/calc-preview"', text)
+        self.assertIn("function buildModalCalcPreviewPayload({ resetStored = _modalResetStored } = {})", text)
+        self.assertIn("order_supplements: _collectModalOrderSupplements(),", text)
+        self.assertIn("function renderModalCalcPreview(preview, { focusState = null } = {})", text)
+        self.assertIn("renderSharedPreviewParts(preview?.shared_parts || [])", text)
 
     def test_right_panel_supplement_qty_takes_max_of_stored_and_lookahead(self):
         # Bug: 4 個 order 各缺 2000 (總缺 8000) 時，原本 stored>0 直接 return 4000，

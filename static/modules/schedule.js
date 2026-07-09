@@ -1,5 +1,5 @@
 import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, hideToast, esc, fmt } from "./api.js";
-import { calculate, calculateShortageAmount, getRequiredMinStock } from "./calculator.js";
+import { calculate } from "./calculator.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -43,6 +43,10 @@ let _modalDraftBaseDecisions = {};
 let _modalDraftBaseSupplements = {};
 let _modalDraftVisibleParts = [];
 let _modalCommitAfterSave = false;
+let _modalResetStored = false;
+let _modalPreviewAbortController = null;
+let _modalPreviewDebounceTimer = null;
+let _modalPreviewRequestSeq = 0;
 let _globalBusyDepth = 0;
 let _globalBusyProgressTimer = null;
 let _globalBusyPercent = 0;
@@ -1237,11 +1241,11 @@ function shortageGroupHeadingHtml(label, poNumber = "", { compact = false, sampl
   return `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:12px 0 8px;padding:6px 10px;background:#f3f4f6;border-radius:6px;font-weight:600;font-size:13px;color:#1f2937"><span>${safeLabel}</span><span style="display:flex;align-items:center;gap:10px">${poHtml}${sampleControlHtml}</span></div>`;
 }
 
-function sampleOrderCheckboxHtml(scope = {}) {
+function sampleOrderCheckboxHtml(scope = {}, checked = false) {
   const orderId = normalizeOrderId(scope.order_id);
   if (!Number.isInteger(orderId)) return "";
   return `<label style="display:flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:#374151;white-space:nowrap">
-    <input type="checkbox" class="sample-order-flag" data-order-id="${orderId}">
+    <input type="checkbox" class="sample-order-flag" data-order-id="${orderId}" ${checked ? "checked" : ""}>
     打樣（此單 EC 料不強制補到 100）
   </label>`;
 }
@@ -1289,76 +1293,6 @@ function buildShortageSupplySuggestion(partNumber, shortageAmount, moq = 0, stSt
     purchase_suggested_qty: purchaseSuggestedQty,
     needs_purchase: purchaseNeededQty > 0,
   };
-}
-
-function applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes = []) {
-  if (!shortagesByScope) return;
-
-  const partChains = new Map();
-  const seenScopes = new Set();
-  let sequence = 0;
-
-  const collectScopeItems = (scopeKey, scopeIndex) => {
-    const items = shortagesByScope?.[scopeKey] || [];
-    items.forEach(item => {
-      const partKey = normalizePartKey(item?.part_number);
-      if (!partKey || isOrderScopedPart(partKey)) return;
-      if (!partChains.has(partKey)) partChains.set(partKey, []);
-      const orderIndex = Number(item?._row_order_index);
-      partChains.get(partKey).push({
-        item,
-        scopeIndex,
-        orderIndex: Number.isFinite(orderIndex) ? orderIndex : Number.MAX_SAFE_INTEGER,
-        sequence: sequence++,
-      });
-    });
-  };
-
-  orderedScopes.forEach((scope, scopeIndex) => {
-    const scopeKey = String(scope?.key || "");
-    if (!scopeKey) return;
-    seenScopes.add(scopeKey);
-    collectScopeItems(scopeKey, scopeIndex);
-  });
-
-  Object.keys(shortagesByScope).forEach(scopeKey => {
-    if (seenScopes.has(scopeKey)) return;
-    collectScopeItems(scopeKey, Number.MAX_SAFE_INTEGER);
-  });
-
-  partChains.forEach(entries => {
-    entries.sort((a, b) => (
-      a.orderIndex - b.orderIndex
-      || a.scopeIndex - b.scopeIndex
-      || a.sequence - b.sequence
-    ));
-
-    let downstreamMaxShortage = 0;
-    for (let index = entries.length - 1; index >= 0; index -= 1) {
-      const entry = entries[index];
-      downstreamMaxShortage = Math.max(
-        downstreamMaxShortage,
-        Math.max(0, Number(entry.item?.shortage_amount || 0) || 0),
-      );
-      const lookaheadSuggestion = buildShortageSupplySuggestion(
-        entry.item?.part_number,
-        downstreamMaxShortage,
-        entry.item?.moq,
-        entry.item?.st_stock_qty,
-      );
-      Object.assign(
-        entry.item,
-        {
-          _lookahead_shortage_amount: downstreamMaxShortage,
-          _lookahead_suggested_qty: lookaheadSuggestion.suggested_qty,
-          _lookahead_st_available_qty: lookaheadSuggestion.st_available_qty,
-          _lookahead_purchase_needed_qty: lookaheadSuggestion.purchase_needed_qty,
-          _lookahead_purchase_suggested_qty: lookaheadSuggestion.purchase_suggested_qty,
-          _lookahead_needs_purchase: lookaheadSuggestion.needs_purchase,
-        },
-      );
-    }
-  });
 }
 
 function getRightPanelSupplementQty(item, storedSupplementsByPart = {}) {
@@ -1571,104 +1505,6 @@ function buildCheckedOrderVisibleShortageBadgeMap() {
   return badgeMap;
 }
 
-function buildRawModalShortageGroups(targets) {
-  const targetIds = new Set(
-    (targets || [])
-      .map(target => normalizeOrderId(target?.id))
-      .filter(Number.isInteger)
-  );
-  const targetRows = _rows.filter(row => targetIds.has(row.id));
-  const rawResults = targetRows.length
-    ? calculate(targetRows, _bomData, _stock, _moq, _dispatchedConsumption, _stStock, {})
-    : [];
-
-  const shortagesByScope = {};
-  const csShortagesByScope = {};
-  const orderedScopes = buildShortageScopeList(targetRows);
-  rawResults.forEach((result, index) => {
-    if (!result) return;
-    const row = targetRows[index];
-    if (!row) return;
-
-    const meta = buildShortageGroupMeta(row);
-    const scopeKey = meta._row_group_key;
-
-    (result.shortages || []).forEach(item => {
-      if (!shortagesByScope[scopeKey]) shortagesByScope[scopeKey] = [];
-      shortagesByScope[scopeKey].push({ ...item, ...meta });
-    });
-    (result.customer_material_shortages || []).forEach(item => {
-      if (!csShortagesByScope[scopeKey]) csShortagesByScope[scopeKey] = [];
-      csShortagesByScope[scopeKey].push({ ...item, ...meta });
-    });
-  });
-
-  injectStoredSupplementOnlyItems(shortagesByScope, targetRows);
-  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
-  return { shortagesByScope, csShortagesByScope, orderedScopes };
-}
-
-function injectStoredSupplementOnlyItems(shortagesByScope, targetRows) {
-  // 使用者在 draft 存了 supplement > 0 但系統判定不缺料的料號，
-  // 也要在 modal 列出，讓使用者看到自己輸入的補料並可以再編輯。
-  for (const row of targetRows) {
-    const draft = _draftsByOrderId?.[row.id];
-    if (!draft) continue;
-    const supplements = draft.supplements || {};
-    const modelKey = String(row.model || "").toUpperCase();
-    const bomEntry = _bomData?.[modelKey];
-    if (!bomEntry) continue;
-
-    const meta = buildShortageGroupMeta(row);
-    const scopeKey = meta._row_group_key;
-    const existingParts = new Set(
-      (shortagesByScope[scopeKey] || [])
-        .filter(item => normalizeOrderId(item._order_id) === row.id)
-        .map(item => normalizePartKey(item.part_number))
-    );
-
-    const orderQty = toSchedOrderQty(row);
-    for (const [rawPart, rawQty] of Object.entries(supplements)) {
-      const partKey = normalizePartKey(rawPart);
-      const supVal = Number(rawQty) || 0;
-      if (!partKey || supVal <= 0) continue;
-      if (existingParts.has(partKey)) continue;
-
-      const comp = (bomEntry.components || []).find(
-        c => normalizePartKey(c.part_number) === partKey,
-      );
-      if (!comp || comp.is_dash) continue;
-
-      const neededQty = effectiveNeededFromBomComp(comp, orderQty);
-      if (neededQty <= 0) continue;
-      const currentStock = Number(_stock?.[partKey] ?? 0) || 0;
-      const itemMoq = Number(_moq?.[partKey] ?? 0) || 0;
-      const stStockQty = Number(_stStock?.[partKey] ?? 0) || 0;
-
-      const synthetic = {
-        part_number: comp.part_number,
-        description: comp.description || "",
-        shortage_amount: 0,
-        current_stock: currentStock,
-        needed: neededQty,
-        supplement_qty: supVal,
-        moq: itemMoq,
-        suggested_qty: supVal,
-        purchase_suggested_qty: 0,
-        decision: "None",
-        st_stock_qty: stStockQty,
-        st_available_qty: 0,
-        purchase_needed_qty: 0,
-        needs_purchase: false,
-        _supplement_only: true,
-        ...meta,
-      };
-      if (!shortagesByScope[scopeKey]) shortagesByScope[scopeKey] = [];
-      shortagesByScope[scopeKey].push(synthetic);
-    }
-  }
-}
-
 function toSchedOrderQty(row) {
   const v = Number(row?.order_qty || 0);
   return Number.isFinite(v) && v > 0 ? v : 0;
@@ -1697,6 +1533,18 @@ function buildPartDescriptionLookup() {
   return descLookup;
 }
 
+function getDisplayMinStock(partNumber) {
+  const normalized = normalizePartKey(partNumber);
+  if (normalized.startsWith("EC-6")) return 0;
+  if (normalized.startsWith("EC-")) return 100;
+  if (normalized.startsWith("PK-")) return normalized.startsWith("PK-50070") ? 0 : 1;
+  return 0;
+}
+
+function calculateDisplayShortageAmount(partNumber, endingStock) {
+  return Math.max(0, getDisplayMinStock(partNumber) - Number(endingStock || 0));
+}
+
 /** 從主檔目前庫存找出已違反 shortage rule 門檻的料號。 */
 function buildMainStockNegativeItems() {
   if (!_stock || !Object.keys(_stock).length) return [];
@@ -1711,8 +1559,8 @@ function buildMainStockNegativeItems() {
     if (!Number.isFinite(currentStock)) continue;
     if (currentStock >= 0) continue;
 
-    const threshold = getRequiredMinStock(key);
-    const shortageAmount = calculateShortageAmount(key, currentStock);
+    const threshold = getDisplayMinStock(key);
+    const shortageAmount = calculateDisplayShortageAmount(key, currentStock);
     if (shortageAmount <= 0) continue;
 
     const moq = Math.max(0, Number(_moq?.[key] || 0) || 0);
@@ -1951,7 +1799,7 @@ function buildPostDispatchShortagesFromCompletedDrafts() {
         ? liveStock
         : Number(shortage?.resulting_stock ?? shortage?.current_stock ?? 0);
       const shortageAmount = useLiveStock
-        ? calculateModalShortageAmount(partKey, currentStock)
+        ? calculateDisplayShortageAmount(partKey, currentStock)
         : fallbackShortageAmount;
       if (!shouldRenderRightPanelActionableShortage(partKey, currentStock, shortageAmount)) continue;
 
@@ -2004,7 +1852,7 @@ function normalizePostDispatchShortageForPanel(shortage = {}, row = {}) {
     ? liveStock
     : (Number.isFinite(fallbackStock) ? fallbackStock : -fallbackShortageAmount);
   const shortageAmount = useLiveStock
-    ? calculateModalShortageAmount(partKey, currentStock)
+    ? calculateDisplayShortageAmount(partKey, currentStock)
     : fallbackShortageAmount;
   if (!shouldRenderRightPanelActionableShortage(partKey, currentStock, shortageAmount)) return null;
 
@@ -2207,54 +2055,6 @@ function buildModalCarryOverOverrides() {
     overrides[bomFile.id] = { ...(_modalCarryOversByModel[modelKey] || {}) };
   });
   return overrides;
-}
-
-function buildStoredModalDraftState(targets) {
-  const storedDecisions = {};
-  const storedSupplements = {};
-  const storedOrderScopedDecisions = {};
-  const storedOrderScopedSupplements = {};
-
-  (targets || []).forEach(target => {
-    const orderId = normalizeOrderId(target?.id);
-    const draft = Number.isInteger(orderId)
-      ? _draftsByOrderId?.[orderId]
-      : _draftsByOrderId?.[target?.id];
-    if (!draft) return;
-
-    Object.entries(draft.decisions || {}).forEach(([part, decision]) => {
-      const pk = normalizePartKey(part);
-      if (!pk || !decision) return;
-      const orderPartKey = buildOrderPartKey(orderId, pk);
-      if (orderPartKey) {
-        storedOrderScopedDecisions[orderPartKey] = decision;
-      } else {
-        storedDecisions[pk] = decision;
-      }
-    });
-
-    Object.entries(draft.supplements || {}).forEach(([part, qty]) => {
-      const pk = normalizePartKey(part);
-      const val = Number(qty) || 0;
-      if (!pk || val <= 0) return;
-      const orderPartKey = buildOrderPartKey(orderId, pk);
-      if (orderPartKey) {
-        storedOrderScopedSupplements[orderPartKey] = val;
-      } else {
-        // EC 等共享 pool 料：跨 order 草稿應取 max，不能累加；
-        // 否則 modal 重開時 default_supplement 會被多個 order 的相同補料疊加，
-        // 算出超過實際需求的 MOQ 倍數（Bug 7）。
-        storedSupplements[pk] = Math.max(storedSupplements[pk] || 0, val);
-      }
-    });
-  });
-
-  return {
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  };
 }
 
 async function saveCurrentDraftFromModal({ silent = false } = {}) {
@@ -2723,6 +2523,7 @@ async function showShortageModal(targets) {
   _modalTargets = targets;
   _modalMode = "download";
   _modalPreviewShortages = [];
+  _modalResetStored = false;
   const { list, footer } = ensureCalcWorkspaceReady(
     "確認補料並下載 BOM",
     `共 ${targets.length} 筆訂單，補料內容會寫入下載的 BOM 副本。`,
@@ -2738,81 +2539,11 @@ async function showShortageModal(targets) {
     } catch (_) {}
   }
 
-  // 收集勾選訂單的缺料，按機種分組
-  const {
-    shortagesByScope,
-    csShortagesByScope,
-    orderedScopes,
-  } = buildRawModalShortageGroups(targets);
-
-  // 組內按料號排序
-  _modalCarryOversByModel = buildModalCarryOversByModel(targets);
-
-  for (const items of Object.values(shortagesByScope))
-    items.sort(compareShortageItems);
-  for (const items of Object.values(csShortagesByScope))
-    items.sort(compareShortageItems);
-
-  // 從已存的副檔草稿還原上次的 decisions / supplements
-  const {
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  } = buildStoredModalDraftState(targets);
-  // preserveShortageDecisions: true
-  _applyStoredToShortages(
-    shortagesByScope,
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  );
-  _applyStoredToShortages(
-    csShortagesByScope,
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  );
-
-  const visibleScopes = orderedScopes.filter(scope =>
-    (shortagesByScope[scope.key] || []).length > 0 || (csShortagesByScope[scope.key] || []).length > 0
-  );
-  const hasAny = visibleScopes.length > 0;
-
-  let html = "";
-
-  if (!hasAny) {
-    html += `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
-      全部 OK，無缺料！可直接扣帳。</div>`;
-  } else {
-    for (const scope of visibleScopes) {
-      html += `<section class="modal-shortage-section" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
-      html += shortageGroupHeadingHtml(scope.label, scope.po_number);
-      const csItems = csShortagesByScope[scope.key] || [];
-      const items = shortagesByScope[scope.key] || [];
-      if (csItems.length) {
-        html += '<div style="margin-bottom:8px"><h4 style="font-size:12px;color:#ca8a04;margin:4px 0">客供料</h4>';
-        html += csItems.map(s => modalShortageItem(s, true)).join("");
-        html += '</div>';
-      }
-      if (items.length) {
-        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
-        html += items.map(s => modalShortageItem(s, false)).join("");
-      }
-      html += "</section>";
-    }
-  }
-
-  list.innerHTML = html;
+  _modalCarryOversByModel = {};
+  await refreshModalCalcPreview({ immediate: true, resetStored: false });
   configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
-  bindShortageEditors(list);
 
   // 重設 footer
-  bindMoqEditors(list);
-  bindShortageMoqBadgeEditors(list);
-
   footer.innerHTML = `
     <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
       <div class="modal-progress-head">
@@ -3005,6 +2736,7 @@ async function showBatchMergeDraftModal(targets) {
   _modalDraftBaseDecisions = {};
   _modalDraftBaseSupplements = {};
   _modalDraftVisibleParts = [];
+  _modalResetStored = !commitAfterSave;
 
   const { list, footer } = ensureCalcWorkspaceReady(
     _modalCommitAfterSave ? "批次 Merge 並寫入主檔" : "批次 Merge 補料確認",
@@ -3014,77 +2746,8 @@ async function showBatchMergeDraftModal(targets) {
     console.error("[showBatchMergeDraftModal] DOM elements missing:", { list: !!list, footer: !!footer });
     throw new Error("算料工作區 DOM 元素遺失");
   }
-  const {
-    shortagesByScope,
-    csShortagesByScope,
-    orderedScopes,
-  } = buildRawModalShortageGroups(targets);
-
-  for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
-  for (const items of Object.values(csShortagesByScope)) items.sort(compareShortageItems);
-
-  // 從已存的副檔草稿載入上次的 decisions / supplements，下次開 modal 直接還原
-  const {
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  } = buildStoredModalDraftState(targets);
-  // preserveShortageDecisions: true
-  _applyStoredToShortages(
-    shortagesByScope,
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  );
-  _applyStoredToShortages(
-    csShortagesByScope,
-    storedDecisions,
-    storedSupplements,
-    storedOrderScopedDecisions,
-    storedOrderScopedSupplements,
-  );
-  const visibleScopes = orderedScopes.filter(scope =>
-    (shortagesByScope[scope.key] || []).length > 0 || (csShortagesByScope[scope.key] || []).length > 0
-  );
-
-  let html = "";
-  if (!orderedScopes.length) {
-    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
-      目前沒有缺料，確認後仍會建立可預覽、可編輯的副檔。
-    </div>`;
-  } else {
-    for (const scope of orderedScopes) {
-      html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
-      html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
-        sampleControlHtml: sampleOrderCheckboxHtml(scope),
-      });
-      const csItems = csShortagesByScope[scope.key] || [];
-      const items = shortagesByScope[scope.key] || [];
-      if (csItems.length) {
-        html += '<div style="margin-bottom:8px"><h4 style="font-size:12px;color:#ca8a04;margin:4px 0">客供料</h4>';
-        html += csItems.map(item => modalShortageItem(item, true)).join("");
-        html += "</div>";
-      }
-      if (items.length) {
-        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
-        html += items.map(item => modalShortageItem(item, false)).join("");
-      }
-      if (!csItems.length && !items.length) {
-        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
-      }
-      html += "</section>";
-    }
-  }
-
-  list.innerHTML = html;
+  await refreshModalCalcPreview({ immediate: true, resetStored: _modalResetStored });
   configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
-  bindShortageEditors(list);
-  bindSampleOrderFlags(list);
-
-  bindMoqEditors(list);
-  bindShortageMoqBadgeEditors(list);
 
   footer.innerHTML = `
     <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
@@ -3109,6 +2772,7 @@ async function showWriteToMainModal(targets) {
   _modalDraftId = null;
   _modalTargets = targets;
   _modalMode = "write";
+  _modalResetStored = false;
 
   const { list, footer } = ensureCalcWorkspaceReady(
     "寫入主檔前確認",
@@ -3127,69 +2791,8 @@ async function showWriteToMainModal(targets) {
 
   _modalCarryOversByModel = buildModalCarryOversByModel(targets);
 
-  const preview = await apiPost("/api/schedule/main-write-preview", {
-    order_ids: targetOrderIds,
-    decisions: _decisions,
-  });
-  _modalPreviewShortages = preview.shortages || [];
-
-  const shortagesByScope = {};
-  const orderedScopes = buildShortageScopeList(targets);
-  const targetByOrderId = new Map(
-    (targets || [])
-      .map(target => [normalizeOrderId(target?.id), target])
-      .filter(([orderId]) => Number.isInteger(orderId))
-  );
-  _modalPreviewShortages.forEach(item => {
-    const target = targetByOrderId.get(normalizeOrderId(item?.order_id)) || {};
-    const meta = buildShortageGroupMeta(target, {
-      ...item,
-      model: item.model || item.bom_model || target?.model || "未指定機種",
-      _row_code: item.batch_code || target?.code || item.model || item.bom_model || "未指定機種",
-      _po_number: target?.po_number || item?.po_number || "",
-    });
-    if (!shortagesByScope[meta._row_group_key]) shortagesByScope[meta._row_group_key] = [];
-    shortagesByScope[meta._row_group_key].push({
-      ...item,
-      ...meta,
-    });
-  });
-  applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
-  for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
-
-  const totalShortageCount = _modalPreviewShortages.length;
-  let html = "";
-  if (!orderedScopes.length) {
-    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
-      模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。</div>`;
-  } else {
-    if (totalShortageCount > 0) {
-      html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
-        ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
-    }
-    for (const scope of orderedScopes) {
-      const items = shortagesByScope[scope.key] || [];
-      html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
-      html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
-        sampleControlHtml: sampleOrderCheckboxHtml(scope),
-      });
-      if (items.length) {
-        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
-        html += items.map(item => modalShortageItem(item, false)).join("");
-      } else {
-        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
-      }
-      html += "</section>";
-    }
-  }
-
-  list.innerHTML = html;
+  await refreshModalCalcPreview({ immediate: true, resetStored: false });
   configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
-  bindShortageEditors(list);
-  bindSampleOrderFlags(list);
-
-  bindMoqEditors(list);
-  bindShortageMoqBadgeEditors(list);
 
   footer.innerHTML = `
     <div id="modal-download-progress" class="modal-progress-shell" style="display:none">
@@ -3206,6 +2809,236 @@ async function showWriteToMainModal(targets) {
     <button id="modal-cancel" class="btn btn-secondary btn-sm">取消</button>`;
   document.getElementById("modal-write-main").onclick = handleModalWriteMain;
   document.getElementById("modal-cancel").onclick = closeShortageModal;
+}
+
+function buildModalCalcPreviewPayload({ resetStored = _modalResetStored } = {}) {
+  const targetOrderIds = (_modalTargets || [])
+    .map(target => normalizeOrderId(target?.id))
+    .filter(Number.isInteger);
+  return {
+    order_ids: targetOrderIds,
+    decisions: _modalMode === "write" ? { ..._decisions, ..._collectModalDecisions() } : _collectModalDecisions(),
+    supplements: _collectModalSupplements(),
+    order_decisions: _collectModalOrderDecisions(),
+    order_supplements: _collectModalOrderSupplements(),
+    sample_order_ids: collectModalSampleOrderIds(),
+    reset_stored: Boolean(resetStored),
+  };
+}
+
+function captureFocusedModalField() {
+  const active = document.activeElement;
+  if (!active || !active.closest?.("#modal-shortage-list")) return null;
+  if (!active.matches("input, textarea, select")) return null;
+  const meta = _getModalRowMeta(active);
+  return {
+    selector: active.classList.contains("sample-order-flag")
+      ? `.sample-order-flag[data-order-id="${esc(active.dataset.orderId || "")}"]`
+      : active.classList.contains("shortage-mark")
+        ? `.shortage-mark[data-part="${esc(active.dataset.part || "")}"][data-order-id="${esc(active.dataset.orderId || "")}"]`
+        : active.classList.contains("supplement-input")
+          ? `.supplement-input[data-part="${esc(active.dataset.part || "")}"][data-order-id="${esc(active.dataset.orderId || "")}"]`
+          : "",
+    className: active.className,
+    part: meta.part,
+    orderId: meta.orderId,
+    value: active.value,
+    checked: Boolean(active.checked),
+    selectionStart: active.selectionStart,
+    selectionEnd: active.selectionEnd,
+  };
+}
+
+function restoreFocusedModalField(focusState) {
+  if (!focusState) return;
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return;
+  let target = focusState.selector ? list.querySelector(focusState.selector) : null;
+  if (!target && focusState.part) {
+    const orderSelector = Number.isInteger(focusState.orderId) ? `[data-order-id="${focusState.orderId}"]` : "";
+    const cls = String(focusState.className || "").includes("shortage-mark") ? "shortage-mark" : "supplement-input";
+    target = list.querySelector(`.${cls}[data-part="${CSS.escape(focusState.part)}"]${orderSelector}`);
+  }
+  if (!target) return;
+  if ("checked" in target) target.checked = focusState.checked;
+  if ("value" in target) target.value = focusState.value;
+  target.focus({ preventScroll: true });
+  if (Number.isInteger(focusState.selectionStart) && target.setSelectionRange) {
+    target.setSelectionRange(focusState.selectionStart, focusState.selectionEnd ?? focusState.selectionStart);
+  }
+}
+
+async function fetchModalCalcPreview({ resetStored = _modalResetStored, signal = null } = {}) {
+  const payload = buildModalCalcPreviewPayload({ resetStored });
+  if (!payload.order_ids.length) return null;
+  return apiJson("/api/schedule/calc-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+}
+
+async function refreshModalCalcPreview({ immediate = false, resetStored = _modalResetStored } = {}) {
+  const run = async () => {
+    const seq = ++_modalPreviewRequestSeq;
+    if (_modalPreviewAbortController) _modalPreviewAbortController.abort();
+    _modalPreviewAbortController = new AbortController();
+    const focusState = captureFocusedModalField();
+    try {
+      const preview = await fetchModalCalcPreview({
+        resetStored,
+        signal: _modalPreviewAbortController.signal,
+      });
+      if (!preview || seq !== _modalPreviewRequestSeq || _modalPreviewDebounceTimer) return;
+      renderModalCalcPreview(preview, { focusState });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      showToast("缺料預覽更新失敗: " + error.message, { tone: "error" });
+    }
+  };
+
+  if (immediate) {
+    if (_modalPreviewDebounceTimer) clearTimeout(_modalPreviewDebounceTimer);
+    _modalPreviewDebounceTimer = null;
+    await run();
+    return;
+  }
+  if (_modalPreviewDebounceTimer) clearTimeout(_modalPreviewDebounceTimer);
+  _modalPreviewDebounceTimer = setTimeout(() => {
+    _modalPreviewDebounceTimer = null;
+    void run();
+  }, 250);
+}
+
+function normalizePreviewScope(scope = {}) {
+  const orderId = normalizeOrderId(scope.order_id);
+  const target = (_modalTargets || []).find(item => normalizeOrderId(item?.id) === orderId) || {};
+  const meta = buildShortageGroupMeta(target, {
+    order_id: orderId,
+    model: scope.model || target.model,
+    batch_code: scope.batch_code || target.code,
+    po_number: scope.po_number || target.po_number,
+  });
+  return {
+    key: meta._row_group_key,
+    label: meta._row_group_label,
+    po_number: meta._po_number,
+    order_id: orderId,
+    batch_code: scope.batch_code || target.code || "",
+    is_sample: Boolean(scope.is_sample),
+  };
+}
+
+function normalizePreviewShortageItem(item = {}, scope = {}) {
+  const meta = buildShortageGroupMeta(
+    (_modalTargets || []).find(target => normalizeOrderId(target?.id) === normalizeOrderId(scope.order_id)) || {},
+    {
+      ...item,
+      order_id: item.order_id ?? scope.order_id,
+      model: item.model || scope.model,
+      batch_code: item.batch_code || scope.batch_code,
+      po_number: item.po_number || scope.po_number,
+    },
+  );
+  return {
+    ...item,
+    ...meta,
+    _lookahead_shortage_amount: item.lookahead_shortage_amount ?? item._lookahead_shortage_amount ?? item.shortage_amount,
+    _lookahead_suggested_qty: item.lookahead_suggested_qty ?? item._lookahead_suggested_qty ?? item.suggested_qty,
+    _lookahead_st_available_qty: item.lookahead_st_available_qty ?? item.st_available_qty,
+    _lookahead_purchase_needed_qty: item.lookahead_purchase_needed_qty ?? item.purchase_needed_qty,
+    _lookahead_purchase_suggested_qty: item.lookahead_purchase_suggested_qty ?? item.purchase_suggested_qty,
+    _lookahead_needs_purchase: item.lookahead_needs_purchase ?? item.needs_purchase,
+  };
+}
+
+function renderSharedPreviewParts(sharedParts = []) {
+  const items = (sharedParts || [])
+    .map(item => ({
+      ...item,
+      _row_code: (item.batch_codes || []).join("、"),
+      _row_model: "共用料",
+      _row_group_label: "共用料",
+      _row_group_key: "shared",
+      _order_id: undefined,
+      _lookahead_shortage_amount: item.lookahead_shortage_amount ?? item.shortage_amount,
+      _lookahead_suggested_qty: item.lookahead_suggested_qty ?? item.suggested_qty,
+      _lookahead_st_available_qty: item.lookahead_st_available_qty ?? item.st_available_qty,
+      _lookahead_purchase_needed_qty: item.lookahead_purchase_needed_qty ?? item.purchase_needed_qty,
+      _lookahead_purchase_suggested_qty: item.lookahead_purchase_suggested_qty ?? item.purchase_suggested_qty,
+    }))
+    .filter(item => Number(item.shortage_amount || 0) > 0 || Number(item.supplement_qty || item.default_supplement || 0) > 0 || item.decision === "Shortage")
+    .sort(compareShortageItems);
+
+  if (!items.length) return "";
+  return `<section class="modal-shortage-section" data-fixed-scope="1" data-search="共用料 ${esc(items.map(item => item.part_number).join(" "))}">
+    ${shortageGroupHeadingHtml("共用料（整批只補一次）", "")}
+    <h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>
+    ${items.map(item => modalShortageItem(item, Boolean(item.is_customer_material))).join("")}
+  </section>`;
+}
+
+function renderModalCalcPreview(preview, { focusState = null } = {}) {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return;
+
+  _modalPreviewShortages = preview?.shortages || [];
+  const scopes = Array.isArray(preview?.scopes) ? preview.scopes : [];
+  const sharedPartKeys = new Set((preview?.shared_parts || []).map(item => normalizePartKey(item?.part_number)).filter(Boolean));
+  let html = "";
+
+  if (_modalMode === "write" && Number(preview?.blocking_count || 0) > 0) {
+    html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
+      寫入後將有 ${Number(preview.blocking_count || 0)} 筆料號缺料，需補料或保留缺料</div>`;
+  }
+
+  html += renderSharedPreviewParts(preview?.shared_parts || []);
+
+  if (!scopes.length && !html) {
+    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">目前沒有可顯示的缺料。</div>`;
+  } else {
+    for (const rawScope of scopes) {
+      const scope = normalizePreviewScope(rawScope);
+      const items = (rawScope.shortages || [])
+        .map(item => normalizePreviewShortageItem(item, rawScope))
+        .filter(item => !sharedPartKeys.has(normalizePartKey(item.part_number)))
+        .sort(compareShortageItems);
+      const csItems = items.filter(item => Boolean(item.is_customer_material));
+      const purchaseItems = items.filter(item => !item.is_customer_material);
+      html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
+      html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
+        sampleControlHtml: sampleOrderCheckboxHtml(scope, scope.is_sample),
+      });
+      if (csItems.length) {
+        html += '<div style="margin-bottom:8px"><h4 style="font-size:12px;color:#ca8a04;margin:4px 0">客供料</h4>';
+        html += csItems.map(item => modalShortageItem(item, true)).join("");
+        html += "</div>";
+      }
+      if (purchaseItems.length) {
+        html += `<h4 style="font-size:12px;color:#dc2626;margin:4px 0">${_modalMode === "write" ? "寫入主檔後仍缺料" : "訂單專屬缺料"}</h4>`;
+        html += purchaseItems.map(item => modalShortageItem(item, false)).join("");
+      }
+      if (!csItems.length && !purchaseItems.length) {
+        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無訂單專屬缺料</div>';
+      }
+      html += "</section>";
+    }
+  }
+
+  if (!preview?.shared_parts?.length && scopes.every(scope => !(scope.shortages || []).length)) {
+    html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
+      ${_modalMode === "write" ? "模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。" : "全部 OK，無缺料！"}</div>`;
+  }
+
+  list.innerHTML = html;
+  bindShortageEditors(list);
+  bindSampleOrderFlags(list);
+  bindMoqEditors(list);
+  bindShortageMoqBadgeEditors(list);
+  restoreFocusedModalField(focusState);
+  const searchInput = document.getElementById("modal-search-input");
+  applyModalSearchFilter(searchInput?.value || "");
 }
 
 function computeShortageResultingStock(shortage, supplementQty = undefined) {
@@ -3229,8 +3062,7 @@ function computeShortageResultingStock(shortage, supplementQty = undefined) {
 }
 
 function hasRemainingShortageForResultingStock(partNumber, resultingStock) {
-  return Number.isFinite(resultingStock)
-    && calculateModalShortageAmount(partNumber, resultingStock) > 0;
+  return Number.isFinite(resultingStock) && resultingStock < 0;
 }
 
 function isShortageStillNegative(shortage) {
@@ -3331,34 +3163,6 @@ function modalShortageItem(s, isCS) {
   </div>`;
 }
 
-const MODAL_PK_NO_WARNING_PREFIXES = ["PK-50070"];
-
-function getModalRequiredMinStock(partNumber, ignoreEcMin = false) {
-  const normalized = normalizePartKey(partNumber);
-  if (normalized.startsWith("EC-6")) return 0;
-  if (ignoreEcMin && normalized.startsWith("EC-")) return 0;
-  if (normalized.startsWith("EC-")) return 100;
-  // PK 包材類結存 < 1 視為缺料；例外清單的 PK 料維持 0 門檻
-  if (normalized.startsWith("PK-")) {
-    if (MODAL_PK_NO_WARNING_PREFIXES.some(p => normalized.startsWith(p))) return 0;
-    return 1;
-  }
-  return 0;
-}
-
-function calculateModalShortageAmount(partNumber, endingStock, ignoreEcMin = false) {
-  const requiredMin = getModalRequiredMinStock(partNumber, ignoreEcMin);
-  return Math.max(0, requiredMin - Number(endingStock || 0));
-}
-
-function calculateModalCurrentOrderShortageAmount(partNumber, availableBefore, neededQty, ignoreEcMin = false) {
-  if (isOrderScopedPart(partNumber)) {
-    return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
-  }
-  const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
-  return calculateModalShortageAmount(partNumber, endingStock, ignoreEcMin);
-}
-
 function buildModalShortageAmountsHtml(shortage) {
   const ownShortage = roundShortageUiValue(shortage.shortage_amount || 0);
   const lookaheadShortage = roundShortageUiValue(shortage._lookahead_shortage_amount || 0);
@@ -3406,181 +3210,6 @@ function refreshDraftPartTone(list, part) {
   });
 }
 
-function getModalCardOrderIndex(card) {
-  const index = Number(card?.dataset.orderIndex);
-  return Number.isFinite(index) ? index : Number.MAX_SAFE_INTEGER;
-}
-
-function isSampleScopeEnabledForCard(card) {
-  const section = card?.closest(".modal-shortage-section");
-  return Boolean(section?.querySelector(".sample-order-flag")?.checked);
-}
-
-function isEcMinIgnoredPart(partNumber) {
-  const partKey = normalizePartKey(partNumber);
-  return partKey.startsWith("EC-") && !partKey.startsWith("EC-6");
-}
-
-function buildModalCardDerivedState(card, currentStock) {
-  const partKey = normalizePartKey(card?.dataset.part);
-  const prevQtyCs = Number(card?.dataset.prevQtyCs || 0);
-  const neededQty = Number(card?.dataset.needed || 0);
-  const moq = Number(card?.dataset.moq || 0);
-  const stStockQty = Math.max(0, Number(card?.dataset.stStockQty || 0) || 0);
-  const input = card?.querySelector(".supplement-input");
-  const checkbox = card?.querySelector(".shortage-mark");
-  const supplementQty = checkbox?.checked ? 0 : Math.max(0, Number(input?.value || 0) || 0);
-  const availableBefore = Number(currentStock || 0) + prevQtyCs;
-  const ignoreEcMin = isSampleScopeEnabledForCard(card);
-  const shortageAmount = calculateModalCurrentOrderShortageAmount(partKey, availableBefore, neededQty, ignoreEcMin);
-  const suggestion = buildShortageSupplySuggestion(partKey, shortageAmount, moq, stStockQty);
-  const resultingStock = Number(currentStock || 0) + prevQtyCs + supplementQty - neededQty;
-  return {
-    part_number: partKey,
-    current_stock: Number(currentStock || 0),
-    needed: neededQty,
-    shortage_amount: shortageAmount,
-    moq,
-    st_stock_qty: stStockQty,
-    supplement_qty: supplementQty,
-    default_supplement: supplementQty,
-    prev_qty_cs: prevQtyCs,
-    resulting_stock: resultingStock,
-    ...suggestion,
-  };
-}
-
-function updateModalCardComputedState(card, derived, { visible = true } = {}) {
-  if (!card || !derived) return;
-  card.dataset.currentStock = String(Number(derived.current_stock || 0));
-  card.dataset.flowHidden = visible ? "0" : "1";
-  const amounts = card.querySelector(".modal-shortage-amounts");
-  if (amounts) {
-    amounts.innerHTML = buildModalShortageAmountsHtml(derived);
-  }
-  updateModalShortageTone(card);
-}
-
-function refreshModalShortageCascadeForPart(list, part) {
-  const partKey = normalizePartKey(part);
-  if (!partKey || !list) return;
-
-  const cards = [...list.querySelectorAll(".shortage-item[data-part]")]
-    .filter(card => normalizePartKey(card.dataset.part) === partKey)
-    .sort((a, b) => getModalCardOrderIndex(a) - getModalCardOrderIndex(b));
-
-  let runningCurrent = Number(cards[0]?.dataset.baseCurrentStock);
-  const cardStates = [];
-  cards.forEach((card, index) => {
-    const baseCurrent = Number(card.dataset.baseCurrentStock);
-    if (index === 0 || !Number.isFinite(runningCurrent)) {
-      runningCurrent = Number.isFinite(baseCurrent) ? baseCurrent : 0;
-    }
-
-    const checkbox = card.querySelector(".shortage-mark");
-    const input = card.querySelector(".supplement-input");
-    const previewState = buildModalCardDerivedState(card, runningCurrent);
-    let rawQty = Math.max(0, Number(input?.value || 0) || 0);
-
-    const sampleClearedEcMin = isSampleScopeEnabledForCard(card)
-      && isEcMinIgnoredPart(partKey)
-      && previewState.shortage_amount <= 0;
-
-    // 非 order-scoped 料號：上游補料已覆蓋時，自動清零下游的補料 input
-    if (((index > 0 && !isOrderScopedPart(partKey)) || sampleClearedEcMin) && previewState.shortage_amount <= 0 && rawQty > 0) {
-      if (input && document.activeElement !== input) {
-        input.value = "0";
-        rawQty = 0;
-      }
-    }
-
-    if (input && document.activeElement !== input && String(input.value || "") !== String(rawQty)) {
-      input.value = rawQty > 0 ? String(rawQty) : "0";
-    }
-
-    if (checkbox && checkbox.dataset.manual !== "1") {
-      const shouldAutoCheck = previewState.shortage_amount > 0 && rawQty <= 0;
-      checkbox.checked = shouldAutoCheck;
-      if (input) input.disabled = shouldAutoCheck;
-      if (shouldAutoCheck && input && document.activeElement !== input) {
-        input.value = "0";
-      }
-    } else if (input) {
-      input.disabled = Boolean(checkbox?.checked);
-    }
-
-    const derived = buildModalCardDerivedState(card, runningCurrent);
-    const shouldShow = Boolean(checkbox?.checked) || derived.shortage_amount > 0 || rawQty > 0;
-    cardStates.push({ card, derived, shouldShow });
-    runningCurrent = Number.isFinite(derived.resulting_stock) ? derived.resulting_stock : runningCurrent;
-  });
-
-  let downstreamMaxShortage = 0;
-  for (let index = cardStates.length - 1; index >= 0; index -= 1) {
-    const state = cardStates[index];
-    downstreamMaxShortage = Math.max(
-      downstreamMaxShortage,
-      Math.max(0, Number(state.derived?.shortage_amount || 0) || 0),
-    );
-    const lookaheadSuggestion = buildShortageSupplySuggestion(
-      state.derived?.part_number,
-      downstreamMaxShortage,
-      state.derived?.moq,
-      state.derived?.st_stock_qty,
-    );
-    updateModalCardComputedState(
-      state.card,
-      {
-        ...state.derived,
-        _lookahead_shortage_amount: downstreamMaxShortage,
-        _lookahead_suggested_qty: lookaheadSuggestion.suggested_qty,
-        _lookahead_st_available_qty: lookaheadSuggestion.st_available_qty,
-        _lookahead_purchase_needed_qty: lookaheadSuggestion.purchase_needed_qty,
-        _lookahead_purchase_suggested_qty: lookaheadSuggestion.purchase_suggested_qty,
-        _lookahead_needs_purchase: lookaheadSuggestion.needs_purchase,
-      },
-      { visible: state.shouldShow },
-    );
-  }
-}
-
-function refreshModalShortageCascade(list, part = null) {
-  if (!list) return;
-  const partKeys = part
-    ? [normalizePartKey(part)]
-    : [...new Set(
-      [...list.querySelectorAll(".shortage-item[data-part]")]
-        .map(card => normalizePartKey(card.dataset.part))
-        .filter(Boolean)
-    )];
-
-  partKeys.forEach(partKey => {
-    if (!partKey) return;
-    refreshModalShortageCascadeForPart(list, partKey);
-  });
-
-  bindShortageMoqBadgeEditors(list);
-  updateModalSampleSectionVisibility(list);
-  const searchInput = document.getElementById("modal-search-input");
-  applyModalSearchFilter(searchInput?.value || "");
-}
-
-function updateModalSampleSectionVisibility(list) {
-  if (!list) return;
-  list.querySelectorAll(".modal-shortage-section").forEach(section => {
-    if (section.dataset.fixedScope === "1") {
-      section.dataset.sampleHidden = "0";
-      section.style.display = "";
-      return;
-    }
-    const hasVisibleCard = [...section.querySelectorAll(".shortage-item")]
-      .some(card => card.dataset.flowHidden !== "1");
-    const checked = Boolean(section.querySelector(".sample-order-flag")?.checked);
-    section.dataset.sampleHidden = hasVisibleCard || checked ? "0" : "1";
-    section.style.display = section.dataset.sampleHidden === "1" ? "none" : "";
-  });
-}
-
 function closeShortageModal() {
   document.querySelector('.tab-btn[data-tab="schedule"]')?.click();
 }
@@ -3607,6 +3236,11 @@ function clearCalcWorkspace() {
   _modalDraftBaseSupplements = {};
   _modalDraftVisibleParts = [];
   _modalCommitAfterSave = false;
+  _modalResetStored = false;
+  if (_modalPreviewAbortController) _modalPreviewAbortController.abort();
+  if (_modalPreviewDebounceTimer) clearTimeout(_modalPreviewDebounceTimer);
+  _modalPreviewAbortController = null;
+  _modalPreviewDebounceTimer = null;
 }
 
 function hasMoqValue(shortage) {
@@ -4026,8 +3660,9 @@ function _collectModalSupplements() {
 
   list.querySelectorAll(".supplement-input").forEach(input => {
     if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
-    const { part } = _getModalRowMeta(input);
+    const { orderId, part } = _getModalRowMeta(input);
     if (!part) return;
+    if (isOrderScopedPart(part) && Number.isInteger(orderId)) return;
 
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
@@ -5105,36 +4740,6 @@ function _consolidateShortagesAcrossModels(
   }
 }
 
-/**
- * 從已存的副檔草稿還原 decisions / supplements 到缺料項目。
- * 讓 modal 重新開啟時自動帶入上次使用者的輸入，不需重填。
- */
-function _applyStoredToShortages(
-  byModel,
-  storedDecisions,
-  storedSupplements,
-  storedOrderScopedDecisions = {},
-  storedOrderScopedSupplements = {},
-) {
-  for (const items of Object.values(byModel)) {
-    for (const item of items) {
-      const pk = normalizePartKey(item.part_number);
-      if (!pk) continue;
-      const orderPartKey = buildOrderPartKey(item._order_id, pk);
-      if (orderPartKey && storedOrderScopedDecisions[orderPartKey]) {
-        item.decision = storedOrderScopedDecisions[orderPartKey];
-      } else if (storedDecisions[pk]) {
-        item.decision = storedDecisions[pk];
-      }
-      if (orderPartKey && Number(storedOrderScopedSupplements[orderPartKey]) > 0) {
-        item.default_supplement = storedOrderScopedSupplements[orderPartKey];
-      } else if (storedSupplements[pk] > 0) {
-        item.default_supplement = storedSupplements[pk];
-      }
-    }
-  }
-}
-
 // ── Shortage panel ────────────────────────────────────────────────────────────
 function compareText(a, b, locale = "en") {
   return String(a || "").localeCompare(String(b || ""), locale, { numeric: true, sensitivity: "base" });
@@ -6032,7 +5637,7 @@ function bindShortageEditors(list) {
         input.disabled = checkbox.checked;
         if (checkbox.checked) input.value = "0";
       }
-      refreshModalShortageCascade(list, partKey);
+      void refreshModalCalcPreview();
     });
   });
 
@@ -6051,26 +5656,16 @@ function bindShortageEditors(list) {
         shortageChecked: false,
         orderId,
       });
-      refreshModalShortageCascade(list, partKey);
+      void refreshModalCalcPreview();
     });
   });
-
-  refreshModalShortageCascade(list);
 }
 
 function bindSampleOrderFlags(list) {
   if (!list) return;
   list.querySelectorAll(".sample-order-flag").forEach(checkbox => {
     checkbox.addEventListener("change", () => {
-      const section = checkbox.closest(".modal-shortage-section");
-      const partKeys = [...section?.querySelectorAll(".shortage-item[data-part]") || []]
-        .map(card => normalizePartKey(card.dataset.part))
-        .filter(Boolean);
-      if (!partKeys.length) {
-        updateModalSampleSectionVisibility(list);
-        return;
-      }
-      [...new Set(partKeys)].forEach(partKey => refreshModalShortageCascade(list, partKey));
+      void refreshModalCalcPreview();
     });
   });
 }

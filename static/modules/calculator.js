@@ -196,30 +196,16 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
   return normalized;
 }
 
-const PK_NO_WARNING_PREFIXES = ["PK-50070"];
-
-export function getRequiredMinStock(partNumber, ignoreEcMin = false) {
-  const normalized = String(partNumber || "").trim().toUpperCase();
-  if (normalized.startsWith("EC-6")) return 0;
-  if (ignoreEcMin && normalized.startsWith("EC-")) return 0;
-  if (normalized.startsWith("EC-")) return 100;
-  // PK 包材類結存 < 1 視為缺料；例外清單的 PK 料維持 0 門檻
-  if (normalized.startsWith("PK-")) {
-    if (PK_NO_WARNING_PREFIXES.some(p => normalized.startsWith(p))) return 0;
-    return 1;
-  }
-  return 0;
-}
-
-export function calculateShortageAmount(partNumber, endingStock, ignoreEcMin = false) {
-  const requiredMin = getRequiredMinStock(partNumber, ignoreEcMin);
-  return Math.max(0, requiredMin - Number(endingStock || 0));
-}
-
 function calculateCurrentOrderShortageAmount(partNumber, availableBefore, neededQty, ignoreEcMin = false) {
   if (isOrderScopedShortagePart(partNumber)) {
     return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
   }
   const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
-  return calculateShortageAmount(partNumber, endingStock, ignoreEcMin);
+  const normalized = String(partNumber || "").trim().toUpperCase();
+  let requiredMin = 0;
+  if (normalized.startsWith("EC-6")) requiredMin = 0;
+  else if (ignoreEcMin && normalized.startsWith("EC-")) requiredMin = 0;
+  else if (normalized.startsWith("EC-")) requiredMin = 100;
+  else if (normalized.startsWith("PK-")) requiredMin = normalized.startsWith("PK-50070") ? 0 : 1;
+  return Math.max(0, requiredMin - Number(endingStock || 0));
 }

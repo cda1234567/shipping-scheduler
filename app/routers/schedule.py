@@ -292,10 +292,21 @@ def _apply_request_overrides_to_contexts(
     if not normalized_contexts:
         return [], {}
 
+    global_decision_allocations = build_order_decision_allocations(
+        order_ids,
+        req.decisions,
+        include_none=True,
+    )
+    global_supplement_allocations = _merge_order_supplement_allocations_service(
+        order_ids,
+        _normalize_supplements(req.supplements),
+        {},
+        allocator=build_order_supplement_allocations,
+    )
     scoped_decisions = _normalize_order_decisions(req.order_decisions)
     scoped_supplements = _normalize_order_supplements(req.order_supplements)
     sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
-    if not scoped_decisions and not scoped_supplements and not sample_order_ids:
+    if not global_decision_allocations and not global_supplement_allocations and not scoped_decisions and not scoped_supplements and not sample_order_ids:
         return normalized_contexts, build_context_supplement_allocations(normalized_contexts)
 
     updated_contexts: list[DispatchContext] = []
@@ -303,8 +314,14 @@ def _apply_request_overrides_to_contexts(
         decisions = dict(context.decisions or {})
         supplements = dict(context.supplements or {})
         order_id = context.order_id
-        order_decision_updates = scoped_decisions.get(order_id, {})
-        order_supplement_updates = scoped_supplements.get(order_id, {})
+        order_decision_updates = {
+            **global_decision_allocations.get(order_id, {}),
+            **scoped_decisions.get(order_id, {}),
+        }
+        order_supplement_updates = {
+            **global_supplement_allocations.get(order_id, {}),
+            **scoped_supplements.get(order_id, {}),
+        }
 
         for part, decision in order_decision_updates.items():
             if decision == "None":
@@ -333,6 +350,46 @@ def _apply_request_overrides_to_contexts(
         ))
 
     return updated_contexts, build_context_supplement_allocations(updated_contexts)
+
+
+def _build_reset_batch_dispatch_contexts(req: BatchDispatchRequest, normalized_order_ids: list[int], main_path: str):
+    decisions = _normalize_decisions(req.decisions)
+    supplements = _normalize_supplements(req.supplements)
+    order_decisions = _normalize_order_decisions(req.order_decisions)
+    order_supplements = _normalize_order_supplements(req.order_supplements)
+    sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
+
+    decision_allocations = build_order_decision_allocations(
+        normalized_order_ids,
+        decisions,
+        include_none=True,
+    )
+    for order_id, scoped in order_decisions.items():
+        decision_allocations.setdefault(order_id, {}).update(scoped)
+
+    supplement_allocations = _merge_order_supplement_allocations_service(
+        normalized_order_ids,
+        supplements,
+        order_supplements,
+        allocator=build_order_supplement_allocations,
+    )
+
+    contexts = []
+    for order_id in normalized_order_ids:
+        order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+        contexts.append(DispatchContext(
+            order=order,
+            groups=groups,
+            all_components=all_components,
+            decisions={
+                part: decision
+                for part, decision in (decision_allocations.get(int(order["id"]), {}) or {}).items()
+                if decision != "None"
+            },
+            supplements=supplement_allocations.get(int(order["id"]), {}),
+            is_sample=int(order["id"]) in sample_order_ids,
+        ))
+    return contexts, supplement_allocations
 
 
 def _execute_dispatch(
@@ -478,20 +535,32 @@ def _resolve_single_order_dispatch_plan(order_id: int, req: DecisionRequest, mai
     )
 
 
-def _resolve_batch_dispatch_plan(req: BatchDispatchRequest, normalized_order_ids: list[int], main_path: str):
+def _resolve_batch_dispatch_plan(
+    req: BatchDispatchRequest,
+    normalized_order_ids: list[int],
+    main_path: str,
+    *,
+    apply_request_overrides: bool = True,
+):
     sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
     draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
     missing_orders = [order_id for order_id in normalized_order_ids if order_id not in draft_id_map]
-    if missing_orders and draft_id_map:
+    if missing_orders and draft_id_map and not req.reset_stored:
         raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
 
-    if draft_id_map:
+    if req.reset_stored:
+        contexts, supplement_allocations = _build_reset_batch_dispatch_contexts(req, normalized_order_ids, main_path)
+        use_drafts = False
+    elif draft_id_map:
         rebuild_merge_drafts(normalized_order_ids)
         contexts = [
             DispatchContext.from_value(_load_active_merge_draft_context(draft_id_map[order_id], main_path))
             for order_id in normalized_order_ids
         ]
-        contexts, supplement_allocations = _apply_request_overrides_to_contexts(contexts, normalized_order_ids, req)
+        if apply_request_overrides:
+            contexts, supplement_allocations = _apply_request_overrides_to_contexts(contexts, normalized_order_ids, req)
+        else:
+            supplement_allocations = build_context_supplement_allocations(contexts)
         use_drafts = True
     else:
         decisions = _normalize_decisions(req.decisions)
@@ -904,6 +973,17 @@ async def preview_main_write(req: BatchDispatchRequest):
     normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請先選擇要預覽寫入主檔的訂單")
+
+    main_path = _require_existing_main_path()
+    plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path, apply_request_overrides=False)
+    return plan.to_preview_response()
+
+
+@router.post("/schedule/calc-preview")
+async def calc_preview(req: BatchDispatchRequest):
+    normalized_order_ids = _normalize_order_ids(req.order_ids)
+    if not normalized_order_ids:
+        raise HTTPException(400, "請先選擇要計算的訂單")
 
     main_path = _require_existing_main_path()
     plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
