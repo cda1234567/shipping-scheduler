@@ -7,7 +7,9 @@
 from __future__ import annotations
 import logging
 import shutil
+import threading
 import time
+import uuid
 from datetime import datetime, date
 
 log = logging.getLogger(__name__)
@@ -66,6 +68,59 @@ from ..models import (
 from .. import database as db
 
 router = APIRouter()
+
+_COMMIT_JOBS: dict[str, dict] = {}
+_COMMIT_JOBS_LOCK = threading.Lock()
+_COMMIT_JOB_LIMIT = 10
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _copy_commit_job(job: dict) -> dict:
+    return {
+        "job_id": job.get("job_id", ""),
+        "status": job.get("status", "running"),
+        "written": int(job.get("written") or 0),
+        "total": int(job.get("total") or 0),
+        "failures": list(job.get("failures") or []),
+        "negative_shortages": list(job.get("negative_shortages") or []),
+        "result": job.get("result"),
+        "created_at": job.get("created_at", ""),
+        "updated_at": job.get("updated_at", ""),
+    }
+
+
+def _store_commit_job(job_id: str, updates: dict) -> dict:
+    with _COMMIT_JOBS_LOCK:
+        job = _COMMIT_JOBS.setdefault(job_id, {
+            "job_id": job_id,
+            "status": "running",
+            "written": 0,
+            "total": 0,
+            "failures": [],
+            "negative_shortages": [],
+            "result": None,
+            "created_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+        })
+        job.update(updates)
+        job["updated_at"] = _utc_now_iso()
+        ordered = sorted(
+            _COMMIT_JOBS.items(),
+            key=lambda item: str(item[1].get("created_at") or ""),
+            reverse=True,
+        )
+        for old_job_id, _old_job in ordered[_COMMIT_JOB_LIMIT:]:
+            _COMMIT_JOBS.pop(old_job_id, None)
+        return _copy_commit_job(job)
+
+
+def _get_commit_job(job_id: str) -> dict | None:
+    with _COMMIT_JOBS_LOCK:
+        job = _COMMIT_JOBS.get(job_id)
+        return _copy_commit_job(job) if job else None
 
 
 def _normalize_folder_path(value: str | None) -> str:
@@ -1093,14 +1148,20 @@ async def update_selected_schedule_drafts(req: BatchDispatchRequest):
     }
 
 
-@router.post("/schedule/update-and-commit-drafts")
-def update_and_commit_drafts(req: BatchDispatchRequest):
+def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
+    req = BatchDispatchRequest(**req_payload)
     normalized_order_ids, refreshed, _ = _apply_batch_draft_updates(req)
     main_path = _require_existing_main_path()
 
     successes: list[dict] = []
     failures: list[dict] = []
     all_shortages: list[dict] = []
+
+    _store_commit_job(job_id, {
+        "status": "running",
+        "written": 0,
+        "total": len(normalized_order_ids),
+    })
 
     # 先把每筆訂單對應的 active draft 找出來；找不到的直接收進 failures（前置檢查）。
     draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
@@ -1121,6 +1182,7 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
         draft_id_by_order[order_id] = int(draft_id)
 
     if target_order_ids:
+        _store_commit_job(job_id, {"total": len(target_order_ids)})
         try:
             # 在「開始寫主檔之前」就把所有 context 一次載入完（此時主檔尚未被改），
             # 之後 commit_dispatch_plan 內部依序寫入不會再重新做 mtime 檢查，
@@ -1148,6 +1210,11 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
                 rollback_executor=_rollback_dispatch_sessions,
                 execute_dispatcher=_execute_dispatch,
                 snapshot_refresher=refresh_snapshot_from_main,
+                progress_callback=lambda written, total, _result: _store_commit_job(job_id, {
+                    "status": "running",
+                    "written": written,
+                    "total": total,
+                }),
             )
             for item in result.results:
                 item_order_id = int(item["order_id"])
@@ -1186,7 +1253,7 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
         "merge_draft_batch_force_commit",
         f"批次 merge 後強制寫主檔：成功 {len(successes)} 筆，失敗 {len(failures)} 筆，負庫存 {len(negative_shortages)} 項",
     )
-    return {
+    response = {
         "ok": not failures,
         "count": len(successes),
         "success_count": len(successes),
@@ -1200,6 +1267,112 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
         "negative_shortages": negative_shortages,
         "force_write": True,
     }
+    _store_commit_job(job_id, {
+        "status": "failed" if failures else "done",
+        "written": len(successes) if not failures else 0,
+        "total": len(target_order_ids) if target_order_ids else len(normalized_order_ids),
+        "failures": failures,
+        "negative_shortages": negative_shortages,
+        "result": response,
+    })
+    return response
+
+
+def _start_update_and_commit_drafts_job(req: BatchDispatchRequest) -> dict:
+    payload = req.dict()
+    initial_total = len(_normalize_order_ids(payload.get("order_ids") or []))
+    with _COMMIT_JOBS_LOCK:
+        for running_job in _COMMIT_JOBS.values():
+            if running_job.get("status") == "running":
+                job = _copy_commit_job(running_job)
+                job["reused"] = True
+                return job
+
+        job_id = uuid.uuid4().hex
+        now = _utc_now_iso()
+        _COMMIT_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "written": 0,
+            "total": initial_total,
+            "failures": [],
+            "negative_shortages": [],
+            "result": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        ordered = sorted(
+            _COMMIT_JOBS.items(),
+            key=lambda item: str(item[1].get("created_at") or ""),
+            reverse=True,
+        )
+        for old_job_id, _old_job in ordered[_COMMIT_JOB_LIMIT:]:
+            _COMMIT_JOBS.pop(old_job_id, None)
+        job = _copy_commit_job(_COMMIT_JOBS[job_id])
+        job["reused"] = False
+
+    def worker():
+        try:
+            _run_update_and_commit_drafts_job(job_id, payload)
+        except HTTPException as exc:
+            failure = {"message": str(exc.detail)}
+            _store_commit_job(job_id, {
+                "status": "failed",
+                "failures": [failure],
+                "result": {
+                    "ok": False,
+                    "count": 0,
+                    "success_count": 0,
+                    "failure_count": 1,
+                    "failures": [failure],
+                    "shortages": [],
+                    "negative_shortages": [],
+                    "force_write": True,
+                },
+            })
+        except Exception as exc:
+            log.exception("[update_and_commit_drafts_job] commit job failed")
+            failure = {"message": str(exc)}
+            _store_commit_job(job_id, {
+                "status": "failed",
+                "failures": [failure],
+                "result": {
+                    "ok": False,
+                    "count": 0,
+                    "success_count": 0,
+                    "failure_count": 1,
+                    "failures": [failure],
+                    "shortages": [],
+                    "negative_shortages": [],
+                    "force_write": True,
+                },
+            })
+
+    thread = threading.Thread(target=worker, name=f"commit-drafts-{job_id[:8]}", daemon=True)
+    thread.start()
+    return job
+
+
+@router.post("/schedule/update-and-commit-drafts")
+def update_and_commit_drafts(req: BatchDispatchRequest):
+    job = _start_update_and_commit_drafts_job(req)
+    return {
+        "ok": True,
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "written": job["written"],
+        "total": job["total"],
+        "created_at": job.get("created_at", ""),
+        "reused": bool(job.get("reused")),
+    }
+
+
+@router.get("/schedule/commit-job/{job_id}")
+def get_commit_job(job_id: str):
+    job = _get_commit_job(job_id)
+    if not job:
+        raise HTTPException(404, "找不到寫主檔 job")
+    return job
 
 
 @router.get("/schedule/drafts/{draft_id}")

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.10.3"
+APP_VERSION = "v2026.07.10.4"
 APP_RELEASED_AT = "2026-07-10"
-APP_HEADLINE = "下載副檔的期初數字不再跳回老盤點值"
+APP_HEADLINE = "寫主檔顯示真實進度"
 APP_CHANGELOG = [
+    {
+        "title": "寫主檔真實進度",
+        "items": [
+            "批次 Merge 同時寫主檔改成背景 job，送出後會顯示已寫入幾筆、總共幾筆，不再只能等單發請求回來。",
+            "重新進入算料工作區時會自動接回尚未完成的寫主檔 job；超過 10 分鐘仍在執行會提示查看後端紀錄。",
+            "寫入失敗仍維持整批 rollback，畫面會留下失敗明細與負庫存資訊方便確認。",
+        ],
+    },
     {
         "title": "已發料副檔期初修正",
         "items": [

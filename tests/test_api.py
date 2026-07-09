@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import time
 import unittest
 import zipfile
 from contextlib import ExitStack
@@ -2160,12 +2161,25 @@ class ApiTests(unittest.TestCase):
                     "decisions": {"ec-001": "CreateRequirement"},
                     "supplements": {"ec-001": 500},
                 })
+                self.assertEqual(response.status_code, 200)
+                job_id = response.json()["job_id"]
+                data = None
+                for _ in range(40):
+                    poll_response = self.client.get(f"/api/schedule/commit-job/{job_id}")
+                    self.assertEqual(poll_response.status_code, 200)
+                    data = poll_response.json()
+                    if data["status"] != "running":
+                        break
+                    time.sleep(0.05)
 
-            self.assertEqual(response.status_code, 200)
-            data = response.json()
-            self.assertEqual(data["success_count"], 2)
-            self.assertEqual(data["merged_parts"], 2)
-            self.assertEqual(data["shortages"], [])
+            self.assertIsNotNone(data)
+            self.assertEqual(data["status"], "done")
+            self.assertEqual(data["written"], 2)
+            self.assertEqual(data["total"], 2)
+            result = data["result"]
+            self.assertEqual(result["success_count"], 2)
+            self.assertEqual(result["merged_parts"], 2)
+            self.assertEqual(result["shortages"], [])
 
             wb = openpyxl.load_workbook(main_path, data_only=True)
             ws = wb.active

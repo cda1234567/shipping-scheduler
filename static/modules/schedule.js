@@ -58,6 +58,10 @@ const PURCHASE_REMINDER_PREFIXES = ["IC-", "OC-", "UC-"];
 const PURCHASE_REMINDER_FALLBACK_THRESHOLD = 100;
 const BATCH_MERGE_RESET_STORAGE_KEY = "shippingScheduler.batchMerge.resetStored";
 const BATCH_MERGE_COMMIT_STORAGE_KEY = "shippingScheduler.batchMerge.commit";
+const COMMIT_DRAFT_JOB_STORAGE_KEY = "shippingScheduler.commitDraftJob";
+const COMMIT_DRAFT_JOB_POLL_MS = 1500;
+const COMMIT_DRAFT_JOB_STUCK_MS = 10 * 60 * 1000;
+let _commitDraftJobPollTimer = null;
 
 // ── Public ────────────────────────────────────────────────────────────────────
 export async function initSchedule(onRefreshMain) {
@@ -66,6 +70,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
+    document.querySelector('.tab-btn[data-tab="calc-workspace"]')?.addEventListener("click", resumeCommitDraftJobIfNeeded);
     initBatchMergeOptions();
     document.getElementById("btn-dedup-schedule")?.addEventListener("click", handleDedupSchedule);
     document.getElementById("btn-manual-supplement")?.addEventListener("click", openManualSupplementModal);
@@ -96,6 +101,7 @@ export async function initSchedule(onRefreshMain) {
     });
     _scheduleInitialized = true;
   }
+  resumeCommitDraftJobIfNeeded();
   await refresh();
 }
 
@@ -2654,7 +2660,7 @@ async function updateAndCommitBatchDraftsFromModal() {
     setLocalDecision(part, decision);
   });
 
-  return apiPost("/api/schedule/update-and-commit-drafts", {
+  const response = await apiPost("/api/schedule/update-and-commit-drafts", {
     order_ids: targetOrderIds,
     decisions,
     supplements,
@@ -2662,6 +2668,145 @@ async function updateAndCommitBatchDraftsFromModal() {
     order_supplements: orderSupplements,
     sample_order_ids: sampleOrderIds,
   });
+  if (response?.reused) {
+    showToast("已有寫入工作進行中，已自動接上進度");
+  }
+  return response;
+}
+
+function rememberCommitDraftJob(job) {
+  if (!job?.job_id) return;
+  try {
+    window.localStorage?.setItem(COMMIT_DRAFT_JOB_STORAGE_KEY, JSON.stringify({
+      job_id: job.job_id,
+      created_at: job.created_at || new Date().toISOString(),
+    }));
+  } catch (_) {}
+}
+
+function forgetCommitDraftJob(jobId = "") {
+  try {
+    const raw = window.localStorage?.getItem(COMMIT_DRAFT_JOB_STORAGE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (!jobId || saved?.job_id === jobId) {
+      window.localStorage?.removeItem(COMMIT_DRAFT_JOB_STORAGE_KEY);
+    }
+  } catch (_) {
+    try { window.localStorage?.removeItem(COMMIT_DRAFT_JOB_STORAGE_KEY); } catch (__) {}
+  }
+}
+
+function stopCommitDraftJobPolling() {
+  if (_commitDraftJobPollTimer) {
+    clearTimeout(_commitDraftJobPollTimer);
+    _commitDraftJobPollTimer = null;
+  }
+}
+
+function buildCommitDraftJobProgressDetail(job) {
+  const written = Number(job?.written || 0);
+  const total = Number(job?.total || 0);
+  const createdAt = Date.parse(job?.created_at || "");
+  const stuck = Number.isFinite(createdAt) && Date.now() - createdAt > COMMIT_DRAFT_JOB_STUCK_MS;
+  const base = total > 0
+    ? `已寫入 ${written}/${total} 筆。可先切到其他分頁，完成後會通知。`
+    : "正在準備寫入清單。可先切到其他分頁，完成後會通知。";
+  return stuck ? `${base} 已超過 10 分鐘仍在執行，請查看後端紀錄確認 Excel 是否卡住。` : base;
+}
+
+function renderCommitDraftJobProgress(job) {
+  const written = Number(job?.written || 0);
+  const total = Number(job?.total || 0);
+  const percent = total > 0 ? Math.min(99, Math.round((written / total) * 100)) : 12;
+  setModalDownloadProgress(
+    true,
+    total > 0 ? `正在寫入主檔：已寫入 ${written}/${total} 筆` : "正在準備寫入主檔...",
+    buildCommitDraftJobProgressDetail(job),
+    percent,
+    { lockUi: true },
+  );
+}
+
+async function finishCommitDraftJob(job) {
+  stopCommitDraftJobPolling();
+  forgetCommitDraftJob(job?.job_id);
+  const result = job?.result || {};
+  const negativeCount = (job?.negative_shortages || result?.negative_shortages || []).length;
+  const failureCount = Number(result?.failure_count || (job?.failures || []).length || 0);
+
+  targetModalOrderIds().forEach(id => _checkedIds.delete(id));
+  if (job?.status === "failed" || failureCount > 0) {
+    const detailSource = {
+      ...result,
+      failures: result.failures || job?.failures || [],
+      negative_shortages: result.negative_shortages || job?.negative_shortages || [],
+    };
+    setModalDownloadProgress(
+      true,
+      "寫入主檔失敗，已整批 rollback",
+      formatWorkspaceFailureDetail(detailSource),
+      100,
+      { tone: "error", lockUi: false },
+    );
+    showToast(`強制寫入主檔失敗，已整批 rollback，請回算料工作區查看明細`, { sticky: true, tone: "error" });
+    await Promise.all([refresh(), refreshCompleted()]);
+    return result;
+  }
+
+  setModalDownloadProgress(true, "寫入主檔完成，正在重新整理...", "正在重新整理排程與主檔資料。", 100, { tone: "success" });
+  await Promise.all([refresh(), refreshCompleted()]);
+  if (_onRefreshMain) await _onRefreshMain();
+  await new Promise(resolve => setTimeout(resolve, 200));
+
+  const message = `已強制寫入 ${result?.success_count || result?.count || 0} 筆，失敗 0 筆，負庫存 ${negativeCount} 項`;
+  showToast(message, { tone: "success", duration: 6000 });
+  if (negativeCount > 0) {
+    showPostDispatchShortages(result.negative_shortages || job.negative_shortages);
+  } else if (result?.shortages?.length) {
+    showPostDispatchShortages(result.shortages);
+  }
+  if (isCalcWorkspaceActive()) closeShortageModal();
+  return result;
+}
+
+async function pollCommitDraftJob(jobId) {
+  if (!jobId) return null;
+  const job = await apiJson(`/api/schedule/commit-job/${encodeURIComponent(jobId)}`);
+  if (job.status === "running") {
+    rememberCommitDraftJob(job);
+    renderCommitDraftJobProgress(job);
+    stopCommitDraftJobPolling();
+    _commitDraftJobPollTimer = setTimeout(() => {
+      pollCommitDraftJob(jobId).catch(error => {
+        showToast("查詢寫主檔進度失敗: " + error.message, { sticky: true, tone: "error" });
+        setModalDownloadProgress(true, "查詢寫主檔進度失敗", error.message, 100, { tone: "error", lockUi: false });
+      });
+    }, COMMIT_DRAFT_JOB_POLL_MS);
+    return job;
+  }
+  return finishCommitDraftJob(job);
+}
+
+async function resumeCommitDraftJobIfNeeded() {
+  let saved = null;
+  try {
+    saved = JSON.parse(window.localStorage?.getItem(COMMIT_DRAFT_JOB_STORAGE_KEY) || "null");
+  } catch (_) {
+    forgetCommitDraftJob();
+  }
+  if (!saved?.job_id) return;
+  try {
+    setModalDownloadProgress(true, "正在接回寫主檔進度...", "正在向後端查詢尚未完成的寫入工作。", 12);
+    await pollCommitDraftJob(saved.job_id);
+  } catch (error) {
+    forgetCommitDraftJob(saved.job_id);
+    setModalDownloadProgress(true, "無法接回寫主檔進度", error.message, 100, { tone: "error", lockUi: false });
+  }
+}
+
+function targetModalOrderIds() {
+  return _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
 }
 
 async function handleModalSaveDrafts() {
@@ -2693,7 +2838,7 @@ async function handleModalSaveDrafts() {
 }
 
 async function handleModalUpdateAndCommitDrafts() {
-  const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
+  const targetOrderIds = targetModalOrderIds();
   if (!targetOrderIds.length) {
     showToast("找不到要寫入主檔的訂單");
     return;
@@ -2705,37 +2850,11 @@ async function handleModalUpdateAndCommitDrafts() {
 
   try {
     setModalDownloadProgress(true, "正在保存補料並寫入主檔...", `共 ${targetOrderIds.length} 筆訂單，系統會先重建副檔再寫入 live 主檔；可先切到其他分頁。`, 12);
-    startModalProgressAnimation(92, 260);
-    const result = await updateAndCommitBatchDraftsFromModal();
-    targetOrderIds.forEach(id => _checkedIds.delete(id));
-    const negativeCount = (result?.negative_shortages || []).length;
-    const failureCount = Number(result?.failure_count || 0);
-    if (failureCount > 0) {
-      setModalDownloadProgress(
-        true,
-        "寫入主檔有失敗項目",
-        formatWorkspaceFailureDetail(result),
-        100,
-        { tone: "error", lockUi: false },
-      );
-      showToast(`強制寫入完成但有 ${failureCount} 筆失敗，請回算料工作區查看明細`, { sticky: true, tone: "error" });
-      await Promise.all([refresh(), refreshCompleted()]);
-      return;
-    }
-
-    setModalDownloadProgress(true, "寫入主檔完成，正在重新整理...", "正在重新整理排程與主檔資料。", 100);
-    await Promise.all([refresh(), refreshCompleted()]);
-    if (_onRefreshMain) await _onRefreshMain();
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    const message = `已強制寫入 ${result?.success_count || result?.count || 0} 筆，失敗 ${failureCount} 筆，負庫存 ${negativeCount} 項`;
-    showToast(message, { tone: failureCount ? "error" : "success", sticky: failureCount > 0, duration: 6000 });
-    if (negativeCount > 0) {
-      showPostDispatchShortages(result.negative_shortages);
-    } else if (result?.shortages?.length) {
-      showPostDispatchShortages(result.shortages);
-    }
-    if (isCalcWorkspaceActive()) closeShortageModal();
+    const job = await updateAndCommitBatchDraftsFromModal();
+    if (!job?.job_id) throw new Error("後端沒有回傳寫主檔 job_id");
+    rememberCommitDraftJob(job);
+    renderCommitDraftJobProgress(job);
+    await pollCommitDraftJob(job.job_id);
   } catch (error) {
     showToast("強制寫入主檔失敗: " + error.message, { sticky: true, tone: "error" });
     setModalDownloadProgress(
@@ -3275,6 +3394,7 @@ function closeShortageModal() {
 
 function clearCalcWorkspace() {
   stopModalProgressAnimation();
+  stopCommitDraftJobPolling();
   setModalDownloadProgress(false, "", "", 0);
   const modal = document.getElementById("shortage-modal");
   const list = document.getElementById("modal-shortage-list");

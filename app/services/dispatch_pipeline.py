@@ -630,6 +630,7 @@ def commit_dispatch_plan(
     rollback_executor: Callable = rollback_dispatch_sessions,
     execute_dispatcher: Callable | None = None,
     snapshot_refresher: Callable = refresh_snapshot_from_main,
+    progress_callback: Callable[[int, int, dict], None] | None = None,
 ) -> DispatchCommitResult:
     results: list[dict] = []
     processed_sessions: list[dict] = []
@@ -655,6 +656,11 @@ def commit_dispatch_plan(
                     backup_dir=backup_dir,
                 )
             results.append(result)
+            if progress_callback is not None:
+                try:
+                    progress_callback(len(results), len(plan.contexts), result)
+                except Exception:
+                    pass
             if result.get("session"):
                 processed_sessions.append(result["session"])
             if context.draft:
