@@ -1988,7 +1988,7 @@ async function handleDispatch(orderId, model) {
 
   try {
     const result = await apiPost(`/api/schedule/orders/${orderId}/dispatch`, { decisions: _decisions });
-    showToast(`已發料，${result.merged_parts} 筆料號已 Merge`);
+    showDispatchReconcileToast(result, `已發料，${result.merged_parts} 筆料號已 Merge`);
     _checkedIds.delete(orderId);
     await refresh();
     if (_onRefreshMain) await _onRefreshMain();
@@ -2432,6 +2432,17 @@ function configureModalSearch({
     input.focus();
   };
   applyModalSearchFilter("");
+}
+
+function showDispatchReconcileToast(result, successMessage, options = {}) {
+  const reconcile = result?.reconcile;
+  if (reconcile && reconcile.ok === false) {
+    const count = (reconcile.mismatches || []).length;
+    showToast(`⚠ 寫入後核對發現 ${count} 筆數字不一致，請檢查主檔`, { tone: "error", sticky: true });
+    return;
+  }
+  const message = reconcile?.ok === true ? `${successMessage}，核對一致` : successMessage;
+  showToast(message, options);
 }
 
 function activateCalcWorkspace() {
@@ -3655,7 +3666,7 @@ async function handleBatchDispatchLegacyV1() {
       decisions: _decisions,
     });
     targets.forEach(item => _checkedIds.delete(item.id));
-    showToast(`已批次發料 ${result.count} 筆\n共 Merge ${result.merged_parts} 筆料號`);
+    showDispatchReconcileToast(result, `已批次發料 ${result.count} 筆\n共 Merge ${result.merged_parts} 筆料號`);
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
@@ -4088,10 +4099,10 @@ async function handleModalWriteMain() {
     await new Promise(resolve => setTimeout(resolve, 200));
     const shortageCount = (result.shortages || []).length;
     if (shortageCount > 0) {
-      showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
+      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
       showPostDispatchShortages(result.shortages);
     } else {
-      showToast(`已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
+      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
     }
     if (isCalcWorkspaceActive()) closeShortageModal();
   } catch (error) {

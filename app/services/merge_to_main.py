@@ -502,6 +502,25 @@ def _write_group_rows(ws, group_plan: dict):
             clear_cell_fill(j_cell)
 
 
+def _flatten_plan_rows(plan: dict) -> list[dict]:
+    rows: list[dict] = []
+    for batch in plan.get("batches", []) or []:
+        for group in batch.get("groups", []) or []:
+            for row in group.get("rows", []) or []:
+                rows.append({
+                    "part_number": row.get("part_number"),
+                    "row_idx": row.get("row_idx"),
+                    "col_h": row.get("col_h"),
+                    "col_f": row.get("col_f"),
+                    "col_j": row.get("col_j"),
+                    "effective_h": row.get("effective_h"),
+                    "f_value": row.get("f_value"),
+                    "j_value": row.get("j_value"),
+                    "current_stock": row.get("current_stock"),
+                })
+    return rows
+
+
 def merge_row_to_main(
     main_path: str,
     groups: list[dict],
@@ -541,6 +560,7 @@ def merge_row_to_main(
         "merged_parts": plan["merged_parts"],
         "new_col_count": plan["new_col_count"],
         "shortages": plan["shortages"],
+        "plan_rows": _flatten_plan_rows(plan),
     }
 
 

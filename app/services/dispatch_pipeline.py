@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from .. import database as db
 from .bom_quantity import build_effective_components
 from .main_reader import read_moq
+from .main_reconcile import verify_main_write
 from .merge_to_main import merge_row_to_main, preview_order_batches
 from .st_package_breakdowns import consume_st_package_breakdowns, restore_st_package_consumptions
 from .shortage_rules import (
@@ -24,6 +25,13 @@ from .merge_drafts import (
     restore_recent_committed_merge_drafts,
 )
 from ..snapshot_sync import refresh_snapshot_from_main
+
+
+def _safe_log_activity(action: str, detail: str = "") -> None:
+    try:
+        db.log_activity(action, detail)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -221,6 +229,29 @@ class DispatchCommitResult:
     @property
     def shortages(self) -> list[dict]:
         return self.plan.remaining_shortages
+
+    @property
+    def reconcile(self) -> dict:
+        mismatches: list[dict] = []
+        checked_parts: set[str] = set()
+        checked_count = 0
+        saw_result = False
+        for item in self.results:
+            reconcile = item.get("reconcile") or {}
+            if not reconcile:
+                continue
+            saw_result = True
+            mismatches.extend(reconcile.get("mismatches") or [])
+            for mismatch in reconcile.get("mismatches") or []:
+                part = str(mismatch.get("part_number") or "").strip().upper()
+                if part:
+                    checked_parts.add(part)
+            checked_count += int(reconcile.get("checked_parts") or 0)
+        return {
+            "ok": not mismatches,
+            "checked_parts": len(checked_parts) if checked_parts else checked_count,
+            "mismatches": mismatches,
+        } if saw_result else {"ok": True, "checked_parts": 0, "mismatches": []}
 
 
 def normalize_order_ids(order_ids: list[int] | None = None) -> list[int]:
@@ -509,6 +540,31 @@ def execute_dispatch_context(
         is_sample=item.is_sample,
         backup_dir=backup_dir,
     )
+    reconcile = {"ok": True, "checked_parts": 0, "mismatches": []}
+    plan_rows = result.get("plan_rows") or []
+    if plan_rows:
+        try:
+            reconcile = verify_main_write(main_path, plan_rows)
+            if not reconcile.get("ok", True):
+                _safe_log_activity(
+                    "reconcile_mismatch",
+                    f"訂單 {item.order.get('po_number', '')} ({item.order.get('model', '')}) 寫入後核對發現 "
+                    f"{len(reconcile.get('mismatches') or [])} 筆數字不一致",
+                )
+        except Exception as exc:
+            reconcile = {
+                "ok": False,
+                "checked_parts": 0,
+                "mismatches": [{
+                    "part_number": "",
+                    "kind": "verify_error",
+                    "column": "",
+                    "expected": "verify_main_write",
+                    "actual": str(exc),
+                    "delta": None,
+                }],
+            }
+            _safe_log_activity("reconcile_mismatch", f"寫入後核對執行失敗：{exc}")
 
     session = None
     try:
@@ -552,6 +608,7 @@ def execute_dispatch_context(
         "merged_parts": result["merged_parts"],
         "backup_path": result["backup_path"],
         "session": session,
+        "reconcile": reconcile,
     }
 
 

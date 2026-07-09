@@ -1077,6 +1077,7 @@ def batch_dispatch(req: BatchDispatchRequest):
         "merged_parts": result.merged_parts,
         "order_ids": result.order_ids,
         "shortages": result.shortages,
+        "reconcile": result.reconcile,
     }
 
 
@@ -1156,6 +1157,9 @@ def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
     successes: list[dict] = []
     failures: list[dict] = []
     all_shortages: list[dict] = []
+    all_reconcile_mismatches: list[dict] = []
+    reconcile_checked_parts = 0
+    reconcile_seen = False
 
     _store_commit_job(job_id, {
         "status": "running",
@@ -1224,6 +1228,10 @@ def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
                     "merged_parts": int(item.get("merged_parts") or 0),
                 })
             all_shortages.extend(result.shortages)
+            reconcile = result.reconcile
+            reconcile_seen = True
+            reconcile_checked_parts += int(reconcile.get("checked_parts") or 0)
+            all_reconcile_mismatches.extend(reconcile.get("mismatches") or [])
         except HTTPException as exc:
             # 單一 plan 是 all-or-nothing：任何一筆出錯 commit_dispatch_plan 會 rollback 全部並 raise。
             # 把所有目標訂單收進 failures，回 success_count=0，不要讓 API 直接 500。
@@ -1266,6 +1274,11 @@ def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
         "shortages": all_shortages,
         "negative_shortages": negative_shortages,
         "force_write": True,
+        "reconcile": {
+            "ok": not all_reconcile_mismatches,
+            "checked_parts": reconcile_checked_parts,
+            "mismatches": all_reconcile_mismatches,
+        } if reconcile_seen else {"ok": True, "checked_parts": 0, "mismatches": []},
     }
     _store_commit_job(job_id, {
         "status": "failed" if failures else "done",
@@ -1450,6 +1463,7 @@ def commit_schedule_draft(draft_id: int):
         "order_id": plan.contexts[0].order_id,
         "merged_parts": result.merged_parts,
         "shortages": result.shortages,
+        "reconcile": result.reconcile,
     }
 
 
