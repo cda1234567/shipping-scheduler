@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.10.2"
+APP_VERSION = "v2026.07.10.3"
 APP_RELEASED_AT = "2026-07-10"
-APP_HEADLINE = "批次 Merge 合併成一顆＋兩個選項，打樣狀態全流程一致"
+APP_HEADLINE = "下載副檔的期初數字不再跳回老盤點值"
 APP_CHANGELOG = [
+    {
+        "title": "已發料副檔期初修正",
+        "items": [
+            "下載已發料副檔時，如果主檔裡前一批扣帳的批次表頭是空白，期初會改抓左側最新結存，不會跳回最早的盤點值。",
+            "這次只影響下載出來的副檔顯示；主檔實際扣帳本來就有讀到正確結存，資料不需要重扣。",
+        ],
+    },
     {
         "title": "批次 Merge 選項合併",
         "items": [

@@ -138,6 +138,37 @@ class MergeDraftDetailTests(unittest.TestCase):
         finally:
             rebuilt.close()
 
+    def test_previous_stock_before_col_uses_rightmost_left_value_when_batch_header_blank(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.cell(row=1, column=1, value="料號")
+        worksheet.cell(row=1, column=8, value="盤點")
+        worksheet.cell(row=1, column=116, value=None)
+        worksheet.cell(row=1, column=117, value="PO-1-3")
+        worksheet.cell(row=1, column=118, value="T356789iu - Display REV-2.0")
+        worksheet.cell(row=1, column=239, value="6-3")
+        worksheet.cell(row=1, column=240, value="PO-6-3")
+        worksheet.cell(row=1, column=241, value="T356789iu - Display REV-2.0")
+        worksheet.cell(row=2, column=1, value="UC-60021A")
+        worksheet.cell(row=2, column=8, value=273)
+        worksheet.cell(row=2, column=117, value=144)
+        worksheet.cell(row=2, column=118, value=129)
+
+        events = merge_drafts._main_stock_events(worksheet)
+        row_values = tuple(
+            worksheet.cell(row=2, column=col).value
+            for col in range(1, worksheet.max_column + 1)
+        )
+
+        self.assertEqual(
+            merge_drafts._main_previous_stock_before_col(worksheet, 2, 239, events),
+            129,
+        )
+        self.assertEqual(
+            merge_drafts._main_previous_stock_before_col_from_values(row_values, 239, events),
+            129,
+        )
+
     def test_download_active_merge_draft_keeps_existing_file_flow(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             draft_file = Path(temp_dir) / "draft.xlsx"

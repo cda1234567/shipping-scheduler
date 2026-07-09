@@ -33,7 +33,7 @@ from .bom_quantity import (
     format_excel_qty,
     get_component_effective_needed_qty,
 )
-from .main_reader import read_moq, read_stock
+from .main_reader import find_current_stock_cell_from_row_values, read_moq, read_stock
 from ..models import calc_suggested_qty
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
@@ -1099,6 +1099,11 @@ def _main_previous_stock_before_col(ws, row_idx: int, start_col: int, events: li
         if value is not None:
             return value
 
+    left_values = tuple(ws.cell(row=row_idx, column=col).value for col in range(1, start_col))
+    stock = find_current_stock_cell_from_row_values(left_values)
+    if stock is not None:
+        return stock
+
     fallback_col = 8
     value = _main_number(ws.cell(row=row_idx, column=fallback_col).value)
     return value if value is not None else 0.0
@@ -1115,6 +1120,10 @@ def _main_previous_stock_before_col_from_values(row_values: tuple, start_col: in
         value = _main_number(_main_row_value(row_values, int(event["balance_col"])))
         if value is not None:
             return value
+
+    stock = find_current_stock_cell_from_row_values(row_values[: max(start_col - 1, 0)])
+    if stock is not None:
+        return stock
 
     value = _main_number(_main_row_value(row_values, 8))
     return value if value is not None else 0.0
