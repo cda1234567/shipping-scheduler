@@ -638,11 +638,13 @@ console.log(JSON.stringify(results));
         self.assertEqual(shortages[0]["current_stock"], 100)
         self.assertEqual(shortages[0]["shortage_amount"], 230)
 
-    def test_schedule_module_does_not_auto_mark_order_scoped_ic_parts_as_shortage_from_prior_negative(self):
+    def test_schedule_module_does_not_auto_mark_negative_running_stock_as_shortage(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")
 
-        self.assertIn("if (isOrderScopedPart(item?.part_number)) return false;", schedule_module)
+        self.assertIn('if (decision === "Shortage") return true;', schedule_module)
+        self.assertIn("return false;\n}\n\nfunction hasNegativeRunningStock(item)", schedule_module)
+        self.assertIn("⚠ 結存為負，請確認補料或手動勾缺料", schedule_module)
         self.assertIn("const hasStoredSupplement = Number(s.default_supplement) > 0 || Number(s.supplement_qty) > 0;", schedule_module)
         self.assertIn("const defaultQty = shortageChecked && !hasStoredSupplement", schedule_module)
 

@@ -155,6 +155,11 @@ class UpdateModelRequest(BaseModel):
     model: str
 
 
+class MoveCompletedFolderRequest(BaseModel):
+    folder: str
+    new_parent: str = ""
+
+
 class DatabaseBackupSettingsRequest(BaseModel):
     enabled: bool = True
     hour: int = Field(ge=0, le=23)

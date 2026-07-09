@@ -1597,6 +1597,44 @@ def move_orders_to_folder_by_name(folder_name: str):
         )
 
 
+def move_completed_folder_tree(folder: str, new_folder: str) -> int:
+    """搬移已發料資料夾整棵子樹，將 folder 前綴改寫成 new_folder。"""
+    old_prefix = str(folder or "").strip().strip("/")
+    new_prefix = str(new_folder or "").strip().strip("/")
+    if not old_prefix:
+        return 0
+
+    old_child_prefix = f"{old_prefix}/"
+    old_child_like = (
+        old_child_prefix
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+        + "%"
+    )
+    now = _now()
+    updated = 0
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, folder FROM orders
+            WHERE status IN ('dispatched','completed')
+              AND (folder=? OR folder LIKE ? ESCAPE '\\')
+            """,
+            (old_prefix, old_child_like),
+        ).fetchall()
+        for row in rows:
+            current = str(row["folder"] or "")
+            suffix = current[len(old_prefix):].lstrip("/")
+            target = "/".join(part for part in (new_prefix, suffix) if part)
+            conn.execute(
+                "UPDATE orders SET folder=?, updated_at=? WHERE id=?",
+                (target, now, row["id"]),
+            )
+            updated += 1
+    return updated
+
+
 def update_orders_sort(order_ids: list[int]):
     """按 order_ids 順序更新 sort_order。"""
     with get_conn() as conn:

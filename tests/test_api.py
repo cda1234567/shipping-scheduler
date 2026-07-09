@@ -104,6 +104,45 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["order_supplements"], {"1": {"PART-1": 1000}})
         self.assertEqual(data["order_supplement_details"], {"1": {"PART-1": {"supplement_qty": 1000, "note": "補急單", "updated_at": "2026-04-02T10:00:00"}}})
 
+    def test_move_completed_folder_rewrites_prefix_and_returns_folders(self):
+        with patch("app.routers.schedule.db.get_dispatch_folders", side_effect=[
+            ["A", "A/B", "C"],
+            ["C", "C/A", "C/A/B"],
+        ]), \
+             patch("app.routers.schedule.db.move_completed_folder_tree", return_value=2) as mock_move, \
+             patch("app.routers.schedule.db.log_activity"):
+            response = self.client.post(
+                "/api/schedule/completed/folders/move",
+                json={"folder": "A", "new_parent": "C"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_move.assert_called_once_with("A", "C/A")
+        self.assertEqual(response.json()["folders"], ["C", "C/A", "C/A/B"])
+
+    def test_move_completed_folder_rejects_cycle(self):
+        with patch("app.routers.schedule.db.move_completed_folder_tree") as mock_move:
+            response = self.client.post(
+                "/api/schedule/completed/folders/move",
+                json={"folder": "A", "new_parent": "A/B"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "不能把資料夾搬到自己或自己的子資料夾裡")
+        mock_move.assert_not_called()
+
+    def test_move_completed_folder_rejects_depth_over_three(self):
+        with patch("app.routers.schedule.db.get_dispatch_folders", return_value=["A", "A/B", "A/B/C"]), \
+             patch("app.routers.schedule.db.move_completed_folder_tree") as mock_move:
+            response = self.client.post(
+                "/api/schedule/completed/folders/move",
+                json={"folder": "A", "new_parent": "X/Y"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "搬移後資料夾會超過 3 層，請選擇較上層的位置")
+        mock_move.assert_not_called()
+
     def test_analytics_trend_excludes_ec_1_and_ec_2_parts(self):
         rows = [
             {"period": "2026-07", "part_number": "EC-10001A", "total_qty": 9000},

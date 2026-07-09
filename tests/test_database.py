@@ -89,6 +89,38 @@ class DefectiveRecordsAfterTests(InMemoryDbTestCase):
         self.assertEqual(result[2]["batch_imported_at"], "2026-07-08T10:00:00")
 
 
+class CompletedFolderMoveTests(InMemoryDbTestCase):
+    def test_move_completed_folder_tree_rewrites_folder_prefix_only_for_completed_orders(self):
+        now = "2026-07-09T09:00:00"
+        rows = [
+            (1, "PO-1", "M1", "dispatched", "A", now, now),
+            (2, "PO-2", "M2", "completed", "A/B", now, now),
+            (3, "PO-3", "M3", "completed", "A/B/C", now, now),
+            (4, "PO-4", "M4", "completed", "A2", now, now),
+            (5, "PO-5", "M5", "pending", "A/B", now, now),
+        ]
+        self.conn.executemany(
+            """
+            INSERT INTO orders(id, po_number, model, status, folder, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            rows,
+        )
+
+        updated = db.move_completed_folder_tree("A", "X/A")
+        result = {
+            row["id"]: row["folder"]
+            for row in self.conn.execute("SELECT id, folder FROM orders ORDER BY id").fetchall()
+        }
+
+        self.assertEqual(updated, 3)
+        self.assertEqual(result[1], "X/A")
+        self.assertEqual(result[2], "X/A/B")
+        self.assertEqual(result[3], "X/A/B/C")
+        self.assertEqual(result[4], "A2")
+        self.assertEqual(result[5], "A/B")
+
+
 class SnapshotTests(InMemoryDbTestCase):
     def test_save_snapshot_keeps_parts_that_only_have_moq(self):
         db.save_snapshot({"AAA": 5}, {"AAA": 8, "BBB": 12})

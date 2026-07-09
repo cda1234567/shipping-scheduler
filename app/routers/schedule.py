@@ -61,11 +61,21 @@ from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
-    SupplementPartRequest,
+    SupplementPartRequest, MoveCompletedFolderRequest,
 )
 from .. import database as db
 
 router = APIRouter()
+
+
+def _normalize_folder_path(value: str | None) -> str:
+    parts = [part.strip() for part in str(value or "").strip().strip("/").split("/") if part.strip()]
+    return "/".join(parts)
+
+
+def _folder_depth(value: str) -> int:
+    normalized = _normalize_folder_path(value)
+    return len(normalized.split("/")) if normalized else 0
 
 
 def _repair_legacy_snapshot_if_needed(main_path: str) -> dict[str, dict]:
@@ -698,6 +708,36 @@ async def move_orders_to_folder(req: dict):
     return {"ok": True}
 
 
+@router.post("/schedule/completed/folders/move")
+async def move_completed_folder(req: MoveCompletedFolderRequest):
+    folder = _normalize_folder_path(req.folder)
+    new_parent = _normalize_folder_path(req.new_parent)
+    if not folder:
+        raise HTTPException(400, "請選擇要搬移的資料夾")
+    if new_parent == folder or new_parent.startswith(f"{folder}/"):
+        raise HTTPException(400, "不能把資料夾搬到自己或自己的子資料夾裡")
+
+    folder_name = folder.rsplit("/", 1)[-1]
+    new_folder = "/".join(part for part in (new_parent, folder_name) if part)
+    descendants = [
+        path for path in db.get_dispatch_folders()
+        if path == folder or path.startswith(f"{folder}/")
+    ]
+    if descendants:
+        max_extra_depth = max(_folder_depth(path) - _folder_depth(folder) for path in descendants)
+    else:
+        max_extra_depth = 0
+    if _folder_depth(new_folder) + max_extra_depth > 3:
+        raise HTTPException(400, "搬移後資料夾會超過 3 層，請選擇較上層的位置")
+
+    updated = db.move_completed_folder_tree(folder, new_folder)
+    db.log_activity(
+        "move_completed_folder",
+        f"資料夾「{folder}」搬到「{new_parent or '最上層'}」，更新 {updated} 筆訂單",
+    )
+    return {"ok": True, "folders": db.get_dispatch_folders()}
+
+
 @router.delete("/schedule/folders/{folder_name}")
 async def delete_folder(folder_name: str):
     """刪除資料夾（訂單移回未歸檔）。"""
@@ -1006,6 +1046,7 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
                 )
                 for order_id in target_order_ids
             ]
+            contexts, supplement_allocations = _apply_request_overrides_to_contexts(contexts, target_order_ids, req)
             plan = build_dispatch_plan(
                 main_path,
                 contexts,
@@ -1013,7 +1054,7 @@ def update_and_commit_drafts(req: BatchDispatchRequest):
                 moq_map=_get_effective_moq(main_path),
                 st_inventory_stock=_get_st_inventory_stock(),
                 use_drafts=True,
-                supplement_allocations=build_context_supplement_allocations(contexts),
+                supplement_allocations=supplement_allocations,
             )
             result = commit_dispatch_plan(
                 plan,

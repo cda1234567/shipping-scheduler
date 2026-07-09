@@ -289,6 +289,57 @@ function flattenCompletedFolderTree(node) {
   return folders;
 }
 
+function getCompletedFolderParent(folderPath) {
+  const normalized = normalizeCompletedFolderPath(folderPath);
+  if (!normalized || !normalized.includes("/")) return "";
+  return normalized.split("/").slice(0, -1).join("/");
+}
+
+function getCompletedFolderName(folderPath) {
+  const normalized = normalizeCompletedFolderPath(folderPath);
+  return normalized ? normalized.split("/").pop() : "";
+}
+
+function buildCompletedFolderParentOptions(folderName, allFolders) {
+  const currentParent = getCompletedFolderParent(folderName);
+  let options = `<option value=""${currentParent === "" ? " selected" : ""}>(最上層)</option>`;
+  for (const f of allFolders || []) {
+    const path = normalizeCompletedFolderPath(f.path);
+    if (!path || path === folderName || path.startsWith(`${folderName}/`)) continue;
+    const indent = "　".repeat(Math.max(0, (f.depth || 1) - 1));
+    options += `<option value="${esc(path)}"${currentParent === path ? " selected" : ""}>${indent}${esc(path)}</option>`;
+  }
+  return options;
+}
+
+function moveCompletedEmptyFolderLocal(folderName, newParent) {
+  const source = normalizeCompletedFolderPath(folderName);
+  const parent = normalizeCompletedFolderPath(newParent);
+  const targetRoot = [parent, getCompletedFolderName(source)].filter(Boolean).join("/");
+  const sourcePrefix = `${source}/`;
+  _completedFolders = (_completedFolders || []).map(item => {
+    const path = normalizeCompletedFolderPath(item);
+    if (path === source) return targetRoot;
+    if (path.startsWith(sourcePrefix)) return `${targetRoot}/${path.slice(sourcePrefix.length)}`;
+    return path;
+  });
+}
+
+function getCompletedFolderMoveDepth(folderName, newParent, allFolders) {
+  const source = normalizeCompletedFolderPath(folderName);
+  const parent = normalizeCompletedFolderPath(newParent);
+  const targetDepth = (parent ? parent.split("/").length : 0) + 1;
+  const sourceDepth = source ? source.split("/").length : 0;
+  let maxExtraDepth = 0;
+  for (const f of allFolders || []) {
+    const path = normalizeCompletedFolderPath(f.path);
+    if (path === source || path.startsWith(`${source}/`)) {
+      maxExtraDepth = Math.max(maxExtraDepth, path.split("/").length - sourceDepth);
+    }
+  }
+  return targetDepth + maxExtraDepth;
+}
+
 function appendCompletedFolderSection(container, folderNode, allFolders, folderTree, renderedFolderPaths) {
   const folderName = normalizeCompletedFolderPath(folderNode?.path);
   if (folderName) {
@@ -2300,6 +2351,9 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
   const resultingStock = Number.isFinite(rawResultingStock)
     ? roundShortageUiValue(rawResultingStock)
     : Number.NaN;
+  const negativeRunningWarning = hasNegativeRunningStock(row)
+    ? '<div style="font-size:12px;color:#dc2626;font-weight:700;margin-top:4px">⚠ 結存為負，請確認補料或手動勾缺料</div>'
+    : "";
   const searchPrimary = [partNumber, row.model || "", row.bom_model || ""].join(" ");
   const searchSecondary = row.description || "";
   const badges = [
@@ -2327,6 +2381,7 @@ function buildDraftPreviewRowHtml(row, { editable = false } = {}) {
         ${draftInlineStatHtml("補料", supplementQty, "is-supplement")}
         ${Number.isFinite(resultingStock) ? draftInlineStatHtml("結存", resultingStock, resultingStock < 0 ? "is-carry" : "") : ""}
       </div>
+      ${negativeRunningWarning}
       ${editable ? `
         <div class="draft-preview-editors">
           <label class="draft-preview-editor-label">補料</label>
@@ -2808,6 +2863,7 @@ async function updateAndCommitBatchDraftsFromModal() {
   const decisions = _collectModalDecisions();
   const orderSupplements = _collectModalOrderSupplements();
   const orderDecisions = _collectModalOrderDecisions();
+  const sampleOrderIds = collectModalSampleOrderIds();
   await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
   Object.entries(decisions).forEach(([part, decision]) => {
     setLocalDecision(part, decision);
@@ -2819,6 +2875,7 @@ async function updateAndCommitBatchDraftsFromModal() {
     supplements,
     order_decisions: orderDecisions,
     order_supplements: orderSupplements,
+    sample_order_ids: sampleOrderIds,
   });
 }
 
@@ -2833,6 +2890,8 @@ async function handleModalSaveDrafts() {
     await handleModalUpdateAndCommitDrafts();
     return;
   }
+
+  if (!confirmModalShortageSupplementConflicts()) return;
 
   try {
     setModalDownloadProgress(true, "正在保存補料到副檔...", "補料完成後，副檔會顯示在該機種下方，之後再按發料即可。", 14);
@@ -2857,6 +2916,7 @@ async function handleModalUpdateAndCommitDrafts() {
   if (!confirm(`確認要強制寫入主檔 ${targetOrderIds.length} 筆訂單嗎？缺料不會擋停，主檔可能出現負庫存。`)) {
     return;
   }
+  if (!confirmModalShortageSupplementConflicts()) return;
 
   try {
     setModalDownloadProgress(true, "正在保存補料並寫入主檔...", `共 ${targetOrderIds.length} 筆訂單，系統會先重建副檔再寫入 live 主檔；可先切到其他分頁。`, 12);
@@ -2990,14 +3050,16 @@ async function showBatchMergeDraftModal(targets) {
   );
 
   let html = "";
-  if (!visibleScopes.length) {
+  if (!orderedScopes.length) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       目前沒有缺料，確認後仍會建立可預覽、可編輯的副檔。
     </div>`;
   } else {
-    for (const scope of visibleScopes) {
-      html += `<section class="modal-shortage-section" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
-      html += shortageGroupHeadingHtml(scope.label, scope.po_number);
+    for (const scope of orderedScopes) {
+      html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
+      html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
+        sampleControlHtml: sampleOrderCheckboxHtml(scope),
+      });
       const csItems = csShortagesByScope[scope.key] || [];
       const items = shortagesByScope[scope.key] || [];
       if (csItems.length) {
@@ -3009,6 +3071,9 @@ async function showBatchMergeDraftModal(targets) {
         html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>';
         html += items.map(item => modalShortageItem(item, false)).join("");
       }
+      if (!csItems.length && !items.length) {
+        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
+      }
       html += "</section>";
     }
   }
@@ -3016,6 +3081,7 @@ async function showBatchMergeDraftModal(targets) {
   list.innerHTML = html;
   configureModalSearch({ placeholder: "搜尋料號 / 說明 / 機種" });
   bindShortageEditors(list);
+  bindSampleOrderFlags(list);
 
   bindMoqEditors(list);
   bindShortageMoqBadgeEditors(list);
@@ -3091,22 +3157,28 @@ async function showWriteToMainModal(targets) {
   applyLookaheadSuggestedQtyToGroups(shortagesByScope, orderedScopes);
   for (const items of Object.values(shortagesByScope)) items.sort(compareShortageItems);
 
-  const visibleScopes = orderedScopes.filter(scope => (shortagesByScope[scope.key] || []).length > 0);
   const totalShortageCount = _modalPreviewShortages.length;
   let html = "";
-  if (!visibleScopes.length) {
+  if (!orderedScopes.length) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。</div>`;
   } else {
-    html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
-      ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
-    for (const scope of visibleScopes) {
-      html += `<section class="modal-shortage-section" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
+    if (totalShortageCount > 0) {
+      html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
+        ⚠ 寫入後將有 ${totalShortageCount} 筆料號缺料，需在右側面板手動補料</div>`;
+    }
+    for (const scope of orderedScopes) {
+      const items = shortagesByScope[scope.key] || [];
+      html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
       html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
         sampleControlHtml: sampleOrderCheckboxHtml(scope),
       });
-      html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
-      html += (shortagesByScope[scope.key] || []).map(item => modalShortageItem(item, false)).join("");
+      if (items.length) {
+        html += '<h4 style="font-size:12px;color:#dc2626;margin:4px 0">寫入主檔後仍缺料</h4>';
+        html += items.map(item => modalShortageItem(item, false)).join("");
+      } else {
+        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
+      }
       html += "</section>";
     }
   }
@@ -3179,9 +3251,10 @@ function shortageToneClass(shortage) {
 function shouldAutoShortageCheck(item) {
   const decision = String(item?.decision || "").trim();
   if (decision === "Shortage") return true;
-  if (decision && decision !== "None") return false;
-  if (isOrderScopedPart(item?.part_number)) return false;
+  return false;
+}
 
+function hasNegativeRunningStock(item) {
   const carryOver = Number(item?.carry_over);
   if (Number.isFinite(carryOver) && carryOver < 0) return true;
 
@@ -3221,6 +3294,9 @@ function modalShortageItem(s, isCS) {
   const neededQty = roundShortageUiValue(s.needed);
   const stAvailableQty = roundShortageUiValue(s.st_available_qty || 0);
   const purchaseNeededQty = roundShortageUiValue(s.purchase_needed_qty || 0);
+  const negativeRunningWarning = hasNegativeRunningStock(s)
+    ? '<div style="font-size:12px;color:#dc2626;font-weight:700;margin:2px 0">⚠ 結存為負，請確認補料或手動勾缺料</div>'
+    : "";
   const resultingStock = computeShortageResultingStock(s, defaultQty);
   s = {
     ...s,
@@ -3241,6 +3317,7 @@ function modalShortageItem(s, isCS) {
     <div class="modal-shortage-amounts" style="font-size:12px;display:flex;gap:10px;margin:4px 0">
       ${amountsHtml}
     </div>
+    ${negativeRunningWarning}
     ${missingMoqEditorHtml(s)}
     ${isCS ? '<div style="font-size:11px;color:#ca8a04">請通知客戶提供此料</div>' : `
     <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
@@ -3491,6 +3568,11 @@ function refreshModalShortageCascade(list, part = null) {
 function updateModalSampleSectionVisibility(list) {
   if (!list) return;
   list.querySelectorAll(".modal-shortage-section").forEach(section => {
+    if (section.dataset.fixedScope === "1") {
+      section.dataset.sampleHidden = "0";
+      section.style.display = "";
+      return;
+    }
     const hasVisibleCard = [...section.querySelectorAll(".shortage-item")]
       .some(card => card.dataset.flowHidden !== "1");
     const checked = Boolean(section.querySelector(".sample-order-flag")?.checked);
@@ -3955,6 +4037,60 @@ function _collectModalSupplements() {
   return supplements;
 }
 
+const MODAL_SHORTAGE_SUPPLEMENT_WARNING_PREFIX = "以下料號有補料數量，但同料號某列已勾缺料，這些補料將不會送出：";
+
+function findModalShortageSupplementConflicts() {
+  const list = document.getElementById("modal-shortage-list");
+  if (!list) return [];
+
+  const checkedParts = new Set();
+  list.querySelectorAll(".shortage-mark").forEach(checkbox => {
+    if (!checkbox.checked) return;
+    const part = normalizePartKey(checkbox.dataset.part || checkbox.closest(".shortage-item, .draft-preview-row")?.querySelector(".supplement-input")?.dataset.part);
+    if (part && !isOrderScopedPart(part)) checkedParts.add(part);
+  });
+
+  const conflicts = new Map();
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
+    const part = normalizePartKey(input.dataset.part || input.closest(".shortage-item, .draft-preview-row")?.dataset.part);
+    const qty = parseFloat(input.value) || 0;
+    if (!part || isOrderScopedPart(part) || qty <= 0 || !checkedParts.has(part)) return;
+    const current = conflicts.get(part) || { part, rows: 0, totalQty: 0 };
+    current.rows += 1;
+    current.totalQty += qty;
+    conflicts.set(part, current);
+  });
+
+  return Array.from(conflicts.values());
+}
+
+function buildModalShortageSupplementConflictMessage(conflicts) {
+  const lines = conflicts.slice(0, 8).map(item => (
+    `料號 ${item.part} 有 ${item.rows} 列填了補料但因為某列勾了缺料，補料將不會送出`
+  ));
+  if (conflicts.length > lines.length) lines.push(`另有 ${conflicts.length - lines.length} 個料號也有相同衝突`);
+  lines.push("確定要繼續？");
+  return [MODAL_SHORTAGE_SUPPLEMENT_WARNING_PREFIX, ...lines].join("\n");
+}
+
+function confirmModalShortageSupplementConflicts() {
+  const conflicts = findModalShortageSupplementConflicts();
+  if (!conflicts.length) return true;
+  return confirm(buildModalShortageSupplementConflictMessage(conflicts));
+}
+
+if (typeof window !== "undefined") {
+  window.__scheduleEcCollectionHotfix = {
+    collectSupplements: _collectModalSupplements,
+    collectDecisions: _collectModalDecisions,
+    findConflicts: findModalShortageSupplementConflicts,
+    buildConflictMessage: buildModalShortageSupplementConflictMessage,
+    shouldAutoShortageCheck,
+    hasNegativeRunningStock,
+  };
+}
+
 function _collectModalOrderDecisions() {
   const list = document.getElementById("modal-shortage-list");
   if (!list) return {};
@@ -4104,6 +4240,7 @@ async function handleModalWriteMain() {
     showToast("沒有可寫入主檔的訂單");
     return;
   }
+  if (!confirmModalShortageSupplementConflicts()) return;
 
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
@@ -4158,6 +4295,7 @@ async function handleModalWriteMain() {
 
 async function handleModalDownloadBom() {
   if (!_modalBomFiles.length) { showToast("找不到對應的 BOM 檔案"); return; }
+  if (!confirmModalShortageSupplementConflicts()) return;
 
   const supplements = _collectModalSupplements();
   const modalDecisions = _collectModalDecisions();
@@ -4299,6 +4437,7 @@ function buildFolderSection(folderNode, allFolders, folderTree, renderedFolderPa
   const isCollapsed = isCompletedFolderCollapsed(folderName);
   const totalCount = isUnsorted ? rows.length : folderNode.totalCount;
   const depth = isUnsorted ? 0 : Math.max(0, (folderNode.depth || 1) - 1);
+  const parentOptions = !isUnsorted ? buildCompletedFolderParentOptions(folderName, allFolders) : "";
 
   // 標題列
   const header = document.createElement("div");
@@ -4308,7 +4447,7 @@ function buildFolderSection(folderNode, allFolders, folderTree, renderedFolderPa
     <span class="folder-toggle" style="cursor:pointer;user-select:none">${isCollapsed ? "▶" : "▼"}</span>
     <span class="folder-name">${esc(label)}</span>
     <span style="font-size:11px;color:#8e8e93;margin-left:4px">(${totalCount})</span>
-    ${!isUnsorted ? `<button class="btn-folder-add-child" title="新增子資料夾" style="margin-left:auto;background:none;border:none;color:#2563eb;font-size:14px;cursor:pointer;padding:2px 6px">＋</button><button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
+    ${!isUnsorted ? `<select class="folder-select completed-folder-parent-select" data-folder="${esc(folderName)}" title="移動資料夾到" style="margin-left:auto;font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:150px">${parentOptions}</select><button class="btn-folder-delete" title="刪除資料夾（訂單移回未歸檔）" style="background:none;border:none;color:#dc2626;font-size:14px;cursor:pointer;padding:2px 6px">✕</button>` : ""}`;
   section.appendChild(header);
 
   // 卡片容器
@@ -4332,17 +4471,27 @@ function buildFolderSection(folderNode, allFolders, folderTree, renderedFolderPa
     setCompletedFolderCollapsed(folderName, nextCollapsed);
   });
 
-  // 新增子資料夾
-  const addChildBtn = header.querySelector(".btn-folder-add-child");
-  if (addChildBtn) {
-    addChildBtn.addEventListener("click", () => {
-      const input = document.getElementById("new-folder-name");
-      if (!input) return;
-      input.value = `${folderName}/`;
-      input.focus();
-      input.setSelectionRange(input.value.length, input.value.length);
-    });
-  }
+  header.querySelector(".completed-folder-parent-select")?.addEventListener("change", async (event) => {
+    const select = event.currentTarget;
+    const newParent = normalizeCompletedFolderPath(select.value);
+    if (getCompletedFolderMoveDepth(folderName, newParent, allFolders) > 3) {
+      showToast("搬移後資料夾會超過 3 層，請選擇較上層的位置");
+      renderCompletedTab();
+      return;
+    }
+    try {
+      if (!folderNode.totalCount) {
+        moveCompletedEmptyFolderLocal(folderName, newParent);
+        renderCompletedTab();
+        return;
+      }
+      await apiPost("/api/schedule/completed/folders/move", { folder: folderName, new_parent: newParent });
+      await refreshCompleted();
+    } catch (err) {
+      showToast("資料夾搬移失敗：" + err.message);
+      renderCompletedTab();
+    }
+  });
 
   // 刪除資料夾
   const delBtn = header.querySelector(".btn-folder-delete");
