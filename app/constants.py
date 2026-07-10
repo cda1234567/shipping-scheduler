@@ -1,0 +1,1 @@
+ST_RECONCILE_ADJUSTMENT_REASON = "st_reconcile_adjustment"
