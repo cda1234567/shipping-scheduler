@@ -60,6 +60,18 @@ def _normalize_genlin_part(value: Any) -> str:
     return text.strip().upper()
 
 
+def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    normalized = [
+        part
+        for value in values
+        for part in [_normalize_part(value)]
+        if part and part != "[]"
+    ]
+    return list(dict.fromkeys(normalized))
+
+
 def _try_float(value: Any) -> float:
     if value is None or value == "":
         return 0.0
@@ -447,10 +459,15 @@ def commit_st_reconcile_stop_loss(
     cutoff_date: str,
     *,
     source_filename: str = "",
+    part_numbers: list[str] | None = None,
 ) -> dict[str, Any]:
     preview = build_st_reconcile_preview(path, cutoff_date)
     if preview.get("format") != "genlin":
         raise ValueError("停損點 commit 目前只支援庚霖實際庫存格式")
+    selected_parts = _normalize_part_numbers(part_numbers)
+    if part_numbers is not None and not selected_parts:
+        raise ValueError("請至少勾選 1 支料號再建立停損點")
+    selected_part_set = set(selected_parts or [])
 
     cutoff_for_anchor = _normalize_cutoff_for_query(cutoff_date)
     current_stock = db.get_st_inventory_stock()
@@ -461,6 +478,8 @@ def commit_st_reconcile_stop_loss(
     for row in preview.get("parts") or []:
         part = str(row.get("part_number") or "").strip().upper()
         if not part:
+            continue
+        if selected_parts is not None and part not in selected_part_set:
             continue
         if row.get("physical_qty") is None:
             continue

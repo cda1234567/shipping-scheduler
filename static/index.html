@@ -826,6 +826,7 @@ document.getElementById("btn-refresh-app").addEventListener("click", () => {
 
 // ── ST reconcile ────────────────────────────────────────────────────────
 let _lastStReconcilePreview = null;
+const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
 
 function formatReconcileQty(value) {
   const n = Number(value || 0);
@@ -839,6 +840,44 @@ function renderStReconcileAssumptions(items = []) {
   el.innerHTML = (items || [])
     .map(item => `<div class="st-reconcile-assumption">${esc(item)}</div>`)
     .join("");
+}
+
+function isSelectableStReconcilePart(row) {
+  return row?.part_number && row?.category !== ST_RECONCILE_SKIP_CATEGORY;
+}
+
+function getSelectedStReconcileParts() {
+  return Array.from(document.querySelectorAll(".st-reconcile-part-check:checked"))
+    .map(input => String(input.dataset.part || "").trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function updateStReconcileCommitCount() {
+  const button = document.getElementById("btn-st-reconcile-commit");
+  const selectedCount = getSelectedStReconcileParts().length;
+  if (button) {
+    button.textContent = `設為停損點（${selectedCount} 支料）`;
+    button.disabled = selectedCount === 0;
+  }
+}
+
+function bindStReconcileSelectionControls() {
+  const checks = Array.from(document.querySelectorAll(".st-reconcile-part-check"));
+  const selectAllBtn = document.getElementById("btn-st-reconcile-select-all");
+  const clearBtn = document.getElementById("btn-st-reconcile-clear-selection");
+
+  checks.forEach(input => {
+    input.addEventListener("change", updateStReconcileCommitCount);
+  });
+  selectAllBtn?.addEventListener("click", () => {
+    checks.forEach(input => { input.checked = true; });
+    updateStReconcileCommitCount();
+  });
+  clearBtn?.addEventListener("click", () => {
+    checks.forEach(input => { input.checked = false; });
+    updateStReconcileCommitCount();
+  });
+  updateStReconcileCommitCount();
 }
 
 function renderStReconcilePreview(report) {
@@ -861,8 +900,14 @@ function renderStReconcilePreview(report) {
         ? "is-positive"
         : "";
     if (isStopLoss) {
+      const selectable = isSelectableStReconcilePart(row);
       return `
         <tr>
+          <td>
+            ${selectable
+              ? `<input class="st-reconcile-part-check" type="checkbox" data-part="${esc(row.part_number)}" checked aria-label="選取 ${esc(row.part_number)}">`
+              : ""}
+          </td>
           <td class="st-reconcile-part">${esc(row.part_number)}</td>
           <td>${esc(row.description || "")}</td>
           <td class="num">${formatReconcileQty(row.book_qty)}</td>
@@ -889,10 +934,17 @@ function renderStReconcilePreview(report) {
         <h4>${isStopLoss ? "庚霖停損點試算" : "盤點對帳試算"}</h4>
         <span class="desktop-status-meta">${esc(report?.sheet_name || "")}，共 ${parts.length} 料；${esc(summaryText)}</span>
       </div>
+      ${isStopLoss ? `
+        <div class="st-reconcile-commit-row">
+          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-select-all" type="button">全選</button>
+          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-clear-selection" type="button">取消全選</button>
+        </div>
+      ` : ""}
       <div class="st-reconcile-table-wrap">
         <table class="st-reconcile-table">
           <thead>
             <tr>
+              ${isStopLoss ? "<th></th>" : ""}
               <th>料號</th>
               <th>說明</th>
               ${isStopLoss
@@ -900,13 +952,14 @@ function renderStReconcilePreview(report) {
                 : "<th>實盤</th><th>系統理論值</th><th>差異</th><th>分類</th>"}
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="${isStopLoss ? 7 : 6}">沒有可試算的料號。</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="${isStopLoss ? 8 : 6}">沒有可試算的料號。</td></tr>`}</tbody>
         </table>
       </div>
     </div>`;
 
   if (commitRow) commitRow.style.display = isStopLoss && parts.length ? "flex" : "none";
   if (commitStatus) commitStatus.textContent = "";
+  bindStReconcileSelectionControls();
 }
 
 async function handleStReconcilePreview() {
@@ -953,9 +1006,14 @@ async function handleStReconcileCommit() {
     showToast("找不到原始盤點表或截止日");
     return;
   }
-  const partCount = (_lastStReconcilePreview.parts || []).length;
+  const selectedParts = getSelectedStReconcileParts();
+  const partCount = selectedParts.length;
+  if (partCount === 0) {
+    showToast("請至少勾選 1 支料號再建立停損點", { tone: "error" });
+    return;
+  }
   const confirmed = confirm(
-    `這會把 ${partCount} 個料號的 ST 庫存基準改成庚霖實盤 G 欄數字。\n\n` +
+    `這會把已勾選的 ${partCount} 支料號 ST 庫存基準改成庚霖實盤 G 欄數字。\n\n` +
     "F 與 G 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。要繼續嗎？"
   );
   if (!confirmed) return;
@@ -963,6 +1021,7 @@ async function handleStReconcileCommit() {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("cutoff_date", cutoff);
+  selectedParts.forEach(part => formData.append("part_numbers", part));
   commitStatus.textContent = "正在建立停損點...";
   try {
     const result = await apiJson("/api/reconcile/st/commit", { method: "POST", body: formData });

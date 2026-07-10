@@ -153,6 +153,12 @@ class StReconcileCommitTests(unittest.TestCase):
         self.conn.close()
 
     def _make_genlin_file(self, folder: str, physical_qty: float | None, book_qty: float = 10) -> str:
+        return self._make_genlin_file_with_rows(
+            folder,
+            [{"part": "PART-1-TAB", "description": "測試料", "book_qty": book_qty, "physical_qty": physical_qty}],
+        )
+
+    def _make_genlin_file_with_rows(self, folder: str, rows: list[dict]) -> str:
         wb = Workbook()
         ws = wb.active
         ws.title = "實際庫存-生產結餘"
@@ -160,22 +166,22 @@ class StReconcileCommitTests(unittest.TestCase):
         ws.cell(row=3, column=4, value="consign invoice NO")
         ws.cell(row=3, column=6, value="辰尚庫存")
         ws.cell(row=3, column=7, value="庚霖庫存 當下實際")
-        ws.cell(row=5, column=3, value="測試料")
-        ws.cell(row=5, column=4, value="PART-1-TAB")
-        ws.cell(row=5, column=6, value=book_qty)
-        ws.cell(row=5, column=7, value=physical_qty)
-        suffix = "blank" if physical_qty is None else f"{physical_qty:g}"
-        path = Path(folder) / f"genlin_{suffix}.xlsx"
+        for offset, row in enumerate(rows, start=5):
+            ws.cell(row=offset, column=3, value=row.get("description") or "")
+            ws.cell(row=offset, column=4, value=row.get("part") or "")
+            ws.cell(row=offset, column=6, value=row.get("book_qty"))
+            ws.cell(row=offset, column=7, value=row.get("physical_qty"))
+        path = Path(folder) / f"genlin_{len(rows)}_rows.xlsx"
         wb.save(path)
         return str(path)
 
-    def _insert_snapshot(self, qty: float) -> None:
+    def _insert_snapshot(self, qty: float, part_number: str = "PART-1") -> None:
         self.conn.execute(
             """
             INSERT INTO st_inventory_snapshot(part_number, stock_qty, description, loaded_at)
-            VALUES('PART-1', ?, '', '2026-06-01T08:00:00')
+            VALUES(?, ?, '', '2026-06-01T08:00:00')
             """,
-            (qty,),
+            (part_number, qty),
         )
 
     def _insert_audit(self, old_qty: float, new_qty: float, delta: float, reason: str, changed_at: str) -> None:
@@ -227,6 +233,47 @@ class StReconcileCommitTests(unittest.TestCase):
             self.assertEqual(db.get_st_inventory_stock()["PART-1"], 500)
             anchor = db.get_latest_st_reconcile_anchor("2026-06-30T00:00:00", ["PART-1"])
             self.assertEqual(anchor["baseline_qty"], {})
+
+    def test_commit_with_part_number_subset_updates_only_selected_parts(self):
+        self._insert_snapshot(10, "PART-1")
+        self._insert_snapshot(20, "PART-2")
+        with TemporaryDirectory() as tmp:
+            path = self._make_genlin_file_with_rows(tmp, [
+                {"part": "PART-1-TAB", "description": "測試料 1", "book_qty": 10, "physical_qty": 7},
+                {"part": "PART-2-TAB", "description": "測試料 2", "book_qty": 20, "physical_qty": 19},
+            ])
+
+            result = commit_st_reconcile_stop_loss(
+                path,
+                "2026-06-29",
+                source_filename="subset.xlsx",
+                part_numbers=[" part-2 "],
+            )
+
+            self.assertEqual(result["summary"]["part_count"], 1)
+            self.assertEqual(result["summary"]["adjusted_count"], 1)
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 10)
+            self.assertEqual(db.get_st_inventory_stock()["PART-2"], 19)
+
+            alignment = self.conn.execute(
+                "SELECT part_count, diff_count FROM st_reconcile_alignments WHERE id=?",
+                (result["summary"]["alignment_id"],),
+            ).fetchone()
+            self.assertEqual(alignment["part_count"], 1)
+            self.assertEqual(alignment["diff_count"], 1)
+            parts = self.conn.execute(
+                "SELECT part_number FROM st_reconcile_alignment_parts WHERE alignment_id=?",
+                (result["summary"]["alignment_id"],),
+            ).fetchall()
+            self.assertEqual([row["part_number"] for row in parts], ["PART-2"])
+
+    def test_commit_with_empty_part_number_list_returns_plain_error(self):
+        self._insert_snapshot(10)
+        with TemporaryDirectory() as tmp:
+            path = self._make_genlin_file(tmp, physical_qty=7, book_qty=10)
+
+            with self.assertRaisesRegex(ValueError, "請至少勾選 1 支料號再建立停損點"):
+                commit_st_reconcile_stop_loss(path, "2026-06-29", part_numbers=[])
 
     def test_commit_same_genlin_file_twice_records_zero_second_adjustment(self):
         self._insert_snapshot(10)

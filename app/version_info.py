@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.10.8"
+APP_VERSION = "v2026.07.10.9"
 APP_RELEASED_AT = "2026-07-10"
 APP_HEADLINE = "盤點停損點上線，一鍵以加工廠實際數字重設基準"
 APP_CHANGELOG = [
+    {
+        "title": "盤點停損可分批",
+        "items": [
+            "停損點試算後可以先勾幾支料分批做，不必一次把整張盤點表全部寫入。",
+        ],
+    },
     {
         "title": "盤點停損點上線",
         "items": [

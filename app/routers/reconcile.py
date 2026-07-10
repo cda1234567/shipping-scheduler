@@ -17,6 +17,18 @@ MAX_RECONCILE_UPLOAD_BYTES = 10 * 1024 * 1024
 CUTOFF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    normalized = [
+        part
+        for value in values
+        for part in [str(value or "").strip().upper()]
+        if part and part != "[]"
+    ]
+    return list(dict.fromkeys(normalized))
+
+
 @router.post("/reconcile/st/preview")
 async def preview_st_reconcile(
     cutoff_date: str = Form(...),
@@ -51,6 +63,7 @@ async def preview_st_reconcile(
 async def commit_st_reconcile(
     cutoff_date: str = Form(...),
     file: UploadFile = File(...),
+    part_numbers: list[str] | None = Form(None),
 ):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
@@ -64,6 +77,9 @@ async def commit_st_reconcile(
     content = await file.read(MAX_RECONCILE_UPLOAD_BYTES + 1)
     if len(content) > MAX_RECONCILE_UPLOAD_BYTES:
         raise HTTPException(400, "盤點檔案超過 10MB，請縮小後再上傳")
+    selected_parts = _normalize_part_numbers(part_numbers)
+    if part_numbers is not None and not selected_parts:
+        raise HTTPException(400, "請至少勾選 1 支料號再建立停損點")
 
     temp_path = RECONCILE_UPLOAD_DIR / f"commit_{uuid4().hex}{ext}"
     try:
@@ -72,6 +88,7 @@ async def commit_st_reconcile(
             str(temp_path),
             cutoff_text,
             source_filename=file.filename or "",
+            part_numbers=selected_parts,
         )
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
