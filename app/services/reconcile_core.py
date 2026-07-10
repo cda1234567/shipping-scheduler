@@ -5,8 +5,7 @@ from collections import defaultdict
 from typing import Any
 
 from app import database as db
-
-ADJUSTMENT_REASON = "st_reconcile_adjustment"
+from app.constants import ST_RECONCILE_ADJUSTMENT_REASON
 
 
 def _normalize_parts(part_numbers: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
@@ -59,26 +58,28 @@ def theoretical_stock(
         return {}
 
     parts = _normalize_parts(part_numbers)
+    if anchor is None:
+        anchor = db.get_latest_st_reconcile_anchor(cutoff, parts or None)
     anchor_at, anchor_baseline = _normalize_anchor(anchor)
     if anchor_at:
+        upload_baselines = db.get_st_inventory_upload_baselines(cutoff, parts or None)
         delta_rows = db.get_st_inventory_audit_deltas(
             cutoff,
             after_at=anchor_at,
             part_numbers=parts or None,
-            exclude_reason=ADJUSTMENT_REASON,
+            exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
         )
-        upload_baselines: dict[str, dict] = {}
     else:
         upload_baselines = db.get_st_inventory_upload_baselines(cutoff, parts or None)
         delta_rows = db.get_st_inventory_audit_deltas(
             cutoff,
             part_numbers=parts or None,
-            exclude_reason=ADJUSTMENT_REASON,
+            exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
         )
 
     result: dict[str, float] = {}
     for part in _candidate_parts(parts, anchor_baseline, upload_baselines, delta_rows):
-        if anchor_at:
+        if anchor_at and part in anchor_baseline:
             result[part] = float(anchor_baseline.get(part, 0.0))
         else:
             result[part] = float((upload_baselines.get(part) or {}).get("baseline_qty") or 0.0)

@@ -382,6 +382,11 @@ body {
   display: grid;
   gap: 12px;
 }
+.st-reconcile-commit-row {
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .st-reconcile-group {
   display: grid;
   gap: 8px;

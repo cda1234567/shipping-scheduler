@@ -146,6 +146,18 @@ class TheoreticalStockTests(InMemoryDbTestCase):
 
         self.assertEqual(result["PART-1"], 72.0)
 
+    def test_anchor_missing_part_falls_back_to_upload_baseline(self):
+        self.insert_audit("PART-1", None, 100, None, "st_inventory_upload", "2026-04-01T08:00:00")
+        self.insert_audit("PART-1", 100, 95, -5, "st_consume", "2026-04-04T09:00:00")
+
+        result = theoretical_stock(
+            "2026-04-06T00:00:00",
+            anchor={"aligned_at": "2026-04-03T00:00:00", "baseline_qty": {"PART-2": 50}},
+            part_numbers=["PART-1"],
+        )
+
+        self.assertEqual(result["PART-1"], 95.0)
+
     def test_order_details_are_filtered_as_of_cutoff(self):
         self.insert_audit("PART-1", None, 100, None, "st_inventory_upload", "2026-04-01T08:00:00")
         self.insert_consumption(

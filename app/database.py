@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from contextlib import contextmanager
 
+from .constants import ST_RECONCILE_ADJUSTMENT_REASON
 from .config import DATA_DIR, MAIN_FILE_DIR, SCHEDULE_DIR, BOM_DIR, BOM_HISTORY_DIR, MERGE_DRAFT_DIR
 from .services.local_time import local_now
 
@@ -83,6 +84,38 @@ CREATE TABLE IF NOT EXISTS st_dispatch_consumptions (
     consumed_at         TEXT    NOT NULL DEFAULT '',
     rolled_back_at      TEXT    NOT NULL DEFAULT '',
     UNIQUE(dispatch_session_id, part_number)
+);
+
+CREATE TABLE IF NOT EXISTS st_reconcile_alignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    aligned_at TEXT NOT NULL,
+    committed_at TEXT NOT NULL,
+    source_filename TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    part_count INTEGER NOT NULL DEFAULT 0,
+    diff_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS st_reconcile_alignment_parts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alignment_id INTEGER NOT NULL REFERENCES st_reconcile_alignments(id) ON DELETE CASCADE,
+    part_number TEXT NOT NULL DEFAULT '',
+    theoretical_qty REAL NOT NULL DEFAULT 0,
+    physical_qty REAL NOT NULL DEFAULT 0,
+    diff REAL NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT '',
+    aligned_qty REAL NOT NULL DEFAULT 0,
+    UNIQUE(alignment_id, part_number)
+);
+
+CREATE TABLE IF NOT EXISTS st_reconcile_adjustments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alignment_id INTEGER NOT NULL REFERENCES st_reconcile_alignments(id) ON DELETE CASCADE,
+    part_number TEXT NOT NULL DEFAULT '',
+    adjust_qty REAL NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -306,6 +339,8 @@ CREATE INDEX IF NOT EXISTS idx_orders_delivery ON orders(delivery_date);
 CREATE INDEX IF NOT EXISTS idx_st_inventory_audit_part_changed ON st_inventory_audit_log(part_number, changed_at);
 CREATE INDEX IF NOT EXISTS idx_st_dispatch_consumptions_session ON st_dispatch_consumptions(dispatch_session_id, rolled_back_at);
 CREATE INDEX IF NOT EXISTS idx_st_dispatch_consumptions_order ON st_dispatch_consumptions(order_id, rolled_back_at);
+CREATE INDEX IF NOT EXISTS idx_st_reconcile_align_at ON st_reconcile_alignments(aligned_at);
+CREATE INDEX IF NOT EXISTS idx_st_reconcile_parts_align ON st_reconcile_alignment_parts(alignment_id, part_number);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
@@ -958,6 +993,131 @@ def get_st_inventory_stock() -> dict[str, float]:
     return {part: float(item.get("stock_qty") or 0) for part, item in snapshot.items()}
 
 
+def get_latest_st_reconcile_anchor(
+    cutoff_at: str,
+    part_numbers: list[str] | None = None,
+) -> dict | None:
+    """取得 cutoff 前最近一次 ST 停損點對齊 baseline。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return None
+    normalized_parts = [
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ]
+    normalized_parts = list(dict.fromkeys(normalized_parts))
+
+    with get_conn() as conn:
+        alignment = conn.execute(
+            """
+            SELECT id, aligned_at, committed_at, source_filename, note, part_count, diff_count
+            FROM st_reconcile_alignments
+            WHERE aligned_at<=?
+            ORDER BY aligned_at DESC, id DESC
+            LIMIT 1
+            """,
+            (cutoff,),
+        ).fetchone()
+        if not alignment:
+            return None
+
+        sql = """
+            SELECT part_number, aligned_qty, theoretical_qty, physical_qty, diff, category
+            FROM st_reconcile_alignment_parts
+            WHERE alignment_id=?
+        """
+        params: list[object] = [int(alignment["id"])]
+        if normalized_parts:
+            placeholders = ",".join("?" * len(normalized_parts))
+            sql += f" AND part_number IN ({placeholders})"
+            params.extend(normalized_parts)
+        rows = conn.execute(sql, params).fetchall()
+
+    baseline = {
+        str(row["part_number"] or "").strip().upper(): float(row["aligned_qty"] or 0)
+        for row in rows
+        if str(row["part_number"] or "").strip()
+    }
+    return {
+        "id": int(alignment["id"]),
+        "aligned_at": str(alignment["aligned_at"] or ""),
+        "committed_at": str(alignment["committed_at"] or ""),
+        "source_filename": str(alignment["source_filename"] or ""),
+        "note": str(alignment["note"] or ""),
+        "part_count": int(alignment["part_count"] or 0),
+        "diff_count": int(alignment["diff_count"] or 0),
+        "baseline_qty": baseline,
+    }
+
+
+def create_st_reconcile_alignment(
+    *,
+    aligned_at: str,
+    source_filename: str,
+    note: str,
+    parts: list[dict],
+    adjustments: list[dict],
+) -> int:
+    committed_at = _now()
+    safe_parts = parts or []
+    diff_count = sum(1 for row in safe_parts if abs(float(row.get("diff") or 0)) > 1e-6)
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO st_reconcile_alignments(
+                aligned_at, committed_at, source_filename, note, part_count, diff_count
+            )
+            VALUES(?,?,?,?,?,?)
+            """,
+            (
+                str(aligned_at or ""),
+                committed_at,
+                str(source_filename or ""),
+                str(note or ""),
+                len(safe_parts),
+                diff_count,
+            ),
+        )
+        alignment_id = int(cur.lastrowid)
+        for row in safe_parts:
+            conn.execute(
+                """
+                INSERT INTO st_reconcile_alignment_parts(
+                    alignment_id, part_number, theoretical_qty, physical_qty, diff, category, aligned_qty
+                )
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (
+                    alignment_id,
+                    str(row.get("part_number") or "").strip().upper(),
+                    float(row.get("theoretical_qty") or row.get("theoretical") or 0),
+                    float(row.get("physical_qty") or row.get("physical") or 0),
+                    float(row.get("diff") or 0),
+                    str(row.get("category") or ""),
+                    float(row.get("aligned_qty") or row.get("physical_qty") or row.get("physical") or 0),
+                ),
+            )
+        for row in adjustments or []:
+            conn.execute(
+                """
+                INSERT INTO st_reconcile_adjustments(
+                    alignment_id, part_number, adjust_qty, reason, actor, created_at
+                )
+                VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    alignment_id,
+                    str(row.get("part_number") or "").strip().upper(),
+                    float(row.get("adjust_qty") or 0),
+                    str(row.get("reason") or ""),
+                    str(row.get("actor") or ""),
+                    committed_at,
+                ),
+            )
+    return alignment_id
+
+
 def _insert_st_inventory_audit_log(
     conn: sqlite3.Connection,
     *,
@@ -1109,7 +1269,7 @@ def get_st_inventory_audit_deltas(
     *,
     after_at: str | None = None,
     part_numbers: list[str] | None = None,
-    exclude_reason: str = "st_reconcile_adjustment",
+    exclude_reason: str = ST_RECONCILE_ADJUSTMENT_REASON,
 ) -> list[dict]:
     """取得截止日前 ST audit delta；after_at 為開區間。"""
     cutoff = str(cutoff_at or "").strip()

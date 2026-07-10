@@ -380,6 +380,10 @@
           <div id="st-reconcile-status" class="file-status">選擇盤點表與截止日後可試算對帳。</div>
           <div id="st-reconcile-assumptions" class="st-reconcile-assumptions"></div>
           <div id="st-reconcile-result" class="st-reconcile-result"></div>
+          <div class="st-reconcile-commit-row" id="st-reconcile-commit-row" style="display:none">
+            <button class="btn btn-danger btn-sm" id="btn-st-reconcile-commit" type="button">設為停損點（以庚霖實際數字重設基準）</button>
+            <div id="st-reconcile-commit-status" class="desktop-status-meta"></div>
+          </div>
         </section>
       </div>
     </div>
@@ -705,7 +709,7 @@
 </script>
 
 <script type="module">
-import { apiJson, apiFetch, apiPost, showToast } from "/static/modules/api.js";
+import { apiJson, apiFetch, apiPost, showToast, esc } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds, withGlobalBusy } from "/static/modules/schedule.js";
 import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
 import { initMainPreviewV2, onMainPreviewV2TabActivated, refreshMainPreviewV2 } from "/static/modules/main_preview_v2.js";
@@ -818,6 +822,165 @@ async function refreshCurrentView(options = {}) {
 
 document.getElementById("btn-refresh-app").addEventListener("click", () => {
   void refreshCurrentView();
+});
+
+// ── ST reconcile ────────────────────────────────────────────────────────
+let _lastStReconcilePreview = null;
+
+function formatReconcileQty(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return "0";
+  return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function renderStReconcileAssumptions(items = []) {
+  const el = document.getElementById("st-reconcile-assumptions");
+  if (!el) return;
+  el.innerHTML = (items || [])
+    .map(item => `<div class="st-reconcile-assumption">${esc(item)}</div>`)
+    .join("");
+}
+
+function renderStReconcilePreview(report) {
+  const resultEl = document.getElementById("st-reconcile-result");
+  const commitRow = document.getElementById("st-reconcile-commit-row");
+  const commitStatus = document.getElementById("st-reconcile-commit-status");
+  if (!resultEl) return;
+
+  const parts = report?.parts || [];
+  const summary = report?.summary || {};
+  const isStopLoss = report?.mode === "stop_loss";
+  const summaryText = Object.entries(summary)
+    .map(([key, value]) => `${key} ${value}`)
+    .join("、");
+
+  const rows = parts.map(row => {
+    const diffClass = Number(row.book_vs_physical_diff ?? row.diff ?? 0) < 0
+      ? "is-negative"
+      : Number(row.book_vs_physical_diff ?? row.diff ?? 0) > 0
+        ? "is-positive"
+        : "";
+    if (isStopLoss) {
+      return `
+        <tr>
+          <td class="st-reconcile-part">${esc(row.part_number)}</td>
+          <td>${esc(row.description || "")}</td>
+          <td class="num">${formatReconcileQty(row.book_qty)}</td>
+          <td class="num">${formatReconcileQty(row.physical_qty)}</td>
+          <td class="num">${formatReconcileQty(row.theoretical)}</td>
+          <td class="num ${diffClass}">${formatReconcileQty(row.book_vs_physical_diff)}</td>
+          <td>${esc(row.category || "")}</td>
+        </tr>`;
+    }
+    return `
+      <tr>
+        <td class="st-reconcile-part">${esc(row.part_number)}</td>
+        <td>${esc(row.description || "")}</td>
+        <td class="num">${row.physical == null ? "需拆分" : formatReconcileQty(row.physical)}</td>
+        <td class="num">${formatReconcileQty(row.theoretical)}</td>
+        <td class="num ${diffClass}">${row.diff == null ? "-" : formatReconcileQty(row.diff)}</td>
+        <td>${esc(row.category || "")}</td>
+      </tr>`;
+  }).join("");
+
+  resultEl.innerHTML = `
+    <div class="st-reconcile-group">
+      <div class="st-reconcile-group-head">
+        <h4>${isStopLoss ? "庚霖停損點試算" : "盤點對帳試算"}</h4>
+        <span class="desktop-status-meta">${esc(report?.sheet_name || "")}，共 ${parts.length} 料；${esc(summaryText)}</span>
+      </div>
+      <div class="st-reconcile-table-wrap">
+        <table class="st-reconcile-table">
+          <thead>
+            <tr>
+              <th>料號</th>
+              <th>說明</th>
+              ${isStopLoss
+                ? "<th>我方帳面 F</th><th>庚霖實盤 G</th><th>系統理論值</th><th>F-G</th><th>分類</th>"
+                : "<th>實盤</th><th>系統理論值</th><th>差異</th><th>分類</th>"}
+            </tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="${isStopLoss ? 7 : 6}">沒有可試算的料號。</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>`;
+
+  if (commitRow) commitRow.style.display = isStopLoss && parts.length ? "flex" : "none";
+  if (commitStatus) commitStatus.textContent = "";
+}
+
+async function handleStReconcilePreview() {
+  const fileInput = document.getElementById("st-reconcile-file");
+  const cutoffInput = document.getElementById("st-reconcile-cutoff");
+  const statusEl = document.getElementById("st-reconcile-status");
+  const file = fileInput?.files?.[0];
+  const cutoff = cutoffInput?.value || "";
+  if (!file || !cutoff) {
+    showToast("請先選擇盤點表並輸入截止日");
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("cutoff_date", cutoff);
+  statusEl.textContent = "試算中...";
+  try {
+    const report = await apiJson("/api/reconcile/st/preview", { method: "POST", body: formData });
+    _lastStReconcilePreview = report;
+    statusEl.textContent = report.mode === "stop_loss"
+      ? "庚霖格式試算完成，可進行停損點確認。"
+      : "試算完成。";
+    renderStReconcileAssumptions(report.assumptions || []);
+    renderStReconcilePreview(report);
+  } catch (error) {
+    _lastStReconcilePreview = null;
+    statusEl.textContent = "試算失敗：" + error.message;
+    document.getElementById("st-reconcile-result").innerHTML = "";
+    document.getElementById("st-reconcile-commit-row").style.display = "none";
+  }
+}
+
+async function handleStReconcileCommit() {
+  const fileInput = document.getElementById("st-reconcile-file");
+  const cutoffInput = document.getElementById("st-reconcile-cutoff");
+  const commitStatus = document.getElementById("st-reconcile-commit-status");
+  const file = fileInput?.files?.[0];
+  const cutoff = cutoffInput?.value || "";
+  if (!_lastStReconcilePreview || _lastStReconcilePreview.mode !== "stop_loss") {
+    showToast("請先完成庚霖格式試算");
+    return;
+  }
+  if (!file || !cutoff) {
+    showToast("找不到原始盤點表或截止日");
+    return;
+  }
+  const partCount = (_lastStReconcilePreview.parts || []).length;
+  const confirmed = confirm(
+    `這會把 ${partCount} 個料號的 ST 庫存基準改成庚霖實盤 G 欄數字。\n\n` +
+    "F 與 G 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。要繼續嗎？"
+  );
+  if (!confirmed) return;
+
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("cutoff_date", cutoff);
+  commitStatus.textContent = "正在建立停損點...";
+  try {
+    const result = await apiJson("/api/reconcile/st/commit", { method: "POST", body: formData });
+    const summary = result.summary || {};
+    commitStatus.textContent = `已建立停損點 #${summary.alignment_id}，對齊 ${summary.part_count} 料，調帳 ${summary.adjusted_count} 料。`;
+    showToast("盤點停損點已建立", { tone: "success", duration: 5000 });
+    await refreshStInventoryInMain();
+  } catch (error) {
+    commitStatus.textContent = "停損點建立失敗：" + error.message;
+    showToast("停損點建立失敗：" + error.message, { tone: "error", duration: 5000 });
+  }
+}
+
+document.getElementById("btn-st-reconcile-preview")?.addEventListener("click", () => {
+  void handleStReconcilePreview();
+});
+document.getElementById("btn-st-reconcile-commit")?.addEventListener("click", () => {
+  void handleStReconcileCommit();
 });
 
 // ── Main file ───────────────────────────────────────────────────────────
