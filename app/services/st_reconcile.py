@@ -270,6 +270,17 @@ def _normalize_cutoff_for_query(cutoff_date: str) -> str:
     return text
 
 
+def resolve_cutoff_batch(batch_code: str) -> dict:
+    """把批次代碼解析成該批最新一次有效發料的 dispatched_at（含該批本身在基準側）。"""
+    code = str(batch_code or "").strip()
+    if not code:
+        raise ValueError("請選擇停損批次")
+    for option in db.get_st_reconcile_cutoff_batch_options():
+        if option["code"] == code:
+            return option
+    raise ValueError(f"找不到批次 {code} 的有效發料紀錄（可能已退回），請重新選擇")
+
+
 def _build_summary() -> dict[str, int]:
     return {
         CATEGORY_HAVE_OURS_NOT_THEIRS: 0,
@@ -460,6 +471,7 @@ def commit_st_reconcile_stop_loss(
     *,
     source_filename: str = "",
     part_numbers: list[str] | None = None,
+    cutoff_label: str = "",
 ) -> dict[str, Any]:
     preview = build_st_reconcile_preview(path, cutoff_date)
     if preview.get("format") != "genlin":
@@ -524,7 +536,11 @@ def commit_st_reconcile_stop_loss(
     alignment_id = db.create_st_reconcile_alignment(
         aligned_at=cutoff_for_anchor,
         source_filename=source_filename or Path(path).name,
-        note="停損點模式：以庚霖實盤 G 欄重設 ST 庫存基準",
+        note=(
+            f"停損點模式：以庚霖實盤 G 欄重設 ST 庫存基準（截止批次 {cutoff_label}）"
+            if cutoff_label
+            else "停損點模式：以庚霖實盤 G 欄重設 ST 庫存基準"
+        ),
         parts=alignment_parts,
         adjustments=adjustments,
     )

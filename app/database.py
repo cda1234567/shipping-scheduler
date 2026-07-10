@@ -1369,6 +1369,41 @@ def get_st_dispatch_consumptions_as_of(
     ]
 
 
+def get_st_reconcile_cutoff_batch_options(limit: int = 200) -> list[dict]:
+    """取得可當盤點停損截止點的批次清單（未回滾的發料批次，新到舊）。
+
+    cutoff_at 用「該批最後一筆有效 ST 消耗的 consumed_at」（無消耗才退回 dispatched_at）：
+    同一批的 audit changed_at 恆早於 consumed_at、晚於 dispatched_at，
+    這樣該批自己的扣帳會落在停損基準側，不會被重放雙扣。
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT TRIM(o.code) AS code,
+                   MAX(s.dispatched_at) AS dispatched_at,
+                   MAX(COALESCE(c.consumed_at, s.dispatched_at)) AS cutoff_at
+            FROM dispatch_sessions s
+            JOIN orders o ON o.id = s.order_id
+            LEFT JOIN st_dispatch_consumptions c
+                   ON c.dispatch_session_id = s.id AND c.rolled_back_at=''
+            WHERE s.rolled_back_at='' AND TRIM(IFNULL(o.code,'')) <> ''
+            GROUP BY TRIM(o.code)
+            ORDER BY MAX(s.dispatched_at) DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    return [
+        {
+            "code": str(row["code"] or "").strip(),
+            "dispatched_at": str(row["dispatched_at"] or ""),
+            "cutoff_at": str(row["cutoff_at"] or row["dispatched_at"] or ""),
+        }
+        for row in rows
+        if str(row["code"] or "").strip() and str(row["dispatched_at"] or "").strip()
+    ]
+
+
 def get_st_package_breakdowns(part_numbers: list[str] | None = None) -> dict[str, dict]:
     normalized_parts = [
         str(part).strip().upper()

@@ -21,6 +21,7 @@ from app.services.st_reconcile import (
     build_st_reconcile_preview,
     commit_st_reconcile_stop_loss,
     parse_st_reconcile_file,
+    resolve_cutoff_batch,
 )
 
 
@@ -310,6 +311,121 @@ class StReconcileCommitTests(unittest.TestCase):
             self.assertEqual(second["summary"]["adjusted_count"], 0)
             self.assertEqual(second["adjustments"][0]["adjust_qty"], 0)
             self.assertEqual(db.get_st_inventory_stock()["PART-1"], 50)
+
+    def test_batch_cutoff_absorbs_own_batch_and_replays_only_later_batches(self):
+        # 鎖死雙扣回歸：選批次 6-1 時，6-1 自己的消耗（audit 時間晚於 dispatched_at）
+        # 必須落在盤點吸收側，只有 6-1 之後的批次被重放。
+        self._insert_snapshot(100)
+        order_cursor = self.conn.execute(
+            "INSERT INTO orders(po_number, model, status, code) VALUES('PO-6-1', 'MODEL-A', 'dispatched', '6-1')"
+        )
+        session_cursor = self.conn.execute(
+            "INSERT INTO dispatch_sessions(order_id, dispatched_at) VALUES(?, '2026-06-28T14:00:00')",
+            (order_cursor.lastrowid,),
+        )
+        self._insert_audit(100, 70, -30, "st_consume", "2026-06-28T14:00:05")
+        self.conn.execute(
+            """
+            INSERT INTO st_dispatch_consumptions(dispatch_session_id, order_id, part_number, used_qty, consumed_at)
+            VALUES(?, ?, 'PART-1', 30, '2026-06-28T14:00:06')
+            """,
+            (session_cursor.lastrowid, order_cursor.lastrowid),
+        )
+        self._insert_audit(70, 50, -20, "st_consume", "2026-06-30T09:00:05")
+
+        resolved = resolve_cutoff_batch("6-1")
+        self.assertEqual(resolved["cutoff_at"], "2026-06-28T14:00:06")
+
+        with TemporaryDirectory() as tmp:
+            path = self._make_genlin_file(tmp, physical_qty=68, book_qty=70)
+            result = commit_st_reconcile_stop_loss(
+                path,
+                resolved["cutoff_at"],
+                source_filename="batch-cutoff.xlsx",
+                cutoff_label=resolved["code"],
+            )
+
+            self.assertTrue(result["ok"])
+            # 目標 = 實盤 68 + 只有 6-30 那筆 -20 → 48（雙扣錯誤會算出 18）
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 48)
+            self.assertEqual(result["adjustments"][0]["adjust_qty"], -2)
+
+
+class StReconcileCutoffBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.executescript(db._CREATE_SQL)
+
+        @contextmanager
+        def temp_conn():
+            try:
+                yield self.conn
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        self.get_conn_patcher = patch.object(db, "get_conn", temp_conn)
+        self.get_conn_patcher.start()
+
+    def tearDown(self):
+        self.get_conn_patcher.stop()
+        self.conn.close()
+
+    def _insert_order_with_session(self, code: str, dispatched_at: str, rolled_back_at: str = "") -> int:
+        cursor = self.conn.execute(
+            "INSERT INTO orders(po_number, model, status, code) VALUES(?, ?, 'dispatched', ?)",
+            (f"PO-{code}", f"MODEL-{code}", code),
+        )
+        order_id = cursor.lastrowid
+        session_cursor = self.conn.execute(
+            "INSERT INTO dispatch_sessions(order_id, dispatched_at, rolled_back_at) VALUES(?, ?, ?)",
+            (order_id, dispatched_at, rolled_back_at),
+        )
+        return int(session_cursor.lastrowid)
+
+    def _insert_consumption(self, session_id: int, consumed_at: str, part_number: str = "PART-1", used_qty: float = 1) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO st_dispatch_consumptions(dispatch_session_id, order_id, part_number, used_qty, consumed_at)
+            SELECT ?, order_id, ?, ?, ? FROM dispatch_sessions WHERE id=?
+            """,
+            (session_id, part_number, used_qty, consumed_at, session_id),
+        )
+
+    def test_cutoff_options_exclude_rolled_back_and_sort_newest_first(self):
+        self._insert_order_with_session("1-3", "2026-06-11T09:32:08")
+        self._insert_order_with_session("6-3", "2026-06-28T14:05:00")
+        self._insert_order_with_session("9-9", "2026-07-01T10:00:00", rolled_back_at="2026-07-02T08:00:00")
+
+        options = db.get_st_reconcile_cutoff_batch_options()
+
+        codes = [option["code"] for option in options]
+        self.assertEqual(codes, ["6-3", "1-3"])
+        self.assertNotIn("9-9", codes)
+        self.assertEqual(options[0]["dispatched_at"], "2026-06-28T14:05:00")
+
+    def test_resolve_cutoff_batch_uses_last_consumption_time_to_absorb_own_batch(self):
+        session_id = self._insert_order_with_session("6-1", "2026-06-28T14:32:08")
+        self._insert_consumption(session_id, "2026-06-28T14:32:15")
+
+        resolved = resolve_cutoff_batch("6-1")
+
+        self.assertEqual(resolved["dispatched_at"], "2026-06-28T14:32:08")
+        self.assertEqual(resolved["cutoff_at"], "2026-06-28T14:32:15")
+        with self.assertRaises(ValueError):
+            resolve_cutoff_batch("99-99")
+        with self.assertRaises(ValueError):
+            resolve_cutoff_batch("")
+
+    def test_resolve_cutoff_batch_without_consumption_falls_back_to_dispatched_at(self):
+        self._insert_order_with_session("7-1", "2026-07-01T09:00:00")
+
+        resolved = resolve_cutoff_batch("7-1")
+
+        self.assertEqual(resolved["cutoff_at"], "2026-07-01T09:00:00")
 
 
 if __name__ == "__main__":

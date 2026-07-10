@@ -375,10 +375,15 @@
               </div>
               <input type="file" id="st-reconcile-file" accept=".xlsx,.xls,.xlsm">
             </label>
-            <label class="db-backup-field">
+            <label class="db-backup-field" id="st-reconcile-cutoff-batch-field">
+              <span>停損到哪一批</span>
+              <select id="st-reconcile-cutoff-batch"></select>
+            </label>
+            <label class="db-backup-field" id="st-reconcile-cutoff-date-field" style="display:none">
               <span>截止日</span>
               <input type="date" id="st-reconcile-cutoff">
             </label>
+            <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-cutoff-mode" type="button">改用日期</button>
             <button class="btn btn-primary btn-sm" id="btn-st-reconcile-preview" type="button">試算</button>
           </div>
           <div id="st-reconcile-status" class="file-status">選擇盤點表與截止日後可試算對帳。</div>
@@ -830,7 +835,52 @@ document.getElementById("btn-refresh-app").addEventListener("click", () => {
 
 // ── ST reconcile ────────────────────────────────────────────────────────
 let _lastStReconcilePreview = null;
+let _stReconcileCutoffMode = "batch";
 const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
+
+async function loadStReconcileCutoffOptions() {
+  const select = document.getElementById("st-reconcile-cutoff-batch");
+  if (!select) return;
+  try {
+    const data = await apiJson("/api/reconcile/st/cutoff-options");
+    const options = data?.options || [];
+    select.innerHTML = options.length
+      ? options.map(opt => `<option value="${esc(opt.code)}">${esc(opt.label)}</option>`).join("")
+      : '<option value="">（尚無可選批次）</option>';
+    if (!options.length) document.getElementById("btn-st-reconcile-cutoff-mode")?.click();
+  } catch (_) {
+    select.innerHTML = '<option value="">（批次清單載入失敗）</option>';
+    document.getElementById("btn-st-reconcile-cutoff-mode")?.click();
+  }
+}
+
+function getStReconcileCutoffFields() {
+  if (_stReconcileCutoffMode === "batch") {
+    const code = document.getElementById("st-reconcile-cutoff-batch")?.value || "";
+    return code ? { cutoff_batch_code: code } : null;
+  }
+  const date = document.getElementById("st-reconcile-cutoff")?.value || "";
+  return date ? { cutoff_date: date } : null;
+}
+
+function appendStReconcileCutoff(formData) {
+  const fields = getStReconcileCutoffFields();
+  if (!fields) return false;
+  Object.entries(fields).forEach(([key, value]) => formData.append(key, value));
+  return true;
+}
+
+document.getElementById("btn-st-reconcile-cutoff-mode")?.addEventListener("click", () => {
+  _stReconcileCutoffMode = _stReconcileCutoffMode === "batch" ? "date" : "batch";
+  const batchField = document.getElementById("st-reconcile-cutoff-batch-field");
+  const dateField = document.getElementById("st-reconcile-cutoff-date-field");
+  const modeBtn = document.getElementById("btn-st-reconcile-cutoff-mode");
+  const useBatch = _stReconcileCutoffMode === "batch";
+  if (batchField) batchField.style.display = useBatch ? "" : "none";
+  if (dateField) dateField.style.display = useBatch ? "none" : "";
+  if (modeBtn) modeBtn.textContent = useBatch ? "改用日期" : "改用批次";
+});
+void loadStReconcileCutoffOptions();
 
 function formatReconcileQty(value) {
   const n = Number(value || 0);
@@ -968,17 +1018,18 @@ function renderStReconcilePreview(report) {
 
 async function handleStReconcilePreview() {
   const fileInput = document.getElementById("st-reconcile-file");
-  const cutoffInput = document.getElementById("st-reconcile-cutoff");
   const statusEl = document.getElementById("st-reconcile-status");
   const file = fileInput?.files?.[0];
-  const cutoff = cutoffInput?.value || "";
-  if (!file || !cutoff) {
-    showToast("請先選擇盤點表並輸入截止日");
+  if (!file) {
+    showToast("請先選擇盤點表");
     return;
   }
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("cutoff_date", cutoff);
+  if (!appendStReconcileCutoff(formData)) {
+    showToast("請先選擇停損批次或輸入截止日");
+    return;
+  }
   statusEl.textContent = "試算中...";
   try {
     const report = await apiJson("/api/reconcile/st/preview", { method: "POST", body: formData });
@@ -998,16 +1049,14 @@ async function handleStReconcilePreview() {
 
 async function handleStReconcileCommit() {
   const fileInput = document.getElementById("st-reconcile-file");
-  const cutoffInput = document.getElementById("st-reconcile-cutoff");
   const commitStatus = document.getElementById("st-reconcile-commit-status");
   const file = fileInput?.files?.[0];
-  const cutoff = cutoffInput?.value || "";
   if (!_lastStReconcilePreview || _lastStReconcilePreview.mode !== "stop_loss") {
     showToast("請先完成庚霖格式試算");
     return;
   }
-  if (!file || !cutoff) {
-    showToast("找不到原始盤點表或截止日");
+  if (!file || !getStReconcileCutoffFields()) {
+    showToast("找不到原始盤點表或截止點");
     return;
   }
   const selectedParts = getSelectedStReconcileParts();
@@ -1025,7 +1074,7 @@ async function handleStReconcileCommit() {
 
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("cutoff_date", cutoff);
+  appendStReconcileCutoff(formData);
   selectedParts.forEach(part => formData.append("part_numbers", part));
   commitStatus.textContent = "正在建立停損點...";
   try {
