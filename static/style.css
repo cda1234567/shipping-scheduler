@@ -362,8 +362,17 @@ body {
   gap: 8px;
   align-items: end;
 }
-.st-reconcile-file-field input {
-  padding: 5px 8px;
+.st-reconcile-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.st-reconcile-file-picker .desktop-status-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .st-reconcile-assumptions {
   display: grid;

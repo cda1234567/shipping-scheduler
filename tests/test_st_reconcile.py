@@ -186,6 +186,10 @@ class StReconcileCommitTests(unittest.TestCase):
 
     def _insert_audit(self, old_qty: float, new_qty: float, delta: float, reason: str, changed_at: str) -> None:
         self.conn.execute(
+            "UPDATE st_inventory_snapshot SET stock_qty=?, loaded_at=? WHERE part_number='PART-1'",
+            (new_qty, changed_at),
+        )
+        self.conn.execute(
             """
             INSERT INTO st_inventory_audit_log(part_number, old_qty, new_qty, delta, reason, actor, changed_at)
             VALUES('PART-1', ?, ?, ?, ?, 'test', ?)
@@ -211,6 +215,7 @@ class StReconcileCommitTests(unittest.TestCase):
             second_path = self._make_genlin_file(tmp, physical_qty=9, book_qty=9)
             second = commit_st_reconcile_stop_loss(second_path, "2026-07-02", source_filename="second.xlsx")
             self.assertEqual(second["preview_summary"][CATEGORY_MATCHED], 1)
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 9)
 
             self._insert_audit(9, 8, -1, "st_consume", "2026-07-03T09:00:00")
             self.assertEqual(theoretical_stock("2026-07-04T00:00:00", part_numbers=["PART-1"])["PART-1"], 8)
@@ -287,6 +292,24 @@ class StReconcileCommitTests(unittest.TestCase):
             self.assertEqual(second["summary"]["adjusted_count"], 0)
             self.assertEqual(second["adjustments"][0]["adjust_qty"], 0)
             self.assertEqual(db.get_st_inventory_stock()["PART-1"], 7)
+
+    def test_commit_preserves_post_cutoff_consumption_and_second_commit_is_idempotent(self):
+        self._insert_snapshot(100)
+        self._insert_audit(100, 70, -30, "st_consume", "2026-06-30T09:00:00")
+        with TemporaryDirectory() as tmp:
+            path = self._make_genlin_file(tmp, physical_qty=80, book_qty=100)
+
+            first = commit_st_reconcile_stop_loss(path, "2026-06-29", source_filename="post-cutoff.xlsx")
+
+            self.assertEqual(first["summary"]["adjusted_count"], 1)
+            self.assertEqual(first["adjustments"][0]["adjust_qty"], -20)
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 50)
+
+            second = commit_st_reconcile_stop_loss(path, "2026-06-29", source_filename="post-cutoff.xlsx")
+
+            self.assertEqual(second["summary"]["adjusted_count"], 0)
+            self.assertEqual(second["adjustments"][0]["adjust_qty"], 0)
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 50)
 
 
 if __name__ == "__main__":

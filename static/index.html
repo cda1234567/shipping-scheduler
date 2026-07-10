@@ -369,6 +369,10 @@
           <div class="st-reconcile-form">
             <label class="db-backup-field st-reconcile-file-field">
               <span>盤點表</span>
+              <div class="st-reconcile-file-picker">
+                <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-file" type="button">選擇檔案</button>
+                <span id="st-reconcile-file-name" class="desktop-status-meta">尚未選擇檔案</span>
+              </div>
               <input type="file" id="st-reconcile-file" accept=".xlsx,.xls,.xlsm">
             </label>
             <label class="db-backup-field">
@@ -1014,7 +1018,8 @@ async function handleStReconcileCommit() {
   }
   const confirmed = confirm(
     `這會把已勾選的 ${partCount} 支料號 ST 庫存基準改成庚霖實盤 G 欄數字。\n\n` +
-    "F 與 G 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。要繼續嗎？"
+    "F 與 G 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。\n" +
+    "盤點日之後的扣帳與異動會保留，疊加在新基準上。要繼續嗎？"
   );
   if (!confirmed) return;
 
@@ -1037,6 +1042,15 @@ async function handleStReconcileCommit() {
 
 document.getElementById("btn-st-reconcile-preview")?.addEventListener("click", () => {
   void handleStReconcilePreview();
+});
+document.getElementById("btn-st-reconcile-file")?.addEventListener("click", event => {
+  event.preventDefault();
+  event.stopPropagation();
+  document.getElementById("st-reconcile-file")?.click();
+});
+document.getElementById("st-reconcile-file")?.addEventListener("change", e => {
+  const fileNameEl = document.getElementById("st-reconcile-file-name");
+  if (fileNameEl) fileNameEl.textContent = e.target.files?.[0]?.name || "尚未選擇檔案";
 });
 document.getElementById("btn-st-reconcile-commit")?.addEventListener("click", () => {
   void handleStReconcileCommit();

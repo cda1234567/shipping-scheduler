@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.10.9"
+APP_VERSION = "v2026.07.10.10"
 APP_RELEASED_AT = "2026-07-10"
 APP_HEADLINE = "盤點停損點上線，一鍵以加工廠實際數字重設基準"
 APP_CHANGELOG = [
+    {
+        "title": "盤點停損扣帳保留",
+        "items": [
+            "停損點改成只調整盤點日當下的差額，不會洗掉盤點日之後已經發生的扣帳或異動。",
+            "修正盤點對帳區選檔按鈕看不見的問題，亮色與深色模式都能正常選擇盤點表。",
+        ],
+    },
     {
         "title": "盤點停損可分批",
         "items": [

@@ -471,6 +471,18 @@ def commit_st_reconcile_stop_loss(
 
     cutoff_for_anchor = _normalize_cutoff_for_query(cutoff_date)
     current_stock = db.get_st_inventory_stock()
+    audit_delta_rows = db.get_st_inventory_audit_deltas(
+        "9999-12-31T23:59:59",
+        after_at=cutoff_for_anchor,
+        part_numbers=selected_parts or None,
+        exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
+    )
+    post_cutoff_delta_by_part: dict[str, float] = defaultdict(float)
+    for audit_row in audit_delta_rows:
+        audit_part = str(audit_row.get("part_number") or "").strip().upper()
+        if not audit_part:
+            continue
+        post_cutoff_delta_by_part[audit_part] += float(audit_row.get("delta") or 0)
     stock_updates: dict[str, float] = {}
     alignment_parts: list[dict] = []
     adjustments: list[dict] = []
@@ -485,11 +497,13 @@ def commit_st_reconcile_stop_loss(
             continue
         aligned_qty = float(row.get("physical_qty") or 0)
         current_qty = float(current_stock.get(part, 0.0))
-        adjust_qty = round(aligned_qty - current_qty, 6)
-        stock_updates[part] = aligned_qty
+        theoretical_qty = float(row.get("theoretical") or 0)
+        target_qty = round(aligned_qty + post_cutoff_delta_by_part.get(part, 0.0), 6)
+        adjust_qty = round(target_qty - current_qty, 6)
+        stock_updates[part] = target_qty
         alignment_parts.append({
             "part_number": part,
-            "theoretical_qty": float(row.get("theoretical") or 0),
+            "theoretical_qty": theoretical_qty,
             "physical_qty": aligned_qty,
             "diff": float(row.get("diff") or 0),
             "category": str(row.get("category") or ""),
