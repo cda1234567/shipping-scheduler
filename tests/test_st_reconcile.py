@@ -312,6 +312,30 @@ class StReconcileCommitTests(unittest.TestCase):
             self.assertEqual(second["adjustments"][0]["adjust_qty"], 0)
             self.assertEqual(db.get_st_inventory_stock()["PART-1"], 50)
 
+    def test_preview_lists_defective_parts_not_covered_by_stocktake(self):
+        self._insert_snapshot(10)
+        for part, qty, created in (
+            ("PART-1", 5, "2026-06-21T09:00:00"),
+            ("SELF-9", 12, "2026-06-22T09:00:00"),
+            ("SELF-9", 3, "2026-06-25T09:00:00"),
+            ("SELF-LATE", 4, "2026-07-05T09:00:00"),
+        ):
+            self.conn.execute(
+                "INSERT INTO defective_records(part_number, defective_qty, created_at) VALUES(?, ?, ?)",
+                (part, qty, created),
+            )
+
+        with TemporaryDirectory() as tmp:
+            path = self._make_genlin_file(tmp, physical_qty=7, book_qty=10)
+            preview = build_st_reconcile_preview(path, "2026-06-29")
+
+        uncovered = {item["part_number"]: item for item in preview["uncovered_parts"]}
+        self.assertNotIn("PART-1", uncovered)          # 檔內有的料不列
+        self.assertNotIn("SELF-LATE", uncovered)       # 截止點之後的不算本期
+        self.assertIn("SELF-9", uncovered)
+        self.assertEqual(uncovered["SELF-9"]["total_qty"], 15)
+        self.assertEqual(uncovered["SELF-9"]["record_count"], 2)
+
     def test_batch_cutoff_absorbs_own_batch_and_replays_only_later_batches(self):
         # 鎖死雙扣回歸：選批次 6-1 時，6-1 自己的消耗（audit 時間晚於 dispatched_at）
         # 必須落在盤點吸收側，只有 6-1 之後的批次被重放。

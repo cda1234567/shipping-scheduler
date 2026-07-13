@@ -38,6 +38,7 @@ GENLIN_ASSUMPTIONS = [
     "本試算讀取庚霖實際庫存格式：F 欄為我方帳面，G 欄為庚霖實盤。",
     "停損點模式只分「無差異」與「停損吸收」；F 與 G 的差額不再逐筆歸因。",
     "按下設為停損點後，系統會以庚霖實盤 G 欄重設每個料號的 ST 庫存基準，差額自動寫入調帳紀錄。",
+    "報告最後的「未被盤點覆蓋」清單＝這段期間有不良品/多打扣帳、但不在盤點檔裡的料號（多為自備料）——這些料的帳沒有被實盤驗證，僅供你判斷是否請加工廠一併盤點。",
 ]
 
 
@@ -364,6 +365,15 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
             "notes": notes,
         })
 
+    anchor = db.get_latest_st_reconcile_anchor(cutoff_for_query)
+    window_start = str(anchor.get("aligned_at") or "") if anchor else ""
+    covered_parts = set(combined)
+    uncovered_parts = [
+        item
+        for item in db.get_defective_part_totals(cutoff_for_query, after_at=window_start)
+        if item["part_number"] not in covered_parts
+    ]
+
     return {
         "format": "genlin",
         "mode": "stop_loss",
@@ -378,6 +388,8 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
                 row for row in rows if row["category"] == CATEGORY_GENLIN_BLANK_PHYSICAL
             ],
         },
+        "uncovered_parts": uncovered_parts,
+        "uncovered_window_start": window_start,
         "assumptions": GENLIN_ASSUMPTIONS,
     }
 

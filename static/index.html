@@ -888,6 +888,30 @@ function formatReconcileQty(value) {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
 
+function renderStReconcileUncovered(report) {
+  const items = report?.uncovered_parts || [];
+  if (!items.length) return "";
+  const windowStart = String(report?.uncovered_window_start || "").replace("T", " ").slice(0, 16);
+  const rows = items.map(item => `
+    <tr>
+      <td>${esc(item.part_number || "")}</td>
+      <td class="num">${formatReconcileQty(item.total_qty)}</td>
+      <td class="num">${esc(String(item.record_count || 0))}</td>
+      <td>${esc(String(item.last_at || "").replace("T", " ").slice(0, 16))}</td>
+    </tr>`).join("");
+  return `
+    <div class="st-reconcile-group-head" style="margin-top:14px">
+      <h4>⚠ 未被盤點覆蓋（${items.length} 支，多為自備料）</h4>
+      <span class="desktop-status-meta">${windowStart ? `自上次停損（${windowStart}）以來` : "本期間"}有不良品/多打扣帳、但不在這份盤點檔裡——這些料的帳沒有被實盤驗證。</span>
+    </div>
+    <div class="st-reconcile-table-wrap">
+      <table class="st-reconcile-table">
+        <thead><tr><th>料號</th><th>期間扣帳量</th><th>單數</th><th>最後一筆</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 function renderStReconcileAssumptions(items = []) {
   const el = document.getElementById("st-reconcile-assumptions");
   if (!el) return;
@@ -1009,6 +1033,7 @@ function renderStReconcilePreview(report) {
           <tbody>${rows || `<tr><td colspan="${isStopLoss ? 8 : 6}">沒有可試算的料號。</td></tr>`}</tbody>
         </table>
       </div>
+      ${renderStReconcileUncovered(report)}
     </div>`;
 
   if (commitRow) commitRow.style.display = isStopLoss && parts.length ? "flex" : "none";

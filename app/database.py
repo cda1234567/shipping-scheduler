@@ -1051,6 +1051,38 @@ def get_latest_st_reconcile_anchor(
     }
 
 
+def get_defective_part_totals(cutoff_at: str, after_at: str = "") -> list[dict]:
+    """統計時間窗內不良品/加工多打扣帳的料號彙總（盤點覆蓋盲區偵測用）。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return []
+    sql = """
+        SELECT UPPER(TRIM(part_number)) AS part_number,
+               SUM(defective_qty) AS total_qty,
+               COUNT(*) AS record_count,
+               MAX(created_at) AS last_at
+        FROM defective_records
+        WHERE created_at<=? AND TRIM(IFNULL(part_number,'')) <> ''
+    """
+    params: list[object] = [cutoff]
+    window_start = str(after_at or "").strip()
+    if window_start:
+        sql += " AND created_at>?"
+        params.append(window_start)
+    sql += " GROUP BY UPPER(TRIM(part_number)) ORDER BY SUM(defective_qty) DESC, part_number"
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "part_number": str(row["part_number"] or ""),
+            "total_qty": float(row["total_qty"] or 0),
+            "record_count": int(row["record_count"] or 0),
+            "last_at": str(row["last_at"] or ""),
+        }
+        for row in rows
+    ]
+
+
 def create_st_reconcile_alignment(
     *,
     aligned_at: str,
