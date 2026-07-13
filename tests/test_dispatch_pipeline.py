@@ -55,3 +55,26 @@ class DispatchPipelineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResetModeSupplementPrefillTests(unittest.TestCase):
+    def test_reset_mode_prefills_suggested_supplement_for_display(self):
+        from app.services.dispatch_pipeline import DispatchPlan
+        plan = DispatchPlan(main_path="", contexts=[], preview={})
+        plan.reset_stored = True
+        out = plan._normalize_preview_shortage({"supplement_qty": 0, "suggested_qty": 10000})
+        self.assertEqual(out["supplement_qty"], 10000)
+        self.assertEqual(out["default_supplement"], 10000)
+
+    def test_non_reset_mode_keeps_stored_supplement(self):
+        from app.services.dispatch_pipeline import DispatchPlan
+        plan = DispatchPlan(main_path="", contexts=[], preview={})
+        out = plan._normalize_preview_shortage({"supplement_qty": 0, "suggested_qty": 10000})
+        self.assertEqual(out.get("supplement_qty", 0), 0)
+
+    def test_reset_mode_respects_existing_positive_supplement(self):
+        from app.services.dispatch_pipeline import DispatchPlan
+        plan = DispatchPlan(main_path="", contexts=[], preview={})
+        plan.reset_stored = True
+        out = plan._normalize_preview_shortage({"supplement_qty": 375, "suggested_qty": 10000})
+        self.assertEqual(out["supplement_qty"], 375)

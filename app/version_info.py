@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.6"
+APP_VERSION = "v2026.07.13.7"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "修正工作區重算拖垮全站導致寫主檔一直失敗"
+APP_HEADLINE = "重算補料會自動帶入建議補料，不再顯示一片負數"
 APP_CHANGELOG = [
+    {
+        "title": "重算補料帶回建議值",
+        "items": [
+            "勾「重算補料」後，補料輸入框會自動帶入建議補料（照 MOQ 取整），畫面直接顯示補完後的結存，不再是一片負數等你手填。",
+            "已手填過的補料不會被建議值覆蓋；建議值只是預設，仍可自行修改。",
+        ],
+    },
     {
         "title": "寫主檔不再被工作區拖垮",
         "items": [

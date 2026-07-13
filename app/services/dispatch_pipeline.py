@@ -82,6 +82,7 @@ class DispatchPlan:
     preview: dict
     use_drafts: bool = False
     supplement_allocations: dict[int, dict[str, float]] | None = None
+    reset_stored: bool = False
 
     @property
     def order_ids(self) -> list[int]:
@@ -142,6 +143,13 @@ class DispatchPlan:
 
     def _normalize_preview_shortage(self, item: dict) -> dict:
         normalized = dict(item)
+        if self.reset_stored:
+            # 重算模式：舊補料已清空，把建議補料（MOQ 取整）帶進輸入預設值，
+            # 讓畫面直接顯示補完後的結存——與舊版 modal「乾淨 calc 預設值」行為一致。
+            suggested = float(normalized.get("suggested_qty") or 0)
+            if suggested > 0 and float(normalized.get("supplement_qty") or 0) <= 0:
+                normalized["supplement_qty"] = suggested
+                normalized["default_supplement"] = suggested
         normalized.setdefault("default_supplement", normalized.get("supplement_qty", 0))
         normalized.setdefault("lookahead_shortage_amount", normalized.get("shortage_amount", 0))
         normalized.setdefault("lookahead_suggested_qty", normalized.get("suggested_qty", 0))

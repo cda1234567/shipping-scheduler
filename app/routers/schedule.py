@@ -649,7 +649,7 @@ def _resolve_batch_dispatch_plan(
             ))
         use_drafts = False
 
-    return build_dispatch_plan(
+    plan = build_dispatch_plan(
         main_path,
         contexts,
         preview_builder=preview_order_batches,
@@ -658,6 +658,8 @@ def _resolve_batch_dispatch_plan(
         use_drafts=use_drafts,
         supplement_allocations=supplement_allocations,
     )
+    plan.reset_stored = bool(req.reset_stored)
+    return plan
 
 
 def _resolve_draft_commit_plan(draft_id: int, main_path: str):
