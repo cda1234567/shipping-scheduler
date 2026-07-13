@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.9"
+APP_VERSION = "v2026.07.13.10"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "算料依機種順序扣帳，同料號只在第一次缺料處補一次"
+APP_HEADLINE = "一般料只補一次，三類指定 IC 保留各機種補料"
 APP_CHANGELOG = [
+    {
+        "title": "三類 IC 保留機種別補料",
+        "items": [
+            "IC-STM、IC-XC2C32、IC-M24 會留在各自機種的訂單卡，各張訂單分開顯示、分開補料。",
+            "其他一般料仍照排程順序扣帳，同一料號只在第一次缺料的機種顯示一次補料欄位。",
+            "已手填的三類 IC 補料會依「訂單＋料號」保留，重算或修改 MOQ 後不會跨機種合併或消失。",
+        ],
+    },
     {
         "title": "取消共用料區，回到順序補料",
         "items": [

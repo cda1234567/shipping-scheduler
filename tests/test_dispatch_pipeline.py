@@ -98,6 +98,76 @@ if __name__ == "__main__":
 
 
 class ResetModeSupplementPrefillTests(unittest.TestCase):
+    def test_order_scoped_ic_parts_stay_on_each_order_with_own_suggestion(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+
+        contexts = [
+            DispatchContext(order={"id": 1, "code": "8-1", "model": "MODEL-A"}, groups=[], all_components=[]),
+            DispatchContext(order={"id": 2, "code": "8-2", "model": "MODEL-B"}, groups=[], all_components=[]),
+        ]
+        parts = ("IC-STM32F", "IC-XC2C32A", "IC-M24C02")
+        shortages = []
+        for index, part in enumerate(parts, start=1):
+            shortages.extend([
+                {
+                    "order_id": 1,
+                    "part_number": part,
+                    "shortage_amount": index * 100,
+                    "suggested_qty": index * 100,
+                },
+                {
+                    "order_id": 2,
+                    "part_number": part,
+                    "shortage_amount": index * 100 + 50,
+                    "suggested_qty": index * 100 + 50,
+                },
+            ])
+
+        plan = DispatchPlan(
+            main_path="",
+            contexts=contexts,
+            preview={"shortages": shortages, "batches": []},
+            reset_stored=True,
+        )
+        scopes = plan.to_preview_response()["scopes"]
+
+        self.assertEqual(len(scopes[0]["shortages"]), 3)
+        self.assertEqual(len(scopes[1]["shortages"]), 3)
+        first_order = {item["part_number"]: item for item in scopes[0]["shortages"]}
+        second_order = {item["part_number"]: item for item in scopes[1]["shortages"]}
+        for index, part in enumerate(parts, start=1):
+            self.assertEqual(first_order[part]["supplement_qty"], index * 100)
+            self.assertEqual(second_order[part]["supplement_qty"], index * 100 + 50)
+
+    def test_fully_supplemented_order_scoped_part_keeps_each_order_editor(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+
+        contexts = [
+            DispatchContext(order={"id": 1, "code": "8-1", "model": "MODEL-A"}, groups=[], all_components=[]),
+            DispatchContext(order={"id": 2, "code": "8-2", "model": "MODEL-B"}, groups=[], all_components=[]),
+        ]
+        preview = {
+            "shortages": [],
+            "batches": [
+                {"order_id": 1, "model": "MODEL-A", "groups": [{"batch_code": "8-1", "rows": [{
+                    "part_number": "IC-M24C02", "current_stock": 0, "needed_qty": 200,
+                    "shortage_amount": 0, "supplement_qty": 200, "j_value": 0,
+                }]}]},
+                {"order_id": 2, "model": "MODEL-B", "groups": [{"batch_code": "8-2", "rows": [{
+                    "part_number": "IC-M24C02", "current_stock": 0, "needed_qty": 300,
+                    "shortage_amount": 0, "supplement_qty": 300, "j_value": 0,
+                }]}]},
+            ],
+        }
+
+        plan = DispatchPlan(main_path="", contexts=contexts, preview=preview)
+        scopes = plan.to_preview_response()["scopes"]
+
+        self.assertEqual(scopes[0]["shortages"][0]["supplement_qty"], 200)
+        self.assertEqual(scopes[0]["shortages"][0]["model"], "MODEL-A")
+        self.assertEqual(scopes[1]["shortages"][0]["supplement_qty"], 300)
+        self.assertEqual(scopes[1]["shortages"][0]["model"], "MODEL-B")
+
     def test_reset_mode_prefills_total_suggestion_only_on_first_shortage_order(self):
         from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
         contexts = [

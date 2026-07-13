@@ -17,6 +17,7 @@ from .shortage_rules import (
     filter_main_write_blocking_shortages,
     get_shortage_resulting_stock,
     is_ec_part,
+    is_order_scoped_shortage_part,
 )
 from .merge_drafts import (
     _ensure_editable_bom_for_draft,
@@ -147,6 +148,12 @@ class DispatchPlan:
 
     def _normalize_preview_shortage(self, item: dict) -> dict:
         normalized = dict(item)
+        if self.reset_stored and is_order_scoped_shortage_part(normalized.get("part_number", "")):
+            # 這三類 IC 必須留在各自訂單，因此重算時只帶入該訂單自己的建議量。
+            suggested = float(normalized.get("suggested_qty") or 0)
+            if suggested > 0 and float(normalized.get("supplement_qty") or 0) <= 0:
+                normalized["supplement_qty"] = suggested
+                normalized["default_supplement"] = suggested
         normalized.setdefault("default_supplement", normalized.get("supplement_qty", 0))
         normalized.setdefault("lookahead_shortage_amount", normalized.get("shortage_amount", 0))
         normalized.setdefault("lookahead_suggested_qty", normalized.get("suggested_qty", 0))
@@ -160,17 +167,18 @@ class DispatchPlan:
         return normalized
 
     def _keep_first_shortage_per_part(self, scopes: list[dict]) -> list[dict]:
-        """同料號依訂單順序只在第一次缺料處顯示一次。
+        """一般料依訂單順序只在第一次缺料處顯示一次。
 
         預覽引擎仍逐筆 running balance；這裡只收斂畫面列。第一筆會帶上
         後續整串的最大缺口與建議量，讓使用者在第一次缺料的機種一次補足。
+        IC-STM / IC-XC2C32 / IC-M24 則維持訂單別，不參與此收斂。
         """
         rollups: dict[str, dict] = {}
         for scope in scopes:
             order_id = int(scope.get("order_id") or 0)
             for item in scope.get("shortages") or []:
                 part = str(item.get("part_number") or "").strip().upper()
-                if not part:
+                if not part or is_order_scoped_shortage_part(part):
                     continue
                 current = rollups.setdefault(part, {
                     "lookahead_shortage_amount": 0.0,
@@ -227,10 +235,35 @@ class DispatchPlan:
         for scope in scopes:
             for item in scope.get("shortages") or []:
                 part = str(item.get("part_number") or "").strip().upper()
-                if part:
+                if part and not is_order_scoped_shortage_part(part):
                     first_shortages.setdefault(part, dict(item))
         for scope in scopes:
-            scope["shortages"] = []
+            # 訂單專屬 IC 留在原機種；只有一般料會在下面重新收斂到第一次缺料。
+            scope["shortages"] = [
+                dict(item)
+                for item in (scope.get("shortages") or [])
+                if is_order_scoped_shortage_part(item.get("part_number", ""))
+            ]
+
+        # 若某張訂單的專屬 IC 已被補足，預覽引擎不再回傳 shortage；仍把保存的
+        # 補料列放回原訂單，避免重算或改 MOQ 後手填欄位從畫面消失。
+        for order_id, occurrences in self._build_order_scoped_supplement_owners().items():
+            target_scope = scope_by_order.get(order_id)
+            if target_scope is None:
+                continue
+            existing_parts = {
+                str(item.get("part_number") or "").strip().upper()
+                for item in target_scope.get("shortages") or []
+            }
+            for part, occurrence in occurrences.items():
+                if part in existing_parts:
+                    continue
+                stored_qty = float(occurrence.get("supplement_qty") or 0)
+                item = self._normalize_preview_shortage(dict(occurrence.get("item") or {}))
+                item["supplement_qty"] = stored_qty
+                item["default_supplement"] = stored_qty
+                target_scope["shortages"].append(item)
+                existing_parts.add(part)
 
         candidate_parts = list(rollups)
         for part, occurrence in supplement_owners.items():
@@ -286,7 +319,11 @@ class DispatchPlan:
                     part = str(row.get("part_number") or "").strip().upper()
                     row_supplement = float(row.get("supplement_qty") or 0)
                     row_decision = str(row.get("decision") or "None")
-                    if not part or (row_supplement <= 0 and row_decision != "Shortage"):
+                    if (
+                        not part
+                        or is_order_scoped_shortage_part(part)
+                        or (row_supplement <= 0 and row_decision != "Shortage")
+                    ):
                         continue
                     occurrence = occurrences.get(part)
                     if occurrence is None:
@@ -323,6 +360,65 @@ class DispatchPlan:
                         }
                         occurrences[part] = occurrence
                     occurrence["supplement_qty"] += float(row.get("supplement_qty") or 0)
+                    if row_decision == "Shortage":
+                        occurrence["decision"] = "Shortage"
+                        occurrence["item"]["decision"] = "Shortage"
+        return occurrences
+
+    def _build_order_scoped_supplement_owners(self) -> dict[int, dict[str, dict]]:
+        """保留訂單專屬 IC 在各訂單目前保存的補料／缺料決策。"""
+        occurrences: dict[int, dict[str, dict]] = {}
+        context_by_order = {context.order_id: context for context in self.contexts}
+        for batch in self.preview.get("batches") or []:
+            order_id = int(batch.get("order_id") or 0)
+            context = context_by_order.get(order_id)
+            order = context.order if context else {}
+            for group in batch.get("groups") or []:
+                for row in group.get("rows") or []:
+                    part = str(row.get("part_number") or "").strip().upper()
+                    row_supplement = float(row.get("supplement_qty") or 0)
+                    row_decision = str(row.get("decision") or "None")
+                    if (
+                        not is_order_scoped_shortage_part(part)
+                        or (row_supplement <= 0 and row_decision != "Shortage")
+                    ):
+                        continue
+
+                    by_part = occurrences.setdefault(order_id, {})
+                    occurrence = by_part.get(part)
+                    if occurrence is None:
+                        current_stock = float(row.get("current_stock") or 0)
+                        prev_qty_cs = float(row.get("prev_qty_cs") or 0)
+                        needed = float(row.get("needed_qty_raw") or row.get("needed_qty") or 0)
+                        occurrence = {
+                            "supplement_qty": 0.0,
+                            "decision": row_decision,
+                            "item": {
+                                "order_id": order_id,
+                                "batch_code": str(group.get("batch_code") or order.get("code") or ""),
+                                "po_number": str(group.get("po_number") or order.get("po_number") or ""),
+                                "model": str(batch.get("model") or order.get("model") or ""),
+                                "bom_model": str(group.get("bom_model") or ""),
+                                "part_number": part,
+                                "description": str(row.get("description") or ""),
+                                "current_stock": current_stock,
+                                "prev_qty_cs": prev_qty_cs,
+                                "needed": needed,
+                                "shortage_amount": float(row.get("shortage_amount") or 0),
+                                "moq": float(row.get("moq") or 0),
+                                "supplement_qty": row_supplement,
+                                "decision": row_decision,
+                                "resulting_stock": float(row.get("j_value") or 0),
+                                "suggested_qty": 0.0,
+                                "purchase_suggested_qty": 0.0,
+                                "st_stock_qty": float(row.get("st_stock_qty") or 0),
+                                "st_available_qty": 0.0,
+                                "purchase_needed_qty": 0.0,
+                                "needs_purchase": False,
+                            },
+                        }
+                        by_part[part] = occurrence
+                    occurrence["supplement_qty"] += row_supplement
                     if row_decision == "Shortage":
                         occurrence["decision"] = "Shortage"
                         occurrence["item"]["decision"] = "Shortage"
