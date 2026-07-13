@@ -3217,10 +3217,11 @@ function renderModalCalcPreview(preview, { focusState = null } = {}) {
   } else {
     for (const rawScope of scopes) {
       const scope = normalizePreviewScope(rawScope);
-      const items = (rawScope.shortages || [])
+      const allItems = (rawScope.shortages || [])
         .map(item => normalizePreviewShortageItem(item, rawScope))
-        .filter(item => !sharedPartKeys.has(normalizePartKey(item.part_number)))
         .sort(compareShortageItems);
+      const items = allItems.filter(item => !sharedPartKeys.has(normalizePartKey(item.part_number)));
+      const sharedItems = allItems.filter(item => sharedPartKeys.has(normalizePartKey(item.part_number)));
       const csItems = items.filter(item => Boolean(item.is_customer_material));
       const purchaseItems = items.filter(item => !item.is_customer_material);
       html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
@@ -3236,8 +3237,18 @@ function renderModalCalcPreview(preview, { focusState = null } = {}) {
         html += `<h4 style="font-size:12px;color:#dc2626;margin:4px 0">${_modalMode === "write" ? "寫入主檔後仍缺料" : "訂單專屬缺料"}</h4>`;
         html += purchaseItems.map(item => modalShortageItem(item, false)).join("");
       }
-      if (!csItems.length && !purchaseItems.length) {
-        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無訂單專屬缺料</div>';
+      if (sharedItems.length) {
+        html += '<h4 style="font-size:12px;color:#8e8e93;margin:6px 0 4px">共用缺料（補料請在最上方共用料區填一次，會自動分配）</h4>';
+        html += sharedItems.map(item => `
+          <div style="display:flex;gap:12px;align-items:baseline;font-size:12px;color:#6b7280;padding:2px 6px">
+            <span style="font-family:monospace;min-width:160px">${esc(item.part_number)}</span>
+            <span>缺 ${fmt(item.shortage_amount || 0)}</span>
+            <span>需 ${fmt(item.needed || 0)}</span>
+            <span style="color:#9ca3af">${esc(item.description || "")}</span>
+          </div>`).join("");
+      }
+      if (!csItems.length && !purchaseItems.length && !sharedItems.length) {
+        html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
       }
       html += "</section>";
     }
@@ -4041,21 +4052,22 @@ function setModalDownloadProgress(active, statusText = "", detailText = "", perc
   if (percentLabel && config.tone === "error") percentLabel.textContent = "失敗";
   if (percentLabel && config.tone === "success") percentLabel.textContent = "完成";
 
+  const buttonsBusy = active && config.tone !== "error" && config.tone !== "success";
   if (saveBtn) {
     if (!saveBtn.dataset.idleText) saveBtn.dataset.idleText = saveBtn.textContent || "儲存";
     if (!saveBtn.dataset.busyText) saveBtn.dataset.busyText = "儲存中...";
     saveBtn.disabled = Boolean(config.lockUi);
-    saveBtn.textContent = active ? saveBtn.dataset.busyText : saveBtn.dataset.idleText;
+    saveBtn.textContent = buttonsBusy ? saveBtn.dataset.busyText : saveBtn.dataset.idleText;
   }
   if (downloadBtn) {
     if (!downloadBtn.dataset.idleText) downloadBtn.dataset.idleText = downloadBtn.textContent || "下載";
     if (!downloadBtn.dataset.busyText) downloadBtn.dataset.busyText = "下載中...";
     downloadBtn.disabled = Boolean(config.lockUi);
-    downloadBtn.textContent = active ? downloadBtn.dataset.busyText : downloadBtn.dataset.idleText;
+    downloadBtn.textContent = buttonsBusy ? downloadBtn.dataset.busyText : downloadBtn.dataset.idleText;
   }
   if (writeBtn) {
     writeBtn.disabled = Boolean(config.lockUi);
-    writeBtn.textContent = active ? "寫入中..." : "寫入主檔";
+    writeBtn.textContent = buttonsBusy ? "寫入中..." : "寫入主檔";
   }
   if (!active) {
     stopModalProgressAnimation();

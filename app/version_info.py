@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.3"
+APP_VERSION = "v2026.07.13.4"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "批次 Merge 等待期間顯示進度"
+APP_HEADLINE = "訂單卡列回共用缺料，失敗後按鈕不再卡住"
 APP_CHANGELOG = [
+    {
+        "title": "訂單卡列回要補的料",
+        "items": [
+            "算料工作區每張訂單卡會列出這張單用到的共用缺料（缺多少、需多少），不再只顯示「此單無訂單專屬缺料」。",
+            "共用料的補料仍在最上方共用料區填一次、自動分配到各訂單，訂單卡上的清單是唯讀參考。",
+            "寫入或儲存失敗後，按鈕會恢復可按狀態，不再卡在「儲存中／下載中」。",
+        ],
+    },
     {
         "title": "批次 Merge 不再空白等待",
         "items": [
