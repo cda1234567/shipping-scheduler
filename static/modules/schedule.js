@@ -4567,12 +4567,24 @@ function flattenWipedDefectives(wipedDefectives) {
 function buildWipedDefectivesWarning(wipedDefectives) {
   const rows = flattenWipedDefectives(wipedDefectives);
   if (!rows.length) return "";
-  const lines = rows.map((item, index) => {
+  const byDate = new Map();
+  for (const item of rows) {
     const date = item.importedAt ? item.importedAt.slice(0, 10) : "時間未知";
-    const type = item.actionTaken === "加工多打扣帳" ? "加工多打" : "不良品";
-    return `${index + 1}. ${item.partNumber} × ${fmt(item.defectiveQty)}（${date} 匯入，${type}）`;
+    const group = byDate.get(date) || { total: 0, defective: 0, overrun: 0, qty: 0 };
+    group.total += 1;
+    group.qty += item.defectiveQty;
+    if (item.actionTaken === "加工多打扣帳") group.overrun += 1;
+    else group.defective += 1;
+    byDate.set(date, group);
+  }
+  const lines = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, group]) => {
+    const kinds = [
+      group.defective ? `不良品 ${group.defective} 筆` : "",
+      group.overrun ? `加工多打 ${group.overrun} 筆` : "",
+    ].filter(Boolean).join("、");
+    return `・${date} 匯入：${group.total} 筆（${kinds}，合計 ${fmt(group.qty)} pcs）`;
   });
-  return `\n\n⚠ 這次退回會沖掉以下不良品/加工多打扣帳，共 ${rows.length} 筆：\n${lines.join("\n")}`;
+  return `\n\n⚠ 這次退回會沖掉這些日期匯入的不良品/加工多打扣帳，共 ${rows.length} 筆：\n${lines.join("\n")}\n（退回後可用「補回」按鈕一鍵補回）`;
 }
 
 async function replayDefectivesAfterRollback(cutoff, expectedCount, actionButton = null) {

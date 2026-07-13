@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.1"
+APP_VERSION = "v2026.07.13.2"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "盤點試算會列出沒被盤到的自備料"
+APP_HEADLINE = "退回警告改為按日期彙總"
 APP_CHANGELOG = [
+    {
+        "title": "退回警告不再洗版",
+        "items": [
+            "強制退回的確認視窗改成按匯入日期彙總（例如「7/3 匯入：28 筆，合計 103 pcs」），不再逐筆列出料號。",
+            "總筆數照樣顯示，退回後仍可一鍵補回。",
+        ],
+    },
     {
         "title": "未被盤點覆蓋清單",
         "items": [
