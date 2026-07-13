@@ -5,6 +5,8 @@
                                     ↘ cancelled
 """
 from __future__ import annotations
+import hashlib
+import json
 import logging
 import shutil
 import threading
@@ -1039,15 +1041,78 @@ async def preview_main_write(req: BatchDispatchRequest):
     return plan.to_preview_response()
 
 
+_CALC_PREVIEW_CACHE: dict[str, tuple[float, dict]] = {}
+_CALC_PREVIEW_CACHE_LOCK = threading.Lock()
+_CALC_PREVIEW_CACHE_TTL_SECONDS = 10.0
+_CALC_PREVIEW_CACHE_MAX_ENTRIES = 32
+
+
+def _calc_preview_cache_key(req: BatchDispatchRequest, order_ids: list[int], main_path: str) -> str:
+    try:
+        main_mtime = Path(main_path).stat().st_mtime_ns
+    except OSError:
+        main_mtime = 0
+    drafts_version = db.get_setting("merge_drafts_version") or db.get_latest_merge_draft_updated_at()
+    payload = json.dumps(
+        {
+            "order_ids": order_ids,
+            "decisions": req.decisions,
+            "supplements": req.supplements,
+            "order_decisions": req.order_decisions,
+            "order_supplements": req.order_supplements,
+            "sample_order_ids": sorted(req.sample_order_ids or []),
+            "reset_stored": bool(req.reset_stored),
+            "main_mtime": main_mtime,
+            "drafts_version": str(drafts_version or ""),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _get_cached_calc_preview(cache_key: str) -> dict | None:
+    now = time.monotonic()
+    with _CALC_PREVIEW_CACHE_LOCK:
+        entry = _CALC_PREVIEW_CACHE.get(cache_key)
+        if entry and entry[0] > now:
+            return entry[1]
+        if entry:
+            _CALC_PREVIEW_CACHE.pop(cache_key, None)
+    return None
+
+
+def _store_cached_calc_preview(cache_key: str, response: dict) -> None:
+    now = time.monotonic()
+    with _CALC_PREVIEW_CACHE_LOCK:
+        if len(_CALC_PREVIEW_CACHE) >= _CALC_PREVIEW_CACHE_MAX_ENTRIES:
+            expired = [key for key, (expiry, _) in _CALC_PREVIEW_CACHE.items() if expiry <= now]
+            for key in expired:
+                _CALC_PREVIEW_CACHE.pop(key, None)
+            while len(_CALC_PREVIEW_CACHE) >= _CALC_PREVIEW_CACHE_MAX_ENTRIES:
+                _CALC_PREVIEW_CACHE.pop(next(iter(_CALC_PREVIEW_CACHE)), None)
+        _CALC_PREVIEW_CACHE[cache_key] = (now + _CALC_PREVIEW_CACHE_TTL_SECONDS, response)
+
+
 @router.post("/schedule/calc-preview")
-async def calc_preview(req: BatchDispatchRequest):
+def calc_preview(req: BatchDispatchRequest):
+    # 必須是 sync def（FastAPI 會丟 threadpool）：先前是 async def 直接做重計算，
+    # 一個 preview 就凍住整個 event loop，工作區連打幾個字全站請求（含寫主檔）跟著逾時。
     normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請先選擇要計算的訂單")
 
     main_path = _require_existing_main_path()
+    cache_key = _calc_preview_cache_key(req, normalized_order_ids, main_path)
+    cached = _get_cached_calc_preview(cache_key)
+    if cached is not None:
+        return cached
+
     plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
-    return plan.to_preview_response()
+    response = plan.to_preview_response()
+    _store_cached_calc_preview(cache_key, response)
+    return response
 
 
 @router.post("/schedule/batch-dispatch")

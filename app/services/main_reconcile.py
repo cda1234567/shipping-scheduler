@@ -52,7 +52,19 @@ def _mismatch(part_number: str, kind: str, column: str, expected, actual) -> dic
     }
 
 
+def _dedupe_plan_rows(plan_rows: list[dict]) -> list[dict]:
+    """同一張單的 BOM 若同料號出現多筆，寫入端會逐筆覆寫同一組欄位、
+    結存累積扣到最後一筆為止——所以核對只能拿「最後一筆」的期望值比對，
+    否則會對正確的寫入誤報（EC-10029A / EC-10335A 案例）。"""
+    deduped: dict[tuple, dict] = {}
+    for plan_row in plan_rows or []:
+        key = (plan_row.get("row_idx"), plan_row.get("col_j"))
+        deduped[key] = plan_row
+    return list(deduped.values())
+
+
 def verify_main_write(main_path: str, plan_rows: list[dict]) -> dict:
+    plan_rows = _dedupe_plan_rows(plan_rows)
     mismatches: list[dict] = []
     expected_stock_by_part: dict[str, float] = {}
 

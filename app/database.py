@@ -1051,6 +1051,13 @@ def get_latest_st_reconcile_anchor(
     }
 
 
+def get_latest_merge_draft_updated_at() -> str:
+    """最近一次副檔異動時間（calc-preview 快取失效判斷用）。"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT MAX(updated_at) AS latest FROM merge_drafts").fetchone()
+    return str(row["latest"] or "") if row else ""
+
+
 def get_defective_part_totals(cutoff_at: str, after_at: str = "") -> list[dict]:
     """統計時間窗內不良品/加工多打扣帳的料號彙總（盤點覆蓋盲區偵測用）。"""
     cutoff = str(cutoff_at or "").strip()

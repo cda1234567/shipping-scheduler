@@ -396,7 +396,7 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("_modalPreviewDebounceTimer = setTimeout(() => {", schedule_module)
         self.assertIn("_modalPreviewDebounceTimer = null;", schedule_module)
         self.assertIn("void run();", schedule_module)
-        self.assertIn("}, 250);", schedule_module)
+        self.assertIn("}, 600);", schedule_module)
         self.assertIn("if (_modalPreviewAbortController) _modalPreviewAbortController.abort();", schedule_module)
         self.assertNotIn("buildRawModalShortageGroups", schedule_module)
         self.assertIn("syncDraftPartControls(list, partKey, {", schedule_module)

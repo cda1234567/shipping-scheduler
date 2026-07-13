@@ -3125,7 +3125,7 @@ async function refreshModalCalcPreview({ immediate = false, resetStored = _modal
   _modalPreviewDebounceTimer = setTimeout(() => {
     _modalPreviewDebounceTimer = null;
     void run();
-  }, 250);
+  }, 600);
 }
 
 function normalizePreviewScope(scope = {}) {

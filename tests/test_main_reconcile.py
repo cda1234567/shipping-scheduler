@@ -156,3 +156,18 @@ class MainReconcileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicatePartPlanRowTests(unittest.TestCase):
+    def test_verify_uses_last_plan_row_for_same_cells(self):
+        # EC-10029A 迴歸：同一張單 BOM 內同料號兩筆 → 寫入端逐筆覆寫同一組欄位、
+        # 結存扣到最後一筆；核對必須拿最後一筆的期望值，不可拿第一筆誤報。
+        from app.services.main_reconcile import _dedupe_plan_rows
+        first = {"part_number": "EC-10029A", "row_idx": 11, "col_h": 355, "col_f": 356, "col_j": 357,
+                 "effective_h": 0, "f_value": 121, "j_value": 6754, "current_stock": 6875}
+        second = {"part_number": "EC-10029A", "row_idx": 11, "col_h": 355, "col_f": 356, "col_j": 357,
+                  "effective_h": 0, "f_value": 1026, "j_value": 5728, "current_stock": 6875}
+        deduped = _dedupe_plan_rows([first, second])
+        self.assertEqual(len(deduped), 1)
+        self.assertEqual(deduped[0]["f_value"], 1026)
+        self.assertEqual(deduped[0]["j_value"], 5728)
