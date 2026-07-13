@@ -3284,47 +3284,18 @@ function normalizePreviewShortageItem(item = {}, scope = {}) {
   };
 }
 
-function renderSharedPreviewParts(sharedParts = []) {
-  const items = (sharedParts || [])
-    .map(item => ({
-      ...item,
-      _row_code: (item.batch_codes || []).join("、"),
-      _row_model: "共用料",
-      _row_group_label: "共用料",
-      _row_group_key: "shared",
-      _order_id: undefined,
-      _lookahead_shortage_amount: item.lookahead_shortage_amount ?? item.shortage_amount,
-      _lookahead_suggested_qty: item.lookahead_suggested_qty ?? item.suggested_qty,
-      _lookahead_st_available_qty: item.lookahead_st_available_qty ?? item.st_available_qty,
-      _lookahead_purchase_needed_qty: item.lookahead_purchase_needed_qty ?? item.purchase_needed_qty,
-      _lookahead_purchase_suggested_qty: item.lookahead_purchase_suggested_qty ?? item.purchase_suggested_qty,
-    }))
-    .filter(item => Number(item.shortage_amount || 0) > 0 || Number(item.supplement_qty || item.default_supplement || 0) > 0 || item.decision === "Shortage")
-    .sort(compareShortageItems);
-
-  if (!items.length) return "";
-  return `<section class="modal-shortage-section" data-fixed-scope="1" data-search="共用料 ${esc(items.map(item => item.part_number).join(" "))}">
-    ${shortageGroupHeadingHtml("共用料（整批只補一次）", "")}
-    <h4 style="font-size:12px;color:#dc2626;margin:4px 0">採購缺料</h4>
-    ${items.map(item => modalShortageItem(item, Boolean(item.is_customer_material))).join("")}
-  </section>`;
-}
-
 function renderModalCalcPreview(preview, { focusState = null } = {}) {
   const list = document.getElementById("modal-shortage-list");
   if (!list) return;
 
   _modalPreviewShortages = preview?.shortages || [];
   const scopes = Array.isArray(preview?.scopes) ? preview.scopes : [];
-  const sharedPartKeys = new Set((preview?.shared_parts || []).map(item => normalizePartKey(item?.part_number)).filter(Boolean));
   let html = "";
 
   if (_modalMode === "write" && Number(preview?.blocking_count || 0) > 0) {
     html += `<div style="padding:10px 14px;margin-bottom:8px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#dc2626;font-weight:600;font-size:13px">
       寫入後將有 ${Number(preview.blocking_count || 0)} 筆料號缺料，需補料或保留缺料</div>`;
   }
-
-  html += renderSharedPreviewParts(preview?.shared_parts || []);
 
   if (!scopes.length && !html) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">目前沒有可顯示的缺料。</div>`;
@@ -3334,10 +3305,8 @@ function renderModalCalcPreview(preview, { focusState = null } = {}) {
       const allItems = (rawScope.shortages || [])
         .map(item => normalizePreviewShortageItem(item, rawScope))
         .sort(compareShortageItems);
-      const items = allItems.filter(item => !sharedPartKeys.has(normalizePartKey(item.part_number)));
-      const sharedItems = allItems.filter(item => sharedPartKeys.has(normalizePartKey(item.part_number)));
-      const csItems = items.filter(item => Boolean(item.is_customer_material));
-      const purchaseItems = items.filter(item => !item.is_customer_material);
+      const csItems = allItems.filter(item => Boolean(item.is_customer_material));
+      const purchaseItems = allItems.filter(item => !item.is_customer_material);
       html += `<section class="modal-shortage-section" data-fixed-scope="1" data-search="${esc([scope.label, scope.po_number || ""].join(" "))}">`;
       html += shortageGroupHeadingHtml(scope.label, scope.po_number, {
         sampleControlHtml: sampleOrderCheckboxHtml(scope, scope.is_sample),
@@ -3348,27 +3317,17 @@ function renderModalCalcPreview(preview, { focusState = null } = {}) {
         html += "</div>";
       }
       if (purchaseItems.length) {
-        html += `<h4 style="font-size:12px;color:#dc2626;margin:4px 0">${_modalMode === "write" ? "寫入主檔後仍缺料" : "訂單專屬缺料"}</h4>`;
+        html += `<h4 style="font-size:12px;color:#dc2626;margin:4px 0">${_modalMode === "write" ? "寫入主檔後仍缺料" : "採購缺料"}</h4>`;
         html += purchaseItems.map(item => modalShortageItem(item, false)).join("");
       }
-      if (sharedItems.length) {
-        html += '<h4 style="font-size:12px;color:#8e8e93;margin:6px 0 4px">共用缺料（補料請在最上方共用料區填一次，會自動分配）</h4>';
-        html += sharedItems.map(item => `
-          <div style="display:flex;gap:12px;align-items:baseline;font-size:12px;color:#6b7280;padding:2px 6px">
-            <span style="font-family:monospace;min-width:160px">${esc(item.part_number)}</span>
-            <span>缺 ${fmt(item.shortage_amount || 0)}</span>
-            <span>需 ${fmt(item.needed || 0)}</span>
-            <span style="color:#9ca3af">${esc(item.description || "")}</span>
-          </div>`).join("");
-      }
-      if (!csItems.length && !purchaseItems.length && !sharedItems.length) {
+      if (!csItems.length && !purchaseItems.length) {
         html += '<div style="font-size:12px;color:#16a34a;font-weight:600;padding:6px 2px">此單無缺料</div>';
       }
       html += "</section>";
     }
   }
 
-  if (!preview?.shared_parts?.length && scopes.every(scope => !(scope.shortages || []).length)) {
+  if (scopes.every(scope => !(scope.shortages || []).length)) {
     html = `<div style="text-align:center;padding:24px;color:#16a34a;font-weight:600">
       ${_modalMode === "write" ? "模擬寫入主檔後沒有剩餘缺料，可以直接寫入主檔。" : "全部 OK，無缺料！"}</div>`;
   }
@@ -3975,8 +3934,8 @@ function _collectModalDecisions() {
 
   list.querySelectorAll(".supplement-input").forEach(input => {
     if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
-    const { part } = _getModalRowMeta(input);
-    if (!part || isOrderScopedPart(part)) return;
+    const { orderId, part } = _getModalRowMeta(input);
+    if (!part || Number.isInteger(orderId)) return;
 
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked
@@ -4002,8 +3961,7 @@ function _collectModalSupplements() {
   list.querySelectorAll(".supplement-input").forEach(input => {
     if (input.closest(".shortage-item")?.dataset.flowHidden === "1") return;
     const { orderId, part } = _getModalRowMeta(input);
-    if (!part) return;
-    if (isOrderScopedPart(part) && Number.isInteger(orderId)) return;
+    if (!part || Number.isInteger(orderId)) return;
 
     const qty = parseFloat(input.value) || 0;
     const isShortage = input.closest(".draft-preview-row, .shortage-item")?.querySelector(".shortage-mark")?.checked

@@ -780,11 +780,17 @@ def _summarize_negative_shortages(shortages: list[dict]) -> list[dict]:
             "part_number": part,
             "description": str(item.get("description") or ""),
             "resulting_stock": resulting_stock,
-            "shortage_amount": 0.0,
+            "shortage_amount": float(item.get("shortage_amount") or 0),
+            "order_id": item.get("order_id"),
+            "batch_code": str(item.get("batch_code") or ""),
+            "model": str(item.get("model") or item.get("bom_model") or ""),
+            "bom_model": str(item.get("bom_model") or ""),
+            "po_number": str(item.get("po_number") or ""),
             "order_ids": [],
         })
-        current["resulting_stock"] = min(float(current["resulting_stock"]), resulting_stock)
-        current["shortage_amount"] += float(item.get("shortage_amount") or 0)
+        if resulting_stock < float(current["resulting_stock"]):
+            current["resulting_stock"] = resulting_stock
+            current["shortage_amount"] = float(item.get("shortage_amount") or 0)
         order_id = item.get("order_id")
         if order_id is not None and order_id not in current["order_ids"]:
             current["order_ids"].append(order_id)

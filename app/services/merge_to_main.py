@@ -369,6 +369,8 @@ def _build_preview_for_batches(
                     "f_value": f_value,
                     "j_value": _round_away(ending_stock),
                     "shortage_amount": shortage_after,
+                    "moq": _component_moq(part_upper, comp, effective_moq),
+                    "st_stock_qty": float((st_inventory_stock or {}).get(part_upper, 0.0)),
                     "col_h": col_h,
                     "col_f": col_f,
                     "col_j": col_j,

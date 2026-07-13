@@ -1258,7 +1258,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertNotEqual(first, second)
 
-    def test_calc_preview_scopes_include_batch_code_and_shared_parts_one_row(self):
+    def test_calc_preview_scopes_put_repeated_part_only_on_first_shortage_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
             main_path.write_bytes(b"main")
@@ -1321,14 +1321,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual([scope["batch_code"] for scope in data["scopes"]], ["8-1", "8-2"])
-        self.assertEqual(len(data["shared_parts"]), 1)
-        shared = data["shared_parts"][0]
-        self.assertEqual(shared["part_number"], "EC-30009A")
-        self.assertEqual(shared["order_ids"], [1, 2])
-        self.assertEqual(shared["batch_codes"], ["8-1", "8-2"])
-        self.assertEqual(shared["needed"], 5000.0)
-        self.assertEqual(shared["shortage_amount"], 5070.0)
-        self.assertEqual(shared["lookahead_suggested_qty"], 6000.0)
+        self.assertEqual(data["shared_parts"], [])
+        self.assertEqual(len(data["scopes"][0]["shortages"]), 1)
+        self.assertEqual(data["scopes"][1]["shortages"], [])
+        first = data["scopes"][0]["shortages"][0]
+        self.assertEqual(first["part_number"], "EC-30009A")
+        self.assertEqual(first["order_ids"], [1, 2])
+        self.assertEqual(first["batch_codes"], ["8-1", "8-2"])
+        self.assertEqual(first["shortage_amount"], 70.0)
+        self.assertEqual(first["lookahead_shortage_amount"], 5070.0)
+        self.assertEqual(first["lookahead_suggested_qty"], 6000.0)
 
     def test_calc_preview_sample_order_ids_marks_scope_and_zeroes_ec_gap(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1359,6 +1361,36 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(normal.json()["shortages"][0]["shortage_amount"], 51.0)
         self.assertEqual(sample.json()["shortages"], [])
         self.assertTrue(sample.json()["scopes"][0]["is_sample"])
+
+    def test_negative_shortage_summary_keeps_first_order_label_and_final_gap(self):
+        summary = schedule_router._summarize_negative_shortages([
+            {
+                "order_id": 1,
+                "batch_code": "8-1",
+                "model": "MODEL-A",
+                "po_number": "4500059001",
+                "part_number": "PART-1",
+                "resulting_stock": -100,
+                "shortage_amount": 100,
+            },
+            {
+                "order_id": 2,
+                "batch_code": "8-2",
+                "model": "MODEL-B",
+                "po_number": "4500059002",
+                "part_number": "PART-1",
+                "resulting_stock": -250,
+                "shortage_amount": 250,
+            },
+        ])
+
+        self.assertEqual(len(summary), 1)
+        self.assertEqual(summary[0]["order_id"], 1)
+        self.assertEqual(summary[0]["batch_code"], "8-1")
+        self.assertEqual(summary[0]["model"], "MODEL-A")
+        self.assertEqual(summary[0]["order_ids"], [1, 2])
+        self.assertEqual(summary[0]["resulting_stock"], -250)
+        self.assertEqual(summary[0]["shortage_amount"], 250)
 
     def test_calc_preview_uses_backend_shortage_rules_for_ec_ec6_and_pk(self):
         with tempfile.TemporaryDirectory() as temp_dir:

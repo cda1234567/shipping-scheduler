@@ -368,7 +368,8 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertNotIn("function buildRawModalShortageGroups(targets)", schedule_module)
         self.assertIn('apiJson("/api/schedule/calc-preview"', schedule_module)
-        self.assertIn("function renderSharedPreviewParts(sharedParts = [])", schedule_module)
+        self.assertNotIn("function renderSharedPreviewParts(sharedParts = [])", schedule_module)
+        self.assertNotIn("共用料（整批只補一次）", schedule_module)
 
         batch_modal_match = re.search(
             r"async function showBatchMergeDraftModal\(targets\) \{(?P<body>.*?)\n\}",
@@ -1002,7 +1003,8 @@ console.log(JSON.stringify(results));
         self.assertIn("function buildModalCalcPreviewPayload({ resetStored = _modalResetStored } = {})", text)
         self.assertIn("order_supplements: _collectModalOrderSupplements(),", text)
         self.assertIn("function renderModalCalcPreview(preview, { focusState = null } = {})", text)
-        self.assertIn("renderSharedPreviewParts(preview?.shared_parts || [])", text)
+        self.assertNotIn("renderSharedPreviewParts(preview?.shared_parts || [])", text)
+        self.assertIn("if (!part || Number.isInteger(orderId)) return;", text)
 
     def test_right_panel_supplement_qty_takes_max_of_stored_and_lookahead(self):
         # Bug: 4 個 order 各缺 2000 (總缺 8000) 時，原本 stored>0 直接 return 4000，

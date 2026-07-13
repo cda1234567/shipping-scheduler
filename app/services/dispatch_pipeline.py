@@ -17,7 +17,6 @@ from .shortage_rules import (
     filter_main_write_blocking_shortages,
     get_shortage_resulting_stock,
     is_ec_part,
-    is_order_scoped_shortage_part,
 )
 from .merge_drafts import (
     _ensure_editable_bom_for_draft,
@@ -106,15 +105,20 @@ class DispatchPlan:
 
     def to_preview_response(self) -> dict:
         scopes = self._build_preview_scopes()
-        shared_parts = self._build_shared_preview_parts(scopes)
+        blocking_parts = {
+            str(item.get("part_number") or "").strip().upper()
+            for item in filter_main_write_blocking_shortages(self.shortages)
+            if str(item.get("part_number") or "").strip()
+        }
         return {
             "ok": True,
             "count": len(self.contexts),
             "merged_parts": self.merged_parts,
             "shortages": self.shortages,
             "scopes": scopes,
-            "shared_parts": shared_parts,
-            "blocking_count": len(filter_main_write_blocking_shortages(self.shortages)),
+            # 舊版前端仍可能讀取此欄位；保留空陣列相容，但不再建立「共用料」區。
+            "shared_parts": [],
+            "blocking_count": len(blocking_parts),
         }
 
     def _build_preview_scopes(self) -> list[dict]:
@@ -139,17 +143,10 @@ class DispatchPlan:
                 "is_sample": bool(context.is_sample),
                 "shortages": shortages_by_order.get(order_id, []),
             })
-        return scopes
+        return self._keep_first_shortage_per_part(scopes)
 
     def _normalize_preview_shortage(self, item: dict) -> dict:
         normalized = dict(item)
-        if self.reset_stored:
-            # 重算模式：舊補料已清空，把建議補料（MOQ 取整）帶進輸入預設值，
-            # 讓畫面直接顯示補完後的結存——與舊版 modal「乾淨 calc 預設值」行為一致。
-            suggested = float(normalized.get("suggested_qty") or 0)
-            if suggested > 0 and float(normalized.get("supplement_qty") or 0) <= 0:
-                normalized["supplement_qty"] = suggested
-                normalized["default_supplement"] = suggested
         normalized.setdefault("default_supplement", normalized.get("supplement_qty", 0))
         normalized.setdefault("lookahead_shortage_amount", normalized.get("shortage_amount", 0))
         normalized.setdefault("lookahead_suggested_qty", normalized.get("suggested_qty", 0))
@@ -162,33 +159,31 @@ class DispatchPlan:
         normalized.setdefault("is_customer_material", bool(normalized.get("is_customer_material", False)))
         return normalized
 
-    def _build_shared_preview_parts(self, scopes: list[dict]) -> list[dict]:
-        shared: dict[str, dict] = {}
-        order_lookup = {context.order_id: context for context in self.contexts}
+    def _keep_first_shortage_per_part(self, scopes: list[dict]) -> list[dict]:
+        """同料號依訂單順序只在第一次缺料處顯示一次。
+
+        預覽引擎仍逐筆 running balance；這裡只收斂畫面列。第一筆會帶上
+        後續整串的最大缺口與建議量，讓使用者在第一次缺料的機種一次補足。
+        """
+        rollups: dict[str, dict] = {}
         for scope in scopes:
             order_id = int(scope.get("order_id") or 0)
-            context = order_lookup.get(order_id)
             for item in scope.get("shortages") or []:
                 part = str(item.get("part_number") or "").strip().upper()
-                if not part or is_order_scoped_shortage_part(part):
+                if not part:
                     continue
-                current = shared.setdefault(part, {
-                    **dict(item),
-                    "part_number": part,
-                    "needed": 0.0,
-                    "prev_qty_cs": 0.0,
-                    "shortage_amount": 0.0,
-                    "supplement_qty": 0.0,
-                    "default_supplement": 0.0,
+                current = rollups.setdefault(part, {
                     "lookahead_shortage_amount": 0.0,
                     "lookahead_suggested_qty": 0.0,
+                    "lookahead_st_available_qty": 0.0,
+                    "lookahead_purchase_needed_qty": 0.0,
+                    "lookahead_purchase_suggested_qty": 0.0,
+                    "lookahead_needs_purchase": False,
+                    "supplement_qty": 0.0,
+                    "default_supplement": 0.0,
                     "order_ids": [],
                     "batch_codes": [],
-                    "scopes": [],
                 })
-                current["needed"] += float(item.get("needed") or 0)
-                current["prev_qty_cs"] += float(item.get("prev_qty_cs") or 0)
-                current["shortage_amount"] = max(float(current.get("shortage_amount") or 0), float(item.get("shortage_amount") or 0))
                 current["supplement_qty"] = max(float(current.get("supplement_qty") or 0), float(item.get("supplement_qty") or 0))
                 current["default_supplement"] = max(float(current.get("default_supplement") or 0), float(item.get("default_supplement") or item.get("supplement_qty") or 0))
                 current["lookahead_shortage_amount"] = max(
@@ -199,21 +194,139 @@ class DispatchPlan:
                     float(current.get("lookahead_suggested_qty") or 0),
                     float(item.get("lookahead_suggested_qty") or item.get("suggested_qty") or 0),
                 )
+                current["lookahead_st_available_qty"] = max(
+                    float(current.get("lookahead_st_available_qty") or 0),
+                    float(item.get("lookahead_st_available_qty") or item.get("st_available_qty") or 0),
+                )
+                current["lookahead_purchase_needed_qty"] = max(
+                    float(current.get("lookahead_purchase_needed_qty") or 0),
+                    float(item.get("lookahead_purchase_needed_qty") or item.get("purchase_needed_qty") or 0),
+                )
+                current["lookahead_purchase_suggested_qty"] = max(
+                    float(current.get("lookahead_purchase_suggested_qty") or 0),
+                    float(item.get("lookahead_purchase_suggested_qty") or item.get("purchase_suggested_qty") or 0),
+                )
+                current["lookahead_needs_purchase"] = bool(
+                    current.get("lookahead_needs_purchase")
+                    or item.get("lookahead_needs_purchase")
+                    or item.get("needs_purchase")
+                )
                 if order_id and order_id not in current["order_ids"]:
                     current["order_ids"].append(order_id)
                 batch_code = str(scope.get("batch_code") or item.get("batch_code") or "").strip()
                 if batch_code and batch_code not in current["batch_codes"]:
                     current["batch_codes"].append(batch_code)
-                current["scopes"].append({
-                    "order_id": order_id,
-                    "batch_code": batch_code,
-                    "model": context.order.get("model", "") if context else scope.get("model", ""),
-                    "po_number": scope.get("po_number", ""),
-                    "needed": item.get("needed", 0),
-                    "shortage_amount": item.get("shortage_amount", 0),
-                    "resulting_stock": item.get("resulting_stock"),
-                })
-        return sorted(shared.values(), key=lambda item: str(item.get("part_number") or ""))
+
+        supplement_owners = self._build_part_supplement_owners()
+        scope_by_order = {
+            int(scope.get("order_id") or 0): scope
+            for scope in scopes
+            if int(scope.get("order_id") or 0)
+        }
+        first_shortages: dict[str, dict] = {}
+        for scope in scopes:
+            for item in scope.get("shortages") or []:
+                part = str(item.get("part_number") or "").strip().upper()
+                if part:
+                    first_shortages.setdefault(part, dict(item))
+        for scope in scopes:
+            scope["shortages"] = []
+
+        candidate_parts = list(rollups)
+        for part, occurrence in supplement_owners.items():
+            if part in rollups:
+                continue
+            if float(occurrence.get("supplement_qty") or 0) > 0 or occurrence.get("decision") == "Shortage":
+                candidate_parts.append(part)
+
+        for part in candidate_parts:
+            rollup = rollups.get(part) or {}
+            occurrence = supplement_owners.get(part) or {}
+            first_shortage = first_shortages.get(part) or {}
+            order_id = int(occurrence.get("order_id") or first_shortage.get("order_id") or 0)
+            target_scope = scope_by_order.get(order_id)
+            if target_scope is None:
+                continue
+
+            # 缺料資料提供 MOQ / ST 建議，第一個實際使用列提供要顯示的機種與扣帳數字。
+            item = {**first_shortage, **dict(occurrence.get("item") or {})}
+            for field in (
+                "lookahead_shortage_amount",
+                "lookahead_suggested_qty",
+                "lookahead_st_available_qty",
+                "lookahead_purchase_needed_qty",
+                "lookahead_purchase_suggested_qty",
+                "lookahead_needs_purchase",
+                "order_ids",
+                "batch_codes",
+            ):
+                item[field] = rollup.get(field, item.get(field))
+
+            stored_qty = float(occurrence.get("supplement_qty") or rollup.get("supplement_qty") or item.get("supplement_qty") or 0)
+            if self.reset_stored:
+                # 重算模式只在料號第一次使用的機種帶入整串建議量。
+                suggested = float(item.get("lookahead_suggested_qty") or 0)
+                item["supplement_qty"] = suggested
+                item["default_supplement"] = suggested
+            else:
+                item["supplement_qty"] = stored_qty
+                item["default_supplement"] = stored_qty
+            target_scope["shortages"].append(item)
+        return scopes
+
+    def _build_part_supplement_owners(self) -> dict[str, dict]:
+        """找出每個料號目前保存補料／缺料決策的第一張訂單。"""
+        occurrences: dict[str, dict] = {}
+        for batch in self.preview.get("batches") or []:
+            order_id = int(batch.get("order_id") or 0)
+            context = next((item for item in self.contexts if item.order_id == order_id), None)
+            order = context.order if context else {}
+            for group in batch.get("groups") or []:
+                for row in group.get("rows") or []:
+                    part = str(row.get("part_number") or "").strip().upper()
+                    row_supplement = float(row.get("supplement_qty") or 0)
+                    row_decision = str(row.get("decision") or "None")
+                    if not part or (row_supplement <= 0 and row_decision != "Shortage"):
+                        continue
+                    occurrence = occurrences.get(part)
+                    if occurrence is None:
+                        current_stock = float(row.get("current_stock") or 0)
+                        prev_qty_cs = float(row.get("prev_qty_cs") or 0)
+                        needed = float(row.get("needed_qty_raw") or row.get("needed_qty") or 0)
+                        occurrence = {
+                            "order_id": order_id,
+                            "supplement_qty": 0.0,
+                            "decision": row_decision,
+                            "item": {
+                                "order_id": order_id,
+                                "batch_code": str(group.get("batch_code") or order.get("code") or ""),
+                                "po_number": str(group.get("po_number") or order.get("po_number") or ""),
+                                "model": str(batch.get("model") or order.get("model") or ""),
+                                "bom_model": str(group.get("bom_model") or ""),
+                                "part_number": part,
+                                "description": str(row.get("description") or ""),
+                                "current_stock": current_stock,
+                                "prev_qty_cs": prev_qty_cs,
+                                "needed": needed,
+                                "shortage_amount": float(row.get("shortage_amount") or 0),
+                                "moq": float(row.get("moq") or 0),
+                                "supplement_qty": row_supplement,
+                                "decision": row_decision,
+                                "resulting_stock": float(row.get("j_value") or 0),
+                                "suggested_qty": 0.0,
+                                "purchase_suggested_qty": 0.0,
+                                "st_stock_qty": float(row.get("st_stock_qty") or 0),
+                                "st_available_qty": 0.0,
+                                "purchase_needed_qty": 0.0,
+                                "needs_purchase": False,
+                            },
+                        }
+                        occurrences[part] = occurrence
+                    occurrence["supplement_qty"] += float(row.get("supplement_qty") or 0)
+                    if row_decision == "Shortage":
+                        occurrence["decision"] = "Shortage"
+                        occurrence["item"]["decision"] = "Shortage"
+        return occurrences
 
 
 @dataclass

@@ -98,13 +98,64 @@ if __name__ == "__main__":
 
 
 class ResetModeSupplementPrefillTests(unittest.TestCase):
-    def test_reset_mode_prefills_suggested_supplement_for_display(self):
-        from app.services.dispatch_pipeline import DispatchPlan
-        plan = DispatchPlan(main_path="", contexts=[], preview={})
-        plan.reset_stored = True
-        out = plan._normalize_preview_shortage({"supplement_qty": 0, "suggested_qty": 10000})
-        self.assertEqual(out["supplement_qty"], 10000)
-        self.assertEqual(out["default_supplement"], 10000)
+    def test_reset_mode_prefills_total_suggestion_only_on_first_shortage_order(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+        contexts = [
+            DispatchContext(order={"id": 1, "code": "8-1", "model": "MODEL-A"}, groups=[], all_components=[]),
+            DispatchContext(order={"id": 2, "code": "8-2", "model": "MODEL-B"}, groups=[], all_components=[]),
+        ]
+        preview = {
+            "shortages": [
+                {"order_id": 2, "part_number": "PART-1", "shortage_amount": 10000, "suggested_qty": 10000},
+            ],
+            "batches": [
+                {"order_id": 1, "model": "MODEL-A", "groups": [{"batch_code": "8-1", "rows": [{
+                    "part_number": "PART-1", "current_stock": 2000, "needed_qty": 1000,
+                    "shortage_amount": 0, "supplement_qty": 0, "j_value": 1000,
+                }]}]},
+                {"order_id": 2, "model": "MODEL-B", "groups": [{"batch_code": "8-2", "rows": [{
+                    "part_number": "PART-1", "current_stock": 1000, "needed_qty": 11000,
+                    "shortage_amount": 10000, "supplement_qty": 0, "j_value": -10000,
+                }]}]},
+            ],
+        }
+        plan = DispatchPlan(main_path="", contexts=contexts, preview=preview, reset_stored=True)
+        out = plan.to_preview_response()
+        self.assertEqual(out["scopes"][0]["shortages"], [])
+        self.assertEqual(len(out["scopes"][1]["shortages"]), 1)
+        first = out["scopes"][1]["shortages"][0]
+        self.assertEqual(first["supplement_qty"], 10000)
+        self.assertEqual(first["default_supplement"], 10000)
+        self.assertEqual(first["lookahead_shortage_amount"], 10000)
+
+    def test_partial_stored_supplement_keeps_editor_on_original_order(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+        contexts = [
+            DispatchContext(order={"id": 1, "code": "8-1", "model": "MODEL-A"}, groups=[], all_components=[]),
+            DispatchContext(order={"id": 2, "code": "8-2", "model": "MODEL-B"}, groups=[], all_components=[]),
+        ]
+        preview = {
+            "shortages": [
+                {"order_id": 2, "part_number": "PART-1", "shortage_amount": 500, "suggested_qty": 500},
+            ],
+            "batches": [
+                {"order_id": 1, "model": "MODEL-A", "groups": [{"batch_code": "8-1", "rows": [{
+                    "part_number": "PART-1", "current_stock": 0, "needed_qty": 1000,
+                    "shortage_amount": 0, "supplement_qty": 1000, "j_value": 0,
+                }]}]},
+                {"order_id": 2, "model": "MODEL-B", "groups": [{"batch_code": "8-2", "rows": [{
+                    "part_number": "PART-1", "current_stock": 0, "needed_qty": 500,
+                    "shortage_amount": 500, "supplement_qty": 0, "j_value": -500,
+                }]}]},
+            ],
+        }
+        plan = DispatchPlan(main_path="", contexts=contexts, preview=preview)
+        out = plan.to_preview_response()
+        self.assertEqual(len(out["scopes"][0]["shortages"]), 1)
+        self.assertEqual(out["scopes"][1]["shortages"], [])
+        first = out["scopes"][0]["shortages"][0]
+        self.assertEqual(first["supplement_qty"], 1000)
+        self.assertEqual(first["lookahead_shortage_amount"], 500)
 
     def test_non_reset_mode_keeps_stored_supplement(self):
         from app.services.dispatch_pipeline import DispatchPlan
