@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 import zipfile
 import os
@@ -450,6 +451,71 @@ class ExcelLogicTests(unittest.TestCase):
             self.assertEqual(ws.cell(row=2, column=9).value, 70)
             self.assertEqual(ws.cell(row=2, column=10).value, 50)
             self.assertEqual(ws.cell(row=2, column=11).value, 20)
+            wb.close()
+
+    def test_post_dispatch_supplement_waits_for_active_main_write(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            self._build_main_workbook(path)
+            merge_loaded = threading.Event()
+            release_merge = threading.Event()
+            supplement_done = threading.Event()
+            errors: list[Exception] = []
+            real_load_workbook = load_workbook
+
+            def controlled_load_workbook(*args, **kwargs):
+                workbook = real_load_workbook(*args, **kwargs)
+                if threading.current_thread().name == "merge-writer":
+                    merge_loaded.set()
+                    release_merge.wait(timeout=3)
+                return workbook
+
+            def run_merge():
+                try:
+                    merge_row_to_main(
+                        main_path=str(path),
+                        groups=[{
+                            "batch_code": "1-3",
+                            "po_number": "4500059234",
+                            "bom_model": "MODEL-A",
+                            "components": [{
+                                "part_number": "PART-A",
+                                "description": "CAP",
+                                "is_dash": False,
+                                "needed_qty": 50,
+                                "prev_qty_cs": 0,
+                            }],
+                        }],
+                        decisions={},
+                    )
+                except Exception as exc:
+                    errors.append(exc)
+
+            def run_supplement():
+                try:
+                    supplement_part_in_main(str(path), "PART-A", 3)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    supplement_done.set()
+
+            with patch("app.services.merge_to_main.openpyxl.load_workbook", side_effect=controlled_load_workbook):
+                merge_thread = threading.Thread(target=run_merge, name="merge-writer")
+                supplement_thread = threading.Thread(target=run_supplement, name="supplement-writer")
+                merge_thread.start()
+                self.assertTrue(merge_loaded.wait(timeout=2))
+                supplement_thread.start()
+                self.assertFalse(supplement_done.wait(timeout=0.1))
+                release_merge.set()
+                merge_thread.join(timeout=3)
+                supplement_thread.join(timeout=3)
+
+            self.assertEqual(errors, [])
+            self.assertTrue(supplement_done.is_set())
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+            self.assertEqual(ws.cell(row=2, column=9).value, 3)
+            self.assertEqual(ws.cell(row=2, column=11).value, -47)
             wb.close()
 
     def test_merge_to_main_sets_header_row_to_wrap_text(self):

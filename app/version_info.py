@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.10"
+APP_VERSION = "v2026.07.13.11"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "一般料只補一次，三類指定 IC 保留各機種補料"
+APP_HEADLINE = "補主檔不再撞批次寫入，M24 補後立即更新"
 APP_CHANGELOG = [
+    {
+        "title": "補料明細寫入與顯示修正",
+        "items": [
+            "補料明細的單料補主檔會等待正在執行的批次寫入完成，不再因同時讀到尚未寫完的 Excel 而補料失敗。",
+            "主檔改成先完成暫存 Excel 再一次替換，重算或其他讀取不會看到半套檔案。",
+            "IC-M24 等訂單專屬料補進主檔後，明細會依最新主檔結存立即消失或更新，不再沿用副檔舊負數讓人誤以為沒補成功。",
+        ],
+    },
     {
         "title": "三類 IC 保留機種別補料",
         "items": [

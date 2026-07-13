@@ -189,6 +189,11 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("syncPostDispatchShortagesFromCompletedDrafts();", schedule_module)
         self.assertIn("await refreshCompleted();", schedule_module)
         self.assertIn("showPostDispatchShortages();", schedule_module)
+        self.assertGreaterEqual(
+            schedule_module.count("const useLiveStock = Number.isFinite(liveStock);"),
+            2,
+        )
+        self.assertNotIn("Number.isFinite(liveStock) && !isOrderScopedPart(partKey)", schedule_module)
         self.assertNotIn("POST_DISPATCH_STORAGE_KEY", schedule_module)
         self.assertNotIn("post-dispatch-shortages", schedule_module)
 

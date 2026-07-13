@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from .. import database as db
 from .bom_quantity import build_effective_components
 from .main_reader import read_moq
+from .main_file_lock import serialized_main_file_write
 from .main_reconcile import verify_main_write
 from .merge_to_main import merge_row_to_main, preview_order_batches
 from .st_package_breakdowns import consume_st_package_breakdowns, restore_st_package_consumptions
@@ -901,6 +902,7 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     }
 
 
+@serialized_main_file_write
 def commit_dispatch_plan(
     plan: DispatchPlan,
     *,

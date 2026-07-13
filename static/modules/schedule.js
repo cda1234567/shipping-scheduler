@@ -1957,7 +1957,8 @@ function buildPostDispatchShortagesFromCompletedDrafts() {
 
       const fallbackShortageAmount = Math.max(0, Number(shortage?.shortage_amount || 0) || 0);
       const liveStock = Number(_liveStock?.[partKey]);
-      const useLiveStock = Number.isFinite(liveStock) && !isOrderScopedPart(partKey);
+      // 寫入後補料以主檔最新結存為準；M24 等訂單專屬料也不能沿用副檔的舊負數。
+      const useLiveStock = Number.isFinite(liveStock);
       const currentStock = useLiveStock
         ? liveStock
         : Number(shortage?.resulting_stock ?? shortage?.current_stock ?? 0);
@@ -2009,7 +2010,8 @@ function normalizePostDispatchShortageForPanel(shortage = {}, row = {}) {
 
   const fallbackShortageAmount = Math.max(0, Number(shortage?.shortage_amount || 0) || 0);
   const liveStock = Number(_liveStock?.[partKey]);
-  const useLiveStock = Number.isFinite(liveStock) && !isOrderScopedPart(partKey);
+  // 這裡是「已寫主檔後」的補料明細，主檔最新結存才是唯一真相。
+  const useLiveStock = Number.isFinite(liveStock);
   const fallbackStock = Number(shortage?.resulting_stock ?? shortage?.current_stock);
   const currentStock = useLiveStock
     ? liveStock

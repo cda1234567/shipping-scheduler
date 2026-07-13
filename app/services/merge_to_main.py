@@ -8,7 +8,9 @@ This module now exposes both:
 from __future__ import annotations
 
 from copy import copy
+import os
 import shutil
+import tempfile
 from math import copysign, floor
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from openpyxl.formula.translate import Translator
 from ..config import cfg
 from ..models import calc_suggested_qty
 from .local_time import local_now
+from .main_file_lock import serialized_main_file_write
 from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
@@ -35,6 +38,24 @@ RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="soli
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 CLEAR_FILL = PatternFill(fill_type=None)
 STOCK_SEARCH_START_COL = MOQ_COL + 1
+
+
+def _save_workbook_atomically(workbook, main_path: str) -> None:
+    """先在同目錄完成 Excel，再一次替換主檔，讀取端不會看到半套 ZIP。"""
+    target = Path(main_path)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}-",
+        suffix=target.suffix,
+        dir=str(target.parent),
+    )
+    os.close(fd)
+    try:
+        workbook.save(temp_name)
+        os.replace(temp_name, target)
+    finally:
+        temp_path = Path(temp_name)
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _try_float(value) -> float | None:
@@ -528,6 +549,7 @@ def _flatten_plan_rows(plan: dict) -> list[dict]:
     return rows
 
 
+@serialized_main_file_write
 def merge_row_to_main(
     main_path: str,
     groups: list[dict],
@@ -558,7 +580,7 @@ def merge_row_to_main(
                 _write_group_rows(workbook.active, group_plan)
 
         ensure_main_header_wrap(workbook.active)
-        workbook.save(main_path)
+        _save_workbook_atomically(workbook, main_path)
     finally:
         workbook.close()
 
@@ -580,6 +602,7 @@ def _find_latest_stock_col(ws, row_idx: int, max_col: int) -> int | None:
     return None
 
 
+@serialized_main_file_write
 def supplement_part_in_main(
     main_path: str,
     part_number: str,
@@ -633,7 +656,7 @@ def supplement_part_in_main(
                     cell.value = val + supplement_qty
 
         ensure_main_header_wrap(ws)
-        workbook.save(main_path)
+        _save_workbook_atomically(workbook, main_path)
     finally:
         workbook.close()
 
