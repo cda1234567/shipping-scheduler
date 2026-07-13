@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.4"
+APP_VERSION = "v2026.07.13.5"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "訂單卡列回共用缺料，失敗後按鈕不再卡住"
+APP_HEADLINE = "主檔預覽改補料後結存不再接錯前結存"
 APP_CHANGELOG = [
+    {
+        "title": "主檔預覽重算修正",
+        "items": [
+            "在主檔預覽改補料/用量時，如果前面的批次欄是舊格式（批次碼表頭空白），重算不會再跳過它、誤拿更早的盤點值當前結存。",
+            "改用與發料寫入相同的「由右往左找最新結存」規則，兩條路的算法從此一致。",
+        ],
+    },
     {
         "title": "訂單卡列回要補的料",
         "items": [

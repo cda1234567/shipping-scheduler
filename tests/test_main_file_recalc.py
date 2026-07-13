@@ -335,3 +335,33 @@ class MainFileRecalcTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BlankHeaderGroupBaselineTests(unittest.TestCase):
+    def test_recalc_uses_blank_header_group_balance_as_previous(self):
+        # AC-20169B 迴歸：舊批次組的批次碼表頭空白（事件掃描看不到），
+        # 它的結存必須仍被當成前結存，不可跳回 col8 盤點值。
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.cell(row=1, column=1).value = "料號"
+        ws.cell(row=1, column=8).value = "盤點"
+        # 空白表頭舊批次組（col10-12）：header 空 / PO 數字 / 機種
+        ws.cell(row=1, column=11).value = 59234
+        ws.cell(row=1, column=12).value = "MODEL-OLD"
+        # 正常批次組 6-3（col14-16）
+        ws.cell(row=1, column=14).value = "6-3"
+        ws.cell(row=1, column=15).value = "PO-6-3"
+        ws.cell(row=1, column=16).value = "MODEL-NEW"
+
+        ws.cell(row=2, column=1).value = "AC-20169B"
+        ws.cell(row=2, column=8).value = 171          # 老盤點（錯誤的舊 baseline 來源）
+        ws.cell(row=2, column=11).value = 144         # 舊組 F
+        ws.cell(row=2, column=12).value = 27          # 舊組 J（正確前結存）
+        ws.cell(row=2, column=14).value = 350         # 6-3 補料（使用者改的值）
+        ws.cell(row=2, column=15).value = 144         # 6-3 用量
+
+        result = recalc_batch_balances_for_cell(ws, row=2, col=14)
+
+        self.assertTrue(result["recalculated"])
+        # 27 - 144 + 350 = 233；修正前會算成 171 - 144 + 350 = 377
+        self.assertEqual(ws.cell(row=2, column=16).value, 233)

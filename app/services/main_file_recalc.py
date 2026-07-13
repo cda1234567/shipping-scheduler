@@ -137,6 +137,23 @@ def _previous_balance(ws, row: int, events: list[dict[str, int | str]], start_co
         value = _to_number(ws.cell(row=row, column=int(event["balance_col"])).value)
         if value is not None:
             return value
+
+    # 歷史主檔約 8.8% 批次組的批次碼表頭是空白，上面的事件掃描看不到它們的結存
+    # （UC-60021A / AC-20169B 兩案的共同病根）。改用與寫入路徑 _read_latest_stock
+    # 同語意的「右到左找數字」補救：在 start_col 之前、盤點欄之後找最右邊的數值。
+    # 已註冊事件的補料/用量欄要跳過，避免把輸入值誤當結存。
+    non_balance_cols: set[int] = set()
+    for event in events:
+        event_start = int(event["start_col"])
+        balance_col = int(event["balance_col"])
+        for candidate in range(event_start, balance_col):
+            non_balance_cols.add(candidate)
+    for col in range(start_col - 1, _STOCK_FALLBACK_COL, -1):
+        if col in non_balance_cols:
+            continue
+        value = _to_number(ws.cell(row=row, column=col).value)
+        if value is not None:
+            return value
     return None
 
 
