@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.2"
+APP_VERSION = "v2026.07.13.3"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "退回警告改為按日期彙總"
+APP_HEADLINE = "批次 Merge 等待期間顯示進度"
 APP_CHANGELOG = [
+    {
+        "title": "批次 Merge 不再空白等待",
+        "items": [
+            "按下批次 Merge 後會立刻切到算料工作區，顯示進度動畫與階段文字（正在重建副檔 → 正在計算缺料），不再是一片空白。",
+            "生成發料單前的模擬計算也有同樣的進度提示；失敗會在工作區顯示紅字原因。",
+        ],
+    },
     {
         "title": "退回警告不再洗版",
         "items": [

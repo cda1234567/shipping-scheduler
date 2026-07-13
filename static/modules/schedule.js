@@ -2480,6 +2480,33 @@ function ensureCalcWorkspaceReady(title, subtitle = "") {
   };
 }
 
+function showCalcWorkspaceBusy(title, subtitle, stageText) {
+  const { list, footer } = ensureCalcWorkspaceReady(title, subtitle);
+  if (footer) footer.innerHTML = "";
+  if (list) {
+    list.innerHTML = `
+      <div class="calc-workspace-empty" id="calc-workspace-busy" style="border:none">
+        <div class="modal-progress-shell is-indeterminate" style="max-width:460px;margin:24px auto 0">
+          <div class="modal-progress-label" id="calc-workspace-busy-stage">${esc(stageText || "處理中…")}</div>
+          <div class="modal-progress-bar"><div class="modal-progress-fill"></div></div>
+        </div>
+        <div class="desktop-status-meta" style="margin-top:10px">可先切到其他分頁，完成後這裡會自動顯示結果</div>
+      </div>`;
+  }
+  return { list, footer };
+}
+
+function updateCalcWorkspaceBusyStage(stageText) {
+  const el = document.getElementById("calc-workspace-busy-stage");
+  if (el) el.textContent = stageText || "";
+}
+
+function failCalcWorkspaceBusy(message) {
+  const busy = document.getElementById("calc-workspace-busy");
+  if (!busy) return;
+  busy.innerHTML = `<div style="color:#dc2626;font-weight:600;padding:24px 0">✕ ${esc(message || "處理失敗，請重試")}</div>`;
+}
+
 async function showDraftModal(draftId, { readOnly = false, fileId = null } = {}) {
   const { list, footer } = ensureCalcWorkspaceReady(
     readOnly ? "副檔預覽" : "副檔補料工作區",
@@ -2963,9 +2990,10 @@ async function showWriteToMainModal(targets) {
   _modalMode = "write";
   _modalResetStored = false;
 
-  const { list, footer } = ensureCalcWorkspaceReady(
+  const { list, footer } = showCalcWorkspaceBusy(
     "寫入主檔前確認",
     `共 ${targets.length} 筆訂單，寫入期間可自由切換分頁。`,
+    `正在模擬寫入 ${targets.length} 筆訂單並計算缺料…`,
   );
   const targetOrderIds = (targets || []).map(item => item.id).filter(Number.isInteger);
   const models = [...new Set((targets || []).map(item => item.model).filter(Boolean))];
@@ -3670,6 +3698,7 @@ async function handleBatchDispatchLegacyV1() {
     await Promise.all([refresh(), refreshCompleted()]);
     if (_onRefreshMain) await _onRefreshMain();
   } catch (error) {
+    failCalcWorkspaceBusy("批次發料失敗：" + error.message);
     showToast("批次發料失敗：" + error.message);
   } finally {
     if (button) {
@@ -6119,6 +6148,11 @@ async function runBatchMergeWorkflow() {
       button.disabled = true;
       button.textContent = "建立中...";
     }
+    showCalcWorkspaceBusy(
+      commitAfterModal ? "批次 Merge 並寫入主檔" : "批次 Merge",
+      `共 ${mergeableTargets.length} 筆訂單，可先確認補料、儲存副檔或下載副檔。`,
+      `正在批次 Merge ${mergeableTargets.length} 筆訂單並重建副檔…（約需十幾秒）`,
+    );
     const targetIds = mergeableTargets.map(row => row.id);
     const currentOrderIds = _rows.map(row => row.id).filter(Number.isInteger);
 
@@ -6138,6 +6172,8 @@ async function runBatchMergeWorkflow() {
         detail: `共 ${mergeableTargets.length} 筆訂單，系統正在整理 BOM 與補料資料，請稍候。`,
       },
     );
+
+    updateCalcWorkspaceBusyStage("副檔建立完成，正在計算缺料…");
 
     // overlay 已關閉，背景刷新資料
     await refreshScheduleOnly();
@@ -6165,6 +6201,7 @@ async function runBatchMergeWorkflow() {
     }
   } catch (error) {
     console.error("[handleBatchMerge] batch merge failed:", error);
+    failCalcWorkspaceBusy("批次 merge 失敗：" + error.message);
     showToast("批次 merge 失敗: " + error.message, { sticky: true, tone: "error" });
   } finally {
     _batchMergeInFlight = false;
