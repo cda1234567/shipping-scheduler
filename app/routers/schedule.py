@@ -409,7 +409,13 @@ def _apply_request_overrides_to_contexts(
     return updated_contexts, build_context_supplement_allocations(updated_contexts)
 
 
-def _build_reset_batch_dispatch_contexts(req: BatchDispatchRequest, normalized_order_ids: list[int], main_path: str):
+def _build_reset_batch_dispatch_contexts(
+    req: BatchDispatchRequest,
+    normalized_order_ids: list[int],
+    main_path: str,
+    *,
+    sync_bom_files: bool = True,
+):
     decisions = _normalize_decisions(req.decisions)
     supplements = _normalize_supplements(req.supplements)
     order_decisions = _normalize_order_decisions(req.order_decisions)
@@ -433,7 +439,11 @@ def _build_reset_batch_dispatch_contexts(req: BatchDispatchRequest, normalized_o
 
     contexts = []
     for order_id in normalized_order_ids:
-        order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+        order, groups, all_components = _prepare_dispatch_context(
+            order_id,
+            main_path,
+            sync_bom_files=sync_bom_files,
+        )
         contexts.append(DispatchContext(
             order=order,
             groups=groups,
@@ -473,7 +483,12 @@ def _execute_dispatch(
     )
 
 
-def _load_active_merge_draft_context(draft_id: int, main_path: str):
+def _load_active_merge_draft_context(
+    draft_id: int,
+    main_path: str,
+    *,
+    sync_bom_files: bool = True,
+):
     draft = db.get_merge_draft(draft_id)
     if not draft or draft.get("status") != "active":
         raise HTTPException(404, "找不到可提交的副檔草稿")
@@ -487,7 +502,11 @@ def _load_active_merge_draft_context(draft_id: int, main_path: str):
         raise HTTPException(400, "主檔內容已變更，請先重新整理副檔")
 
     order_id = int(draft["order_id"])
-    order, groups, all_components = _prepare_dispatch_context(order_id, resolved_main_path)
+    order, groups, all_components = _prepare_dispatch_context(
+        order_id,
+        resolved_main_path,
+        sync_bom_files=sync_bom_files,
+    )
     return DispatchContext(
         draft=draft,
         order=order,
@@ -599,6 +618,7 @@ def _resolve_batch_dispatch_plan(
     main_path: str,
     *,
     apply_request_overrides: bool = True,
+    refresh_drafts: bool = True,
 ):
     sample_order_ids = set(_normalize_order_ids(req.sample_order_ids))
     draft_id_map = db.get_active_merge_draft_ids_by_order_ids(normalized_order_ids)
@@ -607,12 +627,22 @@ def _resolve_batch_dispatch_plan(
         raise HTTPException(400, "有訂單還沒有副檔草稿，請先 merge 生成副檔")
 
     if req.reset_stored:
-        contexts, supplement_allocations = _build_reset_batch_dispatch_contexts(req, normalized_order_ids, main_path)
+        contexts, supplement_allocations = _build_reset_batch_dispatch_contexts(
+            req,
+            normalized_order_ids,
+            main_path,
+            sync_bom_files=refresh_drafts,
+        )
         use_drafts = False
     elif draft_id_map:
-        rebuild_merge_drafts(normalized_order_ids)
+        if refresh_drafts:
+            rebuild_merge_drafts(normalized_order_ids)
         contexts = [
-            DispatchContext.from_value(_load_active_merge_draft_context(draft_id_map[order_id], main_path))
+            DispatchContext.from_value(_load_active_merge_draft_context(
+                draft_id_map[order_id],
+                main_path,
+                sync_bom_files=refresh_drafts,
+            ))
             for order_id in normalized_order_ids
         ]
         if apply_request_overrides:
@@ -638,7 +668,11 @@ def _resolve_batch_dispatch_plan(
         )
         contexts = []
         for order_id in normalized_order_ids:
-            order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
+            order, groups, all_components = _prepare_dispatch_context(
+                order_id,
+                main_path,
+                sync_bom_files=refresh_drafts,
+            )
             contexts.append(DispatchContext(
                 order=order,
                 groups=groups,
@@ -675,7 +709,12 @@ def _resolve_draft_commit_plan(draft_id: int, main_path: str):
     )
 
 
-def _apply_batch_draft_updates(req: BatchDispatchRequest) -> tuple[list[int], list[dict], dict[int, dict]]:
+def _apply_batch_draft_updates(
+    req: BatchDispatchRequest,
+    *,
+    write_files: bool = True,
+    sync_bom_files: bool = True,
+) -> tuple[list[int], list[dict], dict[int, dict]]:
     normalized_order_ids = _normalize_order_ids(req.order_ids)
     if not normalized_order_ids:
         raise HTTPException(400, "請先選擇要更新副檔的訂單")
@@ -712,7 +751,14 @@ def _apply_batch_draft_updates(req: BatchDispatchRequest) -> tuple[list[int], li
         normalized_order_ids,
         set(_normalize_order_ids(req.sample_order_ids)),
     )
-    refreshed = rebuild_merge_drafts(normalized_order_ids)
+    if write_files and sync_bom_files:
+        refreshed = rebuild_merge_drafts(normalized_order_ids)
+    else:
+        refreshed = rebuild_merge_drafts(
+            normalized_order_ids,
+            write_files=write_files,
+            sync_bom_files=sync_bom_files,
+        )
     drafts = get_schedule_draft_map()
     return normalized_order_ids, refreshed, drafts
 
@@ -1039,7 +1085,13 @@ async def preview_main_write(req: BatchDispatchRequest):
         raise HTTPException(400, "請先選擇要預覽寫入主檔的訂單")
 
     main_path = _require_existing_main_path()
-    plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path, apply_request_overrides=False)
+    plan = _resolve_batch_dispatch_plan(
+        req,
+        normalized_order_ids,
+        main_path,
+        apply_request_overrides=False,
+        refresh_drafts=False,
+    )
     return plan.to_preview_response()
 
 
@@ -1055,6 +1107,7 @@ def _calc_preview_cache_key(req: BatchDispatchRequest, order_ids: list[int], mai
     except OSError:
         main_mtime = 0
     drafts_version = db.get_setting("merge_drafts_version") or db.get_latest_merge_draft_updated_at()
+    manual_moq = db.get_manual_snapshot_moq()
     payload = json.dumps(
         {
             "order_ids": order_ids,
@@ -1066,6 +1119,7 @@ def _calc_preview_cache_key(req: BatchDispatchRequest, order_ids: list[int], mai
             "reset_stored": bool(req.reset_stored),
             "main_mtime": main_mtime,
             "drafts_version": str(drafts_version or ""),
+            "manual_moq": manual_moq,
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -1111,7 +1165,12 @@ def calc_preview(req: BatchDispatchRequest):
     if cached is not None:
         return cached
 
-    plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
+    plan = _resolve_batch_dispatch_plan(
+        req,
+        normalized_order_ids,
+        main_path,
+        refresh_drafts=False,
+    )
     response = plan.to_preview_response()
     _store_cached_calc_preview(cache_key, response)
     return response
@@ -1218,7 +1277,11 @@ async def update_selected_schedule_drafts(req: BatchDispatchRequest):
 
 def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
     req = BatchDispatchRequest(**req_payload)
-    normalized_order_ids, refreshed, _ = _apply_batch_draft_updates(req)
+    normalized_order_ids, refreshed, _ = _apply_batch_draft_updates(
+        req,
+        write_files=False,
+        sync_bom_files=False,
+    )
     main_path = _require_existing_main_path()
 
     successes: list[dict] = []
@@ -1260,7 +1323,11 @@ def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
             # 因此單一 plan 不會互相觸發「主檔內容已變更」。這跟 batch_dispatch 一致。
             contexts = [
                 DispatchContext.from_value(
-                    _load_active_merge_draft_context(draft_id_by_order[order_id], main_path)
+                    _load_active_merge_draft_context(
+                        draft_id_by_order[order_id],
+                        main_path,
+                        sync_bom_files=False,
+                    )
                 )
                 for order_id in target_order_ids
             ]

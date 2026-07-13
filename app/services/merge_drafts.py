@@ -675,7 +675,13 @@ def _write_draft_files(draft_id: int, file_plans: list[dict], *, root_dir: Path 
     return written
 
 
-def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None = None) -> list[dict]:
+def rebuild_merge_drafts(
+    order_ids: list[int],
+    overrides: dict[int, dict] | None = None,
+    *,
+    write_files: bool = True,
+    sync_bom_files: bool = True,
+) -> list[dict]:
     normalized_ids: list[int] = []
     for order_id in order_ids or []:
         try:
@@ -746,13 +752,14 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
         order_id = int(draft["order_id"])
         order = db.get_order(order_id)
         if not order or order.get("status") not in ("pending", "merged"):
-            _cleanup_draft_files(draft_id)
+            if write_files:
+                _cleanup_draft_files(draft_id)
             db.delete_merge_draft(draft_id)
             continue
 
         td0 = time.monotonic()
         bom_files = [
-            _ensure_editable_bom_for_draft(bom)
+            _ensure_editable_bom_for_draft(bom) if sync_bom_files else dict(bom)
             for bom in db.get_bom_files_by_models([str(order.get("model") or "")])
         ]
         effective_decisions = dict(active_decisions_by_order.get(order_id, {}))
@@ -786,11 +793,16 @@ def rebuild_merge_drafts(order_ids: list[int], overrides: dict[int, dict] | None
         refreshed = db.get_active_merge_draft_for_order(int(order["id"]))
         if not refreshed:
             continue
-        _cleanup_draft_files(int(refreshed["id"]))
-        written = _write_draft_files(int(refreshed["id"]), plan["file_plans"])
-        db.replace_merge_draft_files(int(refreshed["id"]), written)
+        if write_files:
+            _cleanup_draft_files(int(refreshed["id"]))
+            written = _write_draft_files(int(refreshed["id"]), plan["file_plans"])
+            db.replace_merge_draft_files(int(refreshed["id"]), written)
+        else:
+            # 即時預覽與「寫主檔」只需要最新計算結果；副檔實體 Excel
+            # 留到使用者明確按儲存／下載時再產生，避免每次輸入都重開整批 BOM。
+            written = db.get_merge_draft_files(int(refreshed["id"]))
         refreshed_ids.add(int(refreshed["id"]))
-        log.info("[rebuild_merge_drafts] draft %d (order %d) done in %.1fs, %d files written",
+        log.info("[rebuild_merge_drafts] draft %d (order %d) done in %.1fs, %d files available",
                  draft_id, int(draft["order_id"]), time.monotonic() - td0, len(written))
 
     log.info("[rebuild_merge_drafts] total %.1fs for %d drafts", time.monotonic() - t0, len(refreshed_ids))

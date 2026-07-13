@@ -608,7 +608,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["count"], 2)
         self.assertEqual(data["merged_parts"], 7)
         self.assertEqual(data["order_ids"], [1, 2])
-        mock_prepare.assert_has_calls([call(1, str(main_path)), call(2, str(main_path))])
+        mock_prepare.assert_has_calls([
+            call(1, str(main_path), sync_bom_files=True),
+            call(2, str(main_path), sync_bom_files=True),
+        ])
         self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
         self.assertEqual(mock_execute.call_args_list[1].args[4], {})
 
@@ -1182,7 +1185,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["shortages"][0]["supplement_qty"], 3000)
         self.assertEqual(data["shortages"][0]["model"], "T356789IU+LCD")
         self.assertEqual(data["shortages"][0]["batch_code"], "1-3")
-        mock_rebuild.assert_called_once_with([1])
+        mock_rebuild.assert_not_called()
 
     def test_calc_preview_reset_stored_switches_between_draft_and_request_state(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1204,9 +1207,9 @@ class ApiTests(unittest.TestCase):
 
             with patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
                  patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11}), \
-                 patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}]), \
+                 patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}]) as mock_rebuild, \
                  patch("app.routers.schedule._load_active_merge_draft_context", return_value=draft_context), \
-                 patch("app.routers.schedule._prepare_dispatch_context", return_value=fresh_context), \
+                 patch("app.routers.schedule._prepare_dispatch_context", return_value=fresh_context) as mock_prepare, \
                  patch("app.routers.schedule._get_effective_moq", return_value={}), \
                  patch("app.routers.schedule.build_order_decision_allocations", return_value={1: {"PART-NEW": "CreateRequirement"}}), \
                  patch("app.routers.schedule.build_order_supplement_allocations", return_value={1: {"PART-NEW": 2000}}), \
@@ -1236,6 +1239,24 @@ class ApiTests(unittest.TestCase):
         })
         self.assertEqual(mock_preview.call_args_list[1].args[1][0]["decisions"], {"PART-NEW": "CreateRequirement"})
         self.assertEqual(mock_preview.call_args_list[1].args[1][0]["supplements"], {"PART-NEW": 2000})
+        mock_rebuild.assert_not_called()
+        mock_prepare.assert_called_once_with(1, str(main_path), sync_bom_files=False)
+
+    def test_calc_preview_cache_key_changes_after_manual_moq_update(self):
+        request = schedule_router.BatchDispatchRequest(order_ids=[1])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"main")
+
+            with patch("app.routers.schedule.db.get_setting", return_value="draft-version"), \
+                 patch("app.routers.schedule.db.get_manual_snapshot_moq", side_effect=[
+                     {"PART-1": 1000},
+                     {"PART-1": 2000},
+                 ]):
+                first = schedule_router._calc_preview_cache_key(request, [1], str(main_path))
+                second = schedule_router._calc_preview_cache_key(request, [1], str(main_path))
+
+        self.assertNotEqual(first, second)
 
     def test_calc_preview_scopes_include_batch_code_and_shared_parts_one_row(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2134,7 +2155,7 @@ class ApiTests(unittest.TestCase):
                 stack.enter_context(patch("app.services.order_supplements.db.get_setting", return_value=str(main_path)))
                 stack.enter_context(patch("app.routers.schedule.BACKUP_DIR", backup_dir))
                 stack.enter_context(patch("app.routers.schedule.db.get_active_merge_draft_ids_by_order_ids", return_value={1: 11, 2: 12}))
-                stack.enter_context(patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]))
+                mock_rebuild = stack.enter_context(patch("app.routers.schedule.rebuild_merge_drafts", return_value=[{"id": 11}, {"id": 12}]))
                 stack.enter_context(patch("app.routers.schedule._load_active_merge_draft_context", side_effect=[context_a, context_b]))
                 stack.enter_context(patch("app.routers.schedule._get_effective_moq", return_value={"EC-001": 500}))
                 stack.enter_context(patch("app.routers.schedule.db.get_st_inventory_stock", return_value={}))
@@ -2180,6 +2201,11 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(result["success_count"], 2)
             self.assertEqual(result["merged_parts"], 2)
             self.assertEqual(result["shortages"], [])
+            mock_rebuild.assert_called_once_with(
+                [1, 2],
+                write_files=False,
+                sync_bom_files=False,
+            )
 
             wb = openpyxl.load_workbook(main_path, data_only=True)
             ws = wb.active

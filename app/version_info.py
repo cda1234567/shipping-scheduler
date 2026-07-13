@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.13.7"
+APP_VERSION = "v2026.07.13.8"
 APP_RELEASED_AT = "2026-07-13"
-APP_HEADLINE = "重算補料會自動帶入建議補料，不再顯示一片負數"
+APP_HEADLINE = "算料手填值不再被 MOQ 重算洗掉，寫主檔前置等待大幅縮短"
 APP_CHANGELOG = [
+    {
+        "title": "算料手填值保留與寫入加速",
+        "items": [
+            "算料工作區會依訂單與料號保留本次手動補料、缺料勾選；修改 MOQ 或即時重算後不再被舊副檔值覆蓋。",
+            "修改 MOQ 改成直接用目前畫面內容重算，不再先儲存整批副檔、關掉工作區再重新開啟。",
+            "calc-preview 改為純計算，不再因每次輸入都重新開啟並儲存所有 BOM Excel。",
+            "強制寫入主檔前改用不產生 Excel 的輕量副檔重算；實體副檔只在明確儲存或下載時生成。",
+        ],
+    },
     {
         "title": "重算補料帶回建議值",
         "items": [

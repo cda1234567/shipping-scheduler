@@ -1016,10 +1016,9 @@ console.log(JSON.stringify(results));
             text,
         )
 
-    def test_save_manual_moq_preserves_in_flight_modal_supplements_before_rerender(self):
-        # Bug: 改 MOQ 後 modal 重渲染會把使用者已輸入的補量蓋掉。
-        # 修正後在 re-render 前應呼叫 _collectModalSupplements 把當前輸入保存進
-        # _modalDraftBaseSupplements，避免被預設值覆蓋。
+    def test_save_manual_moq_recalculates_without_saving_or_reopening_drafts(self):
+        # 改 MOQ 只能用目前記憶體狀態重算；不能先重建副檔再重開整個工作區，
+        # 否則其他尚未儲存的手動輸入會被舊副檔值覆蓋。
         schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
         text = schedule_module.read_text(encoding="utf-8")
 
@@ -1030,33 +1029,28 @@ console.log(JSON.stringify(results));
         )
         self.assertIsNotNone(match)
         body = match.group("body")
-        self.assertIn("_collectModalSupplements()", body)
-        self.assertIn("_modalDraftBaseSupplements", body)
-        # collect 一定要排在 showShortageModal 之前
-        collect_idx = body.index("_collectModalSupplements()")
-        render_idx = body.index("showShortageModal(_modalTargets)")
-        self.assertLess(collect_idx, render_idx)
+        self.assertIn("refreshModalCalcPreview({ immediate: true", body)
+        self.assertNotIn("saveBatchDraftsFromModal", body)
+        self.assertNotIn("showShortageModal(_modalTargets)", body)
+        self.assertNotIn("showBatchMergeDraftModal(_modalTargets)", body)
 
-    def test_save_manual_moq_silent_saves_modal_drafts_before_rerender(self):
-        # Bug 2 補修: 光把 in-flight supplement merge 進 _modalDraftBaseSupplements 不夠，
-        # 因為 showShortageModal 重新渲染時 modal input 預設值是從 server _draftsByOrderId
-        # 透過 buildStoredModalDraftState 讀的，不會讀 _modalDraftBaseSupplements。
-        # 修正後必須先呼叫 saveBatchDraftsFromModal({ silent: true }) 把當下 modal 內所有
-        # supplement / decision 寫進 server，再 re-render，這樣 server draft 才會帶當前值。
+    def test_modal_manual_editor_state_survives_calc_preview_rerenders(self):
         schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
         text = schedule_module.read_text(encoding="utf-8")
 
-        match = re.search(
-            r"async function saveManualMoq\([^)]*\) \{(?P<body>.*?)\n\}",
-            text,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        body = match.group("body")
-        self.assertIn("saveBatchDraftsFromModal({ silent: true })", body)
-        silent_save_idx = body.index("saveBatchDraftsFromModal({ silent: true })")
-        render_idx = body.index("showShortageModal(_modalTargets)")
-        self.assertLess(silent_save_idx, render_idx)
+        self.assertIn("let _modalManualEditorState = createEmptyModalManualEditorState();", text)
+        self.assertIn("function rememberModalManualEditorControl(control)", text)
+        self.assertIn("function mergeModalManualEditorState(payload)", text)
+        self.assertIn("function collectModalManualEditorPayload()", text)
+        self.assertIn("function applyModalManualEditorState(list)", text)
+        self.assertIn("const editorPayload = collectModalManualEditorPayload();", text)
+        self.assertIn("applyModalManualEditorState(list);", text)
+        self.assertIn("rememberModalManualEditorControl(checkbox);", text)
+        self.assertIn("rememberModalManualEditorControl(input);", text)
+
+        # 預覽重算後即使某列暫時不再顯示，儲存、下載與寫主檔也要從
+        # 記憶狀態組 payload，不能只讀當下仍在 DOM 裡的列。
+        self.assertGreaterEqual(text.count("} = collectModalManualEditorPayload();"), 4)
 
     def test_open_batch_merge_modal_stable_renders_workspace_once(self):
         # 算料已搬到工作區分頁，不再使用 overlay 掛載 retry；

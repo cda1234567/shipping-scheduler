@@ -410,16 +410,21 @@ def require_existing_main_path(main_path: str | None = None) -> str:
     return resolved
 
 
-def _sync_bom_for_dispatch(raw_bom: dict) -> dict:
-    if not raw_bom.get("filepath"):
-        return raw_bom
+def _sync_bom_for_dispatch(raw_bom: dict, *, sync_components: bool = True) -> dict:
+    if not raw_bom.get("filepath") or not sync_components:
+        return dict(raw_bom)
     try:
         return _ensure_editable_bom_for_draft(raw_bom)
     except Exception:
         return raw_bom
 
 
-def prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[dict], list[dict]]:
+def prepare_dispatch_context(
+    order_id: int,
+    main_path: str,
+    *,
+    sync_bom_files: bool = True,
+) -> tuple[dict, list[dict], list[dict]]:
     order = db.get_order(order_id)
     if not order:
         raise HTTPException(404, "找不到此訂單")
@@ -439,7 +444,7 @@ def prepare_dispatch_context(order_id: int, main_path: str) -> tuple[dict, list[
     groups = []
     all_components = []
     for raw_bom in bom_files:
-        bf = _sync_bom_for_dispatch(raw_bom)
+        bf = _sync_bom_for_dispatch(raw_bom, sync_components=sync_bom_files)
         comps = build_effective_components(
             db.get_bom_components(bf["id"]),
             schedule_order_qty=order.get("order_qty"),

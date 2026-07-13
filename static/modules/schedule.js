@@ -47,6 +47,7 @@ let _modalResetStored = false;
 let _modalPreviewAbortController = null;
 let _modalPreviewDebounceTimer = null;
 let _modalPreviewRequestSeq = 0;
+let _modalManualEditorState = createEmptyModalManualEditorState();
 let _globalBusyDepth = 0;
 let _globalBusyProgressTimer = null;
 let _globalBusyPercent = 0;
@@ -619,6 +620,110 @@ function normalizeOrderSupplementDetailState(orderSupplementDetails = {}) {
     }
   }
   return normalized;
+}
+
+function createEmptyModalManualEditorState() {
+  return {
+    decisions: {},
+    supplements: {},
+    orderDecisions: {},
+    orderSupplements: {},
+  };
+}
+
+function resetModalManualEditorState() {
+  _modalManualEditorState = createEmptyModalManualEditorState();
+}
+
+function rememberModalManualEditorControl(control) {
+  const { container, orderId, part } = _getModalRowMeta(control);
+  if (!container || !part) return;
+  const input = container.querySelector(".supplement-input");
+  const checkbox = container.querySelector(".shortage-mark");
+  const qty = checkbox?.checked ? 0 : Math.max(0, Number(input?.value || 0) || 0);
+  const decision = checkbox?.checked ? "Shortage" : qty > 0 ? "CreateRequirement" : "None";
+
+  if (Number.isInteger(orderId)) {
+    _modalManualEditorState.orderDecisions[orderId] ||= {};
+    _modalManualEditorState.orderSupplements[orderId] ||= {};
+    _modalManualEditorState.orderDecisions[orderId][part] = decision;
+    _modalManualEditorState.orderSupplements[orderId][part] = qty;
+  } else {
+    _modalManualEditorState.decisions[part] = decision;
+    _modalManualEditorState.supplements[part] = qty;
+  }
+
+  if (input) input.dataset.manual = "1";
+  if (checkbox) checkbox.dataset.manual = "1";
+}
+
+function mergeModalManualEditorState(payload) {
+  const merged = {
+    ...payload,
+    decisions: { ...(payload.decisions || {}), ..._modalManualEditorState.decisions },
+    supplements: { ...(payload.supplements || {}) },
+    order_decisions: { ...(payload.order_decisions || {}) },
+    order_supplements: { ...(payload.order_supplements || {}) },
+  };
+
+  for (const [part, qty] of Object.entries(_modalManualEditorState.supplements)) {
+    const decision = _modalManualEditorState.decisions[part] || "None";
+    if (decision === "Shortage" || Number(qty || 0) <= 0) delete merged.supplements[part];
+    else merged.supplements[part] = Number(qty);
+  }
+
+  for (const [rawOrderId, decisions] of Object.entries(_modalManualEditorState.orderDecisions)) {
+    merged.order_decisions[rawOrderId] = {
+      ...(merged.order_decisions[rawOrderId] || {}),
+      ...decisions,
+    };
+  }
+  for (const [rawOrderId, supplements] of Object.entries(_modalManualEditorState.orderSupplements)) {
+    merged.order_supplements[rawOrderId] = {
+      ...(merged.order_supplements[rawOrderId] || {}),
+      ...supplements,
+    };
+  }
+  return merged;
+}
+
+function collectModalManualEditorPayload() {
+  return mergeModalManualEditorState({
+    decisions: _collectModalDecisions(),
+    supplements: _collectModalSupplements(),
+    order_decisions: _collectModalOrderDecisions(),
+    order_supplements: _collectModalOrderSupplements(),
+  });
+}
+
+function applyModalManualEditorState(list) {
+  if (!list) return;
+  list.querySelectorAll(".supplement-input").forEach(input => {
+    const { container, orderId, part } = _getModalRowMeta(input);
+    if (!container || !part) return;
+    const scoped = Number.isInteger(orderId);
+    const decisions = scoped
+      ? _modalManualEditorState.orderDecisions[orderId]
+      : _modalManualEditorState.decisions;
+    const supplements = scoped
+      ? _modalManualEditorState.orderSupplements[orderId]
+      : _modalManualEditorState.supplements;
+    const hasDecision = Object.prototype.hasOwnProperty.call(decisions || {}, part);
+    const hasSupplement = Object.prototype.hasOwnProperty.call(supplements || {}, part);
+    if (!hasDecision && !hasSupplement) return;
+
+    const decision = hasDecision ? decisions[part] : "None";
+    const qty = hasSupplement ? Math.max(0, Number(supplements[part] || 0) || 0) : 0;
+    const checkbox = container.querySelector(".shortage-mark");
+    if (checkbox) {
+      checkbox.checked = decision === "Shortage";
+      checkbox.dataset.manual = "1";
+    }
+    input.value = decision === "Shortage" ? "0" : String(qty);
+    input.disabled = decision === "Shortage";
+    input.dataset.manual = "1";
+    updateModalShortageTone(container);
+  });
 }
 
 function readStoredBoolean(key, fallback = false) {
@@ -2508,6 +2613,7 @@ function failCalcWorkspaceBusy(message) {
 }
 
 async function showDraftModal(draftId, { readOnly = false, fileId = null } = {}) {
+  resetModalManualEditorState();
   const { list, footer } = ensureCalcWorkspaceReady(
     readOnly ? "副檔預覽" : "副檔補料工作區",
     readOnly ? "檢視已存副檔內容，可下載副檔。" : "編輯副檔補料內容，可儲存或下載副檔。",
@@ -2615,6 +2721,7 @@ async function showDraftModal(draftId, { readOnly = false, fileId = null } = {})
 }
 
 async function showShortageModal(targets) {
+  resetModalManualEditorState();
   _modalDraftId = null;
   _modalTargets = targets;
   _modalMode = "download";
@@ -2661,10 +2768,12 @@ async function saveBatchDraftsFromModal({ silent = false } = {}) {
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   if (!targetOrderIds.length) return null;
 
-  const supplements = _collectModalSupplements();
-  const decisions = _collectModalDecisions();
-  const orderSupplements = _collectModalOrderSupplements();
-  const orderDecisions = _collectModalOrderDecisions();
+  const {
+    supplements,
+    decisions,
+    order_supplements: orderSupplements,
+    order_decisions: orderDecisions,
+  } = collectModalManualEditorPayload();
   const sampleOrderIds = collectModalSampleOrderIds();
   await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
   Object.entries(decisions).forEach(([part, decision]) => {
@@ -2688,10 +2797,12 @@ async function updateAndCommitBatchDraftsFromModal() {
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   if (!targetOrderIds.length) return null;
 
-  const supplements = _collectModalSupplements();
-  const decisions = _collectModalDecisions();
-  const orderSupplements = _collectModalOrderSupplements();
-  const orderDecisions = _collectModalOrderDecisions();
+  const {
+    supplements,
+    decisions,
+    order_supplements: orderSupplements,
+    order_decisions: orderDecisions,
+  } = collectModalManualEditorPayload();
   const sampleOrderIds = collectModalSampleOrderIds();
   await persistDecisionsForOrders(decisions, targetOrderIds, orderDecisions);
   Object.entries(decisions).forEach(([part, decision]) => {
@@ -2936,6 +3047,7 @@ async function handleModalDownloadDrafts() {
 }
 
 async function showBatchMergeDraftModal(targets) {
+  resetModalManualEditorState();
   const commitAfterSave = Boolean(_modalCommitAfterSave);
   _modalTargets = targets;
   _modalBomFiles = [];
@@ -2985,6 +3097,7 @@ async function showBatchMergeDraftModal(targets) {
 }
 
 async function showWriteToMainModal(targets) {
+  resetModalManualEditorState();
   _modalDraftId = null;
   _modalTargets = targets;
   _modalMode = "write";
@@ -3032,12 +3145,13 @@ function buildModalCalcPreviewPayload({ resetStored = _modalResetStored } = {}) 
   const targetOrderIds = (_modalTargets || [])
     .map(target => normalizeOrderId(target?.id))
     .filter(Number.isInteger);
+  const editorPayload = collectModalManualEditorPayload();
   return {
     order_ids: targetOrderIds,
-    decisions: _modalMode === "write" ? { ..._decisions, ..._collectModalDecisions() } : _collectModalDecisions(),
-    supplements: _collectModalSupplements(),
-    order_decisions: _collectModalOrderDecisions(),
-    order_supplements: _collectModalOrderSupplements(),
+    ...editorPayload,
+    decisions: _modalMode === "write"
+      ? { ..._decisions, ...editorPayload.decisions }
+      : editorPayload.decisions,
     sample_order_ids: collectModalSampleOrderIds(),
     reset_stored: Boolean(resetStored),
   };
@@ -3046,7 +3160,7 @@ function buildModalCalcPreviewPayload({ resetStored = _modalResetStored } = {}) 
 function captureFocusedModalField() {
   const active = document.activeElement;
   if (!active || !active.closest?.("#modal-shortage-list")) return null;
-  if (!active.matches("input, textarea, select")) return null;
+  if (!active.matches(".sample-order-flag, .shortage-mark, .supplement-input")) return null;
   const meta = _getModalRowMeta(active);
   return {
     selector: active.classList.contains("sample-order-flag")
@@ -3260,6 +3374,7 @@ function renderModalCalcPreview(preview, { focusState = null } = {}) {
   }
 
   list.innerHTML = html;
+  applyModalManualEditorState(list);
   bindShortageEditors(list);
   bindSampleOrderFlags(list);
   bindMoqEditors(list);
@@ -3573,25 +3688,18 @@ async function saveManualMoq(partNumber, input, button) {
     _moq[key] = moqValue;
     recalculate();
     updateStatusOnly();
-    if (_modalTargets.length && document.getElementById("modal-shortage-list")) {
-      const inFlightSupplements = _collectModalSupplements();
-      _modalDraftBaseSupplements = { ..._modalDraftBaseSupplements, ...inFlightSupplements };
-      // Bug 2 root fix: 把當前 modal 內容 silent save 到 server，避免 re-render 時被 server draft 預設值蓋掉
-      try { await saveBatchDraftsFromModal({ silent: true }); } catch (_) {}
-      if (_modalMode === "write") {
-        await showWriteToMainModal(_modalTargets);
-      } else if (_modalDraftId) {
-        await showDraftModal(_modalDraftId, { readOnly: _modalDraftReadOnly });
-      } else if (_modalMode === "mergeCommit" || _modalCommitAfterSave) {
-        await showBatchMergeDraftModal(_modalTargets);
-      } else {
-        await showShortageModal(_modalTargets);
-      }
+    if (_modalTargets.length && ["write", "download", "mergeCommit"].includes(_modalMode)) {
+      await refreshModalCalcPreview({ immediate: true, resetStored: _modalResetStored });
     }
     showToast(`${key} MOQ 已儲存`);
   } catch (e) {
     showToast("MOQ 儲存失敗: " + e.message);
     if (button) {
+      button.disabled = false;
+      button.textContent = "記住 MOQ";
+    }
+  } finally {
+    if (button?.isConnected) {
       button.disabled = false;
       button.textContent = "記住 MOQ";
     }
@@ -3775,6 +3883,9 @@ async function handleShortageBadgeMoqEdit(badge) {
       _moq[partNumber] = moqValue;
       recalculate();
       updateStatusOnly();
+      if (_modalTargets.length && ["write", "download", "mergeCommit"].includes(_modalMode)) {
+        await refreshModalCalcPreview({ immediate: true, resetStored: _modalResetStored });
+      }
       showToast(`${partNumber} MOQ 已儲存`);
     } catch (e) {
       delete badge.dataset.editing;
@@ -4108,10 +4219,12 @@ async function handleModalWriteMain() {
   }
   if (!confirmModalShortageSupplementConflicts()) return;
 
-  const supplements = _collectModalSupplements();
-  const modalDecisions = _collectModalDecisions();
-  const orderSupplements = _collectModalOrderSupplements();
-  const orderDecisions = _collectModalOrderDecisions();
+  const {
+    supplements,
+    decisions: modalDecisions,
+    order_supplements: orderSupplements,
+    order_decisions: orderDecisions,
+  } = collectModalManualEditorPayload();
   const sampleOrderIds = collectModalSampleOrderIds();
 
   try {
@@ -4163,10 +4276,12 @@ async function handleModalDownloadBom() {
   if (!_modalBomFiles.length) { showToast("找不到對應的 BOM 檔案"); return; }
   if (!confirmModalShortageSupplementConflicts()) return;
 
-  const supplements = _collectModalSupplements();
-  const modalDecisions = _collectModalDecisions();
-  const orderSupplements = _collectModalOrderSupplements();
-  const orderDecisions = _collectModalOrderDecisions();
+  const {
+    supplements,
+    decisions: modalDecisions,
+    order_supplements: orderSupplements,
+    order_decisions: orderDecisions,
+  } = collectModalManualEditorPayload();
   const targetOrderIds = _modalTargets.map(target => target.id).filter(id => Number.isInteger(id));
   const sampleOrderIds = collectModalSampleOrderIds();
   const headerOverrides = buildModalHeaderOverrides();
@@ -5882,6 +5997,7 @@ function bindShortageEditors(list) {
         input.disabled = checkbox.checked;
         if (checkbox.checked) input.value = "0";
       }
+      rememberModalManualEditorControl(checkbox);
       void refreshModalCalcPreview();
     });
   });
@@ -5901,6 +6017,7 @@ function bindShortageEditors(list) {
         shortageChecked: false,
         orderId,
       });
+      rememberModalManualEditorControl(input);
       void refreshModalCalcPreview();
     });
   });

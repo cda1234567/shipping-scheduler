@@ -52,6 +52,46 @@ class DispatchPipelineTests(unittest.TestCase):
         self.assertEqual(groups[0]["components"][0]["needed_qty"], 300)
         self.assertEqual(all_components[0]["needed_qty"], 300)
 
+    def test_prepare_dispatch_context_uses_stored_components_without_touching_bom_file(self):
+        order = {
+            "id": 44,
+            "model": "MODEL-M24C",
+            "order_qty": 300,
+            "status": "merged",
+        }
+        raw_bom = {
+            "id": "bom-m24c",
+            "model": "MODEL-M24C",
+            "group_model": "MODEL-M24C",
+            "order_qty": 300,
+            "filepath": "legacy.xls",
+        }
+        components = [{
+            "part_number": "IC-M24C",
+            "qty_per_board": 1,
+            "needed_qty": 300,
+            "prev_qty_cs": 0,
+            "is_dash": 0,
+        }]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.write_bytes(b"placeholder")
+
+            with patch("app.services.dispatch_pipeline.db.get_order", return_value=order), \
+                 patch("app.services.dispatch_pipeline.db.get_bom_files_by_models", return_value=[raw_bom]), \
+                 patch("app.services.dispatch_pipeline._ensure_editable_bom_for_draft") as mock_sync, \
+                 patch("app.services.dispatch_pipeline.db.get_bom_components", return_value=components):
+                _, groups, all_components = dispatch_pipeline.prepare_dispatch_context(
+                    44,
+                    str(main_path),
+                    sync_bom_files=False,
+                )
+
+        mock_sync.assert_not_called()
+        self.assertEqual(groups[0]["components"][0]["needed_qty"], 300)
+        self.assertEqual(all_components[0]["needed_qty"], 300)
+
 
 if __name__ == "__main__":
     unittest.main()
