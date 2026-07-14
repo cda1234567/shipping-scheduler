@@ -98,6 +98,73 @@ if __name__ == "__main__":
 
 
 class ResetModeSupplementPrefillTests(unittest.TestCase):
+    def test_reset_mode_keeps_general_part_input_after_it_fully_resolves_shortage(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+
+        context = DispatchContext(
+            order={"id": 1, "code": "9-1", "model": "MODEL-A"},
+            groups=[],
+            all_components=[],
+        )
+        preview = {
+            "shortages": [],
+            "batches": [{
+                "order_id": 1,
+                "model": "MODEL-A",
+                "groups": [{"batch_code": "9-1", "rows": [{
+                    "part_number": "EC-TEST",
+                    "current_stock": 0,
+                    "needed_qty": 300,
+                    "shortage_amount": 0,
+                    "supplement_qty": 300,
+                    "j_value": 0,
+                    "decision": "CreateRequirement",
+                }]}],
+            }],
+        }
+
+        plan = DispatchPlan(
+            main_path="",
+            contexts=[context],
+            preview=preview,
+            reset_stored=True,
+        )
+        item = plan.to_preview_response()["scopes"][0]["shortages"][0]
+
+        self.assertEqual(item["supplement_qty"], 300)
+        self.assertEqual(item["default_supplement"], 300)
+
+    def test_reset_mode_keeps_general_part_input_when_shortage_remains(self):
+        from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
+
+        contexts = [
+            DispatchContext(order={"id": 1, "code": "9-1", "model": "MODEL-A"}, groups=[], all_components=[]),
+            DispatchContext(order={"id": 2, "code": "9-2", "model": "MODEL-B"}, groups=[], all_components=[]),
+        ]
+        preview = {
+            "shortages": [
+                {"order_id": 2, "part_number": "EC-TEST", "shortage_amount": 500, "suggested_qty": 500},
+            ],
+            "batches": [
+                {"order_id": 1, "model": "MODEL-A", "groups": [{"batch_code": "9-1", "rows": [{
+                    "part_number": "EC-TEST", "current_stock": 0, "needed_qty": 1000,
+                    "shortage_amount": 0, "supplement_qty": 1000, "j_value": 0,
+                    "decision": "CreateRequirement",
+                }]}]},
+                {"order_id": 2, "model": "MODEL-B", "groups": [{"batch_code": "9-2", "rows": [{
+                    "part_number": "EC-TEST", "current_stock": 0, "needed_qty": 500,
+                    "shortage_amount": 500, "supplement_qty": 0, "j_value": -500,
+                }]}]},
+            ],
+        }
+
+        plan = DispatchPlan(main_path="", contexts=contexts, preview=preview, reset_stored=True)
+        scopes = plan.to_preview_response()["scopes"]
+
+        self.assertEqual(scopes[0]["shortages"][0]["supplement_qty"], 1000)
+        self.assertEqual(scopes[0]["shortages"][0]["lookahead_suggested_qty"], 500)
+        self.assertEqual(scopes[1]["shortages"], [])
+
     def test_order_scoped_ic_parts_stay_on_each_order_with_own_suggestion(self):
         from app.services.dispatch_pipeline import DispatchContext, DispatchPlan
 

@@ -298,10 +298,12 @@ class DispatchPlan:
 
             stored_qty = float(occurrence.get("supplement_qty") or rollup.get("supplement_qty") or item.get("supplement_qty") or 0)
             if self.reset_stored:
-                # 重算模式只在料號第一次使用的機種帶入整串建議量。
+                # 重算只負責替「尚未輸入」的料帶建議量。只要本次畫面已送出補料，
+                # 即使它剛好補足、預覽不再產生 shortage，也必須保留原輸入值。
                 suggested = float(item.get("lookahead_suggested_qty") or 0)
-                item["supplement_qty"] = suggested
-                item["default_supplement"] = suggested
+                prefill_qty = stored_qty if stored_qty > 0 else suggested
+                item["supplement_qty"] = prefill_qty
+                item["default_supplement"] = prefill_qty
             else:
                 item["supplement_qty"] = stored_qty
                 item["default_supplement"] = stored_qty
