@@ -141,6 +141,7 @@ async def set_snapshot():
     moq = read_moq(main_path)
     moq.update(manual_moq)
     db.save_snapshot(stock, moq, manual_moq_parts=set(manual_moq))
+    db.set_setting("main_part_count", str(len(stock)))
     invalidate_main_data_cache()
     db.log_activity("snapshot_set", f"重設主檔快照，共 {len(stock)} 筆")
     return {"ok": True, "part_count": len(stock)}
@@ -192,7 +193,7 @@ async def get_main_data():
         "vendors": vendors,
         "purchase_reminder_statuses": db.get_purchase_reminder_statuses(),
         "part_first_order": _compute_part_last_balance_batch(main_path) or db.get_part_first_dispatched_order_code(),
-        "part_count": int(db.get_setting("main_part_count", "0")),
+        "part_count": len(live_stock),
         "loaded_at": db.get_setting("main_loaded_at"),
         "filename": db.get_setting("main_filename") or Path(main_path).name,
         "has_snapshot": bool(snapshot),
@@ -373,7 +374,7 @@ async def get_main_info():
     return {
         "loaded": exists,
         "filename": db.get_setting("main_filename") or (Path(main_path).name if main_path else ""),
-        "part_count": int(db.get_setting("main_part_count", "0")),
+        "part_count": len(snapshot) if snapshot else int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),
         "has_snapshot": bool(snapshot),
     }

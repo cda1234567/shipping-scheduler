@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-import shutil
 from typing import Callable
 
 from fastapi import HTTPException
@@ -12,7 +11,13 @@ from .bom_quantity import build_effective_components
 from .main_reader import read_moq
 from .main_file_lock import serialized_main_file_write
 from .main_reconcile import verify_main_write
-from .merge_to_main import merge_row_to_main, preview_order_batches
+from .merge_to_main import (
+    merge_order_batches_to_main,
+    merge_row_to_main,
+    preview_order_batches,
+    restore_main_from_backup_reference,
+    validate_dispatch_backup_reference,
+)
 from .st_package_breakdowns import consume_st_package_breakdowns, restore_st_package_consumptions
 from .shortage_rules import (
     filter_main_write_blocking_shortages,
@@ -765,15 +770,20 @@ def execute_dispatch_context(
         is_sample=item.is_sample,
         backup_dir=backup_dir,
     )
+
+    return finalize_dispatch_context(item, main_path, result)
+
+
+def _verify_dispatch_result(main_path: str, plan_rows: list[dict], order: dict | None = None) -> dict:
     reconcile = {"ok": True, "checked_parts": 0, "mismatches": []}
-    plan_rows = result.get("plan_rows") or []
     if plan_rows:
         try:
             reconcile = verify_main_write(main_path, plan_rows)
             if not reconcile.get("ok", True):
+                order = order or {}
                 _safe_log_activity(
                     "reconcile_mismatch",
-                    f"訂單 {item.order.get('po_number', '')} ({item.order.get('model', '')}) 寫入後核對發現 "
+                    f"訂單 {order.get('po_number', '')} ({order.get('model', '')}) 寫入後核對發現 "
                     f"{len(reconcile.get('mismatches') or [])} 筆數字不一致",
                 )
         except Exception as exc:
@@ -790,6 +800,20 @@ def execute_dispatch_context(
                 }],
             }
             _safe_log_activity("reconcile_mismatch", f"寫入後核對執行失敗：{exc}")
+    return reconcile
+
+
+def finalize_dispatch_context(
+    context: DispatchContext,
+    main_path: str,
+    result: dict,
+    *,
+    reconcile: dict | None = None,
+    restore_main_on_error: bool = True,
+) -> dict:
+    item = DispatchContext.from_value(context)
+    if reconcile is None:
+        reconcile = _verify_dispatch_result(main_path, result.get("plan_rows") or [], item.order)
 
     session = None
     try:
@@ -814,16 +838,18 @@ def execute_dispatch_context(
         db.save_dispatch_records(item.order_id, dispatch_records)
         db.update_order(item.order_id, status="dispatched")
     except Exception:
-        backup_path = Path(str(result.get("backup_path") or "")).expanduser()
-        if backup_path.exists():
-            shutil.copy2(backup_path, main_path)
+        if restore_main_on_error:
+            backup_path = str(result.get("backup_path") or "")
+            validation = validate_dispatch_backup_reference(backup_path)
+            if validation.get("ok"):
+                restore_main_from_backup_reference(backup_path, main_path)
         if session:
             db.delete_dispatch_records_for_orders([item.order_id])
             db.mark_dispatch_sessions_rolled_back([int(session["id"])])
             db.update_order(item.order_id, status=item.order["status"], folder=item.order.get("folder", ""))
         raise
 
-    db.log_activity(
+    _safe_log_activity(
         "order_dispatched",
         f"訂單 {item.order['po_number']} ({item.order['model']}) 已發料，{result['merged_parts']} 筆 merge",
     )
@@ -837,6 +863,35 @@ def execute_dispatch_context(
     }
 
 
+def get_dispatch_rollback_unavailable_reason(session: dict | None) -> str:
+    if not session:
+        return "找不到這筆訂單的發料歷史，無法反悔"
+    validation = validate_dispatch_backup_reference(session.get("backup_path") or "")
+    if not validation.get("ok"):
+        return str(validation.get("reason") or "找不到這次發料的主檔備份，無法反悔")
+    return ""
+
+
+def build_dispatch_rollback_availability(orders: list[dict]) -> dict[int, dict]:
+    active_by_order_id: dict[int, dict] = {}
+    for session in db.get_active_dispatch_sessions():
+        try:
+            active_by_order_id[int(session["order_id"])] = session
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    availability: dict[int, dict] = {}
+    for order in orders or []:
+        try:
+            order_id = int(order["id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        reason = get_dispatch_rollback_unavailable_reason(active_by_order_id.get(order_id))
+        availability[order_id] = {"available": not reason, "reason": reason}
+    return availability
+
+
+@serialized_main_file_write
 def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     if not sessions:
         raise HTTPException(400, "找不到可反悔的發料紀錄")
@@ -846,9 +901,10 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         raise HTTPException(400, "找不到可反悔的發料紀錄")
 
     first_session = normalized_sessions[0]
-    backup_path = Path(str(first_session.get("backup_path") or "")).expanduser()
-    if not backup_path.exists():
-        raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
+    backup_reference = str(first_session.get("backup_path") or "")
+    unavailable_reason = get_dispatch_rollback_unavailable_reason(first_session)
+    if unavailable_reason:
+        raise HTTPException(400, unavailable_reason)
 
     current_main_path = db.resolve_managed_path(str(db.get_setting("main_file_path") or "").strip(), "main_file_path")
     session_paths = {
@@ -867,8 +923,14 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
 
     restore_target_path = Path(restore_target)
-    restore_target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(backup_path, restore_target_path)
+    try:
+        restore_result = restore_main_from_backup_reference(
+            backup_reference,
+            restore_target_path,
+            before_order_id=int(first_session["order_id"]),
+        )
+    except (OSError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
     refresh_snapshot_from_main(str(restore_target_path))
 
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
@@ -895,7 +957,9 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
 
     return {
         "count": len(restored_orders),
-        "restored_from": str(backup_path),
+        "restored_from": backup_reference,
+        "main_backup_path": restore_result.get("main_backup_path", backup_reference),
+        "replayed_order_count": int(restore_result.get("replayed_order_count") or 0),
         "main_file_path": str(restore_target_path),
         "orders": restored_orders,
         "restored_draft_order_ids": restored_draft_orders,
@@ -909,6 +973,7 @@ def commit_dispatch_plan(
     plan: DispatchPlan,
     *,
     merge_executor: Callable = merge_row_to_main,
+    batch_merge_executor: Callable | None = merge_order_batches_to_main,
     backup_dir: str,
     rollback_executor: Callable = rollback_dispatch_sessions,
     execute_dispatcher: Callable | None = None,
@@ -918,9 +983,33 @@ def commit_dispatch_plan(
     results: list[dict] = []
     processed_sessions: list[dict] = []
     committed_draft_ids: list[int] = []
+    batch_backup_reference = ""
 
     try:
-        for context in plan.contexts:
+        use_batch_merge = (
+            execute_dispatcher is None
+            and batch_merge_executor is not None
+            and len(plan.contexts) > 1
+        )
+        batch_order_results: list[dict] | None = None
+        batch_reconcile: dict | None = None
+        if use_batch_merge:
+            batch_result = batch_merge_executor(
+                main_path=plan.main_path,
+                batches=[context.to_preview_batch() for context in plan.contexts],
+                backup_dir=backup_dir,
+            )
+            batch_backup_reference = str(batch_result.get("backup_path") or "")
+            batch_order_results = list(batch_result.get("order_results") or [])
+            if len(batch_order_results) != len(plan.contexts):
+                raise RuntimeError("批次主檔寫入結果與訂單數量不一致")
+            batch_reconcile = _verify_dispatch_result(
+                plan.main_path,
+                batch_result.get("plan_rows") or [],
+                {"po_number": "批次", "model": f"{len(plan.contexts)} 筆訂單"},
+            )
+
+        for index, context in enumerate(plan.contexts):
             if execute_dispatcher is not None:
                 result = execute_dispatcher(
                     context.order,
@@ -930,6 +1019,22 @@ def commit_dispatch_plan(
                     context.decisions,
                     context.supplements,
                     is_sample=context.is_sample,
+                )
+            elif batch_order_results is not None:
+                merge_result = dict(batch_order_results[index])
+                expected_order_id = context.order_id
+                if int(merge_result.get("order_id") or 0) != expected_order_id:
+                    raise RuntimeError("批次主檔寫入結果的訂單順序不一致")
+                result = finalize_dispatch_context(
+                    context,
+                    plan.main_path,
+                    merge_result,
+                    reconcile=(
+                        batch_reconcile
+                        if index == 0
+                        else {"ok": True, "checked_parts": 0, "mismatches": []}
+                    ),
+                    restore_main_on_error=False,
                 )
             else:
                 result = execute_dispatch_context(
@@ -951,6 +1056,8 @@ def commit_dispatch_plan(
     except Exception:
         if processed_sessions:
             rollback_executor(processed_sessions)
+        elif batch_backup_reference:
+            restore_main_from_backup_reference(batch_backup_reference, plan.main_path)
         raise
 
     effective_supplement_allocations = (

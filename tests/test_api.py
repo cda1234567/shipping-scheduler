@@ -593,10 +593,18 @@ class ApiTests(unittest.TestCase):
                      "merged_parts": 7,
                      "shortages": [],
                  }), \
-                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                 patch("app.routers.schedule.merge_order_batches_to_main", return_value={
+                     "backup_path": "",
+                     "plan_rows": [],
+                     "order_results": [
+                         {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx"},
+                         {"order_id": 2, "merged_parts": 4, "backup_path": "C:/b2.xlsx"},
+                     ],
+                 }) as mock_batch_merge, \
+                 patch("app.services.dispatch_pipeline.finalize_dispatch_context", side_effect=[
                      {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11}},
                      {"order_id": 2, "merged_parts": 4, "backup_path": "C:/b2.xlsx", "session": {"id": 12}},
-                 ]) as mock_execute, \
+                 ]), \
                  patch("app.routers.schedule.db.log_activity"):
                 response = self.client.post("/api/schedule/batch-dispatch", json={
                     "order_ids": [1, 2],
@@ -612,8 +620,9 @@ class ApiTests(unittest.TestCase):
             call(1, str(main_path), sync_bom_files=True),
             call(2, str(main_path), sync_bom_files=True),
         ])
-        self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-1": "CreateRequirement"})
-        self.assertEqual(mock_execute.call_args_list[1].args[4], {})
+        batches = mock_batch_merge.call_args.kwargs["batches"]
+        self.assertEqual(batches[0]["decisions"], {"PART-1": "CreateRequirement"})
+        self.assertEqual(batches[1]["decisions"], {})
 
     def test_preview_defective_import_returns_missing_items(self):
         with patch("app.routers.defectives._require_main_path", return_value="C:/main.xlsx"), \
@@ -1455,10 +1464,18 @@ class ApiTests(unittest.TestCase):
                      "merged_parts": 5,
                      "shortages": [],
                  }), \
-                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                 patch("app.routers.schedule.merge_order_batches_to_main", return_value={
+                     "backup_path": "",
+                     "plan_rows": [],
+                     "order_results": [
+                         {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx"},
+                         {"order_id": 2, "merged_parts": 2, "backup_path": "C:/b2.xlsx"},
+                     ],
+                 }) as mock_batch_merge, \
+                 patch("app.services.dispatch_pipeline.finalize_dispatch_context", side_effect=[
                      {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11}},
                      {"order_id": 2, "merged_parts": 2, "backup_path": "C:/b2.xlsx", "session": {"id": 12}},
-                 ]) as mock_execute, \
+                 ]), \
                  patch("app.routers.schedule.db.replace_order_supplements") as mock_replace, \
                  patch("app.routers.schedule.db.log_activity"):
                 response = self.client.post("/api/schedule/batch-dispatch", json={
@@ -1468,8 +1485,9 @@ class ApiTests(unittest.TestCase):
                 })
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_execute.call_args_list[0].args[5], {"PART-1": 3000})
-        self.assertEqual(mock_execute.call_args_list[1].args[5], {})
+        batches = mock_batch_merge.call_args.kwargs["batches"]
+        self.assertEqual(batches[0]["supplements"], {"PART-1": 3000})
+        self.assertEqual(batches[1]["supplements"], {})
         mock_replace.assert_called_once_with([1, 2], {1: {"PART-1": 3000}, 2: {}})
 
     def test_batch_dispatch_uses_saved_right_panel_supplements(self):
@@ -1575,10 +1593,18 @@ class ApiTests(unittest.TestCase):
                      {"merged_parts": 2, "shortages": []},
                      {"merged_parts": 2, "shortages": []},
                  ]) as mock_preview, \
-                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                 patch("app.routers.schedule.merge_order_batches_to_main", return_value={
+                     "backup_path": "",
+                     "plan_rows": [],
+                     "order_results": [
+                         {"order_id": 1, "merged_parts": 1, "backup_path": "C:/b1.xlsx"},
+                         {"order_id": 2, "merged_parts": 1, "backup_path": "C:/b2.xlsx"},
+                     ],
+                 }) as mock_batch_merge, \
+                 patch("app.services.dispatch_pipeline.finalize_dispatch_context", side_effect=[
                      {"order_id": 1, "merged_parts": 1, "session": {"id": 11}},
                      {"order_id": 2, "merged_parts": 1, "session": {"id": 12}},
-                 ]) as mock_execute, \
+                 ]), \
                  patch("app.routers.schedule.db.replace_order_supplements"), \
                  patch("app.routers.schedule.refresh_snapshot_from_main"), \
                  patch("app.routers.schedule.db.log_activity"):
@@ -1604,10 +1630,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_preview.call_args_list[1].args[1], expected_batches)
         self.assertEqual(mock_preview.call_args_list[0].args[2], {})
         self.assertEqual(mock_preview.call_args_list[1].args[2], {})
-        self.assertEqual(mock_execute.call_args_list[0].args[4], {"PART-A": "Shortage"})
-        self.assertEqual(mock_execute.call_args_list[0].args[5], {"PART-A": 800})
-        self.assertEqual(mock_execute.call_args_list[1].args[4], {"PART-B": "CreateRequirement"})
-        self.assertEqual(mock_execute.call_args_list[1].args[5], {"PART-B": 1200})
+        batches = mock_batch_merge.call_args.kwargs["batches"]
+        self.assertEqual(batches[0]["decisions"], {"PART-A": "Shortage"})
+        self.assertEqual(batches[0]["supplements"], {"PART-A": 800})
+        self.assertEqual(batches[1]["decisions"], {"PART-B": "CreateRequirement"})
+        self.assertEqual(batches[1]["supplements"], {"PART-B": 1200})
 
     def test_single_dispatch_and_batch_dispatch_share_same_single_order_plan(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1758,7 +1785,15 @@ class ApiTests(unittest.TestCase):
                      "merged_parts": 3,
                      "shortages": [],
                  }), \
-                 patch("app.routers.schedule._execute_dispatch", side_effect=[
+                 patch("app.routers.schedule.merge_order_batches_to_main", return_value={
+                     "backup_path": "",
+                     "plan_rows": [],
+                     "order_results": [
+                         {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx"},
+                         {"order_id": 2, "merged_parts": 2, "backup_path": "C:/b2.xlsx"},
+                     ],
+                 }), \
+                 patch("app.services.dispatch_pipeline.finalize_dispatch_context", side_effect=[
                      {"order_id": 1, "merged_parts": 3, "backup_path": "C:/b1.xlsx", "session": {"id": 11, "order_id": 1}},
                      HTTPException(status_code=400, detail="第二筆發料失敗"),
                  ]), \
@@ -2268,6 +2303,7 @@ class ApiTests(unittest.TestCase):
 
         with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
              patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.get_dispatch_rollback_unavailable_reason", return_value=""), \
              patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[]), \
              patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
              patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
@@ -2284,6 +2320,25 @@ class ApiTests(unittest.TestCase):
             ],
         )
 
+    def test_rollback_preview_rejects_missing_backup_before_showing_confirmation(self):
+        order = {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"}
+        session = {
+            "id": 9,
+            "order_id": 5,
+            "backup_path": "C:/missing-dispatch-backup.xlsx",
+            "main_file_path": "C:/main.xlsx",
+            "dispatched_at": "2026-03-20T09:00:00",
+        }
+
+        with patch("app.routers.schedule.db.get_order", return_value=order), \
+             patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.db.get_dispatch_session_tail") as mock_tail:
+            response = self.client.get("/api/schedule/orders/5/rollback-preview?force=1")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("備份", response.json()["detail"])
+        mock_tail.assert_not_called()
+
     def test_rollback_preview_blocks_when_later_inventory_mutation_exists(self):
         order = {"id": 5, "po_number": "4500059234", "model": "MODEL-E", "status": "dispatched"}
         session = {
@@ -2296,6 +2351,7 @@ class ApiTests(unittest.TestCase):
 
         with patch("app.routers.schedule.db.get_order", return_value=order), \
              patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.get_dispatch_rollback_unavailable_reason", return_value=""), \
              patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[{"id": 88}]), \
              patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]), \
              patch("app.routers.schedule.db.get_dispatch_session_tail") as mock_tail:
@@ -2327,6 +2383,7 @@ class ApiTests(unittest.TestCase):
 
         with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
              patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.get_dispatch_rollback_unavailable_reason", return_value=""), \
              patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after", return_value=[]), \
              patch("app.services.inventory_restore_guard.db.get_activity_logs_after", return_value=[]) as mock_logs, \
              patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
@@ -2354,6 +2411,7 @@ class ApiTests(unittest.TestCase):
 
         with patch("app.routers.schedule.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
              patch("app.routers.schedule.db.get_active_dispatch_session", return_value=session), \
+             patch("app.routers.schedule.get_dispatch_rollback_unavailable_reason", return_value=""), \
              patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after") as mock_defective, \
              patch("app.services.inventory_restore_guard.db.get_activity_logs_after") as mock_logs, \
              patch("app.routers.schedule.db.get_dispatch_session_tail", return_value=tail):
@@ -2396,7 +2454,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
                  patch("app.routers.schedule.db.delete_dispatch_records_for_orders") as mock_delete_records, \
                  patch("app.routers.schedule.db.mark_dispatch_sessions_rolled_back") as mock_mark_rolled_back, \
-                 patch("app.routers.schedule.restore_recent_committed_merge_drafts", return_value=[5, 6]) as mock_restore_drafts, \
+                 patch("app.services.dispatch_pipeline.restore_recent_committed_merge_drafts", return_value=[5, 6]) as mock_restore_drafts, \
                  patch("app.routers.schedule.db.update_order") as mock_update_order, \
                  patch("app.routers.schedule.db.log_activity"):
                 response = self.client.post("/api/schedule/orders/5/rollback")
@@ -2445,7 +2503,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.schedule.db.get_setting", return_value=str(main_path)), \
                  patch("app.routers.schedule.db.delete_dispatch_records_for_orders") as mock_delete_records, \
                  patch("app.routers.schedule.db.mark_dispatch_sessions_rolled_back") as mock_mark_rolled_back, \
-                 patch("app.routers.schedule.restore_recent_committed_merge_drafts", return_value=[5, 6]) as mock_restore_drafts, \
+                 patch("app.services.dispatch_pipeline.restore_recent_committed_merge_drafts", return_value=[5, 6]) as mock_restore_drafts, \
                  patch("app.routers.schedule.db.update_order") as mock_update_order, \
                  patch("app.routers.schedule.db.log_activity") as mock_log_activity, \
                  patch("app.services.inventory_restore_guard.db.get_defective_batch_summaries_after") as mock_defective, \

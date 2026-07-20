@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
 import threading
 import time
 import uuid
@@ -24,7 +23,12 @@ from ..config import SCHEDULE_DIR, BACKUP_DIR, cfg
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_moq, read_stock
 from ..services.schedule_parser import parse_schedule
 from ..services.calculator import run as calc_run
-from ..services.merge_to_main import merge_row_to_main, preview_order_batches, supplement_part_in_main
+from ..services.merge_to_main import (
+    merge_order_batches_to_main,
+    merge_row_to_main,
+    preview_order_batches,
+    supplement_part_in_main,
+)
 from ..services.order_decisions import build_order_decision_allocations
 from ..services.order_supplements import (
     build_order_supplement_allocations,
@@ -32,12 +36,14 @@ from ..services.order_supplements import (
 )
 from ..services.dispatch_pipeline import (
     DispatchContext,
+    build_dispatch_rollback_availability,
     build_context_supplement_allocations,
     build_dispatch_plan,
     commit_dispatch_plan,
     current_main_signature as _current_main_signature,
     ensure_main_write_allowed as _ensure_main_write_allowed,
     execute_dispatch_context,
+    get_dispatch_rollback_unavailable_reason,
     get_effective_moq as _get_effective_moq,
     normalize_decisions as _normalize_decisions,
     normalize_order_decisions as _normalize_order_decisions,
@@ -47,9 +53,9 @@ from ..services.dispatch_pipeline import (
     normalize_supplements as _normalize_supplements,
     prepare_dispatch_context as _prepare_dispatch_context,
     require_existing_main_path as _require_existing_main_path,
+    rollback_dispatch_sessions as _rollback_dispatch_sessions,
 )
 from ..services.inventory_restore_guard import ensure_dispatch_rollback_allowed
-from ..services.st_package_breakdowns import restore_st_package_consumptions
 from ..services.merge_drafts import (
     rebuild_merge_drafts,
     delete_merge_draft_and_refresh,
@@ -59,7 +65,6 @@ from ..services.merge_drafts import (
     download_merge_draft,
     download_selected_merge_drafts,
     download_selected_committed_merge_drafts,
-    restore_recent_committed_merge_drafts,
 )
 from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
@@ -200,6 +205,9 @@ def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict
     session = db.get_active_dispatch_session(order_id)
     if not session:
         raise HTTPException(400, "找不到這筆訂單的發料歷史，無法反悔")
+    unavailable_reason = get_dispatch_rollback_unavailable_reason(session)
+    if unavailable_reason:
+        raise HTTPException(400, unavailable_reason)
     if not force:
         ensure_dispatch_rollback_allowed(session)
 
@@ -518,73 +526,6 @@ def _load_active_merge_draft_context(
     )
 
 
-def _rollback_dispatch_sessions(sessions: list[dict]) -> dict:
-    if not sessions:
-        raise HTTPException(400, "找不到可反悔的發料紀錄")
-
-    normalized_sessions = [dict(session) for session in sessions if session]
-    if not normalized_sessions:
-        raise HTTPException(400, "找不到可反悔的發料紀錄")
-
-    first_session = normalized_sessions[0]
-    backup_path = Path(str(first_session.get("backup_path") or "")).expanduser()
-    if not backup_path.exists():
-        raise HTTPException(400, "找不到這次發料的主檔備份，無法反悔")
-
-    current_main_path = db.resolve_managed_path(str(db.get_setting("main_file_path") or "").strip(), "main_file_path")
-    session_paths = {
-        db.resolve_managed_path(str(session.get("main_file_path") or "").strip(), "main_file_path")
-        for session in normalized_sessions
-        if str(session.get("main_file_path") or "").strip()
-    }
-    if len(session_paths) > 1:
-        raise HTTPException(400, "這批發料使用了不同主檔，無法自動反悔")
-
-    session_main_path = next(iter(session_paths), "")
-    restore_target = session_main_path or current_main_path
-    if not restore_target:
-        raise HTTPException(400, "找不到目前主檔路徑，無法反悔")
-    if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
-        raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
-
-    restore_target_path = Path(restore_target)
-    restore_target_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(backup_path, restore_target_path)
-    refresh_snapshot_from_main(str(restore_target_path))
-
-    order_ids = [int(session["order_id"]) for session in normalized_sessions]
-    session_ids = [int(session["id"]) for session in normalized_sessions]
-    db.delete_dispatch_records_for_orders(order_ids)
-    st_restore_result = restore_st_package_consumptions(session_ids, order_ids)
-    db.mark_dispatch_sessions_rolled_back(session_ids)
-
-    restored_orders = []
-    for session in normalized_sessions:
-        order_id = int(session["order_id"])
-        order = db.get_order(order_id)
-        restore_status = session.get("previous_status") or "merged"
-        db.update_order(order_id, status=restore_status, folder="")
-        restored_orders.append({
-            "id": order_id,
-            "po_number": order.get("po_number", "") if order else "",
-            "model": order.get("model", "") if order else "",
-            "status": order.get("status", "") if order else "",
-            "restore_status": restore_status,
-        })
-
-    restored_draft_orders = restore_recent_committed_merge_drafts(order_ids)
-
-    return {
-        "count": len(restored_orders),
-        "restored_from": str(backup_path),
-        "main_file_path": str(restore_target_path),
-        "orders": restored_orders,
-        "restored_draft_order_ids": restored_draft_orders,
-        "restored_draft_count": len(restored_draft_orders),
-        **st_restore_result,
-    }
-
-
 def _resolve_single_order_dispatch_plan(order_id: int, req: DecisionRequest, main_path: str):
     order, groups, all_components = _prepare_dispatch_context(order_id, main_path)
     decisions = _normalize_decisions(req.decisions)
@@ -879,6 +820,7 @@ async def get_completed_rows():
         "rows": orders,
         "folders": folders,
         "committed_merge_drafts": get_committed_schedule_draft_map(order_ids),
+        "rollback_availability": build_dispatch_rollback_availability(orders),
     }
 
 
@@ -1076,9 +1018,10 @@ async def dispatch_order(order_id: int, req: DecisionRequest):
     result = commit_dispatch_plan(
         plan,
         merge_executor=merge_row_to_main,
+        batch_merge_executor=merge_order_batches_to_main,
         backup_dir=str(BACKUP_DIR),
         rollback_executor=_rollback_dispatch_sessions,
-        execute_dispatcher=_execute_dispatch,
+        execute_dispatcher=_execute_dispatch if len(plan.contexts) == 1 else None,
         snapshot_refresher=refresh_snapshot_from_main,
     )
     return result.results[0]
@@ -1197,9 +1140,10 @@ def batch_dispatch(req: BatchDispatchRequest):
     result = commit_dispatch_plan(
         plan,
         merge_executor=merge_row_to_main,
+        batch_merge_executor=merge_order_batches_to_main,
         backup_dir=str(BACKUP_DIR),
         rollback_executor=_rollback_dispatch_sessions,
-        execute_dispatcher=_execute_dispatch,
+        execute_dispatcher=_execute_dispatch if len(plan.contexts) == 1 else None,
         snapshot_refresher=refresh_snapshot_from_main,
     )
     db.log_activity("batch_dispatch", f"批次發料 {result.count} 筆訂單，合計 {result.merged_parts} 筆 merge")
@@ -1350,9 +1294,10 @@ def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
             result = commit_dispatch_plan(
                 plan,
                 merge_executor=merge_row_to_main,
+                batch_merge_executor=merge_order_batches_to_main,
                 backup_dir=str(BACKUP_DIR),
                 rollback_executor=_rollback_dispatch_sessions,
-                execute_dispatcher=_execute_dispatch,
+                execute_dispatcher=_execute_dispatch if len(plan.contexts) == 1 else None,
                 snapshot_refresher=refresh_snapshot_from_main,
                 progress_callback=lambda written, total, _result: _store_commit_job(job_id, {
                     "status": "running",

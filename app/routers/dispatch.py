@@ -313,13 +313,45 @@ def _load_committed_main_supplements(
             if re.match(r"^\d+-\d+$", code):
                 batch_cols_by_code.setdefault(code, []).append(col_idx)
 
-        row_map: dict[str, int] = {}
-        for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+        order_parts: dict[int, list[str]] = {}
+        relevant_parts: set[str] = set()
+        relevant_cols: set[int] = set()
+        for order in committed_orders:
+            try:
+                order_id = int(order["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            code = str(order.get("code") or "").strip()
+            batch_cols = batch_cols_by_code.get(code)
+            if not batch_cols:
+                continue
+
+            model_key = _normalize_part_key(order.get("model"))
+            parts = list(dict.fromkeys(
+                _normalize_part_key(component.get("part_number"))
+                for component in bom_map.get(model_key, [])
+                if _normalize_part_key(component.get("part_number"))
+            ))
+            order_parts[order_id] = parts
+            relevant_parts.update(parts)
+            relevant_cols.update(batch_cols)
+
+        # ReadOnlyWorksheet.cell() 會從工作表開頭重新掃描到指定列。舊流程對
+        # 每張訂單、每個料號逐格呼叫，20 筆訂單會重複解析主檔數千次。
+        # 這裡改成單次逐列掃描，只保留本批次需要的料號與批次欄值。
+        values_by_part: dict[str, dict[int, float]] = {}
+        max_relevant_col = max(relevant_cols, default=1)
+        for row_values in ws.iter_rows(min_row=2, max_col=max_relevant_col, values_only=True):
             if not row_values:
                 continue
             part = _normalize_part_key(row_values[0] if len(row_values) >= 1 else "")
-            if part and part not in row_map:
-                row_map[part] = row_idx
+            if not part or part not in relevant_parts or part in values_by_part:
+                continue
+            values_by_part[part] = {
+                col_idx: _to_number(row_values[col_idx - 1] if len(row_values) >= col_idx else None)
+                for col_idx in relevant_cols
+            }
 
         result: dict[int, dict[str, float]] = {}
         for order in committed_orders:
@@ -332,19 +364,12 @@ def _load_committed_main_supplements(
             if not batch_cols:
                 continue
 
-            model_key = _normalize_part_key(order.get("model"))
-            parts = [
-                _normalize_part_key(component.get("part_number"))
-                for component in bom_map.get(model_key, [])
-            ]
             supplements: dict[str, float] = {}
-            for part in dict.fromkeys(part for part in parts if part):
-                row_idx = row_map.get(part)
-                if row_idx is None:
+            for part in order_parts.get(order_id, []):
+                part_values = values_by_part.get(part)
+                if part_values is None:
                     continue
-                qty = 0.0
-                for col_idx in batch_cols:
-                    qty += _to_number(ws.cell(row=row_idx, column=col_idx).value)
+                qty = sum(part_values.get(col_idx, 0.0) for col_idx in batch_cols)
                 if qty > 0:
                     supplements[part] = qty
             result[order_id] = supplements

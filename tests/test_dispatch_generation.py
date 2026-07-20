@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from app.routers import bom as bom_router
-from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _build_order_dispatch_context, _generate_dispatch_response, _get_selected_orders
+from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _build_order_dispatch_context, _generate_dispatch_response, _get_selected_orders, _load_committed_main_supplements
 from app.services.dispatch_form_generator import generate_dispatch_form
 
 
@@ -360,6 +360,60 @@ class DispatchGenerationTests(unittest.TestCase):
         items = captured["groups"][0]["items"]
         self.assertEqual([item["part"] for item in items], ["EC-OK"])
         self.assertEqual(items[0]["qty"], 100)
+
+    def test_committed_main_supplements_scan_read_only_sheet_once_without_random_cell_reads(self):
+        class FakeWorksheet:
+            def __init__(self):
+                self.data_scan_count = 0
+
+            def iter_rows(self, min_row=None, max_row=None, max_col=None, values_only=False):
+                if min_row == 1 and max_row == 1:
+                    return iter([("料號", None, None, "6-2", "6-3", "6-2")])
+                self.data_scan_count += 1
+                self.assert_scan_args = (min_row, max_col, values_only)
+                return iter([
+                    ("PART-A", None, None, 30, 50, 12),
+                    ("PART-B", None, None, 0, 70, 0),
+                    # 主檔若有重複料號，維持舊流程只採第一列的行為。
+                    ("PART-A", None, None, 999, 999, 999),
+                ])
+
+            def cell(self, *args, **kwargs):
+                raise AssertionError("read-only 主檔不可逐格隨機讀取")
+
+        class FakeWorkbook:
+            def __init__(self, worksheet):
+                self.worksheets = [worksheet]
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        worksheet = FakeWorksheet()
+        workbook = FakeWorkbook(worksheet)
+        orders = [
+            {"id": 62, "status": "dispatched", "model": "MODEL-A", "code": "6-2"},
+            {"id": 63, "status": "completed", "model": "MODEL-B", "code": "6-3"},
+        ]
+        bom_map = {
+            "MODEL-A": [{"part_number": "PART-A"}, {"part_number": "PART-MISSING"}],
+            "MODEL-B": [{"part_number": "PART-A"}, {"part_number": "PART-B"}],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            main_path.touch()
+            with patch("app.routers.dispatch.db.get_setting", return_value=str(main_path)), \
+                 patch("app.routers.dispatch.openpyxl.load_workbook", return_value=workbook):
+                result = _load_committed_main_supplements(orders, bom_map)
+
+        self.assertEqual(result, {
+            62: {"PART-A": 42},
+            63: {"PART-A": 50, "PART-B": 70},
+        })
+        self.assertEqual(worksheet.data_scan_count, 1)
+        self.assertEqual(worksheet.assert_scan_args, (2, 6, True))
+        self.assertTrue(workbook.closed)
 
     def test_dispatch_generate_5_1_ec_80004a_current_main_stock_plus_own_dispatch_record_is_enough(self):
         orders = [

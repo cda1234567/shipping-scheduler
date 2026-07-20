@@ -40,6 +40,22 @@ class LocalTimeTests(unittest.TestCase):
 
         self.assertTrue(str(backup_path).endswith("main_backup_20260331_103015.xlsx"))
 
+    def test_backup_main_file_does_not_overwrite_same_second_backup(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            backup_dir = Path(temp_dir) / "backups"
+            main_path.write_bytes(b"first")
+
+            with patch("app.services.merge_to_main.local_now", return_value=datetime(2026, 3, 31, 10, 30, 15)):
+                first_path = Path(backup_main_file(str(main_path), str(backup_dir)))
+                main_path.write_bytes(b"second")
+                second_path = Path(backup_main_file(str(main_path), str(backup_dir)))
+
+            self.assertNotEqual(first_path, second_path)
+            self.assertEqual(first_path.read_bytes(), b"first")
+            self.assertEqual(second_path.read_bytes(), b"second")
+            self.assertTrue(second_path.name.endswith("_1.xlsx"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -241,12 +241,13 @@ class FrontendAssetTests(unittest.TestCase):
     def test_frontend_calculator_skips_ec_6_low_stock_warning_threshold(self):
         root = Path(__file__).resolve().parents[1]
         calculator_module = (root / "static" / "modules" / "calculator.js").read_text(encoding="utf-8")
+        shortage_rules = (root / "static" / "modules" / "shortage_rules.js").read_text(encoding="utf-8")
 
         self.assertNotIn("export function getRequiredMinStock", calculator_module)
         self.assertNotIn("export function calculateShortageAmount", calculator_module)
-        self.assertIn('if (normalized.startsWith("EC-6")) requiredMin = 0;', calculator_module)
-        self.assertIn('else if (normalized.startsWith("EC-")) requiredMin = 100;', calculator_module)
-        self.assertIn('else if (normalized.startsWith("PK-")) requiredMin = normalized.startsWith("PK-50070") ? 0 : 1;', calculator_module)
+        self.assertIn('if (normalized.startsWith("EC-6")) requiredMin = 0;', shortage_rules)
+        self.assertIn('else if (normalized.startsWith("EC-")) requiredMin = 100;', shortage_rules)
+        self.assertIn('else if (normalized.startsWith("PK-")) requiredMin = normalized.startsWith("PK-50070") ? 0 : 1;', shortage_rules)
 
     def test_right_panel_includes_main_stock_shortage_rule_items_without_duplicates(self):
         root = Path(__file__).resolve().parents[1]
@@ -987,8 +988,11 @@ console.log(JSON.stringify(results));
 
         # 模擬 6-4~6-9 IC-M24C02 補 400/400/400/200/300/200 → 累加 = 1900
         # 確認分流邏輯能對 ORDER_SCOPED prefix 正確認 + 走累加路徑。
-        self.assertIn('const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];', text)
-        self.assertIn("function isOrderScopedPart(partNumber)", text)
+        shortage_rules = (
+            Path(__file__).resolve().parents[1] / "static" / "modules" / "shortage_rules.js"
+        ).read_text(encoding="utf-8")
+        self.assertIn('ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"]', shortage_rules)
+        self.assertIn("export function isOrderScopedPart(partNumber)", shortage_rules)
 
     def test_modal_stored_supplements_do_not_sum_across_orders_for_shared_pool_parts(self):
         # Bug 7 的正確性現在由後端 calc-preview/分配邏輯保證，API 測試已有覆蓋。

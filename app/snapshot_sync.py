@@ -34,6 +34,7 @@ def refresh_snapshot_from_main(main_path: str) -> int:
     moq.update(manual_moq)
 
     db.save_snapshot(stock, moq, manual_moq_parts=set(manual_moq))
+    db.set_setting("main_part_count", str(len(stock)))
 
     # 主檔或快照變了，清掉 main-file/data 的回應快取
     try:

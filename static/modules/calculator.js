@@ -6,7 +6,10 @@
  * 3. 套用各訂單已保存的補料值
  * 4. 對未發料訂單跑 running balance
  */
-const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];
+import {
+  calculateCurrentOrderShortageAmount,
+  isOrderScopedPart as isOrderScopedShortagePart,
+} from "./shortage_rules.js";
 
 export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}, orderSupplementsByOrder = {}) {
   const running = { ...stock };
@@ -172,11 +175,6 @@ function calculateEffectiveNeededQty(component = {}, scheduleOrderQty = 0) {
   return originalNeededQty;
 }
 
-function isOrderScopedShortagePart(partNumber) {
-  const key = String(partNumber || "").trim().toUpperCase();
-  return ORDER_SCOPED_PART_PREFIXES.some(prefix => key.startsWith(prefix));
-}
-
 function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
   const normalized = {};
   for (const [rawOrderId, supplements] of Object.entries(orderSupplementsByOrder || {})) {
@@ -194,18 +192,4 @@ function normalizeOrderSupplements(orderSupplementsByOrder = {}) {
     normalized[orderId] = orderSupplements;
   }
   return normalized;
-}
-
-function calculateCurrentOrderShortageAmount(partNumber, availableBefore, neededQty, ignoreEcMin = false) {
-  if (isOrderScopedShortagePart(partNumber)) {
-    return Math.max(0, Number(neededQty || 0) - Math.max(0, Number(availableBefore || 0)));
-  }
-  const endingStock = Number(availableBefore || 0) - Number(neededQty || 0);
-  const normalized = String(partNumber || "").trim().toUpperCase();
-  let requiredMin = 0;
-  if (normalized.startsWith("EC-6")) requiredMin = 0;
-  else if (ignoreEcMin && normalized.startsWith("EC-")) requiredMin = 0;
-  else if (normalized.startsWith("EC-")) requiredMin = 100;
-  else if (normalized.startsWith("PK-")) requiredMin = normalized.startsWith("PK-50070") ? 0 : 1;
-  return Math.max(0, requiredMin - Number(endingStock || 0));
 }

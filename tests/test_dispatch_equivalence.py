@@ -3,10 +3,18 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from openpyxl import Workbook, load_workbook
 
-from app.services.merge_to_main import merge_row_to_main, preview_order_batches
+from app.services import merge_to_main as merge_service
+from app.services.merge_to_main import (
+    merge_order_batches_to_main,
+    merge_row_to_main,
+    preview_order_batches,
+    restore_main_from_backup_reference,
+    validate_dispatch_backup_reference,
+)
 
 
 class DispatchEquivalenceTests(unittest.TestCase):
@@ -225,6 +233,85 @@ class DispatchEquivalenceTests(unittest.TestCase):
             self.assertIsNone(ws.cell(row=2, column=12).value)
             self.assertEqual(ws.cell(row=2, column=13).value, 10)
             self.assertEqual(ws.cell(row=2, column=14).value, -5)
+            wb.close()
+
+    def test_multi_batch_commit_saves_once_and_can_restore_from_middle_order(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "main.xlsx"
+            backup_dir = Path(temp_dir) / "backups"
+            self._build_main_workbook(path)
+
+            first_groups = self._single_group(part_number="PART-A", needed_qty=15, prev_qty_cs=0)
+            second_groups = [{
+                "batch_code": "1-2",
+                "po_number": "4500000002",
+                "bom_model": "MODEL-B",
+                "components": [{
+                    "part_number": "PART-A",
+                    "description": "PART-A desc",
+                    "is_dash": False,
+                    "needed_qty": 10,
+                    "prev_qty_cs": 0,
+                }],
+            }]
+            batches = [
+                {"order_id": 1, "model": "MODEL-A", "groups": first_groups, "supplements": {}, "decisions": {}},
+                {"order_id": 2, "model": "MODEL-B", "groups": second_groups, "supplements": {}, "decisions": {}},
+            ]
+
+            with patch.object(
+                merge_service,
+                "_save_workbook_atomically",
+                wraps=merge_service._save_workbook_atomically,
+            ) as mock_save:
+                result = merge_order_batches_to_main(
+                    str(path),
+                    batches,
+                    backup_dir=str(backup_dir),
+                )
+
+            self.assertEqual(mock_save.call_count, 1)
+            self.assertEqual([item["merged_parts"] for item in result["order_results"]], [1, 1])
+            self.assertTrue(validate_dispatch_backup_reference(result["backup_path"])["ok"])
+
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+            self.assertEqual(ws.cell(row=2, column=11).value, 5)
+            self.assertEqual(ws.cell(row=2, column=14).value, -5)
+            wb.close()
+
+            current_bytes = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "找不到要反悔的訂單"):
+                restore_main_from_backup_reference(
+                    result["backup_path"],
+                    str(path),
+                    before_order_id=999,
+                )
+            self.assertEqual(path.read_bytes(), current_bytes)
+
+            restore_result = restore_main_from_backup_reference(
+                result["backup_path"],
+                str(path),
+                before_order_id=2,
+            )
+            self.assertEqual(restore_result["replayed_order_count"], 1)
+
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+            self.assertEqual(ws.cell(row=2, column=11).value, 5)
+            self.assertIsNone(ws.cell(row=2, column=14).value)
+            wb.close()
+
+            restore_result = restore_main_from_backup_reference(
+                result["backup_path"],
+                str(path),
+                before_order_id=1,
+            )
+            self.assertEqual(restore_result["replayed_order_count"], 0)
+            wb = load_workbook(path, data_only=True)
+            ws = wb.active
+            self.assertEqual(ws.max_column, 8)
+            self.assertEqual(ws.cell(row=2, column=8).value, 20)
             wb.close()
 
 

@@ -92,6 +92,24 @@ class DispatchPipelineTests(unittest.TestCase):
         self.assertEqual(groups[0]["components"][0]["needed_qty"], 300)
         self.assertEqual(all_components[0]["needed_qty"], 300)
 
+    def test_rollback_availability_marks_missing_session_and_backup(self):
+        orders = [{"id": 1}, {"id": 2}, {"id": 3}]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            existing_backup = Path(temp_dir) / "existing.xlsx"
+            existing_backup.write_bytes(b"backup")
+            sessions = [
+                {"id": 11, "order_id": 1, "backup_path": str(existing_backup)},
+                {"id": 12, "order_id": 2, "backup_path": str(Path(temp_dir) / "missing.xlsx")},
+            ]
+            with patch("app.services.dispatch_pipeline.db.get_active_dispatch_sessions", return_value=sessions):
+                result = dispatch_pipeline.build_dispatch_rollback_availability(orders)
+
+        self.assertTrue(result[1]["available"])
+        self.assertFalse(result[2]["available"])
+        self.assertIn("備份", result[2]["reason"])
+        self.assertFalse(result[3]["available"])
+        self.assertIn("發料歷史", result[3]["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

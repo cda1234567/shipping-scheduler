@@ -1,5 +1,6 @@
 import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, hideToast, esc, fmt } from "./api.js";
 import { calculate } from "./calculator.js";
+import { isOrderScopedPart } from "./shortage_rules.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -24,6 +25,7 @@ let _orderSupplementDetailsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
 let _completedDraftsByOrderId = {};
+let _completedRollbackAvailabilityByOrderId = {};
 let _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
 let _onRefreshMain = null;
 let _checkedIds = new Set();
@@ -54,7 +56,6 @@ let _globalBusyPercent = 0;
 let _rightPanelMode = "shortages";
 let _rightPanelActiveTab = "shortages";
 let _lastShortagePanelData = { shortages: [], csShortages: [], mainDeficits: [] };
-const ORDER_SCOPED_PART_PREFIXES = ["IC-STM", "IC-XC2C32", "IC-M24"];
 const PURCHASE_REMINDER_PREFIXES = ["IC-", "OC-", "UC-"];
 const PURCHASE_REMINDER_FALLBACK_THRESHOLD = 100;
 const BATCH_MERGE_RESET_STORAGE_KEY = "shippingScheduler.batchMerge.resetStored";
@@ -165,11 +166,6 @@ export function getScheduleMeta() {
 
 function normalizePartKey(partNumber) {
   return String(partNumber || "").trim().toUpperCase();
-}
-
-function isOrderScopedPart(partNumber) {
-  const key = normalizePartKey(partNumber);
-  return ORDER_SCOPED_PART_PREFIXES.some(prefix => key.startsWith(prefix));
 }
 
 function normalizeOrderId(value) {
@@ -988,6 +984,7 @@ async function loadCompletedRows() {
     _completedRows = d.rows || [];
     _completedFolders = d.folders || [];
     _completedDraftsByOrderId = d.committed_merge_drafts || {};
+    _completedRollbackAvailabilityByOrderId = d.rollback_availability || {};
     const validIds = new Set(_completedRows.map(row => normalizeOrderId(row?.id)).filter(Number.isInteger));
     _completedCheckedIds = new Set([..._completedCheckedIds].filter(id => validIds.has(id)));
     if (!validIds.has(_completedLastCheckedId)) _completedLastCheckedId = null;
@@ -995,6 +992,7 @@ async function loadCompletedRows() {
     _completedRows = [];
     _completedFolders = [];
     _completedDraftsByOrderId = {};
+    _completedRollbackAvailabilityByOrderId = {};
     _completedLastCheckedId = null;
   }
 }
@@ -1012,30 +1010,6 @@ function recalculate() {
   checkedOrders.forEach((r, i) => resultById.set(r.id, checkedResults[i]));
   // _calcResults 保持與 _rows 同長度，未勾選的為 null
   _calcResults = _rows.map(r => resultById.get(r.id) || null);
-}
-
-// ── Render schedule ───────────────────────────────────────────────────────────
-function renderScheduleLegacyBase() {
-  const container = document.getElementById("schedule-scroll");
-  container.innerHTML = "";
-
-  if (!_rows.length) {
-    container.innerHTML = '<div class="empty-state">尚未上傳排程表，或排程為空</div>';
-    renderShortagePanel(buildMainStockNegativeItems(), [], []);
-    return;
-  }
-
-  const resultMap = {};
-  _calcResults.forEach((r, i) => { resultMap[_rows[i]?.id] = r; });
-
-  for (const r of _rows) {
-    container.appendChild(buildRowCard(r, resultMap));
-  }
-
-  initSortable(container);
-
-  const { shortages: rpShortages, csShortages: rpCSShortages } = buildRightPanelShortageData();
-  renderShortagePanel(rpShortages, rpCSShortages, []);
 }
 
 function formatDraftTime(value) {
@@ -1084,31 +1058,6 @@ function syncRowBadge(div, badgeState = { cls: "", text: "" }) {
 
   badge.className = `po-status-badge ${badgeState.cls || ""}`.trim();
   badge.textContent = badgeState.text;
-}
-
-function buildDraftPanelHtmlLegacyBase(draft) {
-  const files = draft?.files || [];
-  const shortages = draft?.shortages || [];
-  const updatedAt = formatDraftTime(draft?.updated_at);
-  const fileHtml = files.length
-    ? files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")
-    : '<span class="merge-draft-file merge-draft-file-empty">副檔尚未生成</span>';
-
-  return `
-    <div class="merge-draft-panel">
-      <div class="merge-draft-summary">
-        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
-        <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
-        ${updatedAt ? `<span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>` : ""}
-      </div>
-      <div class="merge-draft-files">${fileHtml}</div>
-      <div class="merge-draft-actions">
-        <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}">預覽</button>
-        <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
-        <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
-        <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
-      </div>
-    </div>`;
 }
 
 // ── Build single-row card ─────────────────────────────────────────────────────
@@ -3702,92 +3651,6 @@ async function downloadDraft(draftId, fileId = null) {
   }
 }
 
-async function handleDeleteDraftLegacyBroken(draftId, model) {
-  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
-  try {
-    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
-    showToast("副檔已刪除");
-    await refreshScheduleOnly();
-    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
-  } catch (error) {
-    showToast("副檔刪除失敗: " + error.message);
-  }
-}
-
-function buildDraftPanelHtmlLegacyV2(draft) {
-  const files = draft?.files || [];
-  const shortages = draft?.shortages || [];
-  const updatedAt = formatDraftTime(draft?.updated_at);
-  const fileHtml = files.length
-    ? files.map(file => `<span class="merge-draft-file" title="${esc(file.filename || "")}">${esc(file.filename || "")}</span>`).join("")
-    : '<span class="merge-draft-file merge-draft-file-empty">副檔尚未生成</span>';
-
-  return `
-    <div class="merge-draft-panel">
-      <div class="merge-draft-summary">
-        <span class="merge-draft-pill">副檔 ${files.length} 份</span>
-        <span class="merge-draft-meta">缺料 ${shortages.length} 筆</span>
-        ${updatedAt ? `<span class="merge-draft-meta">更新 ${esc(updatedAt)}</span>` : ""}
-      </div>
-      <div class="merge-draft-files">${fileHtml}</div>
-      <div class="merge-draft-actions">
-        <button class="btn btn-secondary btn-sm btn-draft-preview" data-draft-id="${draft.id}">預覽</button>
-        <button class="btn btn-secondary btn-sm btn-draft-edit" data-draft-id="${draft.id}">修改</button>
-        <button class="btn btn-secondary btn-sm btn-draft-download" data-draft-id="${draft.id}">下載</button>
-        <button class="btn btn-secondary btn-sm btn-draft-delete" data-draft-id="${draft.id}">刪除</button>
-      </div>
-    </div>`;
-}
-
-async function handleDeleteDraftLegacyV2(draftId, model) {
-  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
-  try {
-    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
-    showToast("副檔已刪除");
-    await refreshScheduleOnly();
-  } catch (error) {
-    showToast("副檔刪除失敗: " + error.message);
-  }
-}
-
-async function handleBatchDispatchLegacyV1() {
-  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
-  if (!_checkedIds.size) { showToast("請先勾選要發料的訂單"); return; }
-  if (!targets.length) { showToast("勾選的訂單中沒有可發料的"); return; }
-
-  const button = document.getElementById("btn-batch-dispatch");
-  const originalText = button?.textContent || "批次發料";
-  const preview = targets.slice(0, 6).map(item => `${item.po_number} ${item.model}`).join("\n");
-  const extra = targets.length > 6 ? `\n... 另 ${targets.length - 6} 筆` : "";
-  const confirmed = confirm(`確定要批次發料 ${targets.length} 筆訂單嗎？\n${preview}${extra}`);
-  if (!confirmed) return;
-  await showWriteToMainModal(targets);
-  return;
-
-  try {
-    if (button) {
-      button.disabled = true;
-      button.textContent = "發料中...";
-    }
-    const result = await apiPost("/api/schedule/batch-dispatch", {
-      order_ids: targets.map(item => item.id),
-      decisions: _decisions,
-    });
-    targets.forEach(item => _checkedIds.delete(item.id));
-    showDispatchReconcileToast(result, `已批次發料 ${result.count} 筆\n共 Merge ${result.merged_parts} 筆料號`);
-    await Promise.all([refresh(), refreshCompleted()]);
-    if (_onRefreshMain) await _onRefreshMain();
-  } catch (error) {
-    failCalcWorkspaceBusy("批次發料失敗：" + error.message);
-    showToast("批次發料失敗：" + error.message);
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = originalText;
-    }
-  }
-}
-
 async function handleShortageBadgeMoqEdit(badge) {
   const partNumber = normalizePartKey(badge?.dataset.part);
   if (!partNumber) {
@@ -4466,6 +4329,9 @@ function buildCompletedCard(r, allFolders) {
   const div = document.createElement("div");
   div.className = "po-group completed-card";
   const draft = _completedDraftsByOrderId?.[r.id] || null;
+  const rollbackAvailability = _completedRollbackAvailabilityByOrderId?.[r.id] || { available: true, reason: "" };
+  const rollbackAvailable = rollbackAvailability.available !== false;
+  const rollbackReason = String(rollbackAvailability.reason || "");
   const draftCollapsed = draft ? isCompletedDraftPanelCollapsed(r.id) : true;
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
@@ -4505,7 +4371,7 @@ function buildCompletedCard(r, allFolders) {
       <span style="font-size:13px;color:#3c3c43;font-weight:500">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
       <div class="completed-card-actions">
-        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" title="退回此筆已發料並恢復可重扣；若後面還有已發料，會一起往後還原">退回已發料</button>
+        <button class="btn btn-danger btn-sm btn-rollback-order" data-order-id="${r.id}" ${rollbackAvailable ? "" : "disabled"} title="${esc(rollbackAvailable ? "退回此筆已發料並恢復可重扣；若後面還有已發料，會一起往後還原" : rollbackReason)}">退回已發料</button>
         <select class="folder-select" data-order-id="${r.id}" style="font-size:11px;padding:2px 4px;border:1px solid #e5e5ea;border-radius:4px;max-width:100px">${folderOptions}</select>
       </div>
     </div>
@@ -4546,9 +4412,11 @@ function buildCompletedCard(r, allFolders) {
       await refreshCompleted();
     } catch (err) { showToast("移動失敗：" + err.message); }
   });
-  div.querySelector(".btn-rollback-order").addEventListener("click", event => {
-    void handleRollbackDispatch(r.id, event.currentTarget);
-  });
+  if (rollbackAvailable) {
+    div.querySelector(".btn-rollback-order")?.addEventListener("click", event => {
+      void handleRollbackDispatch(r.id, event.currentTarget);
+    });
+  }
   div.querySelector(".btn-completed-draft-view")?.addEventListener("click", () => {
     void showDraftModal(draft.id, { readOnly: true });
   });
@@ -4945,30 +4813,6 @@ function buildRowCardLegacyBase(r, resultMap) {
   }
 
   return div;
-}
-
-async function handleBatchMergeLegacyFlow() {
-  const targets = _rows.filter(r => _checkedIds.has(r.id) && (r.status === "pending" || r.status === "merged"));
-  if (!_checkedIds.size) { showToast("請先勾選要 merge 的訂單"); return; }
-  if (!targets.length) { showToast("目前勾選的訂單不能 merge"); return; }
-  try {
-    const result = await apiPost("/api/schedule/batch-merge", { order_ids: targets.map(r => r.id) });
-    await refreshScheduleOnly();
-    showToast(`已建立 ${result.draft_count || 0} 份副檔，請在訂單下方確認後再按勾寫入主檔`);
-  } catch (error) {
-    showToast("批次 merge 失敗: " + error.message);
-  }
-}
-
-async function handleDeleteDraftLegacyV3(draftId, model) {
-  if (!confirm(`確認要刪除 ${model} 的副檔嗎？`)) return;
-  try {
-    await apiFetch(`/api/schedule/drafts/${draftId}`, { method: "DELETE" });
-    showToast("副檔已刪除");
-    await refreshScheduleOnly();
-  } catch (error) {
-    showToast("副檔刪除失敗: " + error.message);
-  }
 }
 
 function initSortable(container) {

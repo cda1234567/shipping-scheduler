@@ -8,6 +8,7 @@ This module now exposes both:
 from __future__ import annotations
 
 from copy import copy
+import json
 import os
 import shutil
 import tempfile
@@ -38,6 +39,7 @@ RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="soli
 ORANGE_FILL = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 CLEAR_FILL = PatternFill(fill_type=None)
 STOCK_SEARCH_START_COL = MOQ_COL + 1
+DISPATCH_BATCH_MANIFEST_FORMAT = "shipping_scheduler_dispatch_batch_v1"
 
 
 def _save_workbook_atomically(workbook, main_path: str) -> None:
@@ -252,6 +254,10 @@ def backup_main_file(main_path: str, backup_dir: str) -> str:
     ts = local_now().strftime("%Y%m%d_%H%M%S")
     backup_name = f"{source.stem}_backup_{ts}{source.suffix}"
     destination = destination_dir / backup_name
+    suffix = 1
+    while destination.exists():
+        destination = destination_dir / f"{source.stem}_backup_{ts}_{suffix}{source.suffix}"
+        suffix += 1
     shutil.copy2(main_path, destination)
     return str(destination)
 
@@ -549,6 +555,189 @@ def _flatten_plan_rows(plan: dict) -> list[dict]:
     return rows
 
 
+def _write_plan_to_workbook(workbook, plan: dict) -> None:
+    worksheet = workbook.active
+    for batch in plan.get("batches", []) or []:
+        for group_plan in batch.get("groups", []) or []:
+            _write_group_headers(worksheet, group_plan)
+            _write_group_rows(worksheet, group_plan)
+    ensure_main_header_wrap(worksheet)
+
+
+def _write_json_atomically(path: Path, payload: dict) -> None:
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{path.stem}-",
+        suffix=path.suffix,
+        dir=str(path.parent),
+    )
+    os.close(fd)
+    try:
+        with open(temp_name, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"), default=str)
+        os.replace(temp_name, path)
+    finally:
+        temp_path = Path(temp_name)
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _load_dispatch_batch_manifest(backup_reference: str | Path) -> dict | None:
+    reference = Path(str(backup_reference or "")).expanduser()
+    if reference.suffix.lower() != ".json":
+        return None
+    with reference.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if payload.get("format") != DISPATCH_BATCH_MANIFEST_FORMAT:
+        raise ValueError("不支援的發料批次備份格式")
+    if not isinstance(payload.get("batches"), list):
+        raise ValueError("發料批次備份內容不完整")
+    return payload
+
+
+def validate_dispatch_backup_reference(backup_reference: str | Path) -> dict:
+    reference = Path(str(backup_reference or "")).expanduser()
+    if not str(backup_reference or "").strip() or not reference.exists():
+        return {"ok": False, "reason": "找不到這次發料的主檔備份，無法反悔"}
+    try:
+        manifest = _load_dispatch_batch_manifest(reference)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"ok": False, "reason": "這次發料的主檔備份已損壞，無法反悔"}
+    if manifest is None:
+        return {"ok": True, "reference_path": str(reference), "main_backup_path": str(reference)}
+
+    main_backup_path = Path(str(manifest.get("main_backup_path") or "")).expanduser()
+    if not main_backup_path.exists():
+        return {"ok": False, "reason": "找不到這次發料的主檔備份，無法反悔"}
+    return {
+        "ok": True,
+        "reference_path": str(reference),
+        "main_backup_path": str(main_backup_path),
+        "manifest": manifest,
+    }
+
+
+@serialized_main_file_write
+def restore_main_from_backup_reference(
+    backup_reference: str | Path,
+    main_path: str | Path,
+    *,
+    before_order_id: int | None = None,
+) -> dict:
+    validation = validate_dispatch_backup_reference(backup_reference)
+    if not validation.get("ok"):
+        raise ValueError(validation.get("reason") or "找不到這次發料的主檔備份，無法反悔")
+
+    target = Path(main_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    main_backup_path = Path(validation["main_backup_path"])
+    manifest = validation.get("manifest")
+
+    replay_batches: list[dict] = []
+    if manifest is not None and before_order_id is not None:
+        target_order_id = int(before_order_id)
+        found_target = False
+        for batch in manifest.get("batches", []) or []:
+            try:
+                order_id = int(batch.get("order_id"))
+            except (TypeError, ValueError):
+                order_id = None
+            if order_id == target_order_id:
+                found_target = True
+                break
+            replay_batches.append(batch)
+        if not found_target:
+            raise ValueError("發料批次備份找不到要反悔的訂單")
+
+    fd, staged_name = tempfile.mkstemp(
+        prefix=f".{target.stem}-restore-",
+        suffix=target.suffix,
+        dir=str(target.parent),
+    )
+    os.close(fd)
+    staged_path = Path(staged_name)
+    try:
+        shutil.copy2(main_backup_path, staged_path)
+        if replay_batches:
+            workbook = openpyxl.load_workbook(staged_path, keep_vba=(target.suffix.lower() == ".xlsm"))
+            try:
+                plan = _build_preview_for_batches(workbook.active, replay_batches, {})
+                _write_plan_to_workbook(workbook, plan)
+                _save_workbook_atomically(workbook, str(staged_path))
+            finally:
+                workbook.close()
+        os.replace(staged_path, target)
+    finally:
+        if staged_path.exists():
+            staged_path.unlink()
+
+    return {
+        "reference_path": str(validation["reference_path"]),
+        "main_backup_path": str(main_backup_path),
+        "replayed_order_count": len(replay_batches),
+    }
+
+
+@serialized_main_file_write
+def merge_order_batches_to_main(
+    main_path: str,
+    batches: list[dict],
+    *,
+    backup_dir: str,
+) -> dict:
+    """整批只開啟與儲存主檔一次，並保留可從任一訂單中間退回的重播資訊。"""
+    normalized_batches = [dict(batch or {}) for batch in (batches or [])]
+    if not normalized_batches:
+        raise ValueError("沒有可寫入主檔的訂單")
+    if not str(backup_dir or "").strip():
+        raise ValueError("批次寫入主檔前必須指定備份目錄")
+
+    main_backup_path = backup_main_file(main_path, backup_dir)
+    workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
+    try:
+        plan = _build_preview_for_batches(workbook.active, normalized_batches, {})
+        _write_plan_to_workbook(workbook, plan)
+        _save_workbook_atomically(workbook, main_path)
+    finally:
+        workbook.close()
+
+    backup_path = Path(main_backup_path)
+    manifest_path = backup_path.with_name(f"{backup_path.stem}_batch.json")
+    try:
+        _write_json_atomically(manifest_path, {
+            "format": DISPATCH_BATCH_MANIFEST_FORMAT,
+            "main_backup_path": str(backup_path.resolve()),
+            "batches": normalized_batches,
+        })
+    except Exception:
+        shutil.copy2(main_backup_path, main_path)
+        raise
+
+    order_results: list[dict] = []
+    for batch_plan in plan.get("batches", []) or []:
+        batch_rows = _flatten_plan_rows({"batches": [batch_plan]})
+        order_id = batch_plan.get("order_id")
+        order_results.append({
+            "order_id": order_id,
+            "backup_path": str(manifest_path),
+            "merged_parts": len(batch_rows),
+            "plan_rows": batch_rows,
+            "shortages": [
+                item for item in (plan.get("shortages", []) or [])
+                if item.get("order_id") == order_id
+            ],
+        })
+
+    return {
+        "backup_path": str(manifest_path),
+        "main_backup_path": main_backup_path,
+        "merged_parts": plan["merged_parts"],
+        "new_col_count": plan["new_col_count"],
+        "shortages": plan["shortages"],
+        "plan_rows": _flatten_plan_rows(plan),
+        "order_results": order_results,
+    }
+
+
 @serialized_main_file_write
 def merge_row_to_main(
     main_path: str,
@@ -574,12 +763,7 @@ def merge_row_to_main(
             _normalize_decisions(decisions),
         )
 
-        for batch in plan["batches"]:
-            for group_plan in batch.get("groups", []):
-                _write_group_headers(workbook.active, group_plan)
-                _write_group_rows(workbook.active, group_plan)
-
-        ensure_main_header_wrap(workbook.active)
+        _write_plan_to_workbook(workbook, plan)
         _save_workbook_atomically(workbook, main_path)
     finally:
         workbook.close()
