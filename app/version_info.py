@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.23.1"
+APP_VERSION = "v2026.07.23.2"
 APP_RELEASED_AT = "2026-07-23"
-APP_HEADLINE = "補料缺口與整批建議不再於輸入時消失"
+APP_HEADLINE = "發料單橘色改回依生成當下 ST 庫存判斷"
 APP_CHANGELOG = [
+    {
+        "title": "發料單庫存不足橘色修正",
+        "items": [
+            "生成發料單時，每筆補料量會直接比較生成當下的 ST 庫存；數量不足的格子會塗成橘色。",
+            "重產已發料／已完成訂單時，歷史缺料重算仍可加回該訂單自己的扣帳，但橘色判斷不再使用加回後庫存或舊 shortage 快照。",
+            "以實際 24 筆、480 列發料內容驗證，數量與內容維持不變，橘色標記與當下 ST 庫存逐列一致。",
+        ],
+    },
     {
         "title": "補料輸入保留原始缺口",
         "items": [

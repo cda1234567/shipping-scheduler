@@ -482,6 +482,7 @@ class DispatchGenerationTests(unittest.TestCase):
              patch("app.routers.dispatch.calc_run", return_value=calc_results), \
              patch("app.routers.dispatch.db.get_order_supplements", return_value={}), \
              patch("app.routers.dispatch.db.get_decisions_for_order", return_value={}), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={"PART-ST": 8}), \
              patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
              patch("app.routers.dispatch.db.log_activity"):
             response = self.client.post("/api/dispatch/generate", json={
@@ -593,7 +594,7 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=3, column=5).value, 0)
         wb.close()
 
-    def test_dispatch_generate_addbacks_dispatched_order_st_consumption_before_highlight(self):
+    def test_dispatch_generate_committed_order_highlight_uses_current_st_inventory_without_addback(self):
         orders = {
             1: {
                 "id": 1,
@@ -613,7 +614,15 @@ class DispatchGenerationTests(unittest.TestCase):
         calc_results = [
             {
                 "order_id": 1,
-                "shortages": [],
+                "shortages": [{
+                    "part_number": "IC-M24C02-WMN6TP-TAB",
+                    "description": "EEPROM",
+                    "suggested_qty": 400,
+                    "shortage_amount": 400,
+                    # 歷史重算可包含加回值，但塗色不可採用這兩欄。
+                    "st_stock_qty": 400,
+                    "st_available_qty": 400,
+                }],
                 "customer_material_shortages": [],
             },
         ]
@@ -646,7 +655,7 @@ class DispatchGenerationTests(unittest.TestCase):
         ws = wb.active
         self.assertEqual(ws.cell(row=3, column=3).value, "IC-M24C02-WMN6TP-TAB")
         self.assertEqual(ws.cell(row=3, column=5).value, 400)
-        self.assertNotEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
+        self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFC000")
         self.assertEqual(ws.cell(row=4, column=3).value, "PART-NEG")
         self.assertEqual(ws.cell(row=4, column=5).value, 5000)
         self.assertEqual(ws["E4"].fill.fgColor.rgb, "FFFFC000")
