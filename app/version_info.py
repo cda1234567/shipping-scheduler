@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.20.1"
-APP_RELEASED_AT = "2026-07-20"
-APP_HEADLINE = "批次寫主檔與已發料單生成全面加速"
+APP_VERSION = "v2026.07.23.1"
+APP_RELEASED_AT = "2026-07-23"
+APP_HEADLINE = "補料缺口與整批建議不再於輸入時消失"
 APP_CHANGELOG = [
+    {
+        "title": "補料輸入保留原始缺口",
+        "items": [
+            "算料工作區第一次顯示的本筆缺口、整批累積缺口與 MOQ 建議量會固定保留，不再因輸入補料後即時重算成缺 0 而突然消失。",
+            "補料後結存與卡片狀態仍會即時更新；窄畫面的缺料資訊會自動換行，整批建議不再被擠出畫面。",
+        ],
+    },
     {
         "title": "已發料多選生成發料單加速",
         "items": [

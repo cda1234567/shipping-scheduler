@@ -50,6 +50,7 @@ let _modalPreviewAbortController = null;
 let _modalPreviewDebounceTimer = null;
 let _modalPreviewRequestSeq = 0;
 let _modalManualEditorState = createEmptyModalManualEditorState();
+let _modalShortageDisplayBaselines = new Map();
 let _globalBusyDepth = 0;
 let _globalBusyProgressTimer = null;
 let _globalBusyPercent = 0;
@@ -629,6 +630,7 @@ function createEmptyModalManualEditorState() {
 
 function resetModalManualEditorState() {
   _modalManualEditorState = createEmptyModalManualEditorState();
+  _modalShortageDisplayBaselines = new Map();
 }
 
 function rememberModalManualEditorControl(control) {
@@ -3223,7 +3225,7 @@ function normalizePreviewShortageItem(item = {}, scope = {}) {
       po_number: item.po_number || scope.po_number,
     },
   );
-  return {
+  return preserveModalShortageDisplayBaseline({
     ...item,
     ...meta,
     _lookahead_shortage_amount: item.lookahead_shortage_amount ?? item._lookahead_shortage_amount ?? item.shortage_amount,
@@ -3232,6 +3234,65 @@ function normalizePreviewShortageItem(item = {}, scope = {}) {
     _lookahead_purchase_needed_qty: item.lookahead_purchase_needed_qty ?? item.purchase_needed_qty,
     _lookahead_purchase_suggested_qty: item.lookahead_purchase_suggested_qty ?? item.purchase_suggested_qty,
     _lookahead_needs_purchase: item.lookahead_needs_purchase ?? item.needs_purchase,
+  });
+}
+
+function modalShortageDisplayBaselineKey(item = {}) {
+  const part = normalizePartKey(item.part_number);
+  if (!part) return "";
+  const orderId = normalizeOrderId(item._order_id ?? item.order_id);
+  return `${Number.isInteger(orderId) ? orderId : "shared"}:${part}`;
+}
+
+function buildModalShortageDisplayBaseline(item = {}) {
+  const shortageAmount = Math.max(0, Number(item.shortage_amount || 0) || 0);
+  const lookaheadShortageAmount = Math.max(
+    shortageAmount,
+    Number(item._lookahead_shortage_amount || 0) || 0,
+  );
+  return {
+    shortage_amount: shortageAmount,
+    _lookahead_shortage_amount: lookaheadShortageAmount,
+    _lookahead_suggested_qty: Math.max(0, Number(item._lookahead_suggested_qty || 0) || 0),
+    _lookahead_st_available_qty: Math.max(0, Number(item._lookahead_st_available_qty || 0) || 0),
+    _lookahead_purchase_needed_qty: Math.max(0, Number(item._lookahead_purchase_needed_qty || 0) || 0),
+    _lookahead_purchase_suggested_qty: Math.max(0, Number(item._lookahead_purchase_suggested_qty || 0) || 0),
+    _lookahead_needs_purchase: Boolean(item._lookahead_needs_purchase),
+  };
+}
+
+function preserveModalShortageDisplayBaseline(item = {}) {
+  const key = modalShortageDisplayBaselineKey(item);
+  if (!key) return item;
+
+  const incoming = buildModalShortageDisplayBaseline(item);
+  let baseline = _modalShortageDisplayBaselines.get(key);
+  if (!baseline && incoming._lookahead_shortage_amount > 0) {
+    baseline = incoming;
+    _modalShortageDisplayBaselines.set(key, baseline);
+  } else if (baseline && incoming._lookahead_shortage_amount >= baseline._lookahead_shortage_amount) {
+    // MOQ 或訂單條件真的改變時，仍允許同一個／更大的原始缺口更新建議量。
+    baseline = {
+      ...incoming,
+      shortage_amount: Math.max(baseline.shortage_amount, incoming.shortage_amount),
+    };
+    _modalShortageDisplayBaselines.set(key, baseline);
+  }
+
+  if (!baseline) return item;
+  return {
+    ...item,
+    _remaining_shortage_amount: Math.max(0, Number(item.shortage_amount || 0) || 0),
+    shortage_amount: Math.max(baseline.shortage_amount, Number(item.shortage_amount || 0) || 0),
+    _lookahead_shortage_amount: Math.max(
+      baseline._lookahead_shortage_amount,
+      Number(item._lookahead_shortage_amount || 0) || 0,
+    ),
+    _lookahead_suggested_qty: baseline._lookahead_suggested_qty,
+    _lookahead_st_available_qty: baseline._lookahead_st_available_qty,
+    _lookahead_purchase_needed_qty: baseline._lookahead_purchase_needed_qty,
+    _lookahead_purchase_suggested_qty: baseline._lookahead_purchase_suggested_qty,
+    _lookahead_needs_purchase: baseline._lookahead_needs_purchase,
   };
 }
 
@@ -3399,7 +3460,7 @@ function modalShortageItem(s, isCS) {
   return `<div class="${shortageToneClass(s)}" style="margin-bottom:8px" data-part="${esc(s.part_number)}" data-base-current-stock="${esc(s.current_stock)}" data-current-stock="${esc(s.current_stock)}" data-prev-qty-cs="${esc(s.prev_qty_cs || 0)}" data-needed="${esc(s.needed)}" data-moq="${esc(s.moq || 0)}" data-st-stock-qty="${esc(s.st_stock_qty || 0)}" data-order-index="${esc(s._row_order_index ?? "")}" data-flow-hidden="0" data-search="${esc(searchText)}"${orderIdAttr}>
     <div style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px">${s.part_number}${codeTag}${csTag}</div>
     <div style="font-size:11px;color:#6b7280">${s.description || "—"}</div>
-    <div class="modal-shortage-amounts" style="font-size:12px;display:flex;gap:10px;margin:4px 0">
+    <div class="modal-shortage-amounts" style="font-size:12px;display:flex;gap:10px;flex-wrap:wrap;margin:4px 0">
       ${amountsHtml}
     </div>
     ${negativeRunningWarning}

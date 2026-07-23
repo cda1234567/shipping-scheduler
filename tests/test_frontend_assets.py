@@ -1027,6 +1027,19 @@ console.log(JSON.stringify(results));
             text,
         )
 
+    def test_modal_live_recalculation_preserves_original_shortage_and_lookahead(self):
+        # 輸入補料後 calc-preview 會回傳剩餘缺口 0；畫面仍須沿用第一次預覽的
+        # 原始缺口與整批 lookahead，否則「總共缺 XXX」會在打字時突然消失。
+        schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"
+        text = schedule_module.read_text(encoding="utf-8")
+
+        self.assertIn("let _modalShortageDisplayBaselines = new Map();", text)
+        self.assertIn("function preserveModalShortageDisplayBaseline(item = {})", text)
+        self.assertIn("_remaining_shortage_amount:", text)
+        self.assertIn("_lookahead_shortage_amount: Math.max(", text)
+        self.assertIn("return preserveModalShortageDisplayBaseline({", text)
+        self.assertIn("gap:10px;flex-wrap:wrap", text)
+
     def test_save_manual_moq_recalculates_without_saving_or_reopening_drafts(self):
         # 改 MOQ 只能用目前記憶體狀態重算；不能先重建副檔再重開整個工作區，
         # 否則其他尚未儲存的手動輸入會被舊副檔值覆蓋。
