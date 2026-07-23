@@ -29,8 +29,6 @@ from ..services.local_time import local_now
 import re as _re_main
 from ..services.main_file_recalc import find_batch_col_for_cell, recalc_batch_balances_for_cell
 
-_COMMITTED_ORDER_STATUSES = {"dispatched", "completed"}
-
 
 def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
     """讀主檔每個料件 row，找『第一個負結餘』cell 對應的批次 code（語意：X-X 開始缺料）。"""
@@ -223,10 +221,6 @@ def _merge_supplement_updates(order_id: int, part_number: str, supplement_qty: f
     return {order_id: merged}
 
 
-def _is_committed_status(status: object) -> bool:
-    return str(status or "").strip().lower() in _COMMITTED_ORDER_STATUSES
-
-
 def _is_batch_supplement_cell(ws, *, row: int, col: int) -> bool:
     if row <= 1:
         return False
@@ -241,8 +235,8 @@ def _main_cell_write_value(ws, *, row: int, col: int, value):
     return value if value != "" else None
 
 
-def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value) -> dict:
-    """主檔補料欄是唯一真相；手動改補料 cell 後同步 order_supplements。"""
+def _sync_supplement_from_main_cell(ws, *, row: int, col: int, value) -> dict:
+    """主檔補料欄是唯一真相；手動修改只同步補料紀錄，不改目前 ST 庫存。"""
     result = {
         "supplement_synced": False,
         "st_inventory_synced": False,
@@ -294,24 +288,6 @@ def _sync_supplement_from_main_cell(ws, *, row: int, col: int, old_value, value)
     )
     result["supplement_synced"] = True
     result["supplement_sync_reason"] = "synced"
-
-    old_supplement_qty = _to_supplement_qty(old_value)
-    if old_supplement_qty is None or not _is_committed_status(order.get("status")):
-        return result
-
-    supplement_delta = round(float(supplement_qty or 0) - float(old_supplement_qty or 0), 6)
-    if supplement_delta == 0:
-        return result
-
-    st_stock = db.get_st_inventory_stock()
-    old_st_qty = float(st_stock.get(part_number) or 0)
-    new_st_qty = round(old_st_qty - supplement_delta, 6)
-    db.update_st_inventory_stock(
-        {part_number: new_st_qty},
-        reason="主檔批次區補料量修正",
-        actor="main_file_cell_patch",
-    )
-    result["st_inventory_synced"] = True
     return result
 
 
@@ -670,7 +646,6 @@ async def edit_main_cell(req: EditCellRequest):
         ws,
         row=req.row,
         col=req.col,
-        old_value=old_value,
         value=cell.value,
     )
     wb.close()

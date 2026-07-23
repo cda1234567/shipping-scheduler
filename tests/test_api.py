@@ -2995,7 +2995,7 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(response.json()["supplement_synced"])
         mock_replace.assert_called_once_with([42], {42: {"EC-60008A": 0.0}})
 
-    def test_edit_main_committed_supplement_cell_syncs_st_inventory_delta(self):
+    def test_edit_main_committed_supplement_cell_does_not_change_current_st_inventory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             main_path = Path(temp_dir) / "main.xlsx"
 
@@ -3029,7 +3029,7 @@ class ApiTests(unittest.TestCase):
                  }), \
                  patch("app.routers.main_file.db.get_order_supplements", return_value={42: {"PART-1": 100}}), \
                  patch("app.routers.main_file.db.replace_order_supplements"), \
-                 patch("app.routers.main_file.db.get_st_inventory_stock", return_value={"PART-1": 1000}), \
+                 patch("app.routers.main_file.db.get_st_inventory_stock", return_value={"PART-1": 1000}) as mock_get_st, \
                  patch("app.routers.main_file.db.update_st_inventory_stock") as mock_update_st, \
                  patch("app.routers.main_file.db.get_active_merge_drafts", return_value=[]), \
                  patch("app.routers.main_file.db.log_activity"):
@@ -3042,12 +3042,9 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["supplement_synced"])
-        self.assertTrue(response.json()["st_inventory_synced"])
-        mock_update_st.assert_called_once_with(
-            {"PART-1": 940.0},
-            reason="主檔批次區補料量修正",
-            actor="main_file_cell_patch",
-        )
+        self.assertFalse(response.json()["st_inventory_synced"])
+        mock_get_st.assert_not_called()
+        mock_update_st.assert_not_called()
 
     def test_edit_main_active_supplement_cell_does_not_sync_st_inventory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -860,6 +860,70 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(ws.cell(row=6, column=5).value, 3000)
         wb.close()
 
+    def test_dispatch_generate_consumes_current_st_stock_in_batch_code_order(self):
+        orders = {
+            1: {
+                "id": 1,
+                "status": "merged",
+                "po_number": "PO-7-10",
+                "model": "MODEL-A",
+                "code": "7-10",
+                "delivery_date": "2026-07-24",
+            },
+            2: {
+                "id": 2,
+                "status": "merged",
+                "po_number": "PO-7-11",
+                "model": "MODEL-B",
+                "code": "7-11",
+                "delivery_date": "2026-07-25",
+            },
+        }
+        bom_map = {
+            "MODEL-A": [
+                {"part_number": "IC-QCS8275-TAB", "description": "QCS", "needed_qty": 1, "is_dash": 0},
+            ],
+            "MODEL-B": [
+                {"part_number": "IC-QCS8275-TAB", "description": "QCS", "needed_qty": 1, "is_dash": 0},
+            ],
+        }
+
+        with patch("app.routers.dispatch.db.get_all_bom_components_by_model", return_value=bom_map), \
+             patch("app.routers.dispatch.db.get_order", side_effect=lambda order_id: orders.get(order_id)), \
+             patch("app.routers.dispatch._load_shortage_inputs", return_value=({}, {}, {})), \
+             patch("app.routers.dispatch.calc_run", return_value=[]), \
+             patch("app.routers.dispatch.db.get_order_supplements", return_value={
+                 1: {"IC-QCS8275-TAB": 50},
+                 2: {"IC-QCS8275-TAB": 30},
+             }), \
+             patch("app.routers.dispatch.db.get_decisions_for_order", return_value={
+                 "IC-QCS8275-TAB": "CreateRequirement",
+             }), \
+             patch("app.routers.dispatch.db.get_st_inventory_stock", return_value={
+                 "IC-QCS8275-TAB": 70,
+             }), \
+             patch("app.routers.dispatch.build_generated_filename", return_value="發料單測試.xlsx"), \
+             patch("app.routers.dispatch.db.log_activity"):
+            response = self.client.post("/api/dispatch/generate", json={
+                # 刻意反向勾選，仍應依 7-10、7-11 的批次順序扣帳。
+                "order_ids": [2, 1],
+                "decisions": {},
+            })
+
+        self.assertEqual(response.status_code, 200)
+
+        wb = openpyxl.load_workbook(io.BytesIO(response.content), data_only=False)
+        ws = wb.active
+        self.assertEqual(ws.cell(row=1, column=1).value, "7-10")
+        self.assertEqual(ws.cell(row=3, column=3).value, "IC-QCS8275-TAB")
+        self.assertEqual(ws.cell(row=3, column=5).value, 50)
+        self.assertEqual(ws["E3"].fill.fgColor.rgb, "FFFFFFFF")
+        self.assertEqual(ws.cell(row=4, column=1).value, "7-11")
+        self.assertEqual(ws.cell(row=6, column=3).value, "IC-QCS8275-TAB")
+        self.assertEqual(ws.cell(row=6, column=5).value, 30)
+        self.assertEqual(ws["E6"].fill.fgColor.rgb, "FFFFC000")
+        wb.close()
+
     def test_dispatch_generate_respects_reviewed_draft_parts_cleared_back_to_none(self):
         orders = {
             1: {

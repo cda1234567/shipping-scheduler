@@ -252,16 +252,19 @@ def _should_render_dispatch_item(
     return bool(shortage_item) and suggested_qty > 0
 
 
-def _should_highlight_dispatch_qty(
+def _consume_dispatch_st_stock(
     part: str,
     qty: float,
-    st_inventory_stock: dict[str, float],
+    remaining_st_inventory: dict[str, float],
 ) -> bool:
     part_key = _normalize_part_key(part)
-    # 發料單橘色是「現在能否由 ST 庫存供應」的即時提示，不能使用
-    # 已發料訂單歷史重算時加回的庫存，也不能沿用 shortage 快照裡的舊值。
-    st_stock_qty = float(st_inventory_stock.get(part_key, 0) or 0)
-    return bool(summarize_requested_supply(qty, st_stock_qty)["needs_purchase"])
+    requested_qty = max(0.0, float(qty or 0))
+    current_qty = float(remaining_st_inventory.get(part_key, 0) or 0)
+    needs_purchase = bool(summarize_requested_supply(requested_qty, current_qty)["needs_purchase"])
+    # 同一張發料單共用生成當下的 ST 庫存，依批次與表內順序逐筆扣帳。
+    # 即使餘額已經是負數也保留負值，後續相同料號會持續標成橘色。
+    remaining_st_inventory[part_key] = round(current_qty - requested_qty, 6)
+    return needs_purchase
 
 
 def _is_committed_status(order: dict) -> bool:
@@ -481,7 +484,11 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
     committed_main_supplements = _load_committed_main_supplements(orders, bom_map)
     # 缺料重算可加回已發料訂單自己的扣帳，但發料單塗色必須比較生成
     # 當下的原始 ST 庫存，否則庫存不足的補料會被誤顯示成白色。
-    st_inventory_stock = db.get_st_inventory_stock()
+    remaining_st_inventory = {
+        _normalize_part_key(part): float(qty or 0)
+        for part, qty in db.get_st_inventory_stock().items()
+        if _normalize_part_key(part)
+    }
 
     today = local_now().strftime("%Y/%m/%d")
     groups = []
@@ -544,7 +551,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
             if effective_supplement_qty > 0 or has_explicit_supplement:
                 fill_color = (
                     "FFFFC000"
-                    if _should_highlight_dispatch_qty(display_part, effective_supplement_qty, st_inventory_stock)
+                    if _consume_dispatch_st_stock(display_part, effective_supplement_qty, remaining_st_inventory)
                     else None
                 )
                 items.append({
@@ -562,7 +569,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
 
             fill_color = (
                 "FFFFC000"
-                if _should_highlight_dispatch_qty(display_part, suggested_qty, st_inventory_stock)
+                if _consume_dispatch_st_stock(display_part, suggested_qty, remaining_st_inventory)
                 else None
             )
             items.append({
