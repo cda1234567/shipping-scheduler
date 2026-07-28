@@ -400,17 +400,39 @@
     <!-- ── Tab: 分析 ── -->
     <div id="tab-analytics-tab" class="tab-content">
       <div class="analytics-shell">
-        <!-- 發料趨勢 -->
-        <section class="analytics-card">
+        <!-- 常用料零庫存 -->
+        <section class="analytics-card frequent-zero-card">
           <div class="analytics-card-header">
-            <h4>發料趨勢（用量最大料號）</h4>
-            <select id="trend-period-select" class="analytics-select">
-              <option value="month">按月</option>
-              <option value="week">按週</option>
-            </select>
+            <div>
+              <h4>常用料零庫存</h4>
+              <div class="analytics-card-subtitle">找出近期經常發料，但主檔與 ST 都已沒有可用庫存的料號。</div>
+            </div>
+            <div class="frequent-zero-controls">
+              <label>
+                <span>統計期間</span>
+                <select id="frequent-zero-months" class="analytics-select">
+                  <option value="3">最近 3 個月</option>
+                  <option value="6" selected>最近 6 個月</option>
+                  <option value="12">最近 12 個月</option>
+                </select>
+              </label>
+              <label>
+                <span>常用門檻</span>
+                <select id="frequent-zero-min-orders" class="analytics-select">
+                  <option value="2">至少 2 筆訂單</option>
+                  <option value="3" selected>至少 3 筆訂單</option>
+                  <option value="5">至少 5 筆訂單</option>
+                  <option value="10">至少 10 筆訂單</option>
+                </select>
+              </label>
+              <button class="btn btn-secondary btn-sm" id="btn-refresh-frequent-zero">重新整理</button>
+            </div>
           </div>
-          <div class="chart-container"><canvas id="trend-chart"></canvas></div>
-          <div id="top-parts-table"></div>
+          <div id="frequent-zero-source-warning"></div>
+          <div id="frequent-zero-summary" class="frequent-zero-summary"></div>
+          <div id="frequent-zero-table">
+            <div class="no-shortage-msg">切到分析頁後會讀取常用料與目前庫存。</div>
+          </div>
         </section>
 
         <!-- 發料歷史 -->

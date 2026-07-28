@@ -1,22 +1,13 @@
 import { apiJson, apiFetch, showToast, esc, fmt } from "./api.js";
 
-let _trendChart = null;
 let _historyChart = null;
-let _trendPeriod = "month";
 let _historyGroupBy = "model";
 let _diffResult = null;
 
-const CHART_COLORS = [
-  "#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#8b5cf6",
-  "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1",
-  "#14b8a6", "#e11d48", "#a855f7", "#0ea5e9", "#eab308",
-];
-
 export async function initAnalytics() {
-  document.getElementById("trend-period-select")?.addEventListener("change", (e) => {
-    _trendPeriod = e.target.value;
-    loadTrend();
-  });
+  document.getElementById("frequent-zero-months")?.addEventListener("change", loadFrequentZeroStock);
+  document.getElementById("frequent-zero-min-orders")?.addEventListener("change", loadFrequentZeroStock);
+  document.getElementById("btn-refresh-frequent-zero")?.addEventListener("click", loadFrequentZeroStock);
   document.getElementById("history-group-select")?.addEventListener("change", (e) => {
     _historyGroupBy = e.target.value;
     loadHistory();
@@ -26,79 +17,130 @@ export async function initAnalytics() {
 }
 
 export async function refreshAnalytics() {
-  await Promise.all([loadTrend(), loadTopParts(), loadHistory()]);
+  await Promise.all([loadFrequentZeroStock(), loadHistory()]);
 }
 
-// ── 發料趨勢 ──────────────────────────────────────────────────────────────────
+// ── 常用料零庫存 ──────────────────────────────────────────────────────────────
 
-async function loadTrend() {
-  try {
-    const d = await apiJson(`/api/analytics/dispatch-trend?period=${_trendPeriod}`);
-    renderTrendChart(d.chart_data);
-  } catch (_) {}
-}
-
-function renderTrendChart(chartData) {
-  const canvas = document.getElementById("trend-chart");
-  if (!canvas || typeof Chart === "undefined") return;
-
-  if (_trendChart) _trendChart.destroy();
-
-  const datasets = (chartData.datasets || []).map((ds, i) => ({
-    label: ds.label,
-    data: ds.data,
-    backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
-    borderWidth: 0,
-  }));
-
-  _trendChart = new Chart(canvas, {
-    type: "bar",
-    data: { labels: chartData.labels || [], datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
-      },
-      scales: {
-        x: { stacked: true, ticks: { font: { size: 11 } } },
-        y: { stacked: true, beginAtZero: true, ticks: { font: { size: 11 } } },
-      },
-    },
-  });
-}
-
-async function loadTopParts() {
-  const container = document.getElementById("top-parts-table");
+async function loadFrequentZeroStock() {
+  const container = document.getElementById("frequent-zero-table");
+  const summaryEl = document.getElementById("frequent-zero-summary");
+  const warningEl = document.getElementById("frequent-zero-source-warning");
   if (!container) return;
+  const months = document.getElementById("frequent-zero-months")?.value || "6";
+  const minOrders = document.getElementById("frequent-zero-min-orders")?.value || "3";
+  container.innerHTML = '<div class="no-shortage-msg">正在分析近期用料與庫存...</div>';
+  if (summaryEl) summaryEl.innerHTML = "";
+  if (warningEl) warningEl.innerHTML = "";
   try {
-    const d = await apiJson("/api/analytics/top-parts?limit=20&months=6");
-    const parts = d.parts || [];
-    if (!parts.length) {
-      container.innerHTML = '<div class="no-shortage-msg">尚無發料紀錄</div>';
-      return;
-    }
-    container.innerHTML = `
-      <table class="analytics-table">
-        <thead><tr>
-          <th>#</th><th>料號</th><th>總用量</th><th>訂單數</th><th>ST 庫存</th>
-        </tr></thead>
-        <tbody>${parts.map((p, i) => `
-          <tr>
-            <td>${i + 1}</td>
-            <td>${esc(p.part_number)}</td>
-            <td>${fmt(p.total_qty)}</td>
-            <td>${p.order_count}</td>
-            <td>${p.has_st_stock
-              ? `<span class="badge-ok" style="padding:2px 8px;border-radius:10px;font-size:11px">${fmt(p.st_stock_qty)}</span>`
-              : '<span class="badge-shortage" style="padding:2px 8px;border-radius:10px;font-size:11px">無</span>'
-            }</td>
-          </tr>`).join("")}
-        </tbody>
-      </table>`;
-  } catch (_) {
-    container.innerHTML = '<div class="no-shortage-msg">載入失敗</div>';
+    const data = await apiJson(`/api/analytics/frequent-zero-stock?months=${encodeURIComponent(months)}&min_orders=${encodeURIComponent(minOrders)}`);
+    renderFrequentZeroStock(data);
+  } catch (error) {
+    container.innerHTML = `<div class="no-shortage-msg">分析載入失敗：${esc(error.message || "未知錯誤")}</div>`;
   }
+}
+
+function renderFrequentZeroStock(data) {
+  const container = document.getElementById("frequent-zero-table");
+  const summaryEl = document.getElementById("frequent-zero-summary");
+  const warningEl = document.getElementById("frequent-zero-source-warning");
+  if (!container) return;
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const summary = data?.summary || {};
+  const sources = data?.sources || {};
+
+  if (warningEl) {
+    const missing = [];
+    if (!sources.main_loaded) missing.push("主檔庫存");
+    if (!sources.st_loaded) missing.push("ST 庫存");
+    warningEl.innerHTML = missing.length
+      ? `<div class="frequent-zero-warning">⚠ 尚未載入${esc(missing.join("、"))}，目前結果只能依已載入的庫存判斷，請先補齊資料。</div>`
+      : "";
+  }
+
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="frequent-zero-stat">
+        <span>符合常用門檻</span>
+        <strong>${fmt(summary.common_part_count || 0)}</strong>
+      </div>
+      <div class="frequent-zero-stat is-zero">
+        <span>庫存已歸零</span>
+        <strong>${fmt(summary.zero_stock_count || 0)}</strong>
+      </div>
+      <div class="frequent-zero-stat is-urgent">
+        <span>目前排程會用到</span>
+        <strong>${fmt(summary.urgent_count || 0)}</strong>
+      </div>
+      <div class="frequent-zero-stat">
+        <span>暫無目前排程</span>
+        <strong>${fmt(summary.watch_count || 0)}</strong>
+      </div>`;
+  }
+
+  if (!items.length) {
+    container.innerHTML = '<div class="frequent-zero-empty">目前沒有符合條件的常用零庫存料號。</div>';
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="frequent-zero-table-wrap">
+      <table class="analytics-table frequent-zero-table">
+        <thead><tr>
+          <th>狀態</th>
+          <th>料號／說明</th>
+          <th>廠商</th>
+          <th>近期使用</th>
+          <th>主檔庫存</th>
+          <th>ST 庫存</th>
+          <th>目前排程</th>
+          <th>最近使用</th>
+        </tr></thead>
+        <tbody>${items.map(renderFrequentZeroRow).join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderFrequentZeroRow(item) {
+  const active = Boolean(item.active_demand);
+  const status = active
+    ? '<span class="frequent-zero-badge is-urgent">排程會用到</span>'
+    : '<span class="frequent-zero-badge">庫存歸零</span>';
+  const description = item.description
+    ? `<div class="frequent-zero-description">${esc(item.description)}</div>`
+    : "";
+  const lastUsed = String(item.last_used_at || "").slice(0, 10) || "—";
+  return `<tr class="${active ? "frequent-zero-row is-urgent" : "frequent-zero-row"}">
+    <td>${status}</td>
+    <td><strong class="frequent-zero-part">${esc(item.part_number)}</strong>${description}</td>
+    <td>${esc(item.vendor || "未分類廠商")}</td>
+    <td>
+      <strong>${fmt(item.history_order_count || 0)} 筆訂單</strong>
+      <div class="frequent-zero-muted">總用量 ${fmt(item.history_total_qty || 0)}</div>
+    </td>
+    <td><span class="frequent-zero-stock">${fmt(item.main_stock_qty || 0)}</span></td>
+    <td><span class="frequent-zero-stock">${fmt(item.st_stock_qty || 0)}</span></td>
+    <td>${renderFrequentZeroActiveUsage(item)}</td>
+    <td>${esc(lastUsed)}</td>
+  </tr>`;
+}
+
+function renderFrequentZeroActiveUsage(item) {
+  const rows = Array.isArray(item.used_by) ? item.used_by : [];
+  if (!rows.length) return '<span class="frequent-zero-muted">目前無排程</span>';
+  const details = rows.map(row => {
+    const model = String(row.model || "").trim() || "未指定機種";
+    const meta = [
+      row.code ? `批次 ${row.code}` : "",
+      row.po_number ? `PO ${row.po_number}` : "",
+      row.ship_date || "",
+    ].filter(Boolean).join("／");
+    return `<li><strong>${esc(model)}</strong> 用量 ${fmt(row.used_qty || 0)}${meta ? `<span>${esc(meta)}</span>` : ""}</li>`;
+  }).join("");
+  return `<details class="frequent-zero-usage">
+    <summary>${fmt(item.active_order_count || 0)} 筆／需求 ${fmt(item.active_demand_qty || 0)}</summary>
+    <ul>${details}</ul>
+  </details>`;
 }
 
 // ── 發料歷史 ──────────────────────────────────────────────────────────────────

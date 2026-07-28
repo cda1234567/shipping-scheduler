@@ -3679,6 +3679,27 @@ def get_top_dispatched_parts(limit: int = 20, months: int = 6) -> list[dict]:
     return results
 
 
+def get_recent_dispatched_part_usage(months: int = 6) -> list[dict]:
+    """彙整近期各料號的已發料訂單數、用量與最後使用時間。"""
+    normalized_months = max(1, min(int(months or 6), 24))
+    cutoff = (local_now() - timedelta(days=normalized_months * 30)).isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT part_number,
+                      SUM(needed_qty) AS total_qty,
+                      COUNT(DISTINCT order_id) AS order_count,
+                      MAX(dispatched_at) AS last_used_at
+               FROM dispatch_records
+               WHERE dispatched_at >= ?
+                 AND decision != 'Shortage'
+                 AND TRIM(part_number) != ''
+               GROUP BY UPPER(TRIM(part_number))
+               ORDER BY order_count DESC, total_qty DESC, part_number""",
+            (cutoff,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def get_dispatch_history(group_by: str = "model") -> list[dict]:
     if group_by == "month":
         sql = """SELECT strftime('%Y-%m', ds.dispatched_at) AS period,

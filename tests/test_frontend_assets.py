@@ -785,6 +785,22 @@ console.log(JSON.stringify(results));
         self.assertIsNotNone(match)
         self.assertNotIn("Object.entries(_stStock)", match.group("body"))
 
+    def test_analytics_page_has_frequent_zero_stock_panel(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        analytics_module = (root / "static" / "modules" / "analytics.js").read_text(encoding="utf-8")
+        stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="frequent-zero-months"', index_html)
+        self.assertIn('id="frequent-zero-min-orders"', index_html)
+        self.assertIn('id="frequent-zero-summary"', index_html)
+        self.assertIn('id="frequent-zero-table"', index_html)
+        self.assertIn("/api/analytics/frequent-zero-stock", analytics_module)
+        self.assertIn("renderFrequentZeroStock", analytics_module)
+        self.assertIn("排程會用到", analytics_module)
+        self.assertIn(".frequent-zero-summary", stylesheet)
+        self.assertIn(".frequent-zero-row.is-urgent", stylesheet)
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")

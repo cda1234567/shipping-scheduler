@@ -52,6 +52,43 @@ class InMemoryDbTestCase(unittest.TestCase):
         self.conn.close()
 
 
+class AnalyticsUsageTests(InMemoryDbTestCase):
+    def test_recent_dispatched_part_usage_counts_distinct_orders_and_ignores_shortages(self):
+        self.conn.executemany(
+            """
+            INSERT INTO orders(id, po_number, model, status, created_at, updated_at, folder)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            [
+                (1, "PO-1", "MODEL-A", "dispatched", "2026-01-01", "2026-01-01", ""),
+                (2, "PO-2", "MODEL-B", "dispatched", "2026-01-01", "2026-01-01", ""),
+                (3, "PO-3", "MODEL-C", "dispatched", "2026-01-01", "2026-01-01", ""),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO dispatch_records(order_id, part_number, needed_qty, decision, dispatched_at)
+            VALUES(?,?,?,?,?)
+            """,
+            [
+                (1, "PART-1", 10, "None", "2026-07-01T08:00:00"),
+                (1, "part-1", 5, "None", "2026-07-01T08:00:00"),
+                (2, "PART-1", 15, "None", "2026-07-20T08:00:00"),
+                (3, "PART-1", 999, "Shortage", "2026-07-22T08:00:00"),
+                (3, "PART-OLD", 100, "None", "2025-01-01T08:00:00"),
+            ],
+        )
+
+        with patch.object(db, "local_now", return_value=datetime(2026, 7, 28, 12, 0, 0)):
+            rows = db.get_recent_dispatched_part_usage(months=6)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["part_number"].upper(), "PART-1")
+        self.assertEqual(rows[0]["order_count"], 2)
+        self.assertEqual(rows[0]["total_qty"], 30)
+        self.assertEqual(rows[0]["last_used_at"], "2026-07-20T08:00:00")
+
+
 class DefectiveRecordsAfterTests(InMemoryDbTestCase):
     def test_get_defective_records_after_filters_cutoff_and_sorts(self):
         self.conn.execute(

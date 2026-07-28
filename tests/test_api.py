@@ -175,6 +175,52 @@ class ApiTests(unittest.TestCase):
             ["EC-30001A", "IC-10001A"],
         )
 
+    def test_analytics_frequent_zero_stock_uses_history_schedule_and_both_stocks(self):
+        with patch("app.routers.analytics.db.get_recent_dispatched_part_usage", return_value=[
+            {
+                "part_number": "IC-ZERO",
+                "order_count": 4,
+                "total_qty": 400,
+                "last_used_at": "2026-07-20T10:00:00",
+            },
+        ]), \
+             patch("app.routers.analytics.db.get_orders", return_value=[
+                 {"id": 1, "model": "MODEL-A", "order_qty": 10, "ship_date": "2026-08-01"},
+             ]), \
+             patch("app.routers.analytics.db.get_all_bom_components_by_model", return_value={
+                 "MODEL-A": [{
+                     "part_number": "IC-ZERO",
+                     "description": "Zero IC",
+                     "qty_per_board": 2,
+                     "scrap_factor": 0,
+                     "needed_qty": 0,
+                     "is_dash": False,
+                 }],
+             }), \
+             patch("app.routers.analytics.db.get_snapshot", return_value={
+                 "IC-ZERO": {"stock_qty": 0, "description": ""},
+             }), \
+             patch("app.routers.analytics.db.get_st_inventory_snapshot", return_value={
+                 "IC-ZERO": {"stock_qty": 0, "description": ""},
+             }), \
+             patch("app.routers.analytics.db.get_setting", side_effect=lambda key, default="": {
+                 "main_file_path": "",
+                 "st_inventory_loaded_at": "2026-07-28T08:00:00",
+             }.get(key, default)), \
+             patch("app.routers.analytics.db.get_snapshot_taken_at", return_value="2026-07-28T07:00:00"), \
+             patch("app.routers.analytics.db.get_st_inventory_taken_at", return_value="2026-07-28T08:00:00"):
+            response = self.client.get(
+                "/api/analytics/frequent-zero-stock?months=6&min_orders=3"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["summary"]["zero_stock_count"], 1)
+        self.assertEqual(data["summary"]["urgent_count"], 1)
+        self.assertEqual(data["items"][0]["part_number"], "IC-ZERO")
+        self.assertEqual(data["items"][0]["active_demand_qty"], 20)
+        self.assertTrue(data["sources"]["stock_data_complete"])
+
     def test_edit_auth_blocks_mutating_api_until_login(self):
         with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False):
             blocked = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})

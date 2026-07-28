@@ -7,6 +7,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from .. import database as db
+from ..services.main_reader import read_vendors
+from ..services.material_risk import build_frequent_zero_stock_analysis
 from ..services.schedule_parser import parse_schedule
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -64,6 +66,41 @@ async def top_parts(limit: int = 20, months: int = 6):
         if not _is_hidden_analysis_part(item.get("part_number"))
     ]
     return {"parts": visible_parts[:limit]}
+
+
+@router.get("/frequent-zero-stock")
+async def frequent_zero_stock(months: int = 6, min_orders: int = 3):
+    """列出近期常用、但主檔與 ST 可用庫存皆為零的料號。"""
+    normalized_months = max(1, min(int(months or 6), 24))
+    normalized_min_orders = max(1, min(int(min_orders or 3), 100))
+    main_snapshot = db.get_snapshot()
+    st_snapshot = db.get_st_inventory_snapshot()
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    vendors: dict[str, str] = {}
+    if main_path and Path(main_path).exists():
+        try:
+            vendors = read_vendors(main_path)
+        except Exception:
+            vendors = {}
+
+    result = build_frequent_zero_stock_analysis(
+        history_usage=db.get_recent_dispatched_part_usage(normalized_months),
+        active_orders=db.get_orders(["pending", "merged"]),
+        bom_map=db.get_all_bom_components_by_model(),
+        main_snapshot=main_snapshot,
+        st_snapshot=st_snapshot,
+        vendors=vendors,
+        history_months=normalized_months,
+        min_order_count=normalized_min_orders,
+    )
+    result["sources"] = {
+        "main_loaded": bool(main_snapshot),
+        "main_loaded_at": db.get_snapshot_taken_at(),
+        "st_loaded": bool(st_snapshot),
+        "st_loaded_at": db.get_setting("st_inventory_loaded_at") or db.get_st_inventory_taken_at(),
+        "stock_data_complete": bool(main_snapshot) and bool(st_snapshot),
+    }
+    return result
 
 
 # ── 發料歷史統計 ──────────────────────────────────────────────────────────────

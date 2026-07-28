@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.07.23.3"
-APP_RELEASED_AT = "2026-07-23"
-APP_HEADLINE = "發料單改為依當下 ST 庫存逐筆扣帳"
+APP_VERSION = "v2026.07.28.1"
+APP_RELEASED_AT = "2026-07-28"
+APP_HEADLINE = "分析頁新增常用料零庫存清單"
 APP_CHANGELOG = [
+    {
+        "title": "常用料零庫存分析",
+        "items": [
+            "分析頁會找出近期經常發料、但主檔與 ST 都已沒有可用庫存的料號，預設統計最近 6 個月且至少使用於 3 筆訂單。",
+            "目前 pending / merged 排程仍會用到的零庫存料會排在最前面並標紅，可展開查看機種、批次、PO、出貨日與預計需求量。",
+            "統計期間與常用門檻可直接切換；若主檔或 ST 庫存尚未載入，畫面會明確提示資料不完整。",
+        ],
+    },
     {
         "title": "發料單逐筆扣帳與 ST 庫存修正",
         "items": [
