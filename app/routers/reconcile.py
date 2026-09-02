@@ -8,6 +8,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from .. import database as db
 from ..config import DATA_DIR
+from ..models import InventoryCountStartRequest
 from ..services.st_reconcile import (
     build_st_reconcile_preview,
     commit_st_reconcile_stop_loss,
@@ -57,6 +58,39 @@ async def get_st_reconcile_cutoff_options():
             for option in options
         ]
     }
+
+
+@router.get("/reconcile/st/session")
+async def get_st_inventory_count_session():
+    return {"active": db.get_active_inventory_count_session("st")}
+
+
+@router.post("/reconcile/st/session/start")
+async def start_st_inventory_count_session(req: InventoryCountStartRequest):
+    cutoff_text, batch_label = _resolve_cutoff(req.cutoff_date, req.cutoff_batch_code)
+    existing = db.get_active_inventory_count_session("st")
+    if existing:
+        if str(existing.get("cutoff_at") or "") == cutoff_text:
+            return {"ok": True, "session": existing}
+        raise HTTPException(409, "已有盤點正在進行，請先完成或取消後再開始新的盤點")
+    session = db.start_inventory_count_session(
+        cutoff_at=cutoff_text,
+        cutoff_code=batch_label,
+        scope="st",
+    )
+    db.log_activity("inventory_count_started", f"盤點開始，截止點 {batch_label or cutoff_text}")
+    return {"ok": True, "session": session}
+
+
+@router.post("/reconcile/st/session/cancel")
+async def cancel_st_inventory_count_session():
+    session = db.get_active_inventory_count_session("st")
+    if not session:
+        return {"ok": True, "cancelled": False}
+    cancelled = db.finish_inventory_count_session(int(session["id"]), status="cancelled")
+    if cancelled:
+        db.log_activity("inventory_count_cancelled", f"取消盤點 #{session['id']}")
+    return {"ok": True, "cancelled": cancelled}
 
 
 def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
@@ -109,6 +143,11 @@ async def commit_st_reconcile(
     if ext not in {".xlsx", ".xls", ".xlsm"}:
         raise HTTPException(400, "盤點對帳只支援 xlsx / xls / xlsm")
     cutoff_text, batch_label = _resolve_cutoff(cutoff_date, cutoff_batch_code)
+    active_session = db.get_active_inventory_count_session("st")
+    if not active_session:
+        raise HTTPException(409, "請先開始盤點並鎖定庫存，再建立停損點")
+    if str(active_session.get("cutoff_at") or "") != cutoff_text:
+        raise HTTPException(400, "盤點截止點與目前鎖定的盤點工作階段不一致")
 
     content = await file.read(MAX_RECONCILE_UPLOAD_BYTES + 1)
     if len(content) > MAX_RECONCILE_UPLOAD_BYTES:
@@ -120,13 +159,24 @@ async def commit_st_reconcile(
     temp_path = RECONCILE_UPLOAD_DIR / f"commit_{uuid4().hex}{ext}"
     try:
         temp_path.write_bytes(content)
-        return commit_st_reconcile_stop_loss(
+        result = commit_st_reconcile_stop_loss(
             str(temp_path),
             cutoff_text,
             source_filename=file.filename or "",
             part_numbers=selected_parts,
             cutoff_label=batch_label,
         )
+        db.finish_inventory_count_session(
+            int(active_session["id"]),
+            status="completed",
+            alignment_id=int(result["summary"]["alignment_id"]),
+            source_filename=file.filename or "",
+        )
+        db.log_activity(
+            "inventory_count_completed",
+            f"盤點 #{active_session['id']} 完成，對齊 {result['summary']['part_count']} 支料",
+        )
+        return result
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except Exception as error:

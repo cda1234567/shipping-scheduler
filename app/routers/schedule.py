@@ -807,6 +807,7 @@ async def get_schedule_rows():
         "merge_drafts": get_schedule_draft_map(),
         "order_supplements": db.get_order_supplements(order_ids) if order_ids else {},
         "order_supplement_details": db.get_order_supplement_details(order_ids) if order_ids else {},
+        "order_substitution_allocations": db.get_order_substitution_allocations(order_ids) if order_ids else {},
     }
 
 
@@ -905,7 +906,16 @@ async def calculate_shortage():
     orders = db.get_orders(["pending", "merged"])
     bom_map = db.get_all_bom_components_by_model()
 
-    results = calc_run(orders, bom_map, snapshot_stock, moq, dispatched_consumption, _get_st_inventory_stock())
+    results = calc_run(
+        orders,
+        bom_map,
+        snapshot_stock,
+        moq,
+        dispatched_consumption,
+        _get_st_inventory_stock(),
+        db.list_bom_substitution_rules(active_only=True),
+        db.get_order_substitution_allocations([int(order["id"]) for order in orders]),
+    )
     return {"results": results}
 
 

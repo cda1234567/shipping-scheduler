@@ -654,6 +654,12 @@ function renderBatches() {
     const addButton = batch.can_add_file
       ? `<button class="btn btn-secondary btn-xs" onclick="event.stopPropagation(); window._defAddToBatch(${batch.id})">追加</button>`
       : "";
+    const historyTag = batch.history_state
+      ? `<span class="tag tag-converted">${esc(batch.history_state)}</span>`
+      : "";
+    const deleteButton = batch.can_delete === false
+      ? ""
+      : `<button class="btn btn-danger btn-xs" onclick="event.stopPropagation(); window._defDeleteBatch(${batch.id})">刪除</button>`;
 
     let html = `<div class="defective-batch" data-batch-id="${batch.id}">
       <div class="defective-batch-header" onclick="window._defToggleBatch(${batch.id})">
@@ -662,9 +668,10 @@ function renderBatches() {
         <span class="defective-batch-name">${esc(batch.filename)}</span>
         <span class="defective-batch-date">${dateStr}</span>
         <span class="defective-batch-count">${items.length} 筆 / ${fmt(totalQty)} pcs</span>
+        ${historyTag}
         <span class="spacer"></span>
         ${addButton}
-        <button class="btn btn-danger btn-xs" onclick="event.stopPropagation(); window._defDeleteBatch(${batch.id})">刪除</button>
+        ${deleteButton}
       </div>`;
 
     if (!isCollapsed) {

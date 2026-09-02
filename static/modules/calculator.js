@@ -11,7 +11,16 @@ import {
   isOrderScopedPart as isOrderScopedShortagePart,
 } from "./shortage_rules.js";
 
-export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}, stStock = {}, orderSupplementsByOrder = {}) {
+export function calculate(
+  orders,
+  bomMap,
+  stock,
+  moq,
+  dispatchedConsumption = {},
+  stStock = {},
+  orderSupplementsByOrder = {},
+  orderSubstitutionAllocations = {},
+) {
   const running = { ...stock };
   const normalizedOrderSupplements = normalizeOrderSupplements(orderSupplementsByOrder);
 
@@ -44,36 +53,54 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
 
     const shortages = [];
     const components = bomEntry.components || [];
+    const substitutionRules = bomEntry.substitution_rules || [];
+    const manualRemaining = normalizeManualAllocations(orderSubstitutionAllocations[orderId] || {});
     const partSummaries = {};
 
     for (const comp of components) {
       const effectiveNeededQty = calculateEffectiveNeededQty(comp, orderQty);
       if (comp.is_dash || effectiveNeededQty <= 0) continue;
 
-      const part = (comp.part_number || "").toUpperCase();
-      if (!partSummaries[part]) {
-        partSummaries[part] = {
-          part_key: part,
-          part_number: comp.part_number,
-          description: comp.description || "",
-          current_stock: running[part] ?? 0,
-          needed: 0,
-          prev_qty_cs: 0,
-          ending_stock: running[part] ?? 0,
-        };
-      } else if (!partSummaries[part].description && comp.description) {
-        partSummaries[part].description = comp.description;
-      }
+      const effectiveComponent = { ...comp, needed_qty: effectiveNeededQty };
+      const rule = findSubstitutionRule(
+        substitutionRules,
+        order.model,
+        comp.part_number,
+        order.code,
+      );
+      const actualComponents = allocateSubstitution(
+        effectiveComponent,
+        rule,
+        running,
+        manualRemaining,
+      );
 
-      const summary = partSummaries[part];
-      const g = running[part] ?? 0;
-      const f = effectiveNeededQty;
-      const h = comp.prev_qty_cs || 0;
-      const j = g + h - f;
-      running[part] = j;
-      summary.needed += f;
-      summary.prev_qty_cs += h;
-      summary.ending_stock = j;
+      for (const actual of actualComponents) {
+        const part = String(actual.part_number || "").trim().toUpperCase();
+        if (!partSummaries[part]) {
+          partSummaries[part] = {
+            part_key: part,
+            part_number: actual.part_number,
+            description: actual.description || "",
+            current_stock: running[part] ?? 0,
+            needed: 0,
+            prev_qty_cs: 0,
+            ending_stock: running[part] ?? 0,
+          };
+        } else if (!partSummaries[part].description && actual.description) {
+          partSummaries[part].description = actual.description;
+        }
+
+        const summary = partSummaries[part];
+        const g = running[part] ?? 0;
+        const f = toNumber(actual.needed_qty);
+        const h = toNumber(actual.prev_qty_cs);
+        const j = g + h - f;
+        running[part] = j;
+        summary.needed += f;
+        summary.prev_qty_cs += h;
+        summary.ending_stock = j;
+      }
     }
 
     const supplements = normalizedOrderSupplements[orderId] || {};
@@ -141,6 +168,86 @@ export function calculate(orders, bomMap, stock, moq, dispatchedConsumption = {}
   }
 
   return results;
+}
+
+function normalizeManualAllocations(allocations = {}) {
+  const normalized = {};
+  for (const [rawRuleId, allocation] of Object.entries(allocations || {})) {
+    const ruleId = Number.parseInt(rawRuleId, 10);
+    if (!Number.isInteger(ruleId)) continue;
+    normalized[ruleId] = {
+      old_qty: Math.max(0, toNumber(allocation?.old_qty)),
+      new_qty: Math.max(0, toNumber(allocation?.new_qty)),
+    };
+  }
+  return normalized;
+}
+
+function findSubstitutionRule(rules, model, partNumber, batchCode) {
+  const targetModel = String(model || "").trim().toUpperCase();
+  const targetPart = String(partNumber || "").trim().toUpperCase();
+  const code = String(batchCode || "").trim();
+  const candidates = [...(rules || [])].sort((a, b) => {
+    const aExact = String(a.model || "").trim().toUpperCase() === targetModel ? 0 : 1;
+    const bExact = String(b.model || "").trim().toUpperCase() === targetModel ? 0 : 1;
+    return aExact - bExact;
+  });
+  return candidates.find(rule => {
+    const ruleModel = String(rule.model || "").trim().toUpperCase();
+    const oldPart = String(rule.old_part_number || "").trim().toUpperCase();
+    const startCode = String(rule.effective_from_code || "").trim();
+    if (String(rule.status || "active") !== "active") return false;
+    if (ruleModel !== "*" && ruleModel !== targetModel) return false;
+    if (oldPart !== targetPart) return false;
+    if (!startCode) return true;
+    return Boolean(code) && code.localeCompare(startCode, undefined, { numeric: true, sensitivity: "base" }) >= 0;
+  }) || null;
+}
+
+function allocateSubstitution(component, rule, running, manualRemaining) {
+  if (!rule) return [{ ...component }];
+
+  const demand = Math.max(0, toNumber(component.needed_qty));
+  const ratio = Math.max(Number.EPSILON, toNumber(rule.new_per_old_ratio) || 1);
+  const oldPart = String(rule.old_part_number || component.part_number || "").trim().toUpperCase();
+  const newPart = String(rule.new_part_number || "").trim().toUpperCase();
+  const ruleId = Number(rule.id || 0);
+  const manual = manualRemaining[ruleId];
+  let oldQty = 0;
+  let newQty = 0;
+
+  if (manual) {
+    oldQty = Math.min(demand, manual.old_qty);
+    newQty = Math.min((demand - oldQty) * ratio, manual.new_qty);
+    manual.old_qty -= oldQty;
+    manual.new_qty -= newQty;
+  } else if (String(rule.strategy || "old_first") === "new_first") {
+    const newBaseQty = Math.min(demand, Math.max(0, toNumber(running[newPart])) / ratio);
+    newQty = newBaseQty * ratio;
+    oldQty = demand - newBaseQty;
+  } else {
+    oldQty = Math.min(
+      demand,
+      Math.max(0, toNumber(running[oldPart]) + toNumber(component.prev_qty_cs)),
+    );
+    newQty = (demand - oldQty) * ratio;
+  }
+
+  const result = [];
+  if (oldQty > 0) {
+    result.push({ ...component, part_number: oldPart, needed_qty: oldQty });
+  }
+  if (newQty > 0) {
+    const description = String(component.description || "").trim();
+    result.push({
+      ...component,
+      part_number: newPart,
+      needed_qty: newQty,
+      prev_qty_cs: 0,
+      description: description ? `${description}（替代 ${oldPart}）` : `替代 ${oldPart}`,
+    });
+  }
+  return result;
 }
 
 function calcSuggested(shortage, moq) {

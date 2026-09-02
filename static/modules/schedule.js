@@ -22,6 +22,7 @@ let _decisions = {};
 let _draftsByOrderId = {};
 let _orderSupplementsByOrderId = {};
 let _orderSupplementDetailsByOrderId = {};
+let _orderSubstitutionAllocationsByOrderId = {};
 let _completedRows = [];
 let _completedFolders = [];
 let _completedDraftsByOrderId = {};
@@ -951,6 +952,7 @@ async function loadScheduleRows() {
       _draftsByOrderId = d.merge_drafts || {};
       _orderSupplementsByOrderId = normalizeOrderSupplementState(d.order_supplements || {});
       _orderSupplementDetailsByOrderId = normalizeOrderSupplementDetailState(d.order_supplement_details || {});
+      _orderSubstitutionAllocationsByOrderId = d.order_substitution_allocations || {};
       _scheduleMeta = {
       filename: String(d.filename || ""),
       loaded_at: String(d.loaded_at || ""),
@@ -970,6 +972,7 @@ async function loadScheduleRows() {
       _draftsByOrderId = {};
       _orderSupplementsByOrderId = {};
       _orderSupplementDetailsByOrderId = {};
+      _orderSubstitutionAllocationsByOrderId = {};
       _scheduleMeta = { filename: "", loaded_at: "", row_count: 0 };
   }
 }
@@ -1005,7 +1008,16 @@ function recalculate() {
   // 只計算勾選的訂單
   const checkedOrders = _rows.filter(r => _checkedIds.has(r.id));
   const checkedResults = checkedOrders.length
-    ? calculate(checkedOrders, _bomData, _stock, _moq, _dispatchedConsumption, _stStock, _orderSupplementsByOrderId)
+    ? calculate(
+      checkedOrders,
+      _bomData,
+      _stock,
+      _moq,
+      _dispatchedConsumption,
+      _stStock,
+      _orderSupplementsByOrderId,
+      _orderSubstitutionAllocationsByOrderId,
+    )
     : [];
   // 建立以 order id 為 key 的結果 map
   const resultById = new Map();

@@ -180,6 +180,26 @@ class StPackageUpdateRequest(BaseModel):
     package_text: str = ""
 
 
+class InventoryCountStartRequest(BaseModel):
+    cutoff_date: str = ""
+    cutoff_batch_code: str = ""
+
+
+class BomSubstitutionRuleRequest(BaseModel):
+    model: str
+    old_part_number: str
+    new_part_number: str
+    new_per_old_ratio: float = Field(default=1, gt=0)
+    strategy: str = "old_first"
+    effective_from_code: str = ""
+    note: str = ""
+
+
+class OrderSubstitutionAllocationRequest(BaseModel):
+    old_qty: float = Field(ge=0)
+    new_qty: float = Field(ge=0)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def calc_suggested_qty(shortage: float, moq: float) -> float:

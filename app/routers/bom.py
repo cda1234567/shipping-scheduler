@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from .. import database as db
 from ..config import BOM_DIR, cfg
 from ..services.server_downloads import maybe_server_save_response
-from ..models import BomEditorSaveRequest
+from ..models import BomEditorSaveRequest, BomSubstitutionRuleRequest, OrderSubstitutionAllocationRequest
 from ..services.bom_editor import (
     apply_bom_editor_changes,
     backup_bom_file,
@@ -31,11 +31,13 @@ from ..services.bom_editor import (
 )
 from ..services.bom_parser import read_formula_needed_qty_cache
 from ..services.bom_quantity import (
+    build_effective_components,
     calculate_effective_needed_qty,
     coerce_qty,
     format_excel_qty,
     get_component_effective_needed_qty,
 )
+from ..services.bom_substitutions import validate_manual_allocation
 from ..services.bom_revision import (
     delete_bom_revision_files,
     ensure_bom_revision_history,
@@ -420,6 +422,16 @@ class BomReorderRequest(BaseModel):
     groups: List[BomOrderGroupRequest] = Field(default_factory=list)
 
 
+def _refresh_substitution_drafts() -> None:
+    try:
+        from ..services.merge_drafts import rebuild_merge_drafts
+        order_ids = [int(row["id"]) for row in db.get_orders(["merged"])]
+        if order_ids:
+            rebuild_merge_drafts(order_ids)
+    except Exception:
+        pass
+
+
 @router.post("/bom/reorder")
 async def reorder_bom_files(req: BomReorderRequest):
     if not req.groups:
@@ -428,6 +440,125 @@ async def reorder_bom_files(req: BomReorderRequest):
     updated = db.save_bom_order([group.dict() for group in req.groups])
     db.log_activity("bom_reorder", f"BOM 排序已更新，{updated} 筆")
     return {"ok": True, "updated": updated}
+
+
+@router.get("/bom/substitutions")
+async def list_bom_substitutions():
+    rules = db.list_bom_substitution_rules()
+    orders = db.get_orders(["pending", "merged"])
+    order_ids = [int(order["id"]) for order in orders]
+    demands: dict[int, dict[int, float]] = {}
+    for order in orders:
+        order_model = str(order.get("model") or "").strip().upper()
+        for rule in rules:
+            rule_model = str(rule.get("model") or "").strip().upper()
+            if rule.get("status") != "active" or rule_model not in {"*", order_model}:
+                continue
+            demand = _get_order_rule_demand(order, rule)
+            if demand > 0:
+                demands.setdefault(int(order["id"]), {})[int(rule["id"])] = demand
+    return {
+        "rules": rules,
+        "orders": orders,
+        "allocations": db.get_order_substitution_allocations(order_ids),
+        "demands": demands,
+    }
+
+
+@router.post("/bom/substitutions")
+async def create_bom_substitution(req: BomSubstitutionRuleRequest):
+    try:
+        rule = db.save_bom_substitution_rule(req.dict())
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    _refresh_substitution_drafts()
+    db.log_activity(
+        "bom_substitution_created",
+        f"{rule['model']}：{rule['old_part_number']} → {rule['new_part_number']}",
+    )
+    return {"ok": True, "rule": rule}
+
+
+@router.put("/bom/substitutions/{rule_id}")
+async def update_bom_substitution(rule_id: int, req: BomSubstitutionRuleRequest):
+    try:
+        rule = db.save_bom_substitution_rule(req.dict(), rule_id=rule_id)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    _refresh_substitution_drafts()
+    db.log_activity(
+        "bom_substitution_updated",
+        f"{rule['model']}：{rule['old_part_number']} → {rule['new_part_number']}",
+    )
+    return {"ok": True, "rule": rule}
+
+
+@router.delete("/bom/substitutions/{rule_id}")
+async def end_bom_substitution(rule_id: int):
+    rule = db.get_bom_substitution_rule(rule_id)
+    if not rule or not db.end_bom_substitution_rule(rule_id):
+        raise HTTPException(404, "找不到進行中的替代設定")
+    _refresh_substitution_drafts()
+    db.log_activity(
+        "bom_substitution_ended",
+        f"{rule['model']}：結束 {rule['old_part_number']} → {rule['new_part_number']}",
+    )
+    return {"ok": True}
+
+
+def _get_order_rule_demand(order: dict, rule: dict) -> float:
+    old_part = str(rule.get("old_part_number") or "").strip().upper()
+    total = 0.0
+    for bom_file in db.get_bom_files_by_models([str(order.get("model") or "").upper()]):
+        components = build_effective_components(
+            db.get_bom_components(bom_file["id"]),
+            schedule_order_qty=order.get("order_qty"),
+            bom_order_qty=bom_file.get("order_qty"),
+        )
+        total += sum(
+            float(component.get("needed_qty") or 0)
+            for component in components
+            if str(component.get("part_number") or "").strip().upper() == old_part
+            and not component.get("is_dash")
+        )
+    return total
+
+
+@router.put("/bom/substitutions/{rule_id}/orders/{order_id}")
+async def set_order_substitution_allocation(
+    rule_id: int,
+    order_id: int,
+    req: OrderSubstitutionAllocationRequest,
+):
+    rule = db.get_bom_substitution_rule(rule_id)
+    order = db.get_order(order_id)
+    if not rule or rule.get("status") != "active":
+        raise HTTPException(404, "找不到進行中的替代設定")
+    if not order:
+        raise HTTPException(404, "找不到訂單")
+    rule_model = str(rule.get("model") or "").strip().upper()
+    if rule_model not in {"*", str(order.get("model") or "").strip().upper()}:
+        raise HTTPException(400, "這筆替代設定不適用此訂單機種")
+    demand = _get_order_rule_demand(order, rule)
+    try:
+        validate_manual_allocation(
+            demand,
+            float(rule.get("new_per_old_ratio") or 1),
+            req.old_qty,
+            req.new_qty,
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    allocation = db.save_order_substitution_allocation(order_id, rule_id, req.old_qty, req.new_qty)
+    _refresh_substitution_drafts()
+    return {"ok": True, "demand": demand, "allocation": allocation}
+
+
+@router.delete("/bom/substitutions/{rule_id}/orders/{order_id}")
+async def clear_order_substitution_allocation(rule_id: int, order_id: int):
+    db.delete_order_substitution_allocation(order_id, rule_id)
+    _refresh_substitution_drafts()
+    return {"ok": True}
 
 
 @router.delete("/bom/{bom_id}")
@@ -443,7 +574,20 @@ async def delete_bom(bom_id: str):
 @router.get("/bom/data")
 async def get_bom_data():
     bom_map = db.get_all_bom_components_by_model()
-    return {model: {"model": model, "components": components} for model, components in bom_map.items()}
+    rules_by_model: dict[str, list[dict]] = {}
+    for rule in db.list_bom_substitution_rules(active_only=True):
+        rules_by_model.setdefault(str(rule.get("model") or "").upper(), []).append(rule)
+    return {
+        model: {
+            "model": model,
+            "components": components,
+            "substitution_rules": [
+                *rules_by_model.get("*", []),
+                *rules_by_model.get(model.upper(), []),
+            ],
+        }
+        for model, components in bom_map.items()
+    }
 
 
 @router.get("/bom/{bom_id}/file")

@@ -28,6 +28,7 @@ from ..services.main_reader import (
 from ..services.local_time import local_now
 import re as _re_main
 from ..services.main_file_recalc import find_batch_col_for_cell, recalc_batch_balances_for_cell
+from ..services.main_file_rollover import rollover_main_file
 
 
 def _compute_part_last_balance_batch(main_path: str) -> dict[str, str]:
@@ -143,6 +144,43 @@ async def set_snapshot():
     invalidate_main_data_cache()
     db.log_activity("snapshot_set", f"重設主檔快照，共 {len(stock)} 筆")
     return {"ok": True, "part_count": len(stock)}
+
+
+@router.post("/main-file/rollover")
+async def rollover_to_new_main_file(period_label: str, file: UploadFile = File(...)):
+    try:
+        result = rollover_main_file(
+            content=await file.read(),
+            filename=file.filename or "",
+            period_label=period_label,
+        )
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+    invalidate_main_data_cache()
+    return result
+
+
+@router.get("/main-file/rollover/history")
+async def get_main_file_rollover_history():
+    return {
+        "current_period_id": db.get_current_main_period_id(),
+        "current_period_label": db.get_setting("main_file_period_label"),
+        "periods": db.list_main_file_periods(),
+    }
+
+
+@router.get("/main-file/rollover/{period_id}/archive")
+async def download_rollover_archive(period_id: int, request: Request):
+    period = db.get_main_file_period(period_id)
+    archive_path = Path(str((period or {}).get("archived_main_path") or ""))
+    if not period or not archive_path.exists():
+        raise HTTPException(404, "找不到年度封存主檔")
+    return maybe_server_save_response(
+        request,
+        str(archive_path),
+        archive_path.name,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @router.get("/main-file/data")
@@ -353,6 +391,7 @@ async def get_main_info():
         "part_count": len(snapshot) if snapshot else int(db.get_setting("main_part_count", "0")),
         "loaded_at": db.get_setting("main_loaded_at"),
         "has_snapshot": bool(snapshot),
+        "period_label": db.get_setting("main_file_period_label"),
     }
 
 

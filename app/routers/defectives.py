@@ -79,9 +79,22 @@ def _detect_batch_type(batch: dict) -> str:
 def _decorate_batch(batch: dict) -> dict:
     data = dict(batch)
     batch_type = _detect_batch_type(data)
+    absorbed = any(int(item.get("absorbed_by_alignment_id") or 0) > 0 for item in (data.get("items") or []))
+    old_period = int(data.get("main_period_id") or 0) != db.get_current_main_period_id()
     data["batch_type"] = batch_type
-    data["can_add_file"] = batch_type == "defective"
+    data["can_add_file"] = (
+        batch_type == "defective"
+        and not absorbed
+        and not old_period
+    )
+    data["can_delete"] = not absorbed and not old_period
+    data["history_state"] = "舊年度" if old_period else ("已由盤點吸收" if absorbed else "")
     return data
+
+
+def _ensure_current_period_batch(batch: dict) -> None:
+    if int(batch.get("main_period_id") or 0) != db.get_current_main_period_id():
+        raise HTTPException(400, "這是舊年度紀錄，只能查帳，不能再追加或刪除")
 
 
 def _format_overrun_batch_name(model: str, extra_pcs: float) -> str:
@@ -200,6 +213,7 @@ def _finalize_defective_import(
         target_batch = _get_defective_batch(target_batch_id)
         if not target_batch:
             raise HTTPException(404, "找不到要追加的不良品批次")
+        _ensure_current_period_batch(target_batch)
         if _detect_batch_type(target_batch) != "defective":
             raise HTTPException(400, "加工多打批次不可追加副檔")
 
@@ -275,6 +289,7 @@ async def preview_add_defectives(batch_id: int, file: UploadFile = File(...)):
     target_batch = _get_defective_batch(batch_id)
     if not target_batch:
         raise HTTPException(404, "找不到批次")
+    _ensure_current_period_batch(target_batch)
     if _detect_batch_type(target_batch) != "defective":
         raise HTTPException(400, "加工多打批次不可追加副檔")
 
@@ -408,6 +423,10 @@ async def import_defectives(file: UploadFile = File(...)):
 @router.post("/batches/{batch_id}/add")
 async def add_item_to_batch(batch_id: int, file: UploadFile = File(...)):
     """對已存在的批次追加不良品項目（解析 Excel + 扣主檔）。"""
+    target_batch = _get_defective_batch(batch_id)
+    if not target_batch:
+        raise HTTPException(404, "找不到批次")
+    _ensure_current_period_batch(target_batch)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (".xlsx", ".xls", ".xlsm"):
         raise HTTPException(400, "僅支援 .xlsx / .xls / .xlsm")
@@ -463,6 +482,15 @@ async def add_item_to_batch(batch_id: int, file: UploadFile = File(...)):
 
 @router.delete("/records/{record_id}")
 async def delete_record(record_id: int):
+    record = db.get_defective_record(record_id)
+    if not record:
+        raise HTTPException(404, "找不到紀錄")
+    if int(record.get("absorbed_by_alignment_id") or 0) > 0:
+        raise HTTPException(400, "這筆紀錄已被盤點數量吸收，只能保留查帳")
+    if record.get("batch_id"):
+        batch = _get_defective_batch(int(record["batch_id"]))
+        if batch:
+            _ensure_current_period_batch(batch)
     if not db.delete_defective_record(record_id):
         raise HTTPException(404, "找不到紀錄")
     db.log_activity("刪除不良品", f"ID={record_id}")

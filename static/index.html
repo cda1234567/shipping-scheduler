@@ -60,8 +60,10 @@
         <button class="btn btn-secondary btn-sm" style="flex:1" id="btn-upload-main">上傳主檔</button>
         <button class="btn btn-secondary btn-sm" id="btn-download-main" title="下載主檔" disabled>⬇</button>
       </div>
+      <button class="btn btn-secondary btn-sm btn-full" id="btn-main-rollover" style="margin-top:6px" title="封存目前主檔與資料庫，再開始新年度">年度換檔</button>
       <div id="snapshot-status" style="font-size:11px;color:#8e8e93;margin-top:6px"></div>
       <input type="file" id="main-file-input" accept=".xlsx,.xls,.xlsm">
+      <input type="file" id="main-rollover-input" accept=".xlsx,.xlsm">
     </div>
 
     <div class="sidebar-section">
@@ -274,6 +276,29 @@
         <p style="font-size:11px;color:#c7c7cc">支援 .xlsx / .xls / .xlsm；.xls 會自動轉成正式 .xlsx</p>
         <input type="file" id="bom-file-input" accept=".xlsx,.xls,.xlsm" multiple>
       </div>
+      <section class="bom-substitution-card">
+        <div class="bom-substitution-head">
+          <div>
+            <strong>新舊料替代</strong>
+            <span>預設先用完舊料，再自動轉新料；需求不重複計算。</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btn-bom-substitution-toggle" type="button">新增設定</button>
+        </div>
+        <div id="bom-substitution-form" class="bom-substitution-form" style="display:none">
+          <label class="form-field"><span>機種</span><input id="bom-substitution-model" placeholder="例如 T7U；* 表示全部"></label>
+          <label class="form-field"><span>舊料號</span><input id="bom-substitution-old" placeholder="原 BOM 料號"></label>
+          <label class="form-field"><span>新料號</span><input id="bom-substitution-new" placeholder="替代料號"></label>
+          <label class="form-field"><span>新料比例</span><input id="bom-substitution-ratio" type="number" min="0.000001" step="0.01" value="1"></label>
+          <label class="form-field"><span>使用順序</span><select id="bom-substitution-strategy"><option value="old_first">舊料優先</option><option value="new_first">新料優先</option></select></label>
+          <label class="form-field"><span>開始批次</span><input id="bom-substitution-start" placeholder="留白立即生效"></label>
+          <label class="form-field bom-substitution-note"><span>備註</span><input id="bom-substitution-note" placeholder="可留白"></label>
+          <div class="bom-substitution-form-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-bom-substitution-cancel" type="button">取消</button>
+            <button class="btn btn-primary btn-sm" id="btn-bom-substitution-save" type="button">儲存</button>
+          </div>
+        </div>
+        <div id="bom-substitution-list" class="bom-substitution-list"></div>
+      </section>
       <div id="bom-group-wrap">
         <div id="bom-group-list"></div>
       </div>
@@ -384,8 +409,11 @@
               <input type="date" id="st-reconcile-cutoff">
             </label>
             <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-cutoff-mode" type="button">改用日期</button>
+            <button class="btn btn-danger btn-sm" id="btn-st-reconcile-start" type="button">開始盤點並鎖定庫存</button>
+            <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-cancel" type="button" style="display:none">取消盤點</button>
             <button class="btn btn-primary btn-sm" id="btn-st-reconcile-preview" type="button">試算</button>
           </div>
+          <div id="st-reconcile-session-status" class="file-status">目前沒有進行中的盤點。</div>
           <div id="st-reconcile-status" class="file-status">選擇盤點表與截止日後可試算對帳。</div>
           <div id="st-reconcile-assumptions" class="st-reconcile-assumptions"></div>
           <div id="st-reconcile-result" class="st-reconcile-result"></div>
@@ -742,7 +770,7 @@
 <script type="module">
 import { apiJson, apiFetch, apiPost, showToast, esc } from "/static/modules/api.js";
 import { initSchedule, refresh as refreshSchedule, refreshCompleted, getCheckedOrderIds, getDecisions, clearCheckedOrderIds, withGlobalBusy } from "/static/modules/schedule.js";
-import { initBomManager, renderBomGroups } from "/static/modules/bom_manager.js";
+import { initBomManager, renderBomGroups, renderSubstitutionRules } from "/static/modules/bom_manager.js";
 import { initMainPreviewV2, onMainPreviewV2TabActivated, refreshMainPreviewV2 } from "/static/modules/main_preview_v2.js";
 import { initAlerts, refreshAlerts } from "/static/modules/alerts.js";
 import { initLogs, refreshLogs } from "/static/modules/logs.js";
@@ -858,6 +886,7 @@ document.getElementById("btn-refresh-app").addEventListener("click", () => {
 // ── ST reconcile ────────────────────────────────────────────────────────
 let _lastStReconcilePreview = null;
 let _stReconcileCutoffMode = "batch";
+let _activeStInventoryCount = null;
 const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
 
 async function loadStReconcileCutoffOptions() {
@@ -877,6 +906,12 @@ async function loadStReconcileCutoffOptions() {
 }
 
 function getStReconcileCutoffFields() {
+  if (_activeStInventoryCount) {
+    const code = String(_activeStInventoryCount.cutoff_code || "").trim();
+    if (code) return { cutoff_batch_code: code };
+    const date = String(_activeStInventoryCount.cutoff_at || "").slice(0, 10);
+    return date ? { cutoff_date: date } : null;
+  }
   if (_stReconcileCutoffMode === "batch") {
     const code = document.getElementById("st-reconcile-cutoff-batch")?.value || "";
     return code ? { cutoff_batch_code: code } : null;
@@ -902,7 +937,67 @@ document.getElementById("btn-st-reconcile-cutoff-mode")?.addEventListener("click
   if (dateField) dateField.style.display = useBatch ? "none" : "";
   if (modeBtn) modeBtn.textContent = useBatch ? "改用日期" : "改用批次";
 });
-void loadStReconcileCutoffOptions();
+function renderStInventoryCountSession() {
+  const active = _activeStInventoryCount;
+  const status = document.getElementById("st-reconcile-session-status");
+  const startButton = document.getElementById("btn-st-reconcile-start");
+  const cancelButton = document.getElementById("btn-st-reconcile-cancel");
+  const modeButton = document.getElementById("btn-st-reconcile-cutoff-mode");
+  const batchSelect = document.getElementById("st-reconcile-cutoff-batch");
+  const dateInput = document.getElementById("st-reconcile-cutoff");
+  if (status) {
+    status.textContent = active
+      ? `盤點進行中：截止 ${active.cutoff_code || String(active.cutoff_at || "").replace("T", " ").slice(0, 19)}，庫存異動已暫停。`
+      : "目前沒有進行中的盤點。";
+  }
+  if (startButton) startButton.disabled = Boolean(active);
+  if (cancelButton) cancelButton.style.display = active ? "inline-flex" : "none";
+  if (modeButton) modeButton.disabled = Boolean(active);
+  if (batchSelect) batchSelect.disabled = Boolean(active);
+  if (dateInput) dateInput.disabled = Boolean(active);
+  updateStReconcileCommitCount();
+}
+
+async function loadStInventoryCountSession() {
+  try {
+    const data = await apiJson("/api/reconcile/st/session");
+    _activeStInventoryCount = data?.active || null;
+  } catch (_) {
+    _activeStInventoryCount = null;
+  }
+  renderStInventoryCountSession();
+}
+
+async function startStInventoryCount() {
+  const fields = getStReconcileCutoffFields();
+  if (!fields) {
+    showToast("請先選擇停損批次或輸入截止日", { tone: "error" });
+    return;
+  }
+  if (!confirm("開始後會暫停發料、補料、不良品、多打及主檔庫存修改，直到完成或取消盤點。要開始嗎？")) return;
+  try {
+    const result = await apiPost("/api/reconcile/st/session/start", fields);
+    _activeStInventoryCount = result.session || null;
+    renderStInventoryCountSession();
+    showToast("盤點已開始，庫存異動已鎖定", { tone: "success" });
+  } catch (error) {
+    showToast(`無法開始盤點：${error.message}`, { tone: "error" });
+  }
+}
+
+async function cancelStInventoryCount() {
+  if (!confirm("取消盤點後會解除庫存鎖定，尚未提交的盤點數不會寫入。要取消嗎？")) return;
+  try {
+    await apiPost("/api/reconcile/st/session/cancel");
+    _activeStInventoryCount = null;
+    renderStInventoryCountSession();
+    showToast("盤點已取消，庫存鎖定已解除");
+  } catch (error) {
+    showToast(`取消盤點失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+void loadStReconcileCutoffOptions().then(loadStInventoryCountSession);
 
 function formatReconcileQty(value) {
   const n = Number(value || 0);
@@ -957,7 +1052,7 @@ function updateStReconcileCommitCount() {
   const selectedCount = getSelectedStReconcileParts().length;
   if (button) {
     button.textContent = `設為停損點（${selectedCount} 支料）`;
-    button.disabled = selectedCount === 0;
+    button.disabled = selectedCount === 0 || !_activeStInventoryCount;
   }
 }
 
@@ -1102,6 +1197,10 @@ async function handleStReconcileCommit() {
     showToast("請先完成庚霖格式試算");
     return;
   }
+  if (!_activeStInventoryCount) {
+    showToast("請先按「開始盤點並鎖定庫存」", { tone: "error" });
+    return;
+  }
   if (!file || !getStReconcileCutoffFields()) {
     showToast("找不到原始盤點表或截止點");
     return;
@@ -1129,6 +1228,8 @@ async function handleStReconcileCommit() {
     const summary = result.summary || {};
     commitStatus.textContent = `已建立停損點 #${summary.alignment_id}，對齊 ${summary.part_count} 料，調帳 ${summary.adjusted_count} 料。`;
     showToast("盤點停損點已建立", { tone: "success", duration: 5000 });
+    _activeStInventoryCount = null;
+    renderStInventoryCountSession();
     await refreshStInventoryInMain();
   } catch (error) {
     commitStatus.textContent = "停損點建立失敗：" + error.message;
@@ -1138,6 +1239,12 @@ async function handleStReconcileCommit() {
 
 document.getElementById("btn-st-reconcile-preview")?.addEventListener("click", () => {
   void handleStReconcilePreview();
+});
+document.getElementById("btn-st-reconcile-start")?.addEventListener("click", () => {
+  void startStInventoryCount();
+});
+document.getElementById("btn-st-reconcile-cancel")?.addEventListener("click", () => {
+  void cancelStInventoryCount();
 });
 document.getElementById("btn-st-reconcile-file")?.addEventListener("click", event => {
   event.preventDefault();
@@ -1153,8 +1260,52 @@ document.getElementById("btn-st-reconcile-commit")?.addEventListener("click", ()
 });
 
 // ── Main file ───────────────────────────────────────────────────────────
+let pendingMainPeriodLabel = "";
 document.getElementById("btn-upload-main").addEventListener("click", () =>
   document.getElementById("main-file-input").click());
+
+document.getElementById("btn-main-rollover")?.addEventListener("click", () => {
+  const suggested = String(new Date().getFullYear() + 1);
+  const label = prompt("新主檔年度（例如 2027）：", suggested);
+  if (label === null) return;
+  if (!/^[0-9A-Za-z_-]{2,20}$/.test(label.trim())) {
+    showToast("年度格式不正確", { tone: "error" });
+    return;
+  }
+  pendingMainPeriodLabel = label.trim();
+  document.getElementById("main-rollover-input")?.click();
+});
+
+document.getElementById("main-rollover-input")?.addEventListener("change", async event => {
+  const input = event.target;
+  const file = input.files?.[0];
+  if (!file || !pendingMainPeriodLabel) return;
+  if (!confirm(`確定開始 ${pendingMainPeriodLabel} 主檔？\n系統會先封存目前主檔與資料庫，未完成訂單會保留。`)) {
+    input.value = "";
+    return;
+  }
+  const button = document.getElementById("btn-main-rollover");
+  const originalText = button?.textContent || "年度換檔";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    if (button) { button.disabled = true; button.textContent = "換檔中..."; }
+    const response = await apiFetch(`/api/main-file/rollover?period_label=${encodeURIComponent(pendingMainPeriodLabel)}`, {
+      method: "POST",
+      body: form,
+    });
+    const result = await response.json();
+    showToast(`${result.period?.label || pendingMainPeriodLabel} 主檔已啟用，舊檔與資料庫已封存`, { tone: "success", duration: 5000 });
+    await handleMainMutation();
+    await refreshSchedule();
+  } catch (error) {
+    showToast(`年度換檔失敗：${error.message}`, { tone: "error", sticky: true });
+  } finally {
+    if (button) { button.disabled = false; button.textContent = originalText; }
+    input.value = "";
+    pendingMainPeriodLabel = "";
+  }
+});
 
 document.getElementById("btn-download-main").addEventListener("click", async () => {
   try {
@@ -1262,7 +1413,7 @@ async function refreshMainStatus() {
       document.getElementById("btn-download-main").disabled = false;
       const snapEl = document.getElementById("snapshot-status");
       snapEl.innerHTML = d.has_snapshot
-        ? '<span style="color:#22c55e">已有起始快照</span>'
+        ? `<span style="color:#22c55e">已有起始快照${d.period_label ? ` · ${esc(d.period_label)} 主檔` : ""}</span>`
         : '<span style="color:#f97316">尚未設定快照</span>';
     }
     return Boolean(d.loaded);
@@ -1320,6 +1471,7 @@ async function init() {
   await finishBoot();
 
   runBootBackground("renderBomGroups", renderBomGroups);
+  runBootBackground("renderSubstitutionRules", renderSubstitutionRules);
   runBootBackground("refreshAlerts", refreshAlerts);
 }
 

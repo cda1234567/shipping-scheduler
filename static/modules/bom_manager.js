@@ -7,6 +7,8 @@ const _innerSortables = [];
 let _editorBom = null;
 let _historyBom = null;
 let _bomOrderDirty = false;
+let _substitutionData = { rules: [], orders: [], allocations: {}, demands: {} };
+let _editingSubstitutionId = null;
 
 export function initBomManager(onRefreshCallback, { autoLoad = true } = {}) {
   _onRefresh = onRefreshCallback;
@@ -37,11 +39,137 @@ export function initBomManager(onRefreshCallback, { autoLoad = true } = {}) {
   });
 
   document.getElementById("btn-save-bom-order")?.addEventListener("click", saveBomOrder);
+  document.getElementById("btn-bom-substitution-toggle")?.addEventListener("click", () => openSubstitutionForm());
+  document.getElementById("btn-bom-substitution-cancel")?.addEventListener("click", closeSubstitutionForm);
+  document.getElementById("btn-bom-substitution-save")?.addEventListener("click", saveSubstitutionRule);
 
   bindEditorModal();
   bindHistoryModal();
   setBomOrderDirty(false);
-  if (autoLoad) void renderBomGroups();
+  if (autoLoad) {
+    void renderBomGroups();
+    void renderSubstitutionRules();
+  }
+}
+
+function openSubstitutionForm(rule = null) {
+  _editingSubstitutionId = rule ? Number(rule.id) : null;
+  document.getElementById("bom-substitution-model").value = rule?.model || "";
+  document.getElementById("bom-substitution-old").value = rule?.old_part_number || "";
+  document.getElementById("bom-substitution-new").value = rule?.new_part_number || "";
+  document.getElementById("bom-substitution-ratio").value = rule?.new_per_old_ratio || 1;
+  document.getElementById("bom-substitution-strategy").value = rule?.strategy || "old_first";
+  document.getElementById("bom-substitution-start").value = rule?.effective_from_code || "";
+  document.getElementById("bom-substitution-note").value = rule?.note || "";
+  document.getElementById("bom-substitution-form").style.display = "grid";
+  document.getElementById("btn-bom-substitution-save").textContent = rule ? "更新" : "儲存";
+}
+
+function closeSubstitutionForm() {
+  _editingSubstitutionId = null;
+  const form = document.getElementById("bom-substitution-form");
+  if (form) form.style.display = "none";
+}
+
+async function saveSubstitutionRule() {
+  const payload = {
+    model: document.getElementById("bom-substitution-model")?.value.trim() || "",
+    old_part_number: document.getElementById("bom-substitution-old")?.value.trim() || "",
+    new_part_number: document.getElementById("bom-substitution-new")?.value.trim() || "",
+    new_per_old_ratio: Number(document.getElementById("bom-substitution-ratio")?.value || 1),
+    strategy: document.getElementById("bom-substitution-strategy")?.value || "old_first",
+    effective_from_code: document.getElementById("bom-substitution-start")?.value.trim() || "",
+    note: document.getElementById("bom-substitution-note")?.value.trim() || "",
+  };
+  if (!payload.model || !payload.old_part_number || !payload.new_part_number) {
+    showToast("請填機種、舊料號與新料號");
+    return;
+  }
+  try {
+    if (_editingSubstitutionId) {
+      await apiPut(`/api/bom/substitutions/${_editingSubstitutionId}`, payload);
+    } else {
+      await apiPost("/api/bom/substitutions", payload);
+    }
+    closeSubstitutionForm();
+    await renderSubstitutionRules();
+    if (_onRefresh) await _onRefresh();
+    showToast("替代設定已儲存", { tone: "success" });
+  } catch (error) {
+    showToast(`替代設定失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+async function endSubstitutionRule(rule) {
+  if (!confirm(`確定結束 ${rule.old_part_number} → ${rule.new_part_number}？`)) return;
+  try {
+    await apiFetch(`/api/bom/substitutions/${rule.id}`, { method: "DELETE" });
+    await renderSubstitutionRules();
+    if (_onRefresh) await _onRefresh();
+  } catch (error) {
+    showToast(`結束設定失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+async function setOrderAllocation(rule) {
+  const candidates = (_substitutionData.orders || []).filter(order => {
+    const modelMatches = rule.model === "*" || String(order.model || "").toUpperCase() === String(rule.model || "").toUpperCase();
+    return modelMatches && Number(_substitutionData.demands?.[order.id]?.[rule.id] || 0) > 0;
+  });
+  if (!candidates.length) {
+    showToast("目前沒有適用的待處理訂單");
+    return;
+  }
+  const guide = candidates.map(order => `${order.id}: ${order.code || order.po_number || order.model}`).join("\n");
+  const rawId = prompt(`輸入要手動分配的訂單 ID：\n${guide}`, String(candidates[0].id));
+  if (rawId === null) return;
+  const order = candidates.find(item => Number(item.id) === Number(rawId));
+  if (!order) { showToast("找不到選擇的訂單"); return; }
+  const demand = Number(_substitutionData.demands?.[order.id]?.[rule.id] || 0);
+  const existing = _substitutionData.allocations?.[order.id]?.[rule.id];
+  const rawOld = prompt(`此單換算需求 ${demand.toLocaleString()}\n要使用多少舊料？`, String(existing?.old_qty ?? demand));
+  if (rawOld === null) return;
+  const oldQty = Number(rawOld);
+  if (!Number.isFinite(oldQty) || oldQty < 0 || oldQty > demand) { showToast("舊料數量不正確"); return; }
+  const newQty = (demand - oldQty) * Number(rule.new_per_old_ratio || 1);
+  if (!confirm(`舊料 ${oldQty}、新料 ${newQty}，確定儲存？`)) return;
+  try {
+    await apiPut(`/api/bom/substitutions/${rule.id}/orders/${order.id}`, { old_qty: oldQty, new_qty: newQty });
+    await renderSubstitutionRules();
+    if (_onRefresh) await _onRefresh();
+    showToast("訂單分配已儲存", { tone: "success" });
+  } catch (error) {
+    showToast(`分配失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+export async function renderSubstitutionRules() {
+  const container = document.getElementById("bom-substitution-list");
+  if (!container) return;
+  try {
+    _substitutionData = await apiJson("/api/bom/substitutions");
+    const rules = _substitutionData.rules || [];
+    if (!rules.length) {
+      container.innerHTML = '<div class="bom-substitution-meta">尚未設定替代料。</div>';
+      return;
+    }
+    container.innerHTML = rules.map(rule => `
+      <div class="bom-substitution-row ${rule.status === "active" ? "" : "ended"}" data-rule-id="${rule.id}">
+        <div class="bom-substitution-main">
+          <div><b>${esc(rule.model)}</b>　${esc(rule.old_part_number)} → ${esc(rule.new_part_number)}　× ${Number(rule.new_per_old_ratio || 1)}</div>
+          <div class="bom-substitution-meta">${rule.strategy === "new_first" ? "新料優先" : "舊料優先"}${rule.effective_from_code ? ` · 從 ${esc(rule.effective_from_code)} 開始` : " · 立即生效"}${rule.note ? ` · ${esc(rule.note)}` : ""}${rule.status === "active" ? "" : " · 已結束"}</div>
+        </div>
+        ${rule.status === "active" ? `<button class="btn btn-secondary btn-sm bom-substitution-allocate">訂單分配</button><button class="btn btn-secondary btn-sm bom-substitution-edit">編輯</button><button class="btn btn-danger btn-sm bom-substitution-end">結束</button>` : ""}
+      </div>`).join("");
+    container.querySelectorAll(".bom-substitution-row").forEach(row => {
+      const rule = rules.find(item => Number(item.id) === Number(row.dataset.ruleId));
+      row.querySelector(".bom-substitution-edit")?.addEventListener("click", () => openSubstitutionForm(rule));
+      row.querySelector(".bom-substitution-end")?.addEventListener("click", () => endSubstitutionRule(rule));
+      row.querySelector(".bom-substitution-allocate")?.addEventListener("click", () => setOrderAllocation(rule));
+    });
+  } catch (error) {
+    container.innerHTML = `<div class="bom-substitution-meta">替代設定載入失敗：${esc(error.message)}</div>`;
+  }
 }
 
 function setBomOrderDirty(dirty) {

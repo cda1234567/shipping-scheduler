@@ -657,6 +657,12 @@ def prepare_dispatch_context(
 
     label = order.get("code") or order.get("model") or str(order_id)
     po_number = str(order.get("po_number", ""))
+    substitution_rules = [
+        rule
+        for rule in db.list_bom_substitution_rules(active_only=True)
+        if str(rule.get("model") or "").strip().upper() in {"*", model_key}
+    ]
+    substitution_allocations = db.get_order_substitution_allocations([order_id]).get(order_id, {})
 
     groups = []
     all_components = []
@@ -672,6 +678,8 @@ def prepare_dispatch_context(
             "po_number": po_number,
             "bom_model": bf["model"],
             "components": comps,
+            "substitution_rules": substitution_rules,
+            "substitution_allocations": substitution_allocations,
         })
         all_components.extend(comps)
 
@@ -825,7 +833,8 @@ def finalize_dispatch_context(
         )
 
         dispatch_records = []
-        for comp in item.all_components:
+        actual_components = list(result.get("plan_rows") or []) or item.all_components
+        for comp in actual_components:
             if comp.get("is_dash") or comp.get("needed_qty", 0) <= 0:
                 continue
             part_number = str(comp.get("part_number") or "")
@@ -833,7 +842,7 @@ def finalize_dispatch_context(
                 "part_number": part_number,
                 "needed_qty": comp["needed_qty"],
                 "prev_qty_cs": comp.get("prev_qty_cs", 0),
-                "decision": item.decisions.get(part_number.strip().upper(), "None"),
+                "decision": comp.get("decision") or item.decisions.get(part_number.strip().upper(), "None"),
             })
         db.save_dispatch_records(item.order_id, dispatch_records)
         db.update_order(item.order_id, status="dispatched")
@@ -866,6 +875,8 @@ def finalize_dispatch_context(
 def get_dispatch_rollback_unavailable_reason(session: dict | None) -> str:
     if not session:
         return "找不到這筆訂單的發料歷史，無法反悔"
+    if int(session.get("main_period_id") or 0) != db.get_current_main_period_id():
+        return "這筆發料屬於舊年度主檔，只能保留查帳，不能回復到目前主檔"
     validation = validate_dispatch_backup_reference(session.get("backup_path") or "")
     if not validation.get("ok"):
         return str(validation.get("reason") or "找不到這次發料的主檔備份，無法反悔")

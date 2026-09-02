@@ -118,6 +118,30 @@ CREATE TABLE IF NOT EXISTS st_reconcile_adjustments (
     created_at TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS inventory_count_sessions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope          TEXT NOT NULL DEFAULT 'st',
+    cutoff_code    TEXT NOT NULL DEFAULT '',
+    cutoff_at      TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'active',
+    started_at     TEXT NOT NULL DEFAULT '',
+    completed_at   TEXT NOT NULL DEFAULT '',
+    cancelled_at   TEXT NOT NULL DEFAULT '',
+    alignment_id   INTEGER REFERENCES st_reconcile_alignments(id),
+    source_filename TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS main_file_periods (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    label                TEXT NOT NULL DEFAULT '',
+    source_filename      TEXT NOT NULL DEFAULT '',
+    main_file_path       TEXT NOT NULL DEFAULT '',
+    previous_label       TEXT NOT NULL DEFAULT '',
+    archived_main_path   TEXT NOT NULL DEFAULT '',
+    database_backup_path TEXT NOT NULL DEFAULT '',
+    started_at           TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS orders (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     po_number     TEXT    NOT NULL DEFAULT '',
@@ -177,6 +201,31 @@ CREATE TABLE IF NOT EXISTS bom_revisions (
     UNIQUE(bom_file_id, revision_number)
 );
 
+CREATE TABLE IF NOT EXISTS bom_substitution_rules (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    model               TEXT NOT NULL DEFAULT '',
+    old_part_number     TEXT NOT NULL DEFAULT '',
+    new_part_number     TEXT NOT NULL DEFAULT '',
+    new_per_old_ratio   REAL NOT NULL DEFAULT 1,
+    strategy            TEXT NOT NULL DEFAULT 'old_first',
+    effective_from_code TEXT NOT NULL DEFAULT '',
+    note                TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'active',
+    created_at          TEXT NOT NULL DEFAULT '',
+    updated_at          TEXT NOT NULL DEFAULT '',
+    ended_at            TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS order_substitution_allocations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id    INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    rule_id     INTEGER NOT NULL REFERENCES bom_substitution_rules(id) ON DELETE CASCADE,
+    old_qty     REAL NOT NULL DEFAULT 0,
+    new_qty     REAL NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL DEFAULT '',
+    UNIQUE(order_id, rule_id)
+);
+
 CREATE TABLE IF NOT EXISTS dispatch_records (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id      INTEGER NOT NULL REFERENCES orders(id),
@@ -194,7 +243,8 @@ CREATE TABLE IF NOT EXISTS dispatch_sessions (
     backup_path     TEXT    NOT NULL DEFAULT '',
     main_file_path  TEXT    NOT NULL DEFAULT '',
     dispatched_at   TEXT    NOT NULL DEFAULT '',
-    rolled_back_at  TEXT    NOT NULL DEFAULT ''
+    rolled_back_at  TEXT    NOT NULL DEFAULT '',
+    main_period_id  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS decisions (
@@ -212,6 +262,7 @@ CREATE TABLE IF NOT EXISTS order_supplements (
     part_number    TEXT    NOT NULL DEFAULT '',
     supplement_qty REAL    NOT NULL DEFAULT 0,
     note           TEXT    NOT NULL DEFAULT '',
+    absorbed_by_alignment_id INTEGER NOT NULL DEFAULT 0,
     updated_at     TEXT    NOT NULL DEFAULT '',
     UNIQUE(order_id, part_number)
 );
@@ -255,6 +306,7 @@ CREATE TABLE IF NOT EXISTS merge_draft_files (
     group_model      TEXT    NOT NULL DEFAULT '',
     carry_overs_json TEXT    NOT NULL DEFAULT '{}',
     supplements_json TEXT    NOT NULL DEFAULT '{}',
+    effective_components_json TEXT NOT NULL DEFAULT '[]',
     created_at       TEXT    NOT NULL DEFAULT '',
     updated_at       TEXT    NOT NULL DEFAULT '',
     UNIQUE(draft_id, bom_file_id)
@@ -343,6 +395,8 @@ CREATE INDEX IF NOT EXISTS idx_st_reconcile_align_at ON st_reconcile_alignments(
 CREATE INDEX IF NOT EXISTS idx_st_reconcile_parts_align ON st_reconcile_alignment_parts(alignment_id, part_number);
 CREATE INDEX IF NOT EXISTS idx_bom_comp_file ON bom_components(bom_file_id);
 CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, revision_number);
+CREATE INDEX IF NOT EXISTS idx_bom_substitution_active ON bom_substitution_rules(status, model, old_part_number);
+CREATE INDEX IF NOT EXISTS idx_order_substitution_order ON order_substitution_allocations(order_id, rule_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
@@ -359,7 +413,8 @@ CREATE TABLE IF NOT EXISTS defective_batches (
     filename        TEXT    NOT NULL DEFAULT '',
     imported_at     TEXT    NOT NULL DEFAULT '',
     note            TEXT    NOT NULL DEFAULT '',
-    main_file_mtime REAL    NOT NULL DEFAULT 0
+    main_file_mtime REAL    NOT NULL DEFAULT 0,
+    main_period_id  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS defective_records (
@@ -378,11 +433,13 @@ CREATE TABLE IF NOT EXISTS defective_records (
     created_at    TEXT    NOT NULL DEFAULT '',
     confirmed_at  TEXT    NOT NULL DEFAULT '',
     closed_at     TEXT    NOT NULL DEFAULT ''
+    ,absorbed_by_alignment_id INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_defective_status ON defective_records(status);
 CREATE INDEX IF NOT EXISTS idx_defective_order ON defective_records(order_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatched_at);
+CREATE INDEX IF NOT EXISTS idx_inventory_count_sessions_status ON inventory_count_sessions(scope, status, id);
 """
 
 
@@ -518,9 +575,17 @@ def init_db():
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN main_file_mtime_ns TEXT NOT NULL DEFAULT ''")
         if draft_cols and "is_sample" not in draft_cols:
             conn.execute("ALTER TABLE merge_drafts ADD COLUMN is_sample INTEGER NOT NULL DEFAULT 0")
+        draft_file_cols = [r[1] for r in conn.execute("PRAGMA table_info(merge_draft_files)").fetchall()]
+        if draft_file_cols and "effective_components_json" not in draft_file_cols:
+            conn.execute("ALTER TABLE merge_draft_files ADD COLUMN effective_components_json TEXT NOT NULL DEFAULT '[]'")
+        dispatch_session_cols = [r[1] for r in conn.execute("PRAGMA table_info(dispatch_sessions)").fetchall()]
+        if dispatch_session_cols and "main_period_id" not in dispatch_session_cols:
+            conn.execute("ALTER TABLE dispatch_sessions ADD COLUMN main_period_id INTEGER NOT NULL DEFAULT 0")
         supplement_cols = [r[1] for r in conn.execute("PRAGMA table_info(order_supplements)").fetchall()]
         if supplement_cols and "note" not in supplement_cols:
             conn.execute("ALTER TABLE order_supplements ADD COLUMN note TEXT NOT NULL DEFAULT ''")
+        if supplement_cols and "absorbed_by_alignment_id" not in supplement_cols:
+            conn.execute("ALTER TABLE order_supplements ADD COLUMN absorbed_by_alignment_id INTEGER NOT NULL DEFAULT 0")
         purchase_reminder_cols = [r[1] for r in conn.execute("PRAGMA table_info(purchase_reminder_statuses)").fetchall()]
         if purchase_reminder_cols and "ignored" not in purchase_reminder_cols:
             conn.execute("ALTER TABLE purchase_reminder_statuses ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0")
@@ -534,6 +599,8 @@ def init_db():
             conn.execute("ALTER TABLE defective_records ADD COLUMN stock_before REAL NOT NULL DEFAULT 0")
         if def_cols and "stock_after" not in def_cols:
             conn.execute("ALTER TABLE defective_records ADD COLUMN stock_after REAL NOT NULL DEFAULT 0")
+        if def_cols and "absorbed_by_alignment_id" not in def_cols:
+            conn.execute("ALTER TABLE defective_records ADD COLUMN absorbed_by_alignment_id INTEGER NOT NULL DEFAULT 0")
         if def_cols and "batch_id" in [r[1] for r in conn.execute("PRAGMA table_info(defective_records)").fetchall()]:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_batch ON defective_records(batch_id)")
 
@@ -541,6 +608,13 @@ def init_db():
         batch_cols = [r[1] for r in conn.execute("PRAGMA table_info(defective_batches)").fetchall()]
         if batch_cols and "main_file_mtime" not in batch_cols:
             conn.execute("ALTER TABLE defective_batches ADD COLUMN main_file_mtime REAL NOT NULL DEFAULT 0")
+        if batch_cols and "main_period_id" not in batch_cols:
+            conn.execute("ALTER TABLE defective_batches ADD COLUMN main_period_id INTEGER NOT NULL DEFAULT 0")
+
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_order_supplements_absorbed ON order_supplements(absorbed_by_alignment_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_absorbed ON defective_records(absorbed_by_alignment_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_period ON dispatch_sessions(main_period_id, rolled_back_at, id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_batches_period ON defective_batches(main_period_id, id)")
 
         _repair_managed_paths(conn)
 
@@ -1048,6 +1122,202 @@ def get_latest_st_reconcile_anchor(
         "part_count": int(alignment["part_count"] or 0),
         "diff_count": int(alignment["diff_count"] or 0),
         "baseline_qty": baseline,
+    }
+
+
+def get_latest_st_reconcile_anchors(
+    cutoff_at: str,
+    part_numbers: list[str] | None = None,
+) -> dict[str, dict]:
+    """逐料號取得 cutoff 前最近一次停損基準，避免局部盤點截斷其他料號。"""
+    cutoff = str(cutoff_at or "").strip()
+    if not cutoff:
+        return {}
+    normalized_parts = list(dict.fromkeys(
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ))
+    sql = """
+        SELECT a.id AS alignment_id, a.aligned_at, a.committed_at,
+               p.part_number, p.aligned_qty
+        FROM st_reconcile_alignment_parts p
+        JOIN st_reconcile_alignments a ON a.id=p.alignment_id
+        WHERE a.aligned_at<=?
+    """
+    params: list[object] = [cutoff]
+    if normalized_parts:
+        placeholders = ",".join("?" * len(normalized_parts))
+        sql += f" AND p.part_number IN ({placeholders})"
+        params.extend(normalized_parts)
+    sql += " ORDER BY p.part_number, a.aligned_at DESC, a.id DESC"
+
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    result: dict[str, dict] = {}
+    for row in rows:
+        part = str(row["part_number"] or "").strip().upper()
+        if not part or part in result:
+            continue
+        result[part] = {
+            "alignment_id": int(row["alignment_id"]),
+            "aligned_at": str(row["aligned_at"] or ""),
+            "committed_at": str(row["committed_at"] or ""),
+            "baseline_qty": float(row["aligned_qty"] or 0),
+        }
+    return result
+
+
+def get_active_inventory_count_session(scope: str = "st") -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM inventory_count_sessions WHERE scope=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (str(scope or "st"),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def start_inventory_count_session(*, cutoff_at: str, cutoff_code: str = "", scope: str = "st") -> dict:
+    normalized_scope = str(scope or "st").strip() or "st"
+    existing = get_active_inventory_count_session(normalized_scope)
+    if existing:
+        return existing
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO inventory_count_sessions(scope, cutoff_code, cutoff_at, status, started_at) "
+            "VALUES(?,?,?,'active',?)",
+            (normalized_scope, str(cutoff_code or "").strip(), str(cutoff_at or "").strip(), now),
+        )
+        session_id = int(cur.lastrowid)
+    return {
+        "id": session_id,
+        "scope": normalized_scope,
+        "cutoff_code": str(cutoff_code or "").strip(),
+        "cutoff_at": str(cutoff_at or "").strip(),
+        "status": "active",
+        "started_at": now,
+        "completed_at": "",
+        "cancelled_at": "",
+        "alignment_id": None,
+        "source_filename": "",
+    }
+
+
+def get_current_main_period_id() -> int:
+    try:
+        return max(0, int(get_setting("main_file_period_id", "0") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def create_main_file_period(
+    *,
+    label: str,
+    source_filename: str,
+    main_file_path: str,
+    previous_label: str = "",
+    archived_main_path: str = "",
+    database_backup_path: str = "",
+    started_at: str | None = None,
+) -> dict:
+    normalized_label = str(label or "").strip()
+    if not normalized_label:
+        raise ValueError("年度標籤不可空白")
+    timestamp = started_at or _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO main_file_periods(label, source_filename, main_file_path, previous_label, "
+            "archived_main_path, database_backup_path, started_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                normalized_label,
+                str(source_filename or "").strip(),
+                str(main_file_path or "").strip(),
+                str(previous_label or "").strip(),
+                str(archived_main_path or "").strip(),
+                str(database_backup_path or "").strip(),
+                timestamp,
+            ),
+        )
+        period_id = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES('main_file_period_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (str(period_id),),
+        )
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES('main_file_period_label', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (normalized_label,),
+        )
+        row = conn.execute("SELECT * FROM main_file_periods WHERE id=?", (period_id,)).fetchone()
+    return dict(row) if row else {"id": period_id, "label": normalized_label}
+
+
+def list_main_file_periods() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM main_file_periods ORDER BY id DESC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_main_file_period(period_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM main_file_periods WHERE id=?", (int(period_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def finish_inventory_count_session(
+    session_id: int,
+    *,
+    status: str,
+    alignment_id: int | None = None,
+    source_filename: str = "",
+) -> bool:
+    normalized_status = str(status or "").strip()
+    if normalized_status not in {"completed", "cancelled"}:
+        raise ValueError("盤點工作階段狀態不正確")
+    now = _now()
+    time_column = "completed_at" if normalized_status == "completed" else "cancelled_at"
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"UPDATE inventory_count_sessions SET status=?, {time_column}=?, alignment_id=?, source_filename=? "
+            "WHERE id=? AND status='active'",
+            (normalized_status, now, alignment_id, str(source_filename or ""), int(session_id)),
+        )
+    return bool(cur.rowcount)
+
+
+def mark_inventory_history_absorbed(
+    alignment_id: int,
+    cutoff_at: str,
+    part_numbers: list[str],
+) -> dict[str, int]:
+    """將已完成且落在盤點切點前的異動封存；未完成缺料不會被吸收。"""
+    parts = list(dict.fromkeys(
+        str(part).strip().upper()
+        for part in (part_numbers or [])
+        if str(part).strip()
+    ))
+    if not parts:
+        return {"defective_records": 0, "supplements": 0}
+    placeholders = ",".join("?" * len(parts))
+    with get_conn() as conn:
+        defective = conn.execute(
+            f"UPDATE defective_records SET absorbed_by_alignment_id=? "
+            f"WHERE absorbed_by_alignment_id=0 AND created_at<=? AND UPPER(TRIM(part_number)) IN ({placeholders})",
+            [int(alignment_id), str(cutoff_at or "")] + parts,
+        )
+        supplements = conn.execute(
+            f"UPDATE order_supplements SET absorbed_by_alignment_id=? "
+            f"WHERE absorbed_by_alignment_id=0 AND updated_at<=? "
+            f"AND UPPER(TRIM(part_number)) IN ({placeholders}) "
+            "AND order_id IN (SELECT id FROM orders WHERE status IN ('dispatched','completed'))",
+            [int(alignment_id), str(cutoff_at or "")] + parts,
+        )
+    return {
+        "defective_records": int(defective.rowcount or 0),
+        "supplements": int(supplements.rowcount or 0),
     }
 
 
@@ -2304,6 +2574,125 @@ def delete_bom_file(bom_id: str):
         conn.execute("DELETE FROM bom_files WHERE id=?", (bom_id,))
 
 
+def list_bom_substitution_rules(*, active_only: bool = False) -> list[dict]:
+    sql = "SELECT * FROM bom_substitution_rules"
+    params: list[object] = []
+    if active_only:
+        sql += " WHERE status='active'"
+    sql += " ORDER BY status='active' DESC, model, old_part_number, id"
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_bom_substitution_rule(rule_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM bom_substitution_rules WHERE id=?", (int(rule_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def save_bom_substitution_rule(payload: dict, rule_id: int | None = None) -> dict:
+    model = str(payload.get("model") or "").strip().upper()
+    old_part = str(payload.get("old_part_number") or "").strip().upper()
+    new_part = str(payload.get("new_part_number") or "").strip().upper()
+    ratio = float(payload.get("new_per_old_ratio") or 1)
+    strategy = str(payload.get("strategy") or "old_first").strip()
+    effective_code = str(payload.get("effective_from_code") or "").strip()
+    note = str(payload.get("note") or "").strip()
+    if not model or not old_part or not new_part:
+        raise ValueError("機種、舊料號與新料號皆為必填")
+    if old_part == new_part:
+        raise ValueError("新舊料號不可相同")
+    if ratio <= 0:
+        raise ValueError("替代比例必須大於 0")
+    if strategy not in {"old_first", "new_first"}:
+        raise ValueError("替代策略不正確")
+    now = _now()
+    with get_conn() as conn:
+        duplicate = conn.execute(
+            "SELECT id FROM bom_substitution_rules "
+            "WHERE status='active' AND model=? AND old_part_number=? AND id<>? LIMIT 1",
+            (model, old_part, int(rule_id or 0)),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(f"{model} 的 {old_part} 已有進行中的替代設定")
+        if rule_id is None:
+            cur = conn.execute(
+                "INSERT INTO bom_substitution_rules("
+                "model, old_part_number, new_part_number, new_per_old_ratio, strategy, "
+                "effective_from_code, note, status, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,'active',?,?)",
+                (model, old_part, new_part, ratio, strategy, effective_code, note, now, now),
+            )
+            saved_id = int(cur.lastrowid)
+        else:
+            cur = conn.execute(
+                "UPDATE bom_substitution_rules SET model=?, old_part_number=?, new_part_number=?, "
+                "new_per_old_ratio=?, strategy=?, effective_from_code=?, note=?, updated_at=? "
+                "WHERE id=? AND status='active'",
+                (model, old_part, new_part, ratio, strategy, effective_code, note, now, int(rule_id)),
+            )
+            if not cur.rowcount:
+                raise ValueError("找不到進行中的替代設定")
+            saved_id = int(rule_id)
+    return get_bom_substitution_rule(saved_id) or {}
+
+
+def end_bom_substitution_rule(rule_id: int) -> bool:
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE bom_substitution_rules SET status='ended', ended_at=?, updated_at=? "
+            "WHERE id=? AND status='active'",
+            (now, now, int(rule_id)),
+        )
+    return bool(cur.rowcount)
+
+
+def get_order_substitution_allocations(order_ids: list[int] | None = None) -> dict[int, dict[int, dict]]:
+    normalized_ids = list(dict.fromkeys(int(order_id) for order_id in (order_ids or []) if int(order_id) > 0))
+    sql = "SELECT order_id, rule_id, old_qty, new_qty, updated_at FROM order_substitution_allocations"
+    params: list[object] = []
+    if normalized_ids:
+        placeholders = ",".join("?" * len(normalized_ids))
+        sql += f" WHERE order_id IN ({placeholders})"
+        params.extend(normalized_ids)
+    sql += " ORDER BY order_id, rule_id"
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    result: dict[int, dict[int, dict]] = {}
+    for row in rows:
+        order_id = int(row["order_id"])
+        rule_id = int(row["rule_id"])
+        result.setdefault(order_id, {})[rule_id] = {
+            "old_qty": float(row["old_qty"] or 0),
+            "new_qty": float(row["new_qty"] or 0),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+    return result
+
+
+def save_order_substitution_allocation(order_id: int, rule_id: int, old_qty: float, new_qty: float) -> dict:
+    now = _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO order_substitution_allocations(order_id, rule_id, old_qty, new_qty, updated_at) "
+            "VALUES(?,?,?,?,?) ON CONFLICT(order_id, rule_id) DO UPDATE SET "
+            "old_qty=excluded.old_qty, new_qty=excluded.new_qty, updated_at=excluded.updated_at",
+            (int(order_id), int(rule_id), float(old_qty or 0), float(new_qty or 0), now),
+        )
+    return {"order_id": int(order_id), "rule_id": int(rule_id), "old_qty": float(old_qty or 0), "new_qty": float(new_qty or 0), "updated_at": now}
+
+
+def delete_order_substitution_allocation(order_id: int, rule_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM order_substitution_allocations WHERE order_id=? AND rule_id=?",
+            (int(order_id), int(rule_id)),
+        )
+    return bool(cur.rowcount)
+
+
 # ── Dispatch Records ──────────────────────────────────────────────────────────
 
 def save_dispatch_records(order_id: int, records: list[dict]):
@@ -2337,10 +2726,11 @@ def save_dispatch_session(
 ) -> dict:
     dispatched_at = dispatched_at or _now()
     with get_conn() as conn:
+        main_period_id = get_current_main_period_id()
         cur = conn.execute(
-            "INSERT INTO dispatch_sessions(order_id, previous_status, backup_path, main_file_path, dispatched_at, rolled_back_at) "
-            "VALUES(?,?,?,?,?, '')",
-            (order_id, previous_status, backup_path, main_file_path, dispatched_at),
+            "INSERT INTO dispatch_sessions(order_id, previous_status, backup_path, main_file_path, dispatched_at, rolled_back_at, main_period_id) "
+            "VALUES(?,?,?,?,?, '', ?)",
+            (order_id, previous_status, backup_path, main_file_path, dispatched_at, main_period_id),
         )
         session_id = cur.lastrowid
     return {
@@ -2351,6 +2741,7 @@ def save_dispatch_session(
         "main_file_path": main_file_path,
         "dispatched_at": dispatched_at,
         "rolled_back_at": "",
+        "main_period_id": main_period_id,
     }
 
 
@@ -2608,11 +2999,14 @@ def get_order_supplement_details(order_ids: list[int] | None = None) -> dict[int
             continue
     normalized_ids = list(dict.fromkeys(normalized_ids))
 
-    sql = "SELECT order_id, part_number, supplement_qty, note, updated_at FROM order_supplements"
+    sql = (
+        "SELECT order_id, part_number, supplement_qty, note, updated_at "
+        "FROM order_supplements WHERE absorbed_by_alignment_id=0"
+    )
     params: list[int] = []
     if normalized_ids:
         placeholders = ",".join("?" * len(normalized_ids))
-        sql += f" WHERE order_id IN ({placeholders})"
+        sql += f" AND order_id IN ({placeholders})"
         params.extend(normalized_ids)
     sql += " ORDER BY order_id, part_number"
 
@@ -2697,11 +3091,14 @@ def get_order_supplements(order_ids: list[int] | None = None) -> dict[int, dict[
             continue
     normalized_ids = list(dict.fromkeys(normalized_ids))
 
-    sql = "SELECT order_id, part_number, supplement_qty FROM order_supplements"
+    sql = (
+        "SELECT order_id, part_number, supplement_qty FROM order_supplements "
+        "WHERE absorbed_by_alignment_id=0"
+    )
     params: list[int] = []
     if normalized_ids:
         placeholders = ",".join("?" * len(normalized_ids))
-        sql += f" WHERE order_id IN ({placeholders})"
+        sql += f" AND order_id IN ({placeholders})"
         params.extend(normalized_ids)
     sql += " ORDER BY order_id, part_number"
 
@@ -2832,8 +3229,8 @@ def replace_merge_draft_files(draft_id: int, files: list[dict]):
             conn.execute(
                 "INSERT INTO merge_draft_files("
                 "draft_id, bom_file_id, filename, filepath, source_filename, source_format, "
-                "model, group_model, carry_overs_json, supplements_json, created_at, updated_at"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "model, group_model, carry_overs_json, supplements_json, effective_components_json, created_at, updated_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     draft_id,
                     str(item.get("bom_file_id") or ""),
@@ -2845,6 +3242,7 @@ def replace_merge_draft_files(draft_id: int, files: list[dict]):
                     str(item.get("group_model") or ""),
                     _json_dumps(item.get("carry_overs") or {}),
                     _json_dumps(item.get("supplements") or {}),
+                    _json_dumps(item.get("effective_components") or []),
                     now,
                     now,
                 ),
@@ -2898,6 +3296,7 @@ def get_merge_draft_files(draft_id: int) -> list[dict]:
     for item in items:
         item["carry_overs"] = _json_loads(item.get("carry_overs_json", ""), {})
         item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        item["effective_components"] = _json_loads(item.get("effective_components_json", ""), [])
     return items
 
 
@@ -2935,6 +3334,7 @@ def get_merge_draft_files_for_drafts(draft_ids: list[int]) -> dict[int, list[dic
             continue
         item["carry_overs"] = _json_loads(item.get("carry_overs_json", ""), {})
         item["supplements"] = _json_loads(item.get("supplements_json", ""), {})
+        item["effective_components"] = _json_loads(item.get("effective_components_json", ""), [])
         result.setdefault(draft_id, []).append(item)
     return result
 
@@ -3470,8 +3870,8 @@ def create_defective_batch(filename: str, note: str = "", main_file_mtime: float
     """建立不良品匯入批次，回傳 batch_id。"""
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO defective_batches(filename, imported_at, note, main_file_mtime) VALUES(?,?,?,?)",
-            (filename, _now(), note, main_file_mtime),
+            "INSERT INTO defective_batches(filename, imported_at, note, main_file_mtime, main_period_id) VALUES(?,?,?,?,?)",
+            (filename, _now(), note, main_file_mtime, get_current_main_period_id()),
         )
         return cur.lastrowid
 

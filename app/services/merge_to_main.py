@@ -24,6 +24,7 @@ from ..models import calc_suggested_qty
 from .local_time import local_now
 from .main_file_lock import serialized_main_file_write
 from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
+from .bom_substitutions import allocate_substitution, find_rule, normalize_part
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -262,6 +263,82 @@ def backup_main_file(main_path: str, backup_dir: str) -> str:
     return str(destination)
 
 
+def _expand_group_substitutions(
+    ws,
+    group: dict,
+    batch: dict,
+    part_row_map: dict[str, int],
+    running_stock: dict[str, float],
+    max_col: int,
+    manual_remaining: dict[int, dict[str, float]],
+) -> list[dict]:
+    rules = list(group.get("substitution_rules") or [])
+    allocations = group.get("substitution_allocations") or {}
+    if not rules:
+        return list(group.get("components") or [])
+
+    simulated = dict(running_stock)
+    expanded: list[dict] = []
+    for component in group.get("components") or []:
+        old_part = normalize_part(component.get("part_number"))
+        rule = find_rule(
+            rules,
+            model=str(batch.get("model") or group.get("bom_model") or ""),
+            part_number=old_part,
+            batch_code=str(group.get("batch_code") or ""),
+        )
+        if not rule:
+            allocated = [dict(component)]
+        else:
+            new_part = normalize_part(rule.get("new_part_number"))
+            old_row = part_row_map.get(old_part)
+            new_row = part_row_map.get(new_part)
+            old_stock = simulated.get(old_part)
+            if old_stock is None:
+                old_stock = _read_latest_stock(ws, old_row, max_col) if old_row else 0.0
+            new_stock = simulated.get(new_part)
+            if new_stock is None:
+                new_stock = _read_latest_stock(ws, new_row, max_col) if new_row else 0.0
+
+            rule_id = int(rule.get("id") or 0)
+            raw_manual = allocations.get(rule_id) or allocations.get(str(rule_id)) or {}
+            manual = None
+            if raw_manual:
+                remaining = manual_remaining.setdefault(rule_id, {
+                    "old_qty": float(raw_manual.get("old_qty") or 0),
+                    "new_qty": float(raw_manual.get("new_qty") or 0),
+                })
+                demand = max(0.0, float(component.get("needed_qty") or 0))
+                ratio = max(1e-12, float(rule.get("new_per_old_ratio") or 1))
+                old_qty = min(demand, max(0.0, remaining["old_qty"]))
+                remaining_base = demand - old_qty
+                new_qty = min(remaining_base * ratio, max(0.0, remaining["new_qty"]))
+                manual = {"old_qty": old_qty, "new_qty": new_qty}
+                remaining["old_qty"] -= old_qty
+                remaining["new_qty"] -= new_qty
+            allocated = allocate_substitution(
+                component,
+                rule,
+                old_available=float(old_stock) + float(component.get("prev_qty_cs") or 0),
+                new_available=float(new_stock),
+                manual_allocation=manual,
+            )
+
+        for actual in allocated:
+            part = normalize_part(actual.get("part_number"))
+            row_idx = part_row_map.get(part)
+            current = simulated.get(part)
+            if current is None:
+                current = _read_latest_stock(ws, row_idx, max_col) if row_idx else 0.0
+            simulated[part] = (
+                float(current)
+                + float(actual.get("prev_qty_cs") or 0)
+                - float(actual.get("needed_qty") or 0)
+            )
+            expanded.append(actual)
+    return expanded
+
+
 def _build_preview_for_batches(
     ws,
     batches: list[dict],
@@ -290,22 +367,41 @@ def _build_preview_for_batches(
                 if comp.get("is_dash") or needed_qty <= 0:
                     continue
 
-                part_number = str(comp.get("part_number") or "").strip()
-                part_upper = part_number.upper()
-                if not part_upper or part_upper in part_row_map:
-                    continue
+                candidates = [dict(comp)]
+                rule = find_rule(
+                    list(group.get("substitution_rules") or []),
+                    model=str(batch.get("model") or group.get("bom_model") or ""),
+                    part_number=str(comp.get("part_number") or ""),
+                    batch_code=str(group.get("batch_code") or ""),
+                )
+                if rule:
+                    replacement = dict(comp)
+                    old_part = normalize_part(comp.get("part_number"))
+                    replacement["part_number"] = normalize_part(rule.get("new_part_number"))
+                    replacement["description"] = (
+                        f"{_component_description(comp)}（替代 {old_part}）"
+                        if _component_description(comp)
+                        else f"替代 {old_part}"
+                    )
+                    candidates.append(replacement)
 
-                description = _component_description(comp)
-                component_moq = _component_moq(part_upper, comp, effective_moq)
-                entry = missing_part_rows.setdefault(part_upper, {
-                    "part_number": part_number or part_upper,
-                    "description": description,
-                    "moq": component_moq,
-                })
-                if not entry["description"] and description:
-                    entry["description"] = description
-                if entry["moq"] <= 0 and component_moq > 0:
-                    entry["moq"] = component_moq
+                for candidate in candidates:
+                    part_number = str(candidate.get("part_number") or "").strip()
+                    part_upper = part_number.upper()
+                    if not part_upper or part_upper in part_row_map:
+                        continue
+
+                    description = _component_description(candidate)
+                    component_moq = _component_moq(part_upper, candidate, effective_moq)
+                    entry = missing_part_rows.setdefault(part_upper, {
+                        "part_number": part_number or part_upper,
+                        "description": description,
+                        "moq": component_moq,
+                    })
+                    if not entry["description"] and description:
+                        entry["description"] = description
+                    if entry["moq"] <= 0 and component_moq > 0:
+                        entry["moq"] = component_moq
 
     for part_upper in sorted(missing_part_rows):
         payload = missing_part_rows[part_upper]
@@ -322,10 +418,19 @@ def _build_preview_for_batches(
         ignore_ec_min = bool(batch.get("is_sample"))
         remaining_supplements = _normalize_supplements(batch.get("supplements") or {})
         batch_decisions = _normalize_decisions(batch.get("decisions") or decisions)
+        substitution_manual_remaining: dict[int, dict[str, float]] = {}
         planned_groups: list[dict] = []
 
         for group in batch.get("groups", []):
-            components = group.get("components", []) or []
+            components = _expand_group_substitutions(
+                ws,
+                group,
+                batch,
+                part_row_map,
+                running_stock,
+                max_col,
+                substitution_manual_remaining,
+            )
             if not components:
                 continue
 
@@ -551,6 +656,8 @@ def _flatten_plan_rows(plan: dict) -> list[dict]:
                     "f_value": row.get("f_value"),
                     "j_value": row.get("j_value"),
                     "current_stock": row.get("current_stock"),
+                    "prev_qty_cs": row.get("prev_qty_cs"),
+                    "decision": row.get("decision"),
                 })
     return rows
 

@@ -8,6 +8,7 @@
 from __future__ import annotations
 from ..models import calc_suggested_qty
 from .bom_quantity import coerce_qty, get_component_effective_needed_qty
+from .bom_substitutions import allocate_substitution, find_rule, normalize_part
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
     calculate_shortage_amount,
@@ -58,6 +59,8 @@ def run(
     moq: dict[str, float],
     dispatched_consumption: dict[str, float] | None = None,
     st_inventory_stock: dict[str, float] | None = None,
+    substitution_rules: list[dict] | None = None,
+    substitution_allocations: dict[int, dict[int, dict]] | None = None,
 ) -> list[dict]:
     """
     依 orders 順序做 running balance，回傳每個 order 的料況。
@@ -105,6 +108,15 @@ def run(
 
         shortages: list[dict] = []
         part_summaries: dict[str, dict] = {}
+        manual_remaining = {
+            int(rule_id): {
+                "old_qty": float(allocation.get("old_qty") or 0),
+                "new_qty": float(allocation.get("new_qty") or 0),
+            }
+            for rule_id, allocation in (
+                (substitution_allocations or {}).get(int(order.get("id") or 0), {}) or {}
+            ).items()
+        }
 
         for comp in components:
             is_dash = comp.get("is_dash", False)
@@ -112,30 +124,59 @@ def run(
             if is_dash or needed_qty <= 0:
                 continue
 
-            part = comp.get("part_number", "").upper()
-            summary = part_summaries.get(part)
-            if summary is None:
-                summary = {
-                    "part_key": part,
-                    "part_number": comp.get("part_number", ""),
-                    "description": comp.get("description", ""),
-                    "current_stock": running.get(part, 0.0),
-                    "needed": 0.0,
-                    "prev_qty_cs": 0.0,
-                    "ending_stock": running.get(part, 0.0),
-                }
-                part_summaries[part] = summary
-            elif not summary["description"] and comp.get("description", ""):
-                summary["description"] = comp.get("description", "")
+            effective_component = dict(comp)
+            effective_component["needed_qty"] = needed_qty
+            old_part = normalize_part(comp.get("part_number"))
+            rule = find_rule(
+                substitution_rules or [],
+                model=model_key,
+                part_number=old_part,
+                batch_code=str(order.get("code") or ""),
+            )
+            manual = None
+            if rule:
+                rule_id = int(rule.get("id") or 0)
+                remaining = manual_remaining.get(rule_id)
+                if remaining is not None:
+                    ratio = max(1e-12, float(rule.get("new_per_old_ratio") or 1))
+                    old_qty = min(needed_qty, max(0.0, remaining["old_qty"]))
+                    new_qty = min((needed_qty - old_qty) * ratio, max(0.0, remaining["new_qty"]))
+                    manual = {"old_qty": old_qty, "new_qty": new_qty}
+                    remaining["old_qty"] -= old_qty
+                    remaining["new_qty"] -= new_qty
+            actual_components = allocate_substitution(
+                effective_component,
+                rule,
+                old_available=running.get(old_part, 0.0) + float(comp.get("prev_qty_cs") or 0),
+                new_available=running.get(normalize_part((rule or {}).get("new_part_number")), 0.0),
+                manual_allocation=manual,
+            )
 
-            g = running.get(part, 0.0)
-            f = needed_qty
-            h = comp.get("prev_qty_cs", 0)
-            j = g + h - f
-            running[part] = j
-            summary["needed"] += f
-            summary["prev_qty_cs"] += h
-            summary["ending_stock"] = j
+            for actual in actual_components:
+                part = normalize_part(actual.get("part_number"))
+                summary = part_summaries.get(part)
+                if summary is None:
+                    summary = {
+                        "part_key": part,
+                        "part_number": actual.get("part_number", ""),
+                        "description": actual.get("description", ""),
+                        "current_stock": running.get(part, 0.0),
+                        "needed": 0.0,
+                        "prev_qty_cs": 0.0,
+                        "ending_stock": running.get(part, 0.0),
+                    }
+                    part_summaries[part] = summary
+                elif not summary["description"] and actual.get("description", ""):
+                    summary["description"] = actual.get("description", "")
+
+                g = running.get(part, 0.0)
+                f = float(actual.get("needed_qty") or 0)
+                h = float(actual.get("prev_qty_cs") or 0)
+                j = g + h - f
+                running[part] = j
+                summary["needed"] += f
+                summary["prev_qty_cs"] += h
+                summary["ending_stock"] = j
 
         for summary in part_summaries.values():
             if calculate_shortage_amount(summary["part_number"], summary["ending_stock"]) <= 0:

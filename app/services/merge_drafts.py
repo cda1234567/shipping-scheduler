@@ -33,6 +33,7 @@ from .bom_quantity import (
     format_excel_qty,
     get_component_effective_needed_qty,
 )
+from .bom_substitutions import allocate_substitution, find_rule
 from .main_reader import find_current_stock_cell_from_row_values, read_moq, read_stock
 from ..models import calc_suggested_qty
 from .shortage_rules import (
@@ -487,6 +488,21 @@ def _plan_order_draft(
     file_plans: list[dict] = []
     shortages: list[dict] = []
     schedule_order_qty = coerce_qty(order.get("order_qty"))
+    model_key = str(order.get("model") or "").strip().upper()
+    substitution_rules = [
+        rule
+        for rule in db.list_bom_substitution_rules(active_only=True)
+        if str(rule.get("model") or "").strip().upper() in {"*", model_key}
+    ]
+    raw_allocations = db.get_order_substitution_allocations([int(order["id"])]).get(int(order["id"]), {})
+    manual_remaining = {
+        int(rule_id): {
+            "old_qty": float(allocation.get("old_qty") or 0),
+            "new_qty": float(allocation.get("new_qty") or 0),
+        }
+        for rule_id, allocation in raw_allocations.items()
+    }
+    allocation_stock = dict(running_stock)
 
     for bom in bom_files:
         components = db.get_bom_components(str(bom["id"]))
@@ -498,6 +514,7 @@ def _plan_order_draft(
         supplement_allocations: dict[str, float] = {}
         purchase_parts: set[str] = set()
         part_totals: dict[str, dict[str, float]] = {}
+        effective_components: list[dict] = []
 
         for component in components:
             needed_qty = get_component_effective_needed_qty(
@@ -508,21 +525,57 @@ def _plan_order_draft(
             if component.get("is_dash") or needed_qty <= 0:
                 continue
 
-            part = normalize_part_key(component.get("part_number"))
-            if not part:
-                continue
+            effective_component = dict(component)
+            effective_component["needed_qty"] = needed_qty
+            old_part = normalize_part_key(component.get("part_number"))
+            rule = find_rule(
+                substitution_rules,
+                model=model_key,
+                part_number=old_part,
+                batch_code=str(order.get("code") or ""),
+            )
+            manual = None
+            if rule:
+                rule_id = int(rule.get("id") or 0)
+                remaining = manual_remaining.get(rule_id)
+                if remaining is not None:
+                    ratio = max(1e-12, float(rule.get("new_per_old_ratio") or 1))
+                    old_qty = min(needed_qty, max(0.0, remaining["old_qty"]))
+                    new_qty = min((needed_qty - old_qty) * ratio, max(0.0, remaining["new_qty"]))
+                    manual = {"old_qty": old_qty, "new_qty": new_qty}
+                    remaining["old_qty"] -= old_qty
+                    remaining["new_qty"] -= new_qty
+            actual_components = allocate_substitution(
+                effective_component,
+                rule,
+                old_available=float(allocation_stock.get(old_part, 0)) + float(component.get("prev_qty_cs") or 0),
+                new_available=float(allocation_stock.get(normalize_part_key((rule or {}).get("new_part_number")), 0)),
+                manual_allocation=manual,
+            )
 
-            if part not in carry_overs:
-                carry_overs[part] = float(running_stock.get(part, 0))
+            for actual in actual_components:
+                part = normalize_part_key(actual.get("part_number"))
+                if not part:
+                    continue
+                actual["is_effective_component"] = True
+                effective_components.append(actual)
+                allocation_stock[part] = (
+                    float(allocation_stock.get(part, 0))
+                    + float(actual.get("prev_qty_cs") or 0)
+                    - float(actual.get("needed_qty") or 0)
+                )
 
-            summary = part_totals.setdefault(part, {
-                "part_number": str(component.get("part_number") or ""),
-                "description": str(component.get("description") or ""),
-                "needed_qty": 0.0,
-                "prev_qty_cs": 0.0,
-            })
-            summary["needed_qty"] += needed_qty
-            summary["prev_qty_cs"] += float(component.get("prev_qty_cs") or 0)
+                if part not in carry_overs:
+                    carry_overs[part] = float(running_stock.get(part, 0))
+
+                summary = part_totals.setdefault(part, {
+                    "part_number": str(actual.get("part_number") or ""),
+                    "description": str(actual.get("description") or ""),
+                    "needed_qty": 0.0,
+                    "prev_qty_cs": 0.0,
+                })
+                summary["needed_qty"] += float(actual.get("needed_qty") or 0)
+                summary["prev_qty_cs"] += float(actual.get("prev_qty_cs") or 0)
 
         decisions = _sanitize_resolved_shortage_decisions(
             part_totals,
@@ -614,6 +667,7 @@ def _plan_order_draft(
             "carry_overs": carry_overs,
             "supplements": supplement_allocations,
             "purchase_parts": sorted(purchase_parts),
+            "effective_components": effective_components,
         })
 
     return {
@@ -670,6 +724,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict], *, root_dir: Path 
             "group_model": plan.get("group_model", ""),
             "carry_overs": plan.get("carry_overs") or {},
             "supplements": plan.get("supplements") or {},
+            "effective_components": plan.get("effective_components") or [],
         })
 
     return written
@@ -843,8 +898,15 @@ def _build_draft_file_preview_rows(
 
     grouped: dict[str, dict] = {}
     schedule_order_qty = coerce_qty((order or {}).get("order_qty"))
-    for component in db.get_bom_components(bom_file_id):
-        needed_qty = get_component_effective_needed_qty(component, schedule_order_qty=schedule_order_qty)
+    source_components = list(file_item.get("effective_components") or [])
+    if not source_components:
+        source_components = db.get_bom_components(bom_file_id)
+    for component in source_components:
+        needed_qty = (
+            float(component.get("needed_qty") or 0)
+            if component.get("is_effective_component")
+            else get_component_effective_needed_qty(component, schedule_order_qty=schedule_order_qty)
+        )
         if component.get("is_dash") or needed_qty <= 0:
             continue
 

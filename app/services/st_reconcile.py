@@ -556,6 +556,11 @@ def commit_st_reconcile_stop_loss(
         parts=alignment_parts,
         adjustments=adjustments,
     )
+    absorbed = db.mark_inventory_history_absorbed(
+        alignment_id,
+        cutoff_for_anchor,
+        [row["part_number"] for row in alignment_parts],
+    )
     summary = {
         "alignment_id": alignment_id,
         "aligned_at": cutoff_for_anchor,
@@ -563,6 +568,8 @@ def commit_st_reconcile_stop_loss(
         "updated_count": updated_count,
         "adjusted_count": sum(1 for row in adjustments if abs(float(row.get("adjust_qty") or 0)) > 1e-6),
         "total_abs_adjust_qty": round(sum(abs(float(row.get("adjust_qty") or 0)) for row in adjustments), 6),
+        "absorbed_defective_records": absorbed["defective_records"],
+        "absorbed_supplements": absorbed["supplements"],
     }
     return {
         "ok": True,

@@ -58,40 +58,47 @@ def theoretical_stock(
         return {}
 
     parts = _normalize_parts(part_numbers)
+    explicit_anchor_at, explicit_anchor_baseline = _normalize_anchor(anchor)
     if anchor is None:
-        anchor = db.get_latest_st_reconcile_anchor(cutoff, parts or None)
-    anchor_at, anchor_baseline = _normalize_anchor(anchor)
-    if anchor_at:
-        upload_baselines = db.get_st_inventory_upload_baselines(cutoff, parts or None)
-        delta_rows = db.get_st_inventory_audit_deltas(
-            cutoff,
-            after_at=anchor_at,
-            part_numbers=parts or None,
-            exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
-        )
+        anchors_by_part = db.get_latest_st_reconcile_anchors(cutoff, parts or None)
     else:
-        upload_baselines = db.get_st_inventory_upload_baselines(cutoff, parts or None)
-        delta_rows = db.get_st_inventory_audit_deltas(
-            cutoff,
-            part_numbers=parts or None,
-            exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
-        )
+        anchors_by_part = {
+            part: {
+                "aligned_at": explicit_anchor_at,
+                "baseline_qty": qty,
+            }
+            for part, qty in explicit_anchor_baseline.items()
+        }
+    upload_baselines = db.get_st_inventory_upload_baselines(cutoff, parts or None)
+    delta_rows = db.get_st_inventory_audit_deltas(
+        cutoff,
+        part_numbers=parts or None,
+        exclude_reason=ST_RECONCILE_ADJUSTMENT_REASON,
+    )
 
+    anchor_baseline = {
+        part: float((values or {}).get("baseline_qty") or 0)
+        for part, values in anchors_by_part.items()
+    }
     result: dict[str, float] = {}
+    baseline_at_by_part: dict[str, str] = {}
     for part in _candidate_parts(parts, anchor_baseline, upload_baselines, delta_rows):
-        if anchor_at and part in anchor_baseline:
-            result[part] = float(anchor_baseline.get(part, 0.0))
+        part_anchor = anchors_by_part.get(part) or {}
+        if part_anchor:
+            result[part] = float(part_anchor.get("baseline_qty") or 0.0)
+            baseline_at_by_part[part] = str(part_anchor.get("aligned_at") or "")
         else:
-            result[part] = float((upload_baselines.get(part) or {}).get("baseline_qty") or 0.0)
+            upload = upload_baselines.get(part) or {}
+            result[part] = float(upload.get("baseline_qty") or 0.0)
+            baseline_at_by_part[part] = str(upload.get("aligned_at") or "")
 
     for row in delta_rows:
         part = str(row.get("part_number") or "").strip().upper()
         if not part:
             continue
-        if not anchor_at:
-            baseline_at = str((upload_baselines.get(part) or {}).get("aligned_at") or "")
-            if baseline_at and str(row.get("changed_at") or "") <= baseline_at:
-                continue
+        baseline_at = baseline_at_by_part.get(part, "")
+        if baseline_at and str(row.get("changed_at") or "") <= baseline_at:
+            continue
         if parts and part not in result:
             continue
         result[part] = round(float(result.get(part, 0.0)) + float(row.get("delta") or 0), 6)
