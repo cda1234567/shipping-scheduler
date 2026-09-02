@@ -28,6 +28,8 @@ from app.services.st_reconcile import (
 class StReconcileParserTests(unittest.TestCase):
     def test_parse_real_genlin_file_extracts_book_physical_and_strips_tab_suffix(self):
         sample_path = Path("templates") / "庚霖實際庫存2026Q1_2026-6-29.xlsx"
+        if not sample_path.exists():
+            self.skipTest("本機實際庚霖盤點樣本未納入版本庫")
 
         parsed = parse_st_reconcile_file(str(sample_path))
 
@@ -41,6 +43,8 @@ class StReconcileParserTests(unittest.TestCase):
 
     def test_parse_real_chenshang_file_extracts_parts_and_forward_filled_groups(self):
         sample_path = Path("templates") / "辰尚庫存狀況20260610_辰尚填寫.xlsx"
+        if not sample_path.exists():
+            self.skipTest("本機實際辰尚盤點樣本未納入版本庫")
 
         parsed = parse_st_reconcile_file(str(sample_path))
 
