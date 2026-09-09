@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.03.1"
-APP_RELEASED_AT = "2026-09-03"
-APP_HEADLINE = "新增部分盤點停損、BOM 替代料與年度主檔換檔"
+APP_VERSION = "v2026.09.09.1"
+APP_RELEASED_AT = "2026-09-09"
+APP_HEADLINE = "分析頁新增料號發料用量查詢"
 APP_CHANGELOG = [
+    {
+        "title": "料號發料用量查詢",
+        "items": [
+            "分析頁輸入完整料號，可查最近 7、30、90、180、365 天或全部紀錄的發料用量、訂單數與最近發料時間。",
+            "明細顯示批次、PO、機種、出貨日及用量；料號不分大小寫，同一訂單相同料號合併顯示。",
+            "以已發料／已完成訂單保存的 BOM 生產用量統計，排除缺料標記與退回訂單，並明確區分 ST 倉庫補料量。",
+        ],
+    },
     {
         "title": "部分盤點停損",
         "items": [

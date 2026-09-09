@@ -428,6 +428,37 @@
     <!-- ── Tab: 分析 ── -->
     <div id="tab-analytics-tab" class="tab-content">
       <div class="analytics-shell">
+        <!-- 單一料號發料查詢 -->
+        <section class="analytics-card part-history-card">
+          <div class="analytics-card-header">
+            <div>
+              <h4>料號發料查詢</h4>
+              <div class="analytics-card-subtitle">依發料時間查詢已發料／已完成訂單的 BOM 生產用量；排除標記缺料的紀錄。此數量與 ST 倉庫補料量不同。</div>
+            </div>
+          </div>
+          <form id="part-history-form" class="part-history-controls">
+            <label class="part-history-part-field">
+              <span>料號</span>
+              <input id="part-history-input" class="part-history-input" type="search" placeholder="輸入完整料號" autocomplete="off" spellcheck="false">
+            </label>
+            <label>
+              <span>查詢期間</span>
+              <select id="part-history-days" class="analytics-select">
+                <option value="7">最近 7 天</option>
+                <option value="30" selected>最近 30 天</option>
+                <option value="90">最近 90 天</option>
+                <option value="180">最近 180 天</option>
+                <option value="365">最近 365 天</option>
+                <option value="0">全部紀錄</option>
+              </select>
+            </label>
+            <button class="btn btn-primary btn-sm" id="btn-part-history" type="submit">查詢</button>
+          </form>
+          <div id="part-history-result">
+            <div class="no-shortage-msg">輸入料號後即可查看期間內的發料總量。</div>
+          </div>
+        </section>
+
         <!-- 常用料零庫存 -->
         <section class="analytics-card frequent-zero-card">
           <div class="analytics-card-header">

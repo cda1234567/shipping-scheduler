@@ -221,6 +221,48 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(data["items"][0]["active_demand_qty"], 20)
         self.assertTrue(data["sources"]["stock_data_complete"])
 
+    def test_analytics_part_dispatch_history_returns_summary_and_details(self):
+        rows = [
+            {
+                "order_id": 2,
+                "code": "7-2",
+                "po_number": "PO-2",
+                "model": "MODEL-B",
+                "ship_date": "2026-07-25",
+                "dispatched_at": "2026-07-20T08:00:00",
+                "issued_qty": 20,
+                "record_count": 1,
+            },
+            {
+                "order_id": 1,
+                "code": "7-1",
+                "po_number": "PO-1",
+                "model": "MODEL-A",
+                "ship_date": "2026-07-05",
+                "dispatched_at": "2026-07-01T08:00:00",
+                "issued_qty": 15,
+                "record_count": 2,
+            },
+        ]
+        with patch("app.routers.analytics.db.get_part_dispatch_history", return_value=rows) as mock_history:
+            response = self.client.get(
+                "/api/analytics/part-dispatch-history?part_number=%20part-1%20&days=30"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mock_history.assert_called_once_with("PART-1", 30)
+        data = response.json()
+        self.assertEqual(data["part_number"], "PART-1")
+        self.assertEqual(data["period_label"], "最近 30 天")
+        self.assertEqual(data["total_qty"], 35)
+        self.assertEqual(data["order_count"], 2)
+        self.assertEqual(data["dispatch_count"], 3)
+        self.assertEqual(data["last_dispatched_at"], "2026-07-20T08:00:00")
+
+        blank = self.client.get("/api/analytics/part-dispatch-history?part_number=%20%20")
+        self.assertEqual(blank.status_code, 400)
+        self.assertEqual(blank.json()["detail"], "請輸入料號")
+
     def test_edit_auth_blocks_mutating_api_until_login(self):
         with patch.dict(os.environ, {"PYTEST_CURRENT_TEST": ""}, clear=False):
             blocked = self.client.post("/api/schedule/batch-merge", json={"order_ids": [1]})

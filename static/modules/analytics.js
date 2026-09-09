@@ -3,8 +3,10 @@ import { apiJson, apiFetch, showToast, esc, fmt } from "./api.js";
 let _historyChart = null;
 let _historyGroupBy = "model";
 let _diffResult = null;
+let _partHistoryRequestId = 0;
 
 export async function initAnalytics() {
+  document.getElementById("part-history-form")?.addEventListener("submit", loadPartDispatchHistory);
   document.getElementById("frequent-zero-months")?.addEventListener("change", loadFrequentZeroStock);
   document.getElementById("frequent-zero-min-orders")?.addEventListener("change", loadFrequentZeroStock);
   document.getElementById("btn-refresh-frequent-zero")?.addEventListener("click", loadFrequentZeroStock);
@@ -18,6 +20,104 @@ export async function initAnalytics() {
 
 export async function refreshAnalytics() {
   await Promise.all([loadFrequentZeroStock(), loadHistory()]);
+}
+
+// ── 單一料號發料查詢 ──────────────────────────────────────────────────────────
+
+async function loadPartDispatchHistory(event) {
+  event?.preventDefault();
+  const input = document.getElementById("part-history-input");
+  const result = document.getElementById("part-history-result");
+  const button = document.getElementById("btn-part-history");
+  const partNumber = String(input?.value || "").trim();
+  const days = document.getElementById("part-history-days")?.value || "30";
+  if (!result) return;
+  if (!partNumber) {
+    input?.focus();
+    showToast("請先輸入完整料號");
+    return;
+  }
+
+  const requestId = ++_partHistoryRequestId;
+  result.innerHTML = '<div class="no-shortage-msg">正在查詢發料紀錄...</div>';
+  if (button) {
+    button.disabled = true;
+    button.textContent = "查詢中...";
+  }
+  try {
+    const data = await apiJson(`/api/analytics/part-dispatch-history?part_number=${encodeURIComponent(partNumber)}&days=${encodeURIComponent(days)}`);
+    if (requestId !== _partHistoryRequestId) return;
+    renderPartDispatchHistory(data);
+  } catch (error) {
+    if (requestId !== _partHistoryRequestId) return;
+    result.innerHTML = `<div class="part-history-empty is-error">查詢失敗：${esc(error.message || "未知錯誤")}</div>`;
+  } finally {
+    if (button && requestId === _partHistoryRequestId) {
+      button.disabled = false;
+      button.textContent = "查詢";
+    }
+  }
+}
+
+function renderPartDispatchHistory(data) {
+  const container = document.getElementById("part-history-result");
+  if (!container) return;
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  const lastDispatched = formatAnalyticsDateTime(data?.last_dispatched_at);
+  const summary = `
+    <div class="part-history-query-label">料號 <strong>${esc(data?.part_number || "")}</strong></div>
+    <div class="part-history-summary">
+      <div class="part-history-stat">
+        <span>查詢期間</span>
+        <strong>${esc(data?.period_label || "—")}</strong>
+      </div>
+      <div class="part-history-stat is-primary">
+        <span>發料總用量（BOM）</span>
+        <strong>${fmt(Number(data?.total_qty || 0))}</strong>
+      </div>
+      <div class="part-history-stat">
+        <span>發料訂單</span>
+        <strong>${fmt(Number(data?.order_count || 0))} 筆</strong>
+      </div>
+      <div class="part-history-stat">
+        <span>最近發料</span>
+        <strong>${esc(lastDispatched || "—")}</strong>
+      </div>
+    </div>`;
+
+  if (!rows.length) {
+    container.innerHTML = `${summary}<div class="part-history-empty">這段期間沒有符合條件的發料紀錄。可確認完整料號，或改查全部紀錄。</div>`;
+    return;
+  }
+
+  container.innerHTML = `${summary}
+    <div class="part-history-table-wrap">
+      <table class="analytics-table part-history-table">
+        <thead><tr>
+          <th>發料時間</th>
+          <th>批次</th>
+          <th>PO</th>
+          <th>機種</th>
+          <th>出貨日</th>
+          <th>發料用量</th>
+        </tr></thead>
+        <tbody>${rows.map(row => `<tr>
+          <td>${esc(formatAnalyticsDateTime(row.dispatched_at) || "—")}</td>
+          <td>${esc(row.code || "—")}</td>
+          <td>${esc(row.po_number || "—")}</td>
+          <td>${esc(row.model || "—")}</td>
+          <td>${esc(row.ship_date || "—")}</td>
+          <td class="part-history-qty">${fmt(Number(row.issued_qty || 0))}</td>
+        </tr>`).join("")}</tbody>
+      </table>
+    </div>
+    <div class="part-history-note">以發料當時保存的 BOM 生產用量加總，同一訂單相同料號合併顯示；排除標記缺料的紀錄。最近天數從查詢當下往前計算。</div>`;
+}
+
+function formatAnalyticsDateTime(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.replace("T", " ").slice(0, 16);
 }
 
 // ── 常用料零庫存 ──────────────────────────────────────────────────────────────

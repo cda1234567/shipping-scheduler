@@ -3867,6 +3867,119 @@ body.desktop-dark .defective-skipped {
   font-size: 12px;
   background: #fff;
 }
+.part-history-card .analytics-card-header {
+  margin-bottom: 10px;
+}
+.part-history-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.part-history-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+}
+.part-history-part-field {
+  flex: 1;
+  max-width: 420px;
+}
+.part-history-input {
+  width: 100%;
+  min-height: 32px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: #fff;
+  color: #111827;
+  font-size: 13px;
+  text-transform: uppercase;
+}
+.part-history-input:focus {
+  border-color: #2563eb;
+  outline: 2px solid rgba(37, 99, 235, 0.14);
+}
+.part-history-query-label {
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+.part-history-query-label strong {
+  margin-left: 3px;
+  color: #111827;
+  font-size: 13px;
+}
+.part-history-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.part-history-stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-height: 68px;
+  padding: 10px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+.part-history-stat span {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+}
+.part-history-stat strong {
+  color: #0f172a;
+  font-size: 17px;
+  line-height: 1.2;
+}
+.part-history-stat.is-primary {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.part-history-stat.is-primary strong {
+  color: #1d4ed8;
+  font-size: 24px;
+}
+.part-history-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+}
+.part-history-table {
+  min-width: 760px;
+}
+.part-history-table .part-history-qty {
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 700;
+}
+.part-history-note {
+  margin-top: 8px;
+  color: #6b7280;
+  font-size: 11px;
+}
+.part-history-empty {
+  padding: 20px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+.part-history-empty.is-error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
 .chart-container {
   position: relative;
   height: 260px;
@@ -4047,6 +4160,17 @@ body.desktop-dark .defective-skipped {
 }
 
 @media (max-width: 900px) {
+  .part-history-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .part-history-part-field {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .part-history-summary {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
   .frequent-zero-card .analytics-card-header {
     flex-direction: column;
   }
@@ -4060,6 +4184,9 @@ body.desktop-dark .defective-skipped {
 }
 
 body.desktop-dark .analytics-card-subtitle,
+body.desktop-dark .part-history-controls label,
+body.desktop-dark .part-history-query-label,
+body.desktop-dark .part-history-note,
 body.desktop-dark .frequent-zero-controls label,
 body.desktop-dark .frequent-zero-description,
 body.desktop-dark .frequent-zero-muted {
@@ -4069,6 +4196,37 @@ body.desktop-dark .analytics-select {
   border-color: #334155;
   background: #0f172a;
   color: #e5e7eb;
+}
+body.desktop-dark .part-history-input {
+  border-color: #334155;
+  background: #0f172a;
+  color: #e5e7eb;
+}
+body.desktop-dark .part-history-query-label strong,
+body.desktop-dark .part-history-stat strong {
+  color: #f8fafc;
+}
+body.desktop-dark .part-history-stat,
+body.desktop-dark .part-history-empty,
+body.desktop-dark .part-history-table-wrap {
+  border-color: #334155;
+  background: #0f172a;
+}
+body.desktop-dark .part-history-stat span {
+  color: #94a3b8;
+}
+body.desktop-dark .part-history-stat.is-primary {
+  border-color: #1d4ed8;
+  background: #172554;
+}
+body.desktop-dark .part-history-stat.is-primary strong,
+body.desktop-dark .part-history-table .part-history-qty {
+  color: #93c5fd;
+}
+body.desktop-dark .part-history-empty.is-error {
+  border-color: #7f1d1d;
+  background: #2b1217;
+  color: #fecaca;
 }
 body.desktop-dark .frequent-zero-stat {
   border-color: #334155;

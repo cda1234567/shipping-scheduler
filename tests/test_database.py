@@ -88,6 +88,73 @@ class AnalyticsUsageTests(InMemoryDbTestCase):
         self.assertEqual(rows[0]["total_qty"], 30)
         self.assertEqual(rows[0]["last_used_at"], "2026-07-20T08:00:00")
 
+    def test_part_dispatch_history_filters_period_and_shortages_and_groups_by_order(self):
+        self.conn.executemany(
+            """
+            INSERT INTO orders(id, po_number, model, ship_date, status, code, created_at, updated_at, folder)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """,
+            [
+                (1, "PO-1", "MODEL-A", "2026-07-05", "dispatched", "7-1", "2026-01-01", "2026-01-01", ""),
+                (2, "PO-2", "MODEL-B", "2026-07-25", "completed", "7-2", "2026-01-01", "2026-01-01", ""),
+                (3, "PO-3", "MODEL-C", "2026-07-26", "dispatched", "7-3", "2026-01-01", "2026-01-01", ""),
+                (4, "PO-4", "MODEL-D", "2026-05-01", "completed", "5-1", "2026-01-01", "2026-01-01", ""),
+            ],
+        )
+        self.conn.executemany(
+            """
+            INSERT INTO dispatch_records(order_id, part_number, needed_qty, decision, dispatched_at)
+            VALUES(?,?,?,?,?)
+            """,
+            [
+                (1, "PART-1", 10, "None", "2026-07-01T08:00:00"),
+                (1, " part-1 ", 5, "CreateRequirement", "2026-07-01T08:00:00"),
+                (2, "PART-1", 20, "None", "2026-07-20T08:00:00"),
+                (3, "PART-1", 999, "Shortage", "2026-07-22T08:00:00"),
+                (4, "PART-1", 40, "None", "2026-05-01T08:00:00"),
+                (2, "OTHER", 500, "None", "2026-07-20T08:00:00"),
+            ],
+        )
+
+        with patch.object(db, "local_now", return_value=datetime(2026, 7, 28, 12, 0, 0)):
+            rows = db.get_part_dispatch_history(" part-1 ", days=30)
+
+        self.assertEqual([row["order_id"] for row in rows], [2, 1])
+        self.assertEqual(rows[0]["issued_qty"], 20)
+        self.assertEqual(rows[1]["issued_qty"], 15)
+        self.assertEqual(rows[1]["record_count"], 2)
+        self.assertEqual(rows[1]["code"], "7-1")
+
+        all_rows = db.get_part_dispatch_history("PART-1", days=0)
+        self.assertEqual(sum(row["issued_qty"] for row in all_rows), 75)
+
+    def test_part_history_boundary_exact_match_ec_parts_and_rollback(self):
+        self.conn.executemany(
+            "INSERT INTO orders(id, status) VALUES(?,?)",
+            [(1, "dispatched"), (2, "completed"), (3, "merged"), (4, "cancelled")],
+        )
+        self.conn.executemany(
+            "INSERT INTO dispatch_records(order_id, part_number, needed_qty, dispatched_at) VALUES(?,?,?,?)",
+            [
+                (1, "EC-10001A", 2.5, "2026-08-10T12:00:00"),
+                (1, "EC-10001A", 99, "2026-08-10T11:59:59"),
+                (2, " ec-10001a ", 3.25, "2026-09-09T10:00:00"),
+                (2, "EC-10001A-OTHER", 100, "2026-09-09T10:00:00"),
+                (3, "EC-10001A", 100, "2026-09-09T10:00:00"),
+                (4, "EC-10001A", 100, "2026-09-09T10:00:00"),
+                (1, "EC-10001A", 100, ""),
+            ],
+        )
+        with patch.object(db, "local_now", return_value=datetime(2026, 9, 9, 12)):
+            rows = db.get_part_dispatch_history("ec-10001a", 30)
+        self.assertEqual([r["order_id"] for r in rows], [2, 1])
+        self.assertEqual(sum(r["issued_qty"] for r in rows), 5.75)
+        self.assertEqual(db.get_part_dispatch_history("missing", 0), [])
+        self.assertEqual(db.get_part_dispatch_history("EC-%", 0), [])
+        self.assertEqual(db.get_part_dispatch_history(" ", 0), [])
+        db.delete_dispatch_records_for_orders([2])
+        self.assertEqual(len(db.get_part_dispatch_history("EC-10001A", 0)), 1)
+
 
 class DefectiveRecordsAfterTests(InMemoryDbTestCase):
     def test_get_defective_records_after_filters_cutoff_and_sorts(self):

@@ -398,6 +398,7 @@ CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, 
 CREATE INDEX IF NOT EXISTS idx_bom_substitution_active ON bom_substitution_rules(status, model, old_part_number);
 CREATE INDEX IF NOT EXISTS idx_order_substitution_order ON order_substitution_allocations(order_id, rule_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_dispatch_records_part_at ON dispatch_records(UPPER(TRIM(part_number)), dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
 CREATE INDEX IF NOT EXISTS idx_order_supplements_order ON order_supplements(order_id);
@@ -4096,6 +4097,44 @@ def get_recent_dispatched_part_usage(months: int = 6) -> list[dict]:
                GROUP BY UPPER(TRIM(part_number))
                ORDER BY order_count DESC, total_qty DESC, part_number""",
             (cutoff,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_part_dispatch_history(part_number: str, days: int = 30) -> list[dict]:
+    """彙整已發料／已完成訂單的 BOM 用量，沿用分析頁排除缺料的口徑。"""
+    normalized_part = str(part_number or "").strip().upper()
+    if not normalized_part:
+        return []
+
+    normalized_days = max(0, min(int(days or 0), 3650))
+    params: list[object] = [normalized_part]
+    cutoff_sql = ""
+    if normalized_days:
+        cutoff_at = (local_now() - timedelta(days=normalized_days)).isoformat()
+        cutoff_sql = " AND dr.dispatched_at >= ?"
+        params.append(cutoff_at)
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT o.id AS order_id,
+                       o.code,
+                       o.po_number,
+                       o.model,
+                       o.ship_date,
+                       MAX(dr.dispatched_at) AS dispatched_at,
+                       SUM(dr.needed_qty) AS issued_qty,
+                       COUNT(*) AS record_count
+                FROM dispatch_records dr
+                JOIN orders o ON o.id = dr.order_id
+                WHERE UPPER(TRIM(dr.part_number)) = ?
+                  AND o.status IN ('dispatched', 'completed')
+                  AND dr.dispatched_at != ''
+                  AND dr.decision != 'Shortage'
+                  {cutoff_sql}
+                GROUP BY o.id, o.code, o.po_number, o.model, o.ship_date
+                ORDER BY dispatched_at DESC, o.id DESC""",
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 

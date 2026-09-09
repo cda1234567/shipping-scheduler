@@ -105,6 +105,32 @@ async def frequent_zero_stock(months: int = 6, min_orders: int = 3):
 
 # ── 發料歷史統計 ──────────────────────────────────────────────────────────────
 
+@router.get("/part-dispatch-history")
+def part_dispatch_history(part_number: str = "", days: int = 30):
+    """查詢單一料號在最近一段期間內的發料 BOM 用量與訂單明細。"""
+    normalized_part = str(part_number or "").strip().upper()
+    if not normalized_part:
+        raise HTTPException(400, "請輸入料號")
+
+    normalized_days = 0 if days == 0 else max(1, min(int(days or 30), 3650))
+    rows = db.get_part_dispatch_history(normalized_part, normalized_days)
+    total_qty = sum(float(row.get("issued_qty") or 0) for row in rows)
+    dispatch_count = sum(int(row.get("record_count") or 0) for row in rows)
+    dispatched_times = [str(row.get("dispatched_at") or "") for row in rows if row.get("dispatched_at")]
+
+    return {
+        "part_number": normalized_part,
+        "days": normalized_days,
+        "period_label": "全部紀錄" if normalized_days == 0 else f"最近 {normalized_days} 天",
+        "total_qty": total_qty,
+        "order_count": len(rows),
+        "dispatch_count": dispatch_count,
+        "first_dispatched_at": min(dispatched_times) if dispatched_times else "",
+        "last_dispatched_at": max(dispatched_times) if dispatched_times else "",
+        "rows": rows,
+    }
+
+
 @router.get("/dispatch-history")
 async def dispatch_history(group_by: str = "model"):
     if group_by not in ("model", "month"):

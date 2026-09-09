@@ -801,6 +801,67 @@ console.log(JSON.stringify(results));
         self.assertIn(".frequent-zero-summary", stylesheet)
         self.assertIn(".frequent-zero-row.is-urgent", stylesheet)
 
+    def test_analytics_page_has_part_dispatch_history_search(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        analytics_module = (root / "static" / "modules" / "analytics.js").read_text(encoding="utf-8")
+        stylesheet = (root / "static" / "style.css").read_text(encoding="utf-8")
+
+        self.assertIn('id="part-history-form"', index_html)
+        self.assertIn('id="part-history-input"', index_html)
+        self.assertIn('id="part-history-days"', index_html)
+        self.assertIn('id="part-history-result"', index_html)
+        self.assertIn("/api/analytics/part-dispatch-history", analytics_module)
+        self.assertIn("renderPartDispatchHistory", analytics_module)
+        self.assertIn("發料總用量（BOM）", analytics_module)
+        self.assertIn(".part-history-summary", stylesheet)
+        self.assertIn(".part-history-table-wrap", stylesheet)
+
+    def test_part_history_submission_ignores_stale_responses_and_escapes_results(self):
+        root = Path(__file__).resolve().parents[1]
+        script = """
+import assert from 'node:assert/strict';
+import { initAnalytics } from './static/modules/analytics.js';
+let submit;
+const elements = {
+  'part-history-form': { addEventListener: (_, fn) => { submit = fn; } },
+  'part-history-input': { value: 'OLD' },
+  'part-history-days': { value: '0' },
+  'part-history-result': { innerHTML: '' },
+  'btn-part-history': { disabled: false, textContent: '' },
+};
+globalThis.document = { getElementById: id => elements[id] };
+const pending = [];
+globalThis.fetch = url => new Promise(resolve => pending.push({ url, resolve }));
+await initAnalytics();
+const first = submit({ preventDefault() {} });
+elements['part-history-input'].value = 'IC-A&B';
+const second = submit({ preventDefault() {} });
+assert.match(pending[1].url, /part_number=IC-A%26B&days=0/);
+pending[1].resolve(Response.json({
+  part_number: 'IC-A&B', period_label: 'ALL', total_qty: 12, order_count: 1,
+  rows: [{ code: '<img src=x>', model: 'MODEL', issued_qty: 12 }],
+}));
+await second;
+const rendered = elements['part-history-result'].innerHTML;
+assert.ok(rendered.includes('IC-A&amp;B'));
+assert.ok(rendered.includes('&lt;img src=x&gt;'));
+assert.ok(!rendered.includes('<img src=x>'));
+pending[0].resolve(Response.json({ part_number: 'OLD', rows: [] }));
+await first;
+assert.equal(elements['part-history-result'].innerHTML, rendered);
+assert.equal(elements['btn-part-history'].disabled, false);
+const failure = submit({ preventDefault() {} });
+pending[2].resolve(Response.json({ detail: '<bad>' }, { status: 500 }));
+await failure;
+assert.ok(elements['part-history-result'].innerHTML.includes('&lt;bad&gt;'));
+assert.equal(elements['btn-part-history'].disabled, false);
+"""
+        subprocess.run(
+            ["node", "--input-type=module", "-e", script], cwd=root,
+            check=True, capture_output=True, text=True,
+        )
+
     def test_st_inventory_upload_assets_exist_for_sidebar_panel(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
