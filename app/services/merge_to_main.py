@@ -339,7 +339,7 @@ def _expand_group_substitutions(
     return expanded
 
 
-def _build_preview_for_batches(
+def _build_append_preview_for_batches(
     ws,
     batches: list[dict],
     decisions: dict[str, str],
@@ -467,7 +467,7 @@ def _build_preview_for_batches(
                     needed_qty,
                     ignore_ec_min=ignore_ec_min,
                 )
-                if decision != "Shortage" and shortage_before > 0 and remaining_supplements.get(part_upper, 0) > 0:
+                if decision != "Shortage" and (shortage_before > 0 or batch.get("insert_before_code")) and remaining_supplements.get(part_upper, 0) > 0:
                     supplement_qty = float(remaining_supplements.get(part_upper, 0))
                     remaining_supplements[part_upper] = 0.0
 
@@ -575,6 +575,16 @@ def _build_preview_for_batches(
     }
 
 
+def _build_preview_for_batches(ws, batches, decisions, moq_map=None, st_inventory_stock=None):
+    if any(batch.get("insert_before_code") for batch in batches):
+        from .main_insertion import build_insertion_plan
+        return build_insertion_plan(
+            ws, batches, decisions, moq_map, st_inventory_stock,
+            _build_append_preview_for_batches, _write_plan_to_workbook,
+        )
+    return _build_append_preview_for_batches(ws, batches, decisions, moq_map, st_inventory_stock)
+
+
 def preview_order_batches(
     main_path: str,
     batches: list[dict],
@@ -658,11 +668,15 @@ def _flatten_plan_rows(plan: dict) -> list[dict]:
                     "current_stock": row.get("current_stock"),
                     "prev_qty_cs": row.get("prev_qty_cs"),
                     "decision": row.get("decision"),
+                    **({"final_stock": row["final_stock"]} if "final_stock" in row else {}),
                 })
     return rows
 
 
 def _write_plan_to_workbook(workbook, plan: dict) -> None:
+    if plan.get("already_written"):
+        ensure_main_header_wrap(workbook.active)
+        return
     worksheet = workbook.active
     for batch in plan.get("batches", []) or []:
         for group_plan in batch.get("groups", []) or []:
@@ -721,6 +735,22 @@ def validate_dispatch_backup_reference(backup_reference: str | Path) -> dict:
         "main_backup_path": str(main_backup_path),
         "manifest": manifest,
     }
+
+
+def save_dispatch_code_changes(backup_reference: str, order_id: int, changes: list[dict]) -> None:
+    manifest = _load_dispatch_batch_manifest(backup_reference)
+    if manifest is None:
+        raise ValueError("插入單據缺少可還原編號的批次備份")
+    manifest.setdefault("database_code_changes", []).append({"order_id": order_id, "changes": changes})
+    _write_json_atomically(Path(backup_reference), manifest)
+
+
+def read_dispatch_code_changes(backup_reference: str, order_ids: list[int]) -> list[list[dict]]:
+    manifest = _load_dispatch_batch_manifest(backup_reference)
+    if not manifest:
+        return []
+    return [item["changes"] for item in reversed(manifest.get("database_code_changes") or [])
+            if int(item["order_id"]) in order_ids]
 
 
 @serialized_main_file_write
@@ -828,6 +858,7 @@ def merge_order_batches_to_main(
             "backup_path": str(manifest_path),
             "merged_parts": len(batch_rows),
             "plan_rows": batch_rows,
+            "code_shifts": batch_plan.get("code_shifts") or {},
             "shortages": [
                 item for item in (plan.get("shortages", []) or [])
                 if item.get("order_id") == order_id
@@ -842,6 +873,7 @@ def merge_order_batches_to_main(
         "shortages": plan["shortages"],
         "plan_rows": _flatten_plan_rows(plan),
         "order_results": order_results,
+        "code_shifts": plan.get("code_shifts") or {},
     }
 
 

@@ -70,7 +70,7 @@ from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
-    SupplementPartRequest, MoveCompletedFolderRequest,
+    SupplementPartRequest, MoveCompletedFolderRequest, CreateOrderRequest,
 )
 from .. import database as db
 
@@ -740,6 +740,26 @@ def _summarize_negative_shortages(shortages: list[dict]) -> list[dict]:
 
 
 # ── Upload schedule ───────────────────────────────────────────────────────────
+
+@router.post("/schedule/orders", status_code=201)
+def create_order(req: CreateOrderRequest):
+    if req.insert_before_code:
+        import openpyxl
+        from ..services.main_insertion import validate_insertion_anchor
+        workbook = openpyxl.load_workbook(_require_existing_main_path(), read_only=True)
+        try:
+            validate_insertion_anchor(workbook.active, req.insert_before_code)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            workbook.close()
+    try:
+        order = db.create_manual_order(req.dict())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    db.log_activity("新增單據", f"手動新增 {order['code']} / {order['po_number']} / {order['model']}")
+    return order
+
 
 @router.post("/schedule/upload")
 async def upload_schedule(file: UploadFile = File(...)):
@@ -1621,6 +1641,8 @@ async def update_order_code(order_id: int, req: RowCodeRequest):
     order = db.get_order(order_id)
     if not order:
         raise HTTPException(404, "找不到此訂單")
+    if order.get("insert_before_code") and req.code != order["code"]:
+        raise HTTPException(409, "插入單據的編號須與插入位置一致，不能單獨修改")
     db.update_order(order_id, code=req.code)
     return {"ok": True}
 

@@ -71,6 +71,7 @@ let _commitDraftJobPollTimer = null;
 export async function initSchedule(onRefreshMain) {
   _onRefreshMain = onRefreshMain || null;
   if (!_scheduleInitialized) {
+    initCreateOrderForm();
     document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
@@ -107,6 +108,72 @@ export async function initSchedule(onRefreshMain) {
   }
   resumeCommitDraftJobIfNeeded();
   await refresh();
+}
+
+function initCreateOrderForm() {
+  const dialog = document.getElementById("create-order-dialog");
+  const form = document.getElementById("create-order-form");
+  const error = document.getElementById("create-order-error");
+  const submit = document.getElementById("btn-submit-create-order");
+  const cancel = document.getElementById("btn-cancel-create-order");
+  const placement = form.elements.namedItem("placement");
+  const insertCode = form.elements.namedItem("insert_before_code");
+  const syncPlacement = () => {
+    const inserting = placement.value === "insert";
+    document.getElementById("create-order-insert-field").hidden = !inserting;
+    insertCode.required = inserting;
+    if (!inserting) insertCode.value = "";
+  };
+  placement.addEventListener("change", syncPlacement);
+  document.getElementById("btn-create-order").addEventListener("click", () => {
+    form.reset();
+    syncPlacement();
+    error.textContent = "";
+    dialog.showModal();
+  });
+  cancel.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("cancel", event => {
+    if (submit.disabled) event.preventDefault();
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    const data = Object.fromEntries(new FormData(form));
+    delete data.placement;
+    data.insert_before_code = data.insert_before_code.trim();
+    for (const key of ["code", "po_number", "model", "pcb"]) {
+      data[key] = data[key].trim();
+      if (!data[key]) {
+        error.textContent = "請完整填寫單據編號、訂單號碼、機種及 PCB。";
+        form.elements.namedItem(key).focus();
+        return;
+      }
+    }
+    data.order_qty = Number(data.order_qty);
+    if (data.insert_before_code && data.insert_before_code !== data.code) {
+      error.textContent = "插入時，單據編號與插入位置編號必須相同。";
+      return;
+    }
+    data.balance_qty = Number(data.balance_qty);
+    submit.disabled = true;
+    cancel.disabled = true;
+    error.textContent = "";
+    try {
+      await apiPost("/api/schedule/orders", data);
+      dialog.close();
+      showToast("單據已新增", { tone: "success" });
+      try {
+        await refreshScheduleOnly();
+      } catch (_) {
+        showToast("單據已新增，但清單更新失敗，請重新整理頁面。", { tone: "error" });
+      }
+    } catch (err) {
+      error.textContent = err.message;
+    } finally {
+      submit.disabled = false;
+      cancel.disabled = false;
+    }
+  });
 }
 
 export async function refresh() {
@@ -1128,9 +1195,10 @@ function buildRowCard(r, resultMap, visibleShortageTotals = null) {
       <span class="tag tag-pcb pcb-chip">${esc(r.pcb)}</span>
       <span style="font-size:13px;color:#3c3c43;font-weight:500;white-space:nowrap">${qty}<span style="font-size:11px;color:#8e8e93;font-weight:400">pcs</span></span>
       <span class="po-ship-date">${date}</span>
-      <input class="code-input" type="text" value="${code}"
+      <span class="order-code-placement"><input class="code-input" type="text" value="${code}" ${r.insert_before_code ? 'readonly' : ''}
              data-order-id="${r.id}" placeholder="編號"
              style="width:100%;box-sizing:border-box;border:1px solid #e5e5ea;border-radius:4px;padding:2px 6px;font-size:12px;text-align:center;background:transparent">
+        ${r.insert_before_code ? `<small class="order-insert-hint">待插入 ${esc(r.insert_before_code)} 前</small>` : ''}</span>
       ${remarkSpan}
       ${badgeHtml}
       <div class="row-actions">

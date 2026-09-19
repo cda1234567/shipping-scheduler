@@ -121,6 +121,7 @@
     <div id="tab-schedule" class="tab-content active">
       <div id="schedule-area">
         <div id="schedule-toolbar">
+          <button class="btn btn-primary btn-sm" id="btn-create-order">新增單據</button>
           <button class="btn btn-secondary btn-sm" id="btn-auto-sort">依出貨日排序</button>
           <button class="btn btn-primary btn-sm" id="btn-save-order">儲存順序</button>
           <button class="btn btn-success btn-sm" id="btn-batch-merge">批次 Merge</button>
@@ -138,6 +139,30 @@
           <span class="spacer"></span>
           <span class="info-text" id="schedule-info"></span>
         </div>
+        <dialog id="create-order-dialog" aria-labelledby="create-order-title">
+          <form id="create-order-form">
+            <h2 id="create-order-title">手動新增單據</h2>
+            <p>請自行填寫單據資料；新增後為未排程，不會發料。</p>
+            <div class="create-order-fields">
+              <label class="create-order-wide">新增方式<select name="placement"><option value="append">加到最後</option><option value="insert">插入指定單據之前</option></select></label>
+              <label class="create-order-wide" id="create-order-insert-field" hidden>插入位置編號<input name="insert_before_code" maxlength="100" placeholder="例如 10-0"><small>新單編號請填相同編號。正式發料後才插入主檔，同組既有編號順延，後面的出貨及不良品欄位一起後移。</small></label>
+              <label>單據編號<input name="code" required maxlength="100" placeholder="例如 10-0"></label>
+              <label>訂單號碼<input name="po_number" required maxlength="100"></label>
+              <label>機種<input name="model" required maxlength="200"></label>
+              <label>PCB<input name="pcb" required maxlength="200"></label>
+              <label>訂單數量<input name="order_qty" type="number" min="0.000001" step="any" required></label>
+              <label>未交數量<input name="balance_qty" type="number" min="0" step="any" required></label>
+              <label>出貨日<input name="ship_date" type="date" required></label>
+              <label>交期<input name="delivery_date" type="date" required></label>
+              <label class="create-order-wide">備註（選填）<textarea name="remark" maxlength="2000" rows="2"></textarea></label>
+            </div>
+            <p id="create-order-error" role="alert"></p>
+            <div class="create-order-actions">
+              <button class="btn btn-secondary" type="button" id="btn-cancel-create-order">取消</button>
+              <button class="btn btn-primary" type="submit" id="btn-submit-create-order">新增單據</button>
+            </div>
+          </form>
+        </dialog>
         <div id="schedule-scroll"></div>
       </div>
 

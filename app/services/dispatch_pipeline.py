@@ -17,6 +17,8 @@ from .merge_to_main import (
     preview_order_batches,
     restore_main_from_backup_reference,
     validate_dispatch_backup_reference,
+    save_dispatch_code_changes,
+    read_dispatch_code_changes,
 )
 from .st_package_breakdowns import consume_st_package_breakdowns, restore_st_package_consumptions
 from .shortage_rules import (
@@ -62,6 +64,7 @@ class DispatchContext:
             "supplements": dict(self.supplements),
             "decisions": dict(self.decisions),
             "is_sample": bool(self.is_sample),
+            "insert_before_code": str(self.order.get("insert_before_code") or ""),
         }
 
     @classmethod
@@ -770,6 +773,11 @@ def execute_dispatch_context(
     backup_dir: str,
 ) -> dict:
     item = DispatchContext.from_value(context)
+    if item.order.get("insert_before_code"):
+        batch_result = merge_order_batches_to_main(
+            main_path, [item.to_preview_batch()], backup_dir=backup_dir,
+        )
+        return finalize_dispatch_context(item, main_path, batch_result["order_results"][0])
     result = merge_executor(
         main_path=main_path,
         groups=item.groups,
@@ -818,12 +826,14 @@ def finalize_dispatch_context(
     *,
     reconcile: dict | None = None,
     restore_main_on_error: bool = True,
+    exclude_order_ids: list[int] | None = None,
 ) -> dict:
     item = DispatchContext.from_value(context)
     if reconcile is None:
         reconcile = _verify_dispatch_result(main_path, result.get("plan_rows") or [], item.order)
 
     session = None
+    code_changes = []
     try:
         session = db.save_dispatch_session(
             order_id=item.order_id,
@@ -846,7 +856,12 @@ def finalize_dispatch_context(
             })
         db.save_dispatch_records(item.order_id, dispatch_records)
         db.update_order(item.order_id, status="dispatched")
+        if result.get("code_shifts"):
+            code_changes = db.apply_dispatch_code_shifts(result["code_shifts"], exclude_order_ids or [item.order_id])
+            save_dispatch_code_changes(result["backup_path"], item.order_id, code_changes)
     except Exception:
+        if code_changes:
+            db.restore_dispatch_code_shifts(code_changes)
         if restore_main_on_error:
             backup_path = str(result.get("backup_path") or "")
             validation = validate_dispatch_backup_reference(backup_path)
@@ -933,6 +948,18 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
         raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
 
+    order_ids = [int(session["order_id"]) for session in normalized_sessions]
+    code_change_batches = []
+    seen_references = set()
+    for session in reversed(normalized_sessions):
+        reference = str(session.get("backup_path") or "")
+        if reference in seen_references:
+            continue
+        seen_references.add(reference)
+        for changes in read_dispatch_code_changes(reference, order_ids):
+            code_change_batches.append(changes)
+    db.validate_dispatch_code_shift_restores(code_change_batches)
+
     restore_target_path = Path(restore_target)
     try:
         restore_result = restore_main_from_backup_reference(
@@ -944,7 +971,8 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         raise HTTPException(400, str(exc)) from exc
     refresh_snapshot_from_main(str(restore_target_path))
 
-    order_ids = [int(session["order_id"]) for session in normalized_sessions]
+    for changes in code_change_batches:
+        db.restore_dispatch_code_shifts(changes)
     session_ids = [int(session["id"]) for session in normalized_sessions]
     db.delete_dispatch_records_for_orders(order_ids)
     st_restore_result = restore_st_package_consumptions(session_ids, order_ids)
@@ -1046,6 +1074,7 @@ def commit_dispatch_plan(
                         else {"ok": True, "checked_parts": 0, "mismatches": []}
                     ),
                     restore_main_on_error=False,
+                    exclude_order_ids=[pending.order_id for pending in plan.contexts[index:]],
                 )
             else:
                 result = execute_dispatch_context(

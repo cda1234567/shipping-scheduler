@@ -118,7 +118,7 @@ def verify_main_write(main_path: str, plan_rows: list[dict]) -> dict:
             if not _same_number(conserved_j, actual_j_num):
                 mismatches.append(_mismatch(part, "conservation", "J", conserved_j, actual_j_num))
 
-            expected_stock_by_part[part] = expected_j
+            expected_stock_by_part[part] = float(row.get("final_stock", expected_j))
     finally:
         wb.close()
 

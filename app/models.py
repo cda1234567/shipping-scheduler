@@ -3,9 +3,11 @@ Pydantic 資料模型 — 用於 API request/response 和資料驗證。
 """
 from __future__ import annotations
 from enum import Enum
+from datetime import date
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 import math
+import re
 
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
@@ -117,6 +119,29 @@ class Metadata(BaseModel):
 
 
 # ── Request models ────────────────────────────────────────────────────────────
+
+class CreateOrderRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=100)
+    po_number: str = Field(min_length=1, max_length=100)
+    model: str = Field(min_length=1, max_length=200)
+    pcb: str = Field(min_length=1, max_length=200)
+    order_qty: float = Field(gt=0, allow_inf_nan=False)
+    balance_qty: float = Field(ge=0, allow_inf_nan=False)
+    ship_date: date
+    delivery_date: date
+    remark: str = Field(default="", max_length=2000)
+    insert_before_code: str = Field(default="", max_length=100)
+
+    @validator("code", "po_number", "model", "pcb", "remark", "insert_before_code", pre=True)
+    def strip_text(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+    @validator("insert_before_code")
+    def validate_insert_code(cls, value):
+        if value and not re.fullmatch(r"\d+-\d+", value):
+            raise ValueError("插入位置必須是完整單據編號，例如 10-0")
+        return value
+
 
 class ReorderRequest(BaseModel):
     order_ids: list[int]

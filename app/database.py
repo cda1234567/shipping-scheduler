@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS orders (
     remark        TEXT    NOT NULL DEFAULT '',
     sort_order    INTEGER NOT NULL DEFAULT 0,
     row_index     INTEGER NOT NULL DEFAULT 0,
+    is_manual     INTEGER NOT NULL DEFAULT 0,
+    insert_before_code TEXT NOT NULL DEFAULT '',
     created_at    TEXT    NOT NULL DEFAULT '',
     updated_at    TEXT    NOT NULL DEFAULT ''
 );
@@ -554,6 +556,10 @@ def init_db():
         conn.executescript(_CREATE_SQL)
         # migration: orders 加 folder 欄位
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+        if "is_manual" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0")
+        if "insert_before_code" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN insert_before_code TEXT NOT NULL DEFAULT ''")
         if "folder" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN folder TEXT NOT NULL DEFAULT ''")
         snapshot_cols = [r[1] for r in conn.execute("PRAGMA table_info(inventory_snapshot)").fetchall()]
@@ -1978,6 +1984,71 @@ def _order_base_key(po, model) -> str:
     return f"{str(po).strip()}|{str(model).strip().upper()}"
 
 
+def apply_dispatch_code_shifts(code_shifts: dict[str, str], exclude_order_ids: list[int]) -> list[dict]:
+    """依發料主檔的編號對照同步訂單；以原始快照避免連續重編。"""
+    changes = []
+    excluded = set(exclude_order_ids)
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for row in conn.execute("SELECT id, code, insert_before_code, status FROM orders").fetchall():
+            old_anchor = row["insert_before_code"]
+            new_anchor = code_shifts.get(old_anchor, old_anchor) if row["status"] in ("pending", "merged") else old_anchor
+            if row["id"] in excluded or (row["code"] not in code_shifts and new_anchor == old_anchor):
+                continue
+            new_code = code_shifts.get(row["code"], row["code"])
+            changes.append({"id": row["id"], "old_code": row["code"], "new_code": new_code,
+                            "old_insert_before_code": old_anchor, "new_insert_before_code": new_anchor})
+            conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (new_code, new_anchor, _now(), row["id"]))
+    return changes
+
+
+def validate_dispatch_code_shift_restores(change_batches: list[list[dict]]):
+    """按呼叫順序模擬多批還原，先確認全部編號仍可安全復原。"""
+    with get_conn() as conn:
+        current = {row["id"]: (row["code"], row["insert_before_code"])
+                   for row in conn.execute("SELECT id, code, insert_before_code FROM orders")}
+    for changes in change_batches:
+        for change in changes:
+            if current.get(change["id"]) != (change["new_code"], change["new_insert_before_code"]):
+                raise ValueError("單據編號已變更，無法安全還原插入")
+        for change in changes:
+            current[change["id"]] = (change["old_code"], change["old_insert_before_code"])
+
+
+def restore_dispatch_code_shifts(changes: list[dict]):
+    """還原本次插入造成的編號異動，遇到其他修改則中止。"""
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for change in changes:
+            row = conn.execute("SELECT code, insert_before_code FROM orders WHERE id=?", (change["id"],)).fetchone()
+            if not row or row["code"] != change["new_code"] or row["insert_before_code"] != change["new_insert_before_code"]:
+                raise ValueError("單據編號已變更，無法安全還原插入")
+        for change in changes:
+            conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (change["old_code"], change["old_insert_before_code"], _now(), change["id"]))
+
+
+def create_manual_order(data: dict) -> dict:
+    """手動建立未排程單據；業務欄位完全採用輸入值。"""
+    now = _now()
+    with get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        insert_before_code = data.get("insert_before_code", "")
+        if insert_before_code and data["code"] != insert_before_code:
+            raise ValueError("插入單據的編號必須與插入位置編號相同")
+        if not insert_before_code and conn.execute("SELECT 1 FROM orders WHERE code=?", (data["code"],)).fetchone():
+            raise ValueError("此單據編號已存在，請使用其他編號")
+        sort_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM orders").fetchone()[0]
+        fields = ("code", "po_number", "model", "pcb", "order_qty", "balance_qty", "ship_date", "delivery_date", "remark")
+        values = [str(data[key]) if key.endswith("_date") else data[key] for key in fields]
+        cursor = conn.execute(
+            "INSERT INTO orders(code, po_number, model, pcb, order_qty, balance_qty, ship_date, "
+            "delivery_date, remark, sort_order, is_manual, insert_before_code, created_at, updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+            (*values, sort_order, insert_before_code, now, now),
+        )
+        return dict(conn.execute("SELECT * FROM orders WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+
 def upsert_orders_from_schedule(rows: list[dict]) -> dict:
     """從排程表解析結果批次寫入 orders 表。
     自動比對已存在的 PO+機種+出貨日（含已發料），不重複新增。
@@ -1989,7 +2060,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
     with get_conn() as conn:
         all_orders = conn.execute(
-            "SELECT id, po_number, model, pcb, order_qty, ship_date, delivery_date, status, code FROM orders"
+            "SELECT id, po_number, model, pcb, order_qty, ship_date, delivery_date, status, code, is_manual FROM orders"
         ).fetchall()
 
         # 用 PO+機種+出貨日 當 key，同 PO/機種不同出貨日分開處理
@@ -2022,7 +2093,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
         # 刪掉「新排程表中不存在」的 pending/merged 訂單
         removed_count = 0
         for key, existing in list(existing_by_key.items()):
-            if key not in new_key_set and existing["status"] in ("pending", "merged"):
+            if not existing["is_manual"] and key not in new_key_set and existing["status"] in ("pending", "merged"):
                 conn.execute("DELETE FROM decisions WHERE order_id = ?", (existing["id"],))
                 conn.execute("DELETE FROM order_supplements WHERE order_id = ?", (existing["id"],))
                 conn.execute("DELETE FROM orders WHERE id = ?", (existing["id"],))
@@ -2041,6 +2112,9 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
             key = _order_key(po, model, r.get("ship_date"))
             existing = existing_by_key.get(key)
+            if existing and existing["is_manual"]:
+                skipped_count += 1
+                continue
             base_key = _order_base_key(po, model)
             dispatched_existing = dispatched_by_base_key.get(base_key)
             if (
@@ -2194,7 +2268,7 @@ def remove_duplicate_pending_orders() -> dict:
         }
 
         pending_orders = conn.execute(
-            "SELECT id, po_number, model, ship_date, delivery_date FROM orders WHERE status IN ('pending','merged')"
+            "SELECT id, po_number, model, ship_date, delivery_date FROM orders WHERE status IN ('pending','merged') AND is_manual=0"
         ).fetchall()
 
         duplicates: list[dict] = []
