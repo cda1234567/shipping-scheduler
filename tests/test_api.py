@@ -1218,6 +1218,7 @@ class ApiTests(unittest.TestCase):
                     "supplements": {"PART-1": 3000.0},
                     "decisions": {"PART-1": "CreateRequirement"},
                     "is_sample": False,
+                    "insert_before_code": "",
                 },
                 {
                     "order_id": 2,
@@ -1226,6 +1227,7 @@ class ApiTests(unittest.TestCase):
                     "supplements": {},
                     "decisions": {},
                     "is_sample": False,
+                    "insert_before_code": "",
                 },
             ],
         )
@@ -1654,6 +1656,7 @@ class ApiTests(unittest.TestCase):
                     "supplements": {"PART-A": 800},
                     "decisions": {"PART-A": "Shortage"},
                     "is_sample": False,
+                    "insert_before_code": "",
                 },
                 {
                     "order_id": 2,
@@ -1662,6 +1665,7 @@ class ApiTests(unittest.TestCase):
                     "supplements": {"PART-B": 1200},
                     "decisions": {"PART-B": "CreateRequirement"},
                     "is_sample": False,
+                    "insert_before_code": "",
                 },
             ]
 

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.20.1"
-APP_RELEASED_AT = "2026-09-20"
-APP_HEADLINE = "出貨排程手動新增單據與主檔插入"
+APP_VERSION = "v2026.09.29.1"
+APP_RELEASED_AT = "2026-09-29"
+APP_HEADLINE = "盤點總和格式欄位修正"
 APP_CHANGELOG = [
+    {
+        "title": "盤點總和格式欄位修正",
+        "items": [
+            "新版盤點總和格式會正確採用 U 欄實際庫存總和與 V 欄生產結餘，不再誤讀舊格式的 F／G 欄。",
+            "盤點試算與停損點確認畫面會依實際來源欄位顯示 U／V 或 F／G，舊格式仍可繼續使用。",
+        ],
+    },
     {
         "title": "手動新增出貨單據",
         "items": [

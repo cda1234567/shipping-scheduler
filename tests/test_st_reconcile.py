@@ -26,7 +26,7 @@ from app.services.st_reconcile import (
 
 
 class StReconcileParserTests(unittest.TestCase):
-    def test_parse_real_genlin_file_extracts_book_physical_and_strips_tab_suffix(self):
+    def test_parse_real_genlin_file_uses_detected_total_columns_and_strips_tab_suffix(self):
         sample_path = Path("templates") / "庚霖實際庫存2026Q1_2026-6-29.xlsx"
         if not sample_path.exists():
             self.skipTest("本機實際庚霖盤點樣本未納入版本庫")
@@ -35,11 +35,102 @@ class StReconcileParserTests(unittest.TestCase):
 
         self.assertEqual(parsed["format"], "genlin")
         self.assertEqual(parsed["sheet_name"], "實際庫存-生產結餘")
+        self.assertEqual(parsed["source_columns"], {"book": "AB", "physical": "AA"})
         rows = {row["part_number"]: row for row in parsed["rows"]}
         self.assertIn("OC-10935B", rows)
         self.assertNotIn("OC-10935B-TAB", rows)
-        self.assertEqual(rows["OC-10935B"]["book_qty"], 8100)
-        self.assertEqual(rows["OC-10935B"]["physical_qty"], 687)
+        self.assertEqual(rows["OC-10935B"]["book_qty"], 8787)
+        self.assertEqual(rows["OC-10935B"]["physical_qty"], 8787)
+
+    def test_parse_total_format_prefers_uv_ignores_y_and_combines_duplicate_parts(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "total-format.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "實際庫存-生產結餘"
+            header_row = 12
+            ws.cell(row=header_row, column=3, value="Parts No/\nDescription")
+            ws.cell(row=header_row, column=4, value="consign invoic")
+            ws.cell(row=header_row, column=6, value="辰尚庫存")
+            ws.cell(row=header_row, column=7, value="庚霖庫存\n當下實際")
+            ws.cell(row=header_row, column=21, value="實際庫存\n總和 (辰尚+庚霖)")
+            ws.cell(row=header_row, column=22, value="生產\n結餘(12/30/2025) Remaining")
+            ws.cell(row=header_row, column=25, value="給客人資料已扣NG")
+
+            ws.cell(row=14, column=3, value="測試料 1")
+            ws.cell(row=14, column=4, value="part-1-tab")
+            ws.cell(row=14, column=6, value=900)
+            ws.cell(row=14, column=7, value=800)
+            ws.cell(row=14, column=21, value=12)
+            ws.cell(row=14, column=22, value=15)
+            ws.cell(row=14, column=25, value=7)
+
+            ws.cell(row=15, column=3, value="測試料 1 重複")
+            ws.cell(row=15, column=4, value="PART-1-TAB")
+            ws.cell(row=15, column=6, value=90)
+            ws.cell(row=15, column=7, value=80)
+            ws.cell(row=15, column=21, value=-2)
+            ws.cell(row=15, column=22, value=-1)
+            ws.cell(row=15, column=25, value=999)
+
+            ws.cell(row=16, column=21, value=123)
+            ws.cell(row=16, column=22, value=456)
+            ws.cell(row=25, column=1, value="")
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_st_reconcile_file(str(path))
+            with patch(
+                "app.services.st_reconcile.theoretical_stock_with_details",
+                return_value={"stock": {"PART-1": 20}, "order_details": {}},
+            ), patch(
+                "app.services.st_reconcile.db.get_latest_st_reconcile_anchor",
+                return_value=None,
+            ), patch(
+                "app.services.st_reconcile.db.get_defective_part_totals",
+                return_value=[],
+            ):
+                preview = build_st_reconcile_preview(str(path), "2026-09-23")
+
+        self.assertEqual(parsed["source_columns"], {"book": "V", "physical": "U"})
+        self.assertEqual(len(parsed["rows"]), 2)
+        self.assertEqual(parsed["rows"][0]["part_number"], "PART-1")
+        self.assertEqual(parsed["rows"][0]["book_qty"], 15)
+        self.assertEqual(parsed["rows"][0]["physical_qty"], 12)
+        self.assertEqual(parsed["rows"][1]["book_qty"], -1)
+        self.assertEqual(parsed["rows"][1]["physical_qty"], -2)
+        self.assertEqual(preview["source_columns"], {"book": "V", "physical": "U"})
+        self.assertEqual(preview["parts"][0]["book_qty"], 14)
+        self.assertEqual(preview["parts"][0]["physical_qty"], 10)
+        self.assertEqual(preview["parts"][0]["book_vs_physical_diff"], 4)
+        self.assertIn("V 欄為我方帳面，U 欄為庚霖實盤", preview["assumptions"][0])
+
+    def test_parse_legacy_format_keeps_fg_with_short_and_multiline_headers(self):
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "legacy-format.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "實際庫存-生產結餘 "
+            ws.cell(row=3, column=3, value="Parts No/Description")
+            ws.cell(row=3, column=4, value="consign invoic")
+            ws.cell(row=3, column=6, value="辰尚庫存")
+            ws.cell(row=3, column=7, value="庚霖庫存\n當下實際")
+            ws.cell(row=5, column=3, value="舊格式料")
+            ws.cell(row=5, column=4, value="legacy-tab")
+            ws.cell(row=5, column=6, value=30)
+            ws.cell(row=5, column=7, value=25)
+            ws.cell(row=5, column=25, value=1)
+            ws.cell(row=10, column=1, value="")
+            wb.save(path)
+            wb.close()
+
+            parsed = parse_st_reconcile_file(str(path))
+
+        self.assertEqual(parsed["source_columns"], {"book": "F", "physical": "G"})
+        self.assertEqual(parsed["part_count"], 1)
+        self.assertEqual(parsed["rows"][0]["part_number"], "LEGACY")
+        self.assertEqual(parsed["rows"][0]["book_qty"], 30)
+        self.assertEqual(parsed["rows"][0]["physical_qty"], 25)
 
     def test_parse_real_chenshang_file_extracts_parts_and_forward_filled_groups(self):
         sample_path = Path("templates") / "辰尚庫存狀況20260610_辰尚填寫.xlsx"

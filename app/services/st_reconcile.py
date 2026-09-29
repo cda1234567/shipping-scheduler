@@ -5,6 +5,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from openpyxl.utils import get_column_letter
+
 from app import database as db
 from app.constants import ST_RECONCILE_ADJUSTMENT_REASON
 
@@ -19,6 +21,8 @@ GENLIN_PART_HEADER = "consign invoice NO"
 GENLIN_BOOK_HEADER = "辰尚庫存"
 GENLIN_PHYSICAL_HEADER = "庚霖庫存 當下實際"
 GENLIN_DESC_HEADER = "Parts No/Description"
+GENLIN_TOTAL_PHYSICAL_HEADER = "實際庫存總和"
+GENLIN_PRODUCTION_BOOK_HEADER = "生產結餘"
 
 CATEGORY_HAVE_OURS_NOT_THEIRS = "我有單他沒有"
 CATEGORY_HAVE_THEIRS_NOT_OURS = "他有單我沒入"
@@ -34,20 +38,16 @@ ASSUMPTIONS = [
     "盤點表沒有工單或 MO 號，本版只能做料號級淨差歸因；同單數量不符需等盤點表提供單號後才能精準判定。",
     "H 欄視為客戶群組總盤點數；同一群組若有多個汎翊料號，會標示需人工拆分並歸入無法歸因淨差。",
 ]
-GENLIN_ASSUMPTIONS = [
-    "本試算讀取庚霖實際庫存格式：F 欄為我方帳面，G 欄為庚霖實盤。",
-    "停損點模式只分「無差異」與「停損吸收」；F 與 G 的差額不再逐筆歸因。",
-    "按下設為停損點後，系統會以庚霖實盤 G 欄重設每個料號的 ST 庫存基準，差額自動寫入調帳紀錄。",
-    "報告最後的「未被盤點覆蓋」清單＝這段期間有不良品/多打扣帳、但不在盤點檔裡的料號（多為自備料）——這些料的帳沒有被實盤驗證，僅供你判斷是否請加工廠一併盤點。",
-]
-
-
 def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
 def _normalize_header_text(value: Any) -> str:
     return " ".join(_normalize_text(value).split())
+
+
+def _compact_header_text(value: Any) -> str:
+    return "".join(_normalize_text(value).split())
 
 
 def _normalize_part(value: Any) -> str:
@@ -111,13 +111,34 @@ def _find_chenshang_header_row(ws) -> tuple[int, dict[str, int]]:
 def _find_genlin_header_row(ws) -> tuple[int, dict[str, int]]:
     for row_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=min(12, ws.max_row), values_only=True), start=1):
         values = [_normalize_header_text(cell) for cell in row]
+        compact_values = [_compact_header_text(cell) for cell in row]
         part_col = 3 if len(values) > 3 and values[3].lower().startswith("consign") else -1
-        book_col = values.index(GENLIN_BOOK_HEADER) if GENLIN_BOOK_HEADER in values else -1
-        physical_col = next((idx for idx, value in enumerate(values) if value.startswith("庚霖庫存")), -1)
+        total_physical_col = next(
+            (idx for idx, value in enumerate(compact_values) if value.startswith(GENLIN_TOTAL_PHYSICAL_HEADER)),
+            -1,
+        )
+        production_book_col = next(
+            (idx for idx, value in enumerate(compact_values) if value.startswith(GENLIN_PRODUCTION_BOOK_HEADER)),
+            -1,
+        )
+        if total_physical_col >= 0 and production_book_col >= 0:
+            book_col = production_book_col
+            physical_col = total_physical_col
+        else:
+            book_col = values.index(GENLIN_BOOK_HEADER) if GENLIN_BOOK_HEADER in values else -1
+            physical_col = next(
+                (idx for idx, value in enumerate(values) if value.startswith(GENLIN_PHYSICAL_HEADER.split()[0])),
+                -1,
+            )
         if part_col < 0 or book_col < 0 or physical_col < 0:
             continue
         desc_col = next(
-            (idx for idx, value in enumerate(values) if value in {GENLIN_DESC_HEADER, "Parts No/Parts Description"}),
+            (
+                idx
+                for idx, value in enumerate(compact_values)
+                if value.lower()
+                in {_compact_header_text(GENLIN_DESC_HEADER).lower(), "partsno/partsdescription"}
+            ),
             -1,
         )
         return row_idx, {
@@ -199,6 +220,24 @@ def _parse_genlin_sheet(ws, header_row: int, columns: dict[str, int]) -> list[di
     return rows
 
 
+def _genlin_source_columns(columns: dict[str, int]) -> dict[str, str]:
+    return {
+        "book": get_column_letter(columns["book"] + 1),
+        "physical": get_column_letter(columns["physical"] + 1),
+    }
+
+
+def _build_genlin_assumptions(source_columns: dict[str, str]) -> list[str]:
+    book_column = source_columns.get("book") or "F"
+    physical_column = source_columns.get("physical") or "G"
+    return [
+        f"本試算讀取庚霖實際庫存格式：{book_column} 欄為我方帳面，{physical_column} 欄為庚霖實盤。",
+        f"停損點模式只分「無差異」與「停損吸收」；{book_column} 與 {physical_column} 的差額不再逐筆歸因。",
+        f"按下設為停損點後，系統會以庚霖實盤 {physical_column} 欄重設每個料號的 ST 庫存基準，差額自動寫入調帳紀錄。",
+        "報告最後的「未被盤點覆蓋」清單＝這段期間有不良品/多打扣帳、但不在盤點檔裡的料號（多為自備料）——這些料的帳沒有被實盤驗證，僅供你判斷是否請加工廠一併盤點。",
+    ]
+
+
 def parse_st_reconcile_file(path: str) -> dict[str, Any]:
     """解析盤點表；依表頭自動偵測辰尚舊格式或庚霖實際庫存格式。"""
     source_path = Path(path)
@@ -213,6 +252,7 @@ def parse_st_reconcile_file(path: str) -> dict[str, Any]:
             return {
                 "format": "genlin",
                 "sheet_name": ws.title.strip(),
+                "source_columns": _genlin_source_columns(columns),
                 "rows": parsed_rows,
                 "part_count": len(parsed_rows),
                 "manual_split_count": 0,
@@ -311,6 +351,8 @@ def _classify(diff: float, has_ours_event: bool, tol: float) -> str:
 
 
 def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_query: str, tol: float) -> dict[str, Any]:
+    source_columns = parsed.get("source_columns") or {"book": "F", "physical": "G"}
+    physical_column = source_columns.get("physical") or "G"
     part_numbers = [str(row.get("part_number") or "") for row in parsed["rows"] if row.get("part_number")]
     theoretical = theoretical_stock_with_details(cutoff_for_query, part_numbers=part_numbers)
     stock_by_part = theoretical.get("stock") or {}
@@ -351,7 +393,7 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
             book_vs_physical_diff = None
             diff = None
             category = CATEGORY_GENLIN_BLANK_PHYSICAL
-            notes = ["G 欄未填實盤，commit 時不更新 ST 庫存，也不建立停損點基準"]
+            notes = [f"{physical_column} 欄未填實盤，commit 時不更新 ST 庫存，也不建立停損點基準"]
         summary[category] = int(summary.get(category, 0)) + 1
         rows.append({
             "part_number": part,
@@ -379,6 +421,7 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
         "mode": "stop_loss",
         "cutoff_date": str(cutoff_date or "").strip(),
         "sheet_name": parsed["sheet_name"],
+        "source_columns": source_columns,
         "parts": rows,
         "summary": summary,
         "categories": {
@@ -390,7 +433,7 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
         },
         "uncovered_parts": uncovered_parts,
         "uncovered_window_start": window_start,
-        "assumptions": GENLIN_ASSUMPTIONS,
+        "assumptions": _build_genlin_assumptions(source_columns),
     }
 
 
@@ -549,9 +592,9 @@ def commit_st_reconcile_stop_loss(
         aligned_at=cutoff_for_anchor,
         source_filename=source_filename or Path(path).name,
         note=(
-            f"停損點模式：以庚霖實盤 G 欄重設 ST 庫存基準（截止批次 {cutoff_label}）"
+            f"停損點模式：以庚霖實盤 {preview['source_columns']['physical']} 欄重設 ST 庫存基準（截止批次 {cutoff_label}）"
             if cutoff_label
-            else "停損點模式：以庚霖實盤 G 欄重設 ST 庫存基準"
+            else f"停損點模式：以庚霖實盤 {preview['source_columns']['physical']} 欄重設 ST 庫存基準"
         ),
         parts=alignment_parts,
         adjustments=adjustments,
@@ -575,6 +618,7 @@ def commit_st_reconcile_stop_loss(
         "ok": True,
         "format": "genlin",
         "mode": "stop_loss",
+        "source_columns": preview.get("source_columns") or {"book": "F", "physical": "G"},
         "summary": summary,
         "preview_summary": preview.get("summary") or {},
         "parts": alignment_parts,

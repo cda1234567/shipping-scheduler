@@ -1140,6 +1140,9 @@ function renderStReconcilePreview(report) {
   const parts = report?.parts || [];
   const summary = report?.summary || {};
   const isStopLoss = report?.mode === "stop_loss";
+  const sourceColumns = report?.source_columns || {};
+  const bookColumn = String(sourceColumns.book || "F").trim() || "F";
+  const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";
   const summaryText = Object.entries(summary)
     .map(([key, value]) => `${key} ${value}`)
     .join("、");
@@ -1199,7 +1202,7 @@ function renderStReconcilePreview(report) {
               <th>料號</th>
               <th>說明</th>
               ${isStopLoss
-                ? "<th>我方帳面 F</th><th>庚霖實盤 G</th><th>系統理論值</th><th>F-G</th><th>分類</th>"
+                ? `<th>我方帳面 ${esc(bookColumn)}</th><th>庚霖實盤 ${esc(physicalColumn)}</th><th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th><th>分類</th>`
                 : "<th>實盤</th><th>系統理論值</th><th>差異</th><th>分類</th>"}
             </tr>
           </thead>
@@ -1267,9 +1270,12 @@ async function handleStReconcileCommit() {
     showToast("請至少勾選 1 支料號再建立停損點", { tone: "error" });
     return;
   }
+  const sourceColumns = _lastStReconcilePreview.source_columns || {};
+  const bookColumn = String(sourceColumns.book || "F").trim() || "F";
+  const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";
   const confirmed = confirm(
-    `這會把已勾選的 ${partCount} 支料號 ST 庫存基準改成庚霖實盤 G 欄數字。\n\n` +
-    "F 與 G 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。\n" +
+    `這會把已勾選的 ${partCount} 支料號 ST 庫存基準改成庚霖實盤 ${physicalColumn} 欄數字。\n\n` +
+    `${bookColumn} 與 ${physicalColumn} 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。\n` +
     "盤點日之後的扣帳與異動會保留，疊加在新基準上。要繼續嗎？"
   );
   if (!confirmed) return;

@@ -1195,3 +1195,16 @@ assert.equal(elements['btn-part-history'].disabled, false);
 
         self.assertIn(".app-readonly-chip", stylesheet)
         self.assertIn(".edit-auth-locked", stylesheet)
+
+    def test_st_reconcile_uses_reported_source_columns_in_preview_and_confirmation(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('const sourceColumns = report?.source_columns || {};', index_html)
+        self.assertIn('const sourceColumns = _lastStReconcilePreview.source_columns || {};', index_html)
+        self.assertIn('const bookColumn = String(sourceColumns.book || "F").trim() || "F";', index_html)
+        self.assertIn('const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";', index_html)
+        self.assertIn('我方帳面 ${esc(bookColumn)}', index_html)
+        self.assertIn('庚霖實盤 ${esc(physicalColumn)}', index_html)
+        self.assertIn('${esc(bookColumn)}-${esc(physicalColumn)}', index_html)
+        self.assertNotIn('庚霖實盤 G 欄數字', index_html)
