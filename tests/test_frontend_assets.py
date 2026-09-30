@@ -1294,22 +1294,41 @@ assert.equal(elements['btn-part-history'].disabled, false);
 
         self.assertIn('const unknownItems = items.filter(item => item.reason != null);', index_html)
         self.assertIn('const uncoveredItems = items.filter(item => item.reason == null);', index_html)
-        self.assertIn('盤點表有、但主檔找不到有效截止批次／目前結存，未納入本次對帳。', index_html)
-        self.assertIn('<td>${esc(Array.isArray(item.source_part_numbers)', index_html)
-        self.assertIn('item.source_part_numbers.join("、")', index_html)
+        self.assertIn('待確認料號（${unknownItems.length}', index_html)
+        self.assertIn('class="st-reconcile-mapping-card"', index_html)
+        self.assertIn('const extraSources = sourceParts.filter(', index_html)
+        self.assertIn('extraSources.join("、")', index_html)
+        self.assertIn('class="st-reconcile-mapping-quantity"><span>庚霖實盤</span>', index_html)
         self.assertIn('esc(formatReconcileQty(item.physical_qty))', index_html)
-        self.assertIn('esc(item.reason || "")', index_html)
+        self.assertIn('主檔找不到此料號，未納入對帳。', index_html)
+        self.assertIn('String(item.reason || "")', index_html)
+        self.assertIn('主檔結存需先確認，本次跳過。', index_html)
         self.assertIn('未被盤點覆蓋（${uncoveredItems.length}', index_html)
 
     def test_st_reconcile_manual_mapping_is_explicit_and_invalidates_preview(self):
         root = Path(__file__).resolve().parents[1]
         index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('suggestions.slice(0, 5)', index_html)
-        self.assertIn('item.can_map ? renderStReconcileMappingChoice', index_html)
+        self.assertIn('const canChoose = showMappingChoices && item.can_map;', index_html)
+        self.assertIn('canChoose ? renderStReconcileMappingChoice', index_html)
         self.assertIn('if (row.manual_mapping) return false;', index_html)
         self.assertIn('preserveMappings: true, preserveMappingControls: true', index_html)
         self.assertIn('if (child !== controls) child.remove();', index_html)
         self.assertIn('if (requestRevision !== _stReconcilePreviewRevision) return;', index_html)
         self.assertIn('const previewMappings = { ...(_lastStReconcilePreview.part_mappings || {}) };', index_html)
         self.assertIn('formData.append("part_mappings", JSON.stringify(previewMappings));', index_html)
-        self.assertIn('套用料號選擇並重新試算', index_html)
+        self.assertIn('重新試算選料', index_html)
+        self.assertIn('class="st-reconcile-mapping-stock">主檔 ', index_html)
+
+    def test_st_reconcile_mapping_layout_is_scoped_and_responsive(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        style_css = (root / "static" / "style.css").read_text(encoding="utf-8")
+        choice = index_html.split('function renderStReconcileMappingChoice(', 1)[1].split('function setStReconcilePartMapping(', 1)[0]
+        self.assertNotIn('defective-resolution-', choice)
+        self.assertIn('.st-reconcile-mapping-list {', style_css)
+        self.assertIn('max-height: 420px;', style_css)
+        self.assertIn('.st-reconcile-mapping-card {', style_css)
+        self.assertIn('grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr);', style_css)
+        self.assertIn('body.desktop-dark .st-reconcile-mapping-panel {', style_css)
+        self.assertIn('@media (max-width: 900px)', style_css)

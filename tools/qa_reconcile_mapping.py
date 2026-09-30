@@ -3,12 +3,87 @@ from __future__ import annotations
 
 import copy
 import re
+import subprocess
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def layout_report() -> dict:
+    examples = [
+        ("EXPRESS-ID7-D-1713NT/M8G-TAB", -233, [("EXPRESS-ID7-D-1713NT/M16G-TAB", -238)]),
+        ("GHR-04V-S-TAB", 24, [("PB-20134A-TAB", 490), ("PB-20140A-TAB", 45),
+                                ("PB-20141A-TAB", 937), ("PB-20142A-TAB", 448), ("PB-20143A-TAB", -4)]),
+        ("IC-ADM1032ARZ-1REEL-TAB", 2951, [("IC-ADM1032ARMZ-TAB", 2438), ("IC-APX809-TAB", 1569),
+                                            ("OC-10839B-TAB", 0), ("PB-20103A-TAB", 193), ("IC-ASM4064-TAB", 4824)]),
+        ("IC-APX809-29SAG-7-TAB", 1567, [("IC-APX809-29SAG-7", 1569)]),
+        ("IC-PMM-8620AU-0-TAB", 35, [("IC-PMM-8620AU-TAB", 70)]),
+        ("IC-SZESD7104MTWTAG-TAB", None, [("IC-SZESD7104MTWTAG", 0)]),
+    ]
+    return {"mode": "stop_loss", "cutoff_batch_code": "9-12", "count_date": "2026-09-23",
+            "preview_token": "layout-token", "part_mappings": {}, "parts": [], "uncovered_parts": [
+                {"part_number": source, "source_part_number": source, "source_part_numbers": [source],
+                 "physical_qty": quantity, "can_map": True,
+                 "reason": f"主檔找不到料號 {source}，可人工選擇正確料號後重新試算",
+                 "suggestions": [{"part_number": target, "stock_qty": stock} for target, stock in suggestions]}
+                for source, quantity, suggestions in examples]}
+
+
+def prepare_layout(page) -> None:
+    # 僅模擬主內容區的寬度與捲動環境；選料本身全部使用正式 CSS。
+    page.add_style_tag(content="""
+      body { display: block; overflow: auto; height: auto; padding: 16px; }
+      @media (min-width: 700px) { body { padding-left: 256px; } }
+      .st-reconcile-card > :not(#st-reconcile-result) { display: none !important; }
+      .st-reconcile-group > :not(.st-reconcile-mapping-panel) { display: none !important; }
+    """)
+
+
+def verify_layout(page, output: Path) -> None:
+    report = layout_report()
+    for theme in ("dark", "light"):
+        page.evaluate("theme => document.body.classList.toggle('desktop-dark', theme === 'dark')", theme)
+        for width in (1920, 1366, 900, 390):
+            page.set_viewport_size({"width": width, "height": 1000})
+            page.evaluate("report => mappingTest.render(report)", report)
+            expect(page.locator(".st-reconcile-mapping-card")).to_have_count(6)
+            expect(page.locator(".st-reconcile-mapping-quantity").first.locator("span")).to_have_text("庚霖實盤")
+            expect(page.locator(".st-reconcile-mapping-quantity").first.locator("strong")).to_have_text("-233")
+            expect(page.locator(".st-reconcile-mapping-quantity").last).to_contain_text("未填")
+            # 同一個來源不重複列出；數量、原因與選料各有獨立區域。
+            assert page.locator(".st-reconcile-mapping-card").first.inner_text().count("EXPRESS-ID7-D-1713NT/M8G-TAB") == 1
+            assert page.locator(".st-reconcile-mapping-note").first.inner_text() == "主檔找不到此料號，未納入對帳。"
+            assert page.locator(".st-reconcile-mapping-stock").first.inner_text() == "主檔 -238"
+            measurements = page.evaluate("""() => {
+              const list = document.querySelector('.st-reconcile-mapping-list');
+              const cards = [...list.querySelectorAll('.st-reconcile-mapping-card')];
+              return { overflow: list.scrollWidth > list.clientWidth + 1,
+                cardOverflow: cards.some(card => card.scrollWidth > card.clientWidth + 1),
+                pageOverflow: document.documentElement.scrollWidth > window.innerWidth,
+                visibleCards: cards.filter(card => card.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 1).length,
+                columns: getComputedStyle(cards[0]).gridTemplateColumns.split(' ').length,
+                inputWidth: cards[0].querySelector('input').getBoundingClientRect().width };
+            }""")
+            assert not measurements["overflow"], (theme, width, measurements)
+            assert not measurements["cardOverflow"], (theme, width, measurements)
+            assert not measurements["pageOverflow"], (theme, width, measurements)
+            assert measurements["inputWidth"] >= 180, (theme, width, measurements)
+            assert measurements["columns"] == (2 if width > 900 else 1), (theme, width, measurements)
+            if width == 1920:
+                assert measurements["visibleCards"] >= 4, (theme, width, measurements)
+            page.locator(".st-reconcile-mapping-panel").screenshot(path=str(output / f"after-{theme}-{width}.png"))
+    mapped = copy.deepcopy(report)
+    source = mapped["uncovered_parts"].pop(0)["part_number"]
+    mapped["part_mappings"] = {source: "EXPRESS-ID7-D-1713NT/M16G-TAB"}
+    page.set_viewport_size({"width": 1366, "height": 1000})
+    page.evaluate("document.body.classList.add('desktop-dark')")
+    page.evaluate("report => mappingTest.render(report)", mapped)
+    expect(page.locator(".st-reconcile-mapping-card.is-mapped")).to_contain_text(f"{source} → EXPRESS-ID7-D-1713NT/M16G-TAB")
+    page.locator(".st-reconcile-mapping-panel").screenshot(path=str(output / "after-mapped-dark-1366.png"))
+    print("PASS: 真實 CSS 深淺主題 1920/1366/900/390、長料號、負數/未填、無水平溢出、桌面可見至少 4 支。")
 
 
 def run() -> None:
@@ -127,6 +202,28 @@ window.mappingTest = {
             expect(page.locator("#btn-st-reconcile-commit")).to_be_enabled()
             assert not errors, errors
             print("PASS: 推薦上限、不自動選料、連續打字不失焦、選料重算、舊回應失效、人工料不預勾、提交同份 mapping/token、完成與換檔清除、日期相容。")
+            output = ROOT / ".omc/artifacts/reconcile-layout-2026-09-30"
+            output.mkdir(parents=True, exist_ok=True)
+            before_html = subprocess.check_output(["git", "show", "HEAD:static/index.html"], cwd=ROOT).decode("utf-8")
+            before_css = subprocess.check_output(["git", "show", "HEAD:static/style.css"], cwd=ROOT).decode("utf-8")
+            before_section = re.search(r'<section class="db-backup-card st-reconcile-card">.*?</section>', before_html, re.S)
+            assert before_section is not None
+            before_script = before_html.split("// ── ST reconcile", 1)[1].split("// ── Main file", 1)[0]
+            before_script = before_script.split("\n", 1)[1].replace("void loadStReconcileCutoffOptions().then(loadStInventoryCountSession);", "")
+            before = browser.new_page(viewport={"width": 1920, "height": 1000})
+            before.set_content(before_section.group(0))
+            before.add_style_tag(content=before_css)
+            before.add_script_tag(content=mock + before_script + hooks)
+            before.wait_for_load_state("networkidle")
+            prepare_layout(before)
+            before.evaluate("document.body.classList.add('desktop-dark')")
+            before.evaluate("report => mappingTest.render(report)", layout_report())
+            before.locator(".st-reconcile-mapping-panel").screenshot(path=str(output / "before-dark-1920.png"))
+            before.close()
+            prepare_layout(page)
+            verify_layout(page, output)
+            assert not errors, errors
+            print(f"Screenshots: {output}")
         finally:
             browser.close()
 

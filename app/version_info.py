@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.30.3"
+APP_VERSION = "v2026.09.30.4"
 APP_RELEASED_AT = "2026-09-30"
-APP_HEADLINE = "盤點料號推薦與人工選料"
+APP_HEADLINE = "盤點選料版面整理"
 APP_CHANGELOG = [
+    {
+        "title": "盤點選料版面",
+        "items": [
+            "找不到的料號改用清楚分區的卡片，實盤數量、選料輸入與相近推薦不再擠在同一張寬表裡。",
+            "相同來源料號不重複顯示；窄視窗自動分行，原有選料、重新試算與套用確認流程不變。",
+        ],
+    },
     {
         "title": "盤點料號推薦",
         "items": [
