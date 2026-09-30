@@ -114,7 +114,7 @@ async def preview_st_reconcile(
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
         raise HTTPException(400, "盤點對帳只支援 xlsx / xls / xlsm")
-    cutoff_text, _ = _resolve_cutoff(cutoff_date, cutoff_batch_code)
+    cutoff_text, batch_label = _resolve_cutoff(cutoff_date, cutoff_batch_code)
 
     content = await file.read(MAX_RECONCILE_UPLOAD_BYTES + 1)
     if len(content) > MAX_RECONCILE_UPLOAD_BYTES:
@@ -123,7 +123,8 @@ async def preview_st_reconcile(
     temp_path = RECONCILE_UPLOAD_DIR / f"preview_{uuid4().hex}{ext}"
     try:
         temp_path.write_bytes(content)
-        return build_st_reconcile_preview(str(temp_path), cutoff_text)
+        return build_st_reconcile_preview(str(temp_path), cutoff_text,
+                                          cutoff_batch_code=batch_label, source_filename=file.filename or '')
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except Exception as error:

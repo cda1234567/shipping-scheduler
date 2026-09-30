@@ -26,23 +26,7 @@ from app.services.st_reconcile import (
 
 
 class StReconcileParserTests(unittest.TestCase):
-    def test_parse_real_genlin_file_uses_detected_total_columns_and_strips_tab_suffix(self):
-        sample_path = Path("templates") / "庚霖實際庫存2026Q1_2026-6-29.xlsx"
-        if not sample_path.exists():
-            self.skipTest("本機實際庚霖盤點樣本未納入版本庫")
-
-        parsed = parse_st_reconcile_file(str(sample_path))
-
-        self.assertEqual(parsed["format"], "genlin")
-        self.assertEqual(parsed["sheet_name"], "實際庫存-生產結餘")
-        self.assertEqual(parsed["source_columns"], {"book": "AB", "physical": "AA"})
-        rows = {row["part_number"]: row for row in parsed["rows"]}
-        self.assertIn("OC-10935B", rows)
-        self.assertNotIn("OC-10935B-TAB", rows)
-        self.assertEqual(rows["OC-10935B"]["book_qty"], 8787)
-        self.assertEqual(rows["OC-10935B"]["physical_qty"], 8787)
-
-    def test_parse_total_format_prefers_uv_ignores_y_and_combines_duplicate_parts(self):
+    def test_parse_detail_format_prefers_fg_and_combines_exact_duplicate_parts(self):
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / "total-format.xlsx"
             wb = Workbook()
@@ -89,21 +73,25 @@ class StReconcileParserTests(unittest.TestCase):
             ), patch(
                 "app.services.st_reconcile.db.get_defective_part_totals",
                 return_value=[],
+            ), patch(
+                "app.services.st_reconcile.db.get_st_inventory_stock", return_value={},
+            ), patch(
+                "app.services.st_reconcile.db.get_setting", return_value='',
             ):
                 preview = build_st_reconcile_preview(str(path), "2026-09-23")
 
-        self.assertEqual(parsed["source_columns"], {"book": "V", "physical": "U"})
+        self.assertEqual(parsed["source_columns"], {"book": "F", "physical": "G"})
         self.assertEqual(len(parsed["rows"]), 2)
-        self.assertEqual(parsed["rows"][0]["part_number"], "PART-1")
-        self.assertEqual(parsed["rows"][0]["book_qty"], 15)
-        self.assertEqual(parsed["rows"][0]["physical_qty"], 12)
-        self.assertEqual(parsed["rows"][1]["book_qty"], -1)
-        self.assertEqual(parsed["rows"][1]["physical_qty"], -2)
-        self.assertEqual(preview["source_columns"], {"book": "V", "physical": "U"})
-        self.assertEqual(preview["parts"][0]["book_qty"], 14)
-        self.assertEqual(preview["parts"][0]["physical_qty"], 10)
-        self.assertEqual(preview["parts"][0]["book_vs_physical_diff"], 4)
-        self.assertIn("V 欄為我方帳面，U 欄為庚霖實盤", preview["assumptions"][0])
+        self.assertEqual(parsed["rows"][0]["part_number"], "PART-1-TAB")
+        self.assertEqual(parsed["rows"][0]["book_qty"], 900)
+        self.assertEqual(parsed["rows"][0]["physical_qty"], 800)
+        self.assertEqual(parsed["rows"][1]["book_qty"], 90)
+        self.assertEqual(parsed["rows"][1]["physical_qty"], 80)
+        self.assertEqual(preview["source_columns"], {"book": "F", "physical": "G"})
+        self.assertEqual(preview["parts"][0]["book_qty"], 990)
+        self.assertEqual(preview["parts"][0]["physical_qty"], 880)
+        self.assertEqual(preview["parts"][0]["book_vs_physical_diff"], 110)
+        self.assertIn("F 欄為我方帳面，G 欄為庚霖實盤", preview["assumptions"][0])
 
     def test_parse_legacy_format_keeps_fg_with_short_and_multiline_headers(self):
         with TemporaryDirectory() as tmp:
@@ -128,7 +116,7 @@ class StReconcileParserTests(unittest.TestCase):
 
         self.assertEqual(parsed["source_columns"], {"book": "F", "physical": "G"})
         self.assertEqual(parsed["part_count"], 1)
-        self.assertEqual(parsed["rows"][0]["part_number"], "LEGACY")
+        self.assertEqual(parsed["rows"][0]["part_number"], "LEGACY-TAB")
         self.assertEqual(parsed["rows"][0]["book_qty"], 30)
         self.assertEqual(parsed["rows"][0]["physical_qty"], 25)
 
@@ -457,10 +445,19 @@ class StReconcileCommitTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             path = self._make_genlin_file(tmp, physical_qty=68, book_qty=70)
+            wb = Workbook()
+            ws = wb.active
+            ws.append(['料號', '廠商', 'MOQ', '6-1', None, None, '6-2', None, None])
+            ws.append(['PART-1', '', 1000, 0, 30, 70, 0, 20, 50])
+            main_path = Path(tmp) / 'main.xlsx'
+            wb.save(main_path)
+            wb.close()
+            db.set_setting('main_file_path', str(main_path))
+            db.start_inventory_count_session(cutoff_at=resolved['cutoff_at'], cutoff_code='6-1')
             result = commit_st_reconcile_stop_loss(
                 path,
                 resolved["cutoff_at"],
-                source_filename="batch-cutoff.xlsx",
+                source_filename="batch-cutoff_2026-06-29.xlsx",
                 cutoff_label=resolved["code"],
             )
 

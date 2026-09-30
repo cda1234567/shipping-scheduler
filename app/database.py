@@ -1299,6 +1299,8 @@ def mark_inventory_history_absorbed(
     alignment_id: int,
     cutoff_at: str,
     part_numbers: list[str],
+    *,
+    defective_record_ids: list[int] | None = None,
 ) -> dict[str, int]:
     """將已完成且落在盤點切點前的異動封存；未完成缺料不會被吸收。"""
     parts = list(dict.fromkeys(
@@ -1310,11 +1312,21 @@ def mark_inventory_history_absorbed(
         return {"defective_records": 0, "supplements": 0}
     placeholders = ",".join("?" * len(parts))
     with get_conn() as conn:
-        defective = conn.execute(
-            f"UPDATE defective_records SET absorbed_by_alignment_id=? "
-            f"WHERE absorbed_by_alignment_id=0 AND created_at<=? AND UPPER(TRIM(part_number)) IN ({placeholders})",
-            [int(alignment_id), str(cutoff_at or "")] + parts,
-        )
+        if defective_record_ids is None:
+            defective = conn.execute(
+                f"UPDATE defective_records SET absorbed_by_alignment_id=? "
+                f"WHERE absorbed_by_alignment_id=0 AND created_at<=? AND UPPER(TRIM(part_number)) IN ({placeholders})",
+                [int(alignment_id), str(cutoff_at or "")] + parts,
+            )
+        else:
+            ids = list(dict.fromkeys(int(value) for value in defective_record_ids))
+            id_placeholders = ','.join('?' for _ in ids) or 'NULL'
+            defective = conn.execute(
+                f"UPDATE defective_records SET absorbed_by_alignment_id=? "
+                f"WHERE absorbed_by_alignment_id=0 AND id IN ({id_placeholders}) "
+                f"AND UPPER(TRIM(part_number)) IN ({placeholders})",
+                [int(alignment_id)] + ids + parts,
+            )
         supplements = conn.execute(
             f"UPDATE order_supplements SET absorbed_by_alignment_id=? "
             f"WHERE absorbed_by_alignment_id=0 AND updated_at<=? "
@@ -1367,6 +1379,24 @@ def get_defective_part_totals(cutoff_at: str, after_at: str = "") -> list[dict]:
     ]
 
 
+def get_defective_interval_parts(cutoff_at: str, count_at: str) -> dict[str, dict]:
+    """盤點日期內有效扣帳；含已吸收列，讓同一盤點重算結果保持一致。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, part_number, defective_qty FROM defective_records "
+            "WHERE created_at>? AND created_at<=? AND status IN ('open','confirmed','closed') "
+            "AND defective_qty>0 ORDER BY id",
+            (cutoff_at, count_at),
+        ).fetchall()
+    result: dict[str, dict] = {}
+    for row in rows:
+        part = str(row['part_number'] or '').strip().upper()
+        item = result.setdefault(part, {'defect_delta': 0.0, 'defective_record_ids': []})
+        item['defect_delta'] -= float(row['defective_qty'])
+        item['defective_record_ids'].append(int(row['id']))
+    return result
+
+
 def create_st_reconcile_alignment(
     *,
     aligned_at: str,
@@ -1411,7 +1441,7 @@ def create_st_reconcile_alignment(
                     float(row.get("physical_qty") or row.get("physical") or 0),
                     float(row.get("diff") or 0),
                     str(row.get("category") or ""),
-                    float(row.get("aligned_qty") or row.get("physical_qty") or row.get("physical") or 0),
+                    float(row["aligned_qty"] if row.get("aligned_qty") is not None else row.get("physical_qty") or row.get("physical") or 0),
                 ),
             )
         for row in adjustments or []:

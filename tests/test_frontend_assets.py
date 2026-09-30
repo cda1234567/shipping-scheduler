@@ -1204,7 +1204,42 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('const sourceColumns = _lastStReconcilePreview.source_columns || {};', index_html)
         self.assertIn('const bookColumn = String(sourceColumns.book || "F").trim() || "F";', index_html)
         self.assertIn('const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";', index_html)
-        self.assertIn('我方帳面 ${esc(bookColumn)}', index_html)
+        self.assertIn('帳面／辰尚 ${esc(bookColumn)}', index_html)
         self.assertIn('庚霖實盤 ${esc(physicalColumn)}', index_html)
         self.assertIn('${esc(bookColumn)}-${esc(physicalColumn)}', index_html)
+        self.assertIn(': `<th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th>`', index_html)
+        self.assertNotIn(': "<th>系統理論值</th><th>${esc(bookColumn)}', index_html)
         self.assertNotIn('庚霖實盤 G 欄數字', index_html)
+
+    def test_st_reconcile_preview_shows_detected_count_date_and_ledger(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('const countDate = String(report?.count_date || "").trim();', index_html)
+        self.assertIn('自動辨識盤點日期 ${esc(countDate)}', index_html)
+        self.assertIn('row.cutoff_main', index_html)
+        self.assertIn('row.defect_delta', index_html)
+        self.assertIn('row.expected_count', index_html)
+        self.assertIn('row.preserved_delta', index_html)
+        self.assertIn('row.current_main', index_html)
+        self.assertIn('row.target_current', index_html)
+        self.assertIn('Number(row.physical_qty) - Number(row.expected_count)', index_html)
+        self.assertIn('截止批次 ${esc(report.cutoff_batch_code)}', index_html)
+        self.assertIn('const cutoffBatch = String(_lastStReconcilePreview.cutoff_batch_code || "").trim();', index_html)
+        self.assertIn('截止批次結存 ${total("cutoff_main")}', index_html)
+        self.assertIn('截止批次結存 + 已含不良 = 預期盤點；實盤差異；保留後續批次；目前目標', index_html)
+        self.assertIn('共 ${parts.length} 料${countDate', index_html)
+        self.assertIn('${esc(summaryText)}', index_html)
+
+    def test_st_reconcile_uncovered_displays_unknown_main_parts_separately(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('const unknownItems = items.filter(item => item.reason != null);', index_html)
+        self.assertIn('const uncoveredItems = items.filter(item => item.reason == null);', index_html)
+        self.assertIn('盤點表有、但主檔找不到有效截止批次／目前結存，未納入本次對帳。', index_html)
+        self.assertIn('<td>${esc(Array.isArray(item.source_part_numbers)', index_html)
+        self.assertIn('item.source_part_numbers.join("、")', index_html)
+        self.assertIn('esc(formatReconcileQty(item.physical_qty))', index_html)
+        self.assertIn('esc(item.reason || "")', index_html)
+        self.assertIn('未被盤點覆蓋（${uncoveredItems.length}', index_html)

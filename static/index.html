@@ -413,7 +413,7 @@
           <div class="db-backup-list-header">
             <div>
               <div class="db-backup-modal-title">盤點對帳（試算）</div>
-              <div class="desktop-status-meta">上傳加工廠盤點表並選擇截止日，只產生唯讀對帳報告。</div>
+              <div class="desktop-status-meta">上傳加工廠盤點表並選擇截止批次，盤點日期由表格自動辨識，先產生唯讀對帳報告。</div>
             </div>
           </div>
           <div class="st-reconcile-form">
@@ -1064,25 +1064,46 @@ function formatReconcileQty(value) {
 function renderStReconcileUncovered(report) {
   const items = report?.uncovered_parts || [];
   if (!items.length) return "";
-  const windowStart = String(report?.uncovered_window_start || "").replace("T", " ").slice(0, 16);
-  const rows = items.map(item => `
+  const unknownItems = items.filter(item => item.reason != null);
+  const uncoveredItems = items.filter(item => item.reason == null);
+  const unknownRows = unknownItems.map(item => `
     <tr>
       <td>${esc(item.part_number || "")}</td>
-      <td class="num">${formatReconcileQty(item.total_qty)}</td>
+      <td>${esc(Array.isArray(item.source_part_numbers) ? item.source_part_numbers.join("、") : String(item.source_part_numbers || ""))}</td>
+      <td class="num">${item.physical_qty == null ? "未填" : esc(formatReconcileQty(item.physical_qty))}</td>
+      <td>${esc(item.reason || "")}</td>
+    </tr>`).join("");
+  const windowStart = String(report?.uncovered_window_start || "").replace("T", " ").slice(0, 16);
+  const rows = uncoveredItems.map(item => `
+    <tr>
+      <td>${esc(item.part_number || "")}</td>
+      <td class="num">${esc(formatReconcileQty(item.total_qty))}</td>
       <td class="num">${esc(String(item.record_count || 0))}</td>
       <td>${esc(String(item.last_at || "").replace("T", " ").slice(0, 16))}</td>
     </tr>`).join("");
   return `
+    ${unknownItems.length ? `
     <div class="st-reconcile-group-head" style="margin-top:14px">
-      <h4>⚠ 未被盤點覆蓋（${items.length} 支，多為自備料）</h4>
-      <span class="desktop-status-meta">${windowStart ? `自上次停損（${windowStart}）以來` : "本期間"}有不良品/多打扣帳、但不在這份盤點檔裡——這些料的帳沒有被實盤驗證。</span>
+      <h4>⚠ 主檔無有效結存（${unknownItems.length} 支）</h4>
+      <span class="desktop-status-meta">盤點表有、但主檔找不到有效截止批次／目前結存，未納入本次對帳。</span>
+    </div>
+    <div class="st-reconcile-table-wrap">
+      <table class="st-reconcile-table">
+        <thead><tr><th>料號</th><th>來源料號</th><th>庚霖實盤</th><th>原因</th></tr></thead>
+        <tbody>${unknownRows}</tbody>
+      </table>
+    </div>` : ""}
+    ${uncoveredItems.length ? `
+    <div class="st-reconcile-group-head" style="margin-top:14px">
+      <h4>⚠ 未被盤點覆蓋（${uncoveredItems.length} 支，多為自備料）</h4>
+      <span class="desktop-status-meta">${windowStart ? `自上次停損（${esc(windowStart)}）以來` : "本期間"}有不良品/多打扣帳、但不在這份盤點檔裡——這些料的帳沒有被實盤驗證。</span>
     </div>
     <div class="st-reconcile-table-wrap">
       <table class="st-reconcile-table">
         <thead><tr><th>料號</th><th>期間扣帳量</th><th>單數</th><th>最後一筆</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>`;
+    </div>` : ""}`;
 }
 
 function renderStReconcileAssumptions(items = []) {
@@ -1143,18 +1164,31 @@ function renderStReconcilePreview(report) {
   const sourceColumns = report?.source_columns || {};
   const bookColumn = String(sourceColumns.book || "F").trim() || "F";
   const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";
+  const countDate = String(report?.count_date || "").trim();
+  const hasLedger = isStopLoss && parts.some(row => row.cutoff_main != null || row.target_current != null);
   const summaryText = Object.entries(summary)
     .map(([key, value]) => `${key} ${value}`)
     .join("、");
 
   const rows = parts.map(row => {
-    const diffClass = Number(row.book_vs_physical_diff ?? row.diff ?? 0) < 0
+    const countDiff = hasLedger && row.physical_qty != null && row.expected_count != null
+      ? Number(row.physical_qty) - Number(row.expected_count)
+      : row.book_vs_physical_diff ?? row.diff;
+    const diffClass = Number(countDiff ?? 0) < 0
       ? "is-negative"
-      : Number(row.book_vs_physical_diff ?? row.diff ?? 0) > 0
+      : Number(countDiff ?? 0) > 0
         ? "is-positive"
         : "";
     if (isStopLoss) {
       const selectable = isSelectableStReconcilePart(row);
+      const ledgerCells = hasLedger ? `
+          <td class="num">${row.cutoff_main == null ? "—" : formatReconcileQty(row.cutoff_main)}</td>
+          <td class="num">${row.defect_delta == null ? "—" : formatReconcileQty(row.defect_delta)}</td>
+          <td class="num">${row.expected_count == null ? "—" : formatReconcileQty(row.expected_count)}</td>
+          <td class="num">${row.preserved_delta == null ? "—" : formatReconcileQty(row.preserved_delta)}</td>
+          <td class="num">${row.current_main == null ? "—" : formatReconcileQty(row.current_main)}</td>
+          <td class="num">${row.target_current == null ? "—" : formatReconcileQty(row.target_current)}</td>` : `
+          <td class="num">${formatReconcileQty(row.theoretical)}</td>`;
       return `
         <tr>
           <td>
@@ -1166,8 +1200,8 @@ function renderStReconcilePreview(report) {
           <td>${esc(row.description || "")}</td>
           <td class="num">${formatReconcileQty(row.book_qty)}</td>
           <td class="num">${formatReconcileQty(row.physical_qty)}</td>
-          <td class="num">${formatReconcileQty(row.theoretical)}</td>
-          <td class="num ${diffClass}">${formatReconcileQty(row.book_vs_physical_diff)}</td>
+          ${ledgerCells}
+          <td class="num ${diffClass}">${countDiff == null ? "—" : formatReconcileQty(countDiff)}</td>
           <td>${esc(row.category || "")}</td>
         </tr>`;
     }
@@ -1186,8 +1220,9 @@ function renderStReconcilePreview(report) {
     <div class="st-reconcile-group">
       <div class="st-reconcile-group-head">
         <h4>${isStopLoss ? "庚霖停損點試算" : "盤點對帳試算"}</h4>
-        <span class="desktop-status-meta">${esc(report?.sheet_name || "")}，共 ${parts.length} 料；${esc(summaryText)}</span>
+        <span class="desktop-status-meta">${esc(report?.sheet_name || "")}，共 ${parts.length} 料${countDate ? `；自動辨識盤點日期 ${esc(countDate)}` : ""}${report?.cutoff_batch_code ? `；截止批次 ${esc(report.cutoff_batch_code)}` : ""}；${esc(summaryText)}</span>
       </div>
+      ${hasLedger ? '<div class="desktop-status-meta">截止批次結存 + 已含不良 = 預期盤點；實盤差異；保留後續批次；目前目標</div>' : ""}
       ${isStopLoss ? `
         <div class="st-reconcile-commit-row">
           <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-select-all" type="button">全選</button>
@@ -1202,11 +1237,11 @@ function renderStReconcilePreview(report) {
               <th>料號</th>
               <th>說明</th>
               ${isStopLoss
-                ? `<th>我方帳面 ${esc(bookColumn)}</th><th>庚霖實盤 ${esc(physicalColumn)}</th><th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th><th>分類</th>`
+                ? `<th>帳面／辰尚 ${esc(bookColumn)}</th><th>庚霖實盤 ${esc(physicalColumn)}</th>${hasLedger ? "<th>截止批次結存</th><th>已含不良</th><th>預期盤點</th><th>保留後續批次</th><th>目前主檔</th><th>目前目標</th><th>實盤差異</th>" : `<th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th>`}<th>分類</th>`
                 : "<th>實盤</th><th>系統理論值</th><th>差異</th><th>分類</th>"}
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="${isStopLoss ? 8 : 6}">沒有可試算的料號。</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="${isStopLoss ? (hasLedger ? 13 : 8) : 6}">沒有可試算的料號。</td></tr>`}</tbody>
         </table>
       </div>
       ${renderStReconcileUncovered(report)}
@@ -1273,10 +1308,20 @@ async function handleStReconcileCommit() {
   const sourceColumns = _lastStReconcilePreview.source_columns || {};
   const bookColumn = String(sourceColumns.book || "F").trim() || "F";
   const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";
+  const countDate = String(_lastStReconcilePreview.count_date || "").trim();
+  const cutoffBatch = String(_lastStReconcilePreview.cutoff_batch_code || "").trim();
+  const selectedRows = (_lastStReconcilePreview.parts || []).filter(row => selectedParts.includes(String(row.part_number || "").trim().toUpperCase()));
+  const hasLedger = selectedRows.length === partCount && selectedRows.every(row =>
+    ["cutoff_main", "defect_delta", "expected_count", "physical_qty", "preserved_delta", "current_main", "target_current"]
+      .every(key => row[key] != null && Number.isFinite(Number(row[key]))));
+  const total = key => formatReconcileQty(selectedRows.reduce((sum, row) => sum + Number(row[key]), 0));
+  const countDiff = formatReconcileQty(selectedRows.reduce((sum, row) => sum + Number(row.physical_qty) - Number(row.expected_count), 0));
   const confirmed = confirm(
-    `這會把已勾選的 ${partCount} 支料號 ST 庫存基準改成庚霖實盤 ${physicalColumn} 欄數字。\n\n` +
-    `${bookColumn} 與 ${physicalColumn} 的差額會自動吸收並留下調帳紀錄；之後理論庫存會從這次盤點數字重新起算。\n` +
-    "盤點日之後的扣帳與異動會保留，疊加在新基準上。要繼續嗎？"
+    `這會以${countDate ? ` ${countDate} ` : ""}盤點結果，調整已勾選的 ${partCount} 支料號${cutoffBatch ? `（截止批次 ${cutoffBatch}）` : ""}。${bookColumn} 欄是帳面／辰尚，${physicalColumn} 欄是庚霖實盤。\n\n` +
+    (hasLedger
+      ? `截止批次結存 ${total("cutoff_main")} + 已含不良 ${total("defect_delta")} = 預期盤點 ${total("expected_count")}；實盤差異 ${countDiff}；保留後續批次 ${total("preserved_delta")}；目前主檔 ${total("current_main")} → 目前目標 ${total("target_current")}。\n`
+      : "截止批次結存 + 已含不良 = 預期盤點；實盤差異會留下調帳紀錄；保留後續批次後，寫入目前目標庫存。\n") +
+    "要繼續嗎？"
   );
   if (!confirmed) return;
 

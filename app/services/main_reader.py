@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import openpyxl
 
@@ -87,6 +88,56 @@ def read_stock(path: str) -> dict[str, float]:
 
     wb.close()
     return result
+
+
+def read_batch_stock(path: str, batch_code: str) -> dict[str, dict[str, float]]:
+    """唯讀取得各料指定批次與現在結存，不把補料、用量或 MOQ 當庫存。"""
+    wb = open_workbook_any(path, read_only=True, data_only=True)
+    try:
+        ws = wb.worksheets[0]
+        headers = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+        batch_ends = []
+        balance_cols = {7}  # 歷史主檔起始盤點 H 欄（0-based）
+        input_cols = set()
+        for idx, value in enumerate(headers):
+            header = str(value or '').strip()
+            if re.fullmatch(r'\d+-\d+', header):
+                balance_cols.add(idx + 2)
+                input_cols.update((idx, idx + 1))
+                if header == batch_code:
+                    batch_ends.append(idx + 2)
+            elif any(word in header for word in ('扣帳', '回復', '恢復')):
+                next_header = str(headers[idx + 1] or '').strip() if idx + 1 < len(headers) else ''
+                end = idx + (2 if next_header in {'使用數量', '扣帳數量', '用量'} else 1)
+                balance_cols.add(end)
+                input_cols.update(range(idx, end))
+            elif any(word in header for word in ('結存', '結餘', '盤點', '庫存')):
+                balance_cols.add(idx)
+        if not batch_ends:
+            raise ValueError(f'主檔找不到截止批次 {batch_code}')
+        # 空白批次碼的歷史三欄組仍有 row 1 結存表頭；不猜測任意數值欄。
+        balance_cols.difference_update(input_cols)
+        cutoff_boundary = max(batch_ends)
+        result = {}
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            part = str(row[_part_col()] or '').strip().upper()
+            if not part:
+                continue
+            def latest(columns):
+                for col in sorted(columns, reverse=True):
+                    value = _try_float(row[col]) if col < len(row) else None
+                    if value is not None:
+                        return value
+                return None
+            cutoff = latest(batch_ends)
+            if cutoff is None:
+                cutoff = latest(col for col in balance_cols if col <= cutoff_boundary)
+            current = latest(balance_cols)
+            if cutoff is not None and current is not None:
+                result[part] = {'cutoff_main': cutoff, 'current_main': current}
+        return result
+    finally:
+        wb.close()
 
 
 def read_vendors(path: str) -> dict[str, str]:

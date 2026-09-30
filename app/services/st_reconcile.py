@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import date
+import json
 from pathlib import Path
+import re
 from typing import Any
 
 from openpyxl.utils import get_column_letter
@@ -11,6 +14,7 @@ from app import database as db
 from app.constants import ST_RECONCILE_ADJUSTMENT_REASON
 
 from .reconcile_core import theoretical_stock_with_details
+from .main_reader import read_batch_stock, read_stock
 from .xls_reader import open_workbook_any
 
 CUSTOMER_HEADER = "客戶編號"
@@ -55,10 +59,25 @@ def _normalize_part(value: Any) -> str:
 
 
 def _normalize_genlin_part(value: Any) -> str:
-    text = _normalize_part(value)
-    if text.endswith("-TAB"):
-        text = text[:-4]
-    return text.strip().upper()
+    return _normalize_part(value)
+
+
+def _resolve_part(part: str, available: set[str]) -> str:
+    if part in available:
+        return part
+    alias = part[:-4] if part.endswith('-TAB') else part + '-TAB'
+    return alias if alias in available else part
+
+
+def _detect_count_date(ws, header_row: int, filename: str) -> str:
+    titles = [str(cell or '') for row in ws.iter_rows(min_row=1, max_row=max(1, header_row - 1), values_only=True) for cell in row]
+    for text in titles + [filename]:
+        for match in re.finditer(r'(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)', text):
+            try:
+                return date(*(int(value) for value in match.groups())).isoformat()
+            except ValueError:
+                continue
+    return ''
 
 
 def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
@@ -121,15 +140,17 @@ def _find_genlin_header_row(ws) -> tuple[int, dict[str, int]]:
             (idx for idx, value in enumerate(compact_values) if value.startswith(GENLIN_PRODUCTION_BOOK_HEADER)),
             -1,
         )
-        if total_physical_col >= 0 and production_book_col >= 0:
-            book_col = production_book_col
-            physical_col = total_physical_col
-        else:
-            book_col = values.index(GENLIN_BOOK_HEADER) if GENLIN_BOOK_HEADER in values else -1
-            physical_col = next(
-                (idx for idx, value in enumerate(values) if value.startswith(GENLIN_PHYSICAL_HEADER.split()[0])),
-                -1,
-            )
+        book_col = values.index(GENLIN_BOOK_HEADER) if GENLIN_BOOK_HEADER in values else -1
+        physical_col = next(
+            (idx for idx, value in enumerate(values) if value.startswith(GENLIN_PHYSICAL_HEADER.split()[0])),
+            -1,
+        )
+        has_detail = book_col >= 0 and physical_col >= 0 and any(
+            _cell(data_row, part_col) and any(_cell(data_row, col) not in (None, '') for col in (book_col, physical_col))
+            for data_row in ws.iter_rows(min_row=row_idx + 2, values_only=True)
+        )
+        if not has_detail and total_physical_col >= 0 and production_book_col >= 0:
+            book_col, physical_col = production_book_col, total_physical_col
         if part_col < 0 or book_col < 0 or physical_col < 0:
             continue
         desc_col = next(
@@ -253,6 +274,7 @@ def parse_st_reconcile_file(path: str) -> dict[str, Any]:
                 "format": "genlin",
                 "sheet_name": ws.title.strip(),
                 "source_columns": _genlin_source_columns(columns),
+                "count_date": _detect_count_date(ws, header_row, source_path.name),
                 "rows": parsed_rows,
                 "part_count": len(parsed_rows),
                 "manual_split_count": 0,
@@ -353,6 +375,11 @@ def _classify(diff: float, has_ours_event: bool, tol: float) -> str:
 def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_query: str, tol: float) -> dict[str, Any]:
     source_columns = parsed.get("source_columns") or {"book": "F", "physical": "G"}
     physical_column = source_columns.get("physical") or "G"
+    available = set(db.get_st_inventory_stock())
+    main_path = db.get_setting('main_file_path')
+    if main_path and Path(main_path).is_file():
+        available.update(read_stock(main_path))
+    parsed = dict(parsed, rows=[dict(row, part_number=_resolve_part(_normalize_part(row['part_number']), available)) for row in parsed['rows']])
     part_numbers = [str(row.get("part_number") or "") for row in parsed["rows"] if row.get("part_number")]
     theoretical = theoretical_stock_with_details(cutoff_for_query, part_numbers=part_numbers)
     stock_by_part = theoretical.get("stock") or {}
@@ -437,11 +464,75 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
     }
 
 
-def build_st_reconcile_preview(path: str, cutoff_date: str, *, tol: float = 1e-6) -> dict[str, Any]:
+def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, source_filename: str, tol: float) -> dict:
+    count_date = parsed.get('count_date') or ''
+    if not count_date and source_filename:
+        for match in re.finditer(r'(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)', source_filename):
+            try:
+                count_date = date(*(int(value) for value in match.groups())).isoformat()
+                break
+            except ValueError:
+                continue
+    if not count_date:
+        raise ValueError('找不到盤點日期，請在盤點表標題或檔名加入 YYYY-MM-DD 日期')
+    count_at = count_date + 'T23:59:59.999999'
+    if count_at < cutoff_at:
+        raise ValueError('盤點日期不可早於截止批次')
+    main_path = db.get_setting('main_file_path')
+    if not main_path or not Path(main_path).is_file():
+        raise ValueError('找不到目前主檔，無法取得截止批次結存')
+    stocks = read_batch_stock(main_path, batch_code)
+    available = set(read_stock(main_path)) | set(db.get_st_inventory_stock())
+    defects = db.get_defective_interval_parts(cutoff_at, count_at)
+    combined = {}
+    for source_row in parsed['rows']:
+        source_part = _normalize_part(source_row['part_number'])
+        part = _resolve_part(source_part, available)
+        row = combined.setdefault(part, dict(part_number=part, source_part_numbers=[], description=source_row.get('description') or '', book_qty=0.0, physical_qty=None))
+        if source_part not in row['source_part_numbers']:
+            row['source_part_numbers'].append(source_part)
+        row['book_qty'] += float(source_row.get('book_qty') or 0)
+        if source_row.get('physical_qty') is not None:
+            row['physical_qty'] = float(row['physical_qty'] or 0) + float(source_row['physical_qty'])
+    rows = []
+    uncovered = []
+    summary = _build_genlin_summary()
+    for part, row in sorted(combined.items()):
+        if part not in stocks:
+            uncovered.append(dict(row, reason=f'主檔找不到料號 {part} 的有效截止批次或目前結存，無法對帳'))
+            continue
+        row.update(stocks[part])
+        row.update(defects.get(part, {'defect_delta': 0.0, 'defective_record_ids': []}))
+        row['expected_count'] = round(row['cutoff_main'] + row['defect_delta'], 6)
+        row['theoretical'] = row['expected_count']
+        row['preserved_delta'] = round(row['current_main'] - row['expected_count'], 6)
+        physical = row['physical_qty']
+        row['diff'] = round(physical - row['expected_count'], 6) if physical is not None else None
+        row['target_current'] = round(physical + row['preserved_delta'], 6) if physical is not None else None
+        row['book_vs_physical_diff'] = round(row['book_qty'] - physical, 6) if physical is not None else None
+        row['category'] = CATEGORY_GENLIN_BLANK_PHYSICAL if physical is None else CATEGORY_MATCHED if abs(row['diff']) <= tol else CATEGORY_STOP_LOSS
+        row['notes'] = ['後續批次異動保留，現在庫存以主檔結存重算']
+        summary[row['category']] += 1
+        rows.append(row)
+    return dict(format='genlin', mode='stop_loss', cutoff_date=cutoff_at, cutoff_batch_code=batch_code,
+                count_date=count_date, sheet_name=parsed['sheet_name'], source_columns=parsed['source_columns'],
+                parts=rows, summary=summary, categories={key: [row for row in rows if row['category'] == key] for key in summary},
+                uncovered_parts=uncovered, assumptions=[
+                    _build_genlin_assumptions(parsed['source_columns'])[0],
+                    f'盤點日期 {count_date}；預期實盤＝主檔截止批次 {batch_code} 結存－截止後至盤點日不良扣帳。',
+                    '後續批次異動保留；現在目標＝實盤＋主檔目前結存－預期實盤。只更新勾選料號。',
+                    '提交時重讀主檔與不良明細；對齊基準使用盤點鎖定時間與現在目標。',
+                ])
+
+
+def build_st_reconcile_preview(path: str, cutoff_date: str, *, tol: float = 1e-6,
+                               cutoff_batch_code: str = '', source_filename: str = '') -> dict[str, Any]:
     parsed = parse_st_reconcile_file(path)
     part_numbers = [str(row.get("part_number") or "") for row in parsed["rows"] if row.get("part_number")]
     cutoff_for_query = _normalize_cutoff_for_query(cutoff_date)
     if parsed.get("format") == "genlin":
+        if cutoff_batch_code:
+            return _build_batch_genlin_preview(parsed, cutoff_for_query, cutoff_batch_code, source_filename, tol)
         return _build_genlin_preview(parsed, cutoff_date, cutoff_for_query, tol)
 
     theoretical = theoretical_stock_with_details(cutoff_for_query, part_numbers=part_numbers)
@@ -520,6 +611,47 @@ def build_st_reconcile_preview(path: str, cutoff_date: str, *, tol: float = 1e-6
     }
 
 
+def _commit_batch_genlin(preview: dict, cutoff_at: str, source_filename: str,
+                         selected_parts: list[str] | None) -> dict:
+    session = db.get_active_inventory_count_session('st')
+    if not session or session['cutoff_at'] != cutoff_at or session['cutoff_code'] != preview['cutoff_batch_code']:
+        raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
+    rows = {row['part_number']: row for row in preview['parts']}
+    invalid_parts = sorted(set(selected_parts or []) - set(rows))
+    if invalid_parts:
+        raise ValueError(f"勾選的料號不可對帳或不在本次盤點資料中：{'、'.join(invalid_parts)}")
+    chosen = [row for part, row in rows.items() if (selected_parts is None or part in selected_parts) and row['physical_qty'] is not None]
+    if not chosen:
+        raise ValueError('沒有可建立停損點的實盤料號')
+    current_stock = db.get_st_inventory_stock()
+    updates, parts, adjustments, defect_ids = {}, [], [], []
+    for row in chosen:
+        part = row['part_number']
+        target = row['target_current']
+        updates[part] = target
+        parts.append(dict(row, theoretical_qty=row['expected_count'], aligned_qty=target))
+        adjustments.append(dict(part_number=part, adjust_qty=round(target - current_stock.get(part, 0), 6),
+                                reason=ST_RECONCILE_ADJUSTMENT_REASON, actor='reconcile'))
+        defect_ids.extend(row['defective_record_ids'])
+    # 所有來源與選取皆驗證成功後才開始寫入；逐料號基準設於庫存鎖定時間。
+    aligned_at = session['started_at']
+    note = json.dumps(dict(cutoff_batch_code=preview['cutoff_batch_code'], cutoff_at=cutoff_at,
+                           count_date=preview['count_date'], source_columns=preview['source_columns'],
+                           parts=[{key: row[key] for key in ('part_number', 'physical_qty', 'cutoff_main', 'current_main',
+                                  'defect_delta', 'defective_record_ids', 'target_current')} for row in chosen]), ensure_ascii=False)
+    updated = db.update_st_inventory_stock(updates, reason=ST_RECONCILE_ADJUSTMENT_REASON, actor='reconcile')
+    alignment_id = db.create_st_reconcile_alignment(aligned_at=aligned_at, source_filename=source_filename,
+                                                     note=note, parts=parts, adjustments=adjustments)
+    absorbed = db.mark_inventory_history_absorbed(alignment_id, cutoff_at, list(updates), defective_record_ids=defect_ids)
+    summary = dict(alignment_id=alignment_id, aligned_at=aligned_at, part_count=len(parts), updated_count=updated,
+                   adjusted_count=sum(abs(row['adjust_qty']) > 1e-6 for row in adjustments),
+                   total_abs_adjust_qty=round(sum(abs(row['adjust_qty']) for row in adjustments), 6),
+                   absorbed_defective_records=absorbed['defective_records'], absorbed_supplements=absorbed['supplements'])
+    return dict(ok=True, format='genlin', mode='stop_loss', count_date=preview['count_date'],
+                cutoff_batch_code=preview['cutoff_batch_code'], source_columns=preview['source_columns'],
+                summary=summary, preview_summary=preview['summary'], parts=parts, adjustments=adjustments)
+
+
 def commit_st_reconcile_stop_loss(
     path: str,
     cutoff_date: str,
@@ -528,13 +660,16 @@ def commit_st_reconcile_stop_loss(
     part_numbers: list[str] | None = None,
     cutoff_label: str = "",
 ) -> dict[str, Any]:
-    preview = build_st_reconcile_preview(path, cutoff_date)
+    preview = build_st_reconcile_preview(path, cutoff_date, cutoff_batch_code=cutoff_label, source_filename=source_filename)
     if preview.get("format") != "genlin":
         raise ValueError("停損點 commit 目前只支援庚霖實際庫存格式")
     selected_parts = _normalize_part_numbers(part_numbers)
     if part_numbers is not None and not selected_parts:
         raise ValueError("請至少勾選 1 支料號再建立停損點")
     selected_part_set = set(selected_parts or [])
+
+    if cutoff_label:
+        return _commit_batch_genlin(preview, cutoff_date, source_filename or Path(path).name, selected_parts)
 
     cutoff_for_anchor = _normalize_cutoff_for_query(cutoff_date)
     current_stock = db.get_st_inventory_stock()
