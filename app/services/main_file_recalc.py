@@ -6,7 +6,8 @@ from typing import Any
 _BATCH_CODE_RE = re.compile(r"^\d+-\d+$")
 _DEDUCT_HEADER_KEYWORDS = ("扣帳",)
 _REVERSE_HEADER_KEYWORDS = ("回復", "恢復")
-_ADJUSTMENT_USAGE_HEADERS = {"使用數量", "扣帳數量", "用量"}
+_RECONCILE_HEADER_KEYWORDS = ("盤點調整",)
+_ADJUSTMENT_USAGE_HEADERS = {"使用數量", "扣帳數量", "扣除數量", "用量"}
 _PART_COL = 1
 _STOCK_FALLBACK_COL = 8
 
@@ -63,6 +64,8 @@ def _header_text(ws, col: int) -> str:
 
 
 def _adjustment_kind(header: str) -> str | None:
+    if any(keyword in header for keyword in _RECONCILE_HEADER_KEYWORDS):
+        return "reconcile"
     if any(keyword in header for keyword in _REVERSE_HEADER_KEYWORDS):
         return "reverse"
     if any(keyword in header for keyword in _DEDUCT_HEADER_KEYWORDS):
@@ -73,6 +76,8 @@ def _adjustment_kind(header: str) -> str | None:
 def _adjustment_balance_col(ws, start_col: int) -> int:
     """新不良品/多打是 3 欄一組；舊資料仍是 2 欄一組。"""
     next_header = _header_text(ws, start_col + 1)
+    if any(keyword in _header_text(ws, start_col) for keyword in _RECONCILE_HEADER_KEYWORDS):
+        return start_col + 2
     if next_header in _ADJUSTMENT_USAGE_HEADERS:
         return start_col + 2
     return start_col + 1
@@ -122,7 +127,7 @@ def _event_for_cell(events: list[dict[str, int | str]], col: int) -> dict[str, i
         start_col = int(event["start_col"])
         if kind == "batch" and col in {start_col, start_col + 1}:
             return event
-        if kind in {"deduct", "reverse"}:
+        if kind in {"deduct", "reverse", "reconcile"}:
             if int(event["balance_col"]) == start_col + 2 and col in {start_col, start_col + 1}:
                 return event
             if col == start_col:

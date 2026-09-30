@@ -6,6 +6,7 @@ import re
 import openpyxl
 
 from ..config import cfg
+from .main_file_lock import serialized_main_file_write
 from .xls_reader import open_workbook_any
 
 _PART_COL = None
@@ -106,9 +107,9 @@ def read_batch_stock(path: str, batch_code: str) -> dict[str, dict[str, float]]:
                 input_cols.update((idx, idx + 1))
                 if header == batch_code:
                     batch_ends.append(idx + 2)
-            elif any(word in header for word in ('扣帳', '回復', '恢復')):
+            elif any(word in header for word in ('扣帳', '回復', '恢復', '盤點調整')):
                 next_header = str(headers[idx + 1] or '').strip() if idx + 1 < len(headers) else ''
-                end = idx + (2 if next_header in {'使用數量', '扣帳數量', '用量'} else 1)
+                end = idx + (2 if '盤點調整' in header or next_header in {'使用數量', '扣帳數量', '扣除數量', '用量'} else 1)
                 balance_cols.add(end)
                 input_cols.update(range(idx, end))
             elif any(word in header for word in ('結存', '結餘', '盤點', '庫存')):
@@ -161,6 +162,7 @@ def read_vendors(path: str) -> dict[str, str]:
     return result
 
 
+@serialized_main_file_write
 def update_vendor(path: str, part_number: str, vendor: str) -> dict:
     """更新主檔 B 欄廠商。"""
     part_key = str(part_number or "").strip().upper()

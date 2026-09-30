@@ -32,6 +32,9 @@ class MainFileRolloverTests(unittest.TestCase):
     def test_inventory_count_lock_includes_year_rollover(self):
         self.assertTrue(is_inventory_mutation_request("POST", "/api/main-file/rollover"))
 
+    def test_inventory_count_lock_includes_vendor_update(self):
+        self.assertTrue(is_inventory_mutation_request("PATCH", "/api/main-file/vendor"))
+
     def test_rollover_archives_old_files_and_sets_new_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

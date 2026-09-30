@@ -28,6 +28,7 @@ from ..services.main_reader import (
 from ..services.local_time import local_now
 import re as _re_main
 from ..services.main_file_recalc import find_batch_col_for_cell, recalc_batch_balances_for_cell
+from ..services.main_file_lock import serialized_main_file_write
 from ..services.main_file_rollover import rollover_main_file
 
 
@@ -77,6 +78,12 @@ from ..services.merge_to_main import backup_main_file
 from ..snapshot_sync import refresh_snapshot_from_main
 
 router = APIRouter()
+
+
+@serialized_main_file_write
+def _backup_and_update_vendor(main_path: str, part_number: str, vendor: str) -> dict:
+    backup_main_file(main_path, str(BACKUP_DIR))
+    return update_vendor(main_path, part_number, vendor)
 
 
 # ── In-memory cache for main-file/data (avoids re-reading xlsx every request) ─
@@ -583,9 +590,8 @@ async def update_main_vendor(req: UpdateVendorRequest):
     if not part_number:
         raise HTTPException(400, "料號不可空白")
 
-    backup_main_file(main_path, str(BACKUP_DIR))
     try:
-        result = update_vendor(main_path, part_number, req.vendor)
+        result = _backup_and_update_vendor(main_path, part_number, req.vendor)
     except KeyError:
         raise HTTPException(404, f"主檔找不到料號 {part_number}") from None
     except ValueError as exc:

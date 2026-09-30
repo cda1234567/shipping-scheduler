@@ -2,19 +2,32 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import copy
 from datetime import date
+import hashlib
+import hmac
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 from typing import Any
 
+import openpyxl
 from openpyxl.utils import get_column_letter
 
 from app import database as db
+from app.config import BACKUP_DIR
 from app.constants import ST_RECONCILE_ADJUSTMENT_REASON
+from app.snapshot_sync import refresh_snapshot_from_main
 
 from .reconcile_core import theoretical_stock_with_details
 from .main_reader import read_batch_stock, read_stock
+from .main_file_lock import serialized_main_file_write
+from .main_file_recalc import _stock_events, recalc_batch_balances_for_cell
+from .main_insertion import insert_columns, validate_insertion_anchor
+from .merge_to_main import PART_COL, _save_workbook_atomically, backup_main_file
 from .xls_reader import open_workbook_any
 
 CUSTOMER_HEADER = "客戶編號"
@@ -35,6 +48,10 @@ CATEGORY_UNATTRIBUTED = "無法歸因淨差"
 CATEGORY_MATCHED = "無差異"
 CATEGORY_STOP_LOSS = "停損吸收"
 CATEGORY_GENLIN_BLANK_PHYSICAL = "未填實盤，跳過"
+
+
+class StaleReconcilePreviewError(ValueError):
+    """盤點試算所依據的檔案或資料已變更。"""
 
 ASSUMPTIONS = [
     "本試算只讀取上傳盤點表，不會寫入 ST 庫存，也不會建立對齊點。",
@@ -60,6 +77,18 @@ def _normalize_part(value: Any) -> str:
 
 def _normalize_genlin_part(value: Any) -> str:
     return _normalize_part(value)
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _display_number(value: float) -> int | float:
+    return int(value) if value == int(value) else value
 
 
 def _resolve_part(part: str, available: set[str]) -> str:
@@ -275,6 +304,7 @@ def parse_st_reconcile_file(path: str) -> dict[str, Any]:
                 "sheet_name": ws.title.strip(),
                 "source_columns": _genlin_source_columns(columns),
                 "count_date": _detect_count_date(ws, header_row, source_path.name),
+                "source_sha256": _sha256_file(str(source_path)),
                 "rows": parsed_rows,
                 "part_count": len(parsed_rows),
                 "manual_split_count": 0,
@@ -464,6 +494,50 @@ def _build_genlin_preview(parsed: dict[str, Any], cutoff_date: str, cutoff_for_q
     }
 
 
+def _batch_preview_token(
+    *,
+    parsed: dict,
+    main_path: str,
+    cutoff_at: str,
+    batch_code: str,
+    session: dict,
+    rows: list[dict],
+) -> str:
+    """鎖定盤點來源、主檔、工作階段及所有可選料號的試算依據。"""
+    payload = {
+        "session": {
+            key: session.get(key)
+            for key in ("id", "cutoff_at", "cutoff_code", "started_at", "status")
+        },
+        "cutoff_at": cutoff_at,
+        "batch_code": batch_code,
+        "count_date": parsed.get("count_date") or "",
+        "source_sha256": parsed.get("source_sha256") or "",
+        "main_sha256": _sha256_file(main_path),
+        "parts": [
+            {
+                key: row.get(key)
+                for key in (
+                    "part_number",
+                    "source_part_numbers",
+                    "book_qty",
+                    "physical_qty",
+                    "cutoff_main",
+                    "current_main",
+                    "defect_delta",
+                    "defective_record_ids",
+                    "expected_count",
+                    "target_main",
+                    "main_adjustment",
+                )
+            }
+            for row in rows
+        ],
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, source_filename: str, tol: float) -> dict:
     count_date = parsed.get('count_date') or ''
     if not count_date and source_filename:
@@ -475,14 +549,19 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
                 continue
     if not count_date:
         raise ValueError('找不到盤點日期，請在盤點表標題或檔名加入 YYYY-MM-DD 日期')
+    parsed = dict(parsed, count_date=count_date)
     count_at = count_date + 'T23:59:59.999999'
     if count_at < cutoff_at:
         raise ValueError('盤點日期不可早於截止批次')
     main_path = db.get_setting('main_file_path')
     if not main_path or not Path(main_path).is_file():
         raise ValueError('找不到目前主檔，無法取得截止批次結存')
+    session = db.get_active_inventory_count_session('st')
+    if not session or session['cutoff_at'] != cutoff_at or session['cutoff_code'] != batch_code:
+        raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
     stocks = read_batch_stock(main_path, batch_code)
-    available = set(read_stock(main_path)) | set(db.get_st_inventory_stock())
+    current_st = db.get_st_inventory_stock()
+    available = set(read_stock(main_path)) | set(current_st)
     defects = db.get_defective_interval_parts(cutoff_at, count_at)
     combined = {}
     for source_row in parsed['rows']:
@@ -508,20 +587,33 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         row['preserved_delta'] = round(row['current_main'] - row['expected_count'], 6)
         physical = row['physical_qty']
         row['diff'] = round(physical - row['expected_count'], 6) if physical is not None else None
-        row['target_current'] = round(physical + row['preserved_delta'], 6) if physical is not None else None
+        row['target_main'] = round(physical + row['preserved_delta'], 6) if physical is not None else None
+        row['target_current'] = row['target_main']
+        row['main_adjustment'] = round(row['target_main'] - row['current_main'], 6) if physical is not None else None
+        row['current_st'] = float(current_st.get(part, 0.0))
         row['book_vs_physical_diff'] = round(row['book_qty'] - physical, 6) if physical is not None else None
         row['category'] = CATEGORY_GENLIN_BLANK_PHYSICAL if physical is None else CATEGORY_MATCHED if abs(row['diff']) <= tol else CATEGORY_STOP_LOSS
         row['notes'] = ['後續批次異動保留，現在庫存以主檔結存重算']
         summary[row['category']] += 1
         rows.append(row)
+    preview_token = _batch_preview_token(
+        parsed=parsed,
+        main_path=main_path,
+        cutoff_at=cutoff_at,
+        batch_code=batch_code,
+        session=session,
+        rows=rows,
+    )
     return dict(format='genlin', mode='stop_loss', cutoff_date=cutoff_at, cutoff_batch_code=batch_code,
                 count_date=count_date, sheet_name=parsed['sheet_name'], source_columns=parsed['source_columns'],
+                preview_token=preview_token,
                 parts=rows, summary=summary, categories={key: [row for row in rows if row['category'] == key] for key in summary},
                 uncovered_parts=uncovered, assumptions=[
                     _build_genlin_assumptions(parsed['source_columns'])[0],
                     f'盤點日期 {count_date}；預期實盤＝主檔截止批次 {batch_code} 結存－截止後至盤點日不良扣帳。',
-                    '後續批次異動保留；現在目標＝實盤＋主檔目前結存－預期實盤。只更新勾選料號。',
-                    '提交時重讀主檔與不良明細；對齊基準使用盤點鎖定時間與現在目標。',
+                    '後續批次異動保留；主檔目標＝實盤＋主檔目前結存－預期實盤。只更新勾選料號。',
+                    'ST 庫存僅供警示，不會由本次主檔盤點調整寫入或吸收歷史。',
+                    '提交時會重讀來源、主檔與不良明細；資料有變動時必須重新試算。',
                 ])
 
 
@@ -611,45 +703,250 @@ def build_st_reconcile_preview(path: str, cutoff_date: str, *, tol: float = 1e-6
     }
 
 
-def _commit_batch_genlin(preview: dict, cutoff_at: str, source_filename: str,
-                         selected_parts: list[str] | None) -> dict:
-    session = db.get_active_inventory_count_session('st')
-    if not session or session['cutoff_at'] != cutoff_at or session['cutoff_code'] != preview['cutoff_batch_code']:
-        raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
+def _copy_adjustment_group_style(ws, start_col: int) -> None:
+    """以截止批次最後三欄為樣板，只複製樣式，不複製任何料號資料。"""
+    for offset in range(3):
+        source_col = start_col - 3 + offset
+        target_col = start_col + offset
+        source_letter = get_column_letter(source_col)
+        target_letter = get_column_letter(target_col)
+        source_dimension = ws.column_dimensions[source_letter]
+        target_dimension = ws.column_dimensions[target_letter]
+        for attr in ("width", "hidden", "bestFit", "outlineLevel", "collapsed"):
+            try:
+                setattr(target_dimension, attr, getattr(source_dimension, attr))
+            except (AttributeError, TypeError):
+                pass
+        for row_idx in range(1, ws.max_row + 1):
+            source = ws.cell(row=row_idx, column=source_col)
+            target = ws.cell(row=row_idx, column=target_col)
+            target._style = copy(source._style)
+            target.number_format = source.number_format
+            target.protection = copy(source.protection)
+            target.alignment = copy(source.alignment)
+            target.font = copy(source.font)
+            target.fill = copy(source.fill)
+            target.border = copy(source.border)
+
+
+def _validate_reconcile_rows(ws, insertion_col: int, selected_parts: list[str]) -> dict[str, int]:
+    part_rows: dict[str, list[int]] = defaultdict(list)
+    for row_idx in range(2, ws.max_row + 1):
+        part = _normalize_part(ws.cell(row=row_idx, column=PART_COL).value)
+        if part:
+            part_rows[part].append(row_idx)
+
+    resolved: dict[str, int] = {}
+    events = _stock_events(ws)
+    known_columns = {
+        col
+        for event in events
+        for col in range(int(event["start_col"]), int(event["balance_col"]) + 1)
+    }
+    for part in selected_parts:
+        matches = part_rows.get(part) or []
+        if not matches:
+            raise ValueError(f"主檔找不到料號 {part}，未寫入任何資料")
+        if len(matches) != 1:
+            raise ValueError(f"主檔料號 {part} 有重複列，無法安全寫入")
+        row_idx = matches[0]
+        for col in range(insertion_col, ws.max_column + 1):
+            cell = ws.cell(row=row_idx, column=col)
+            if col not in known_columns and (
+                isinstance(cell.value, (int, float)) or cell.data_type == "f"
+            ):
+                raise ValueError(f"主檔料號 {part} 後續有無法辨識的庫存欄位，未寫入任何資料")
+        for event in events:
+            if int(event["start_col"]) < insertion_col:
+                continue
+            for col in range(int(event["start_col"]), int(event["balance_col"]) + 1):
+                if ws.cell(row=row_idx, column=col).data_type == "f":
+                    raise ValueError(f"主檔料號 {part} 後續庫存事件含公式，未寫入任何資料")
+        resolved[part] = row_idx
+    return resolved
+
+
+def _restore_main_from_backup(backup_path: str, main_path: str) -> None:
+    target = Path(main_path)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{target.stem}-restore-",
+        suffix=target.suffix,
+        dir=str(target.parent),
+    )
+    os.close(fd)
+    try:
+        shutil.copy2(backup_path, temp_name)
+        os.replace(temp_name, target)
+    finally:
+        temp_path = Path(temp_name)
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+@serialized_main_file_write
+def _commit_batch_genlin(
+    path: str,
+    cutoff_at: str,
+    source_filename: str,
+    batch_code: str,
+    selected_parts: list[str],
+    preview_token: str,
+) -> dict:
+    """把批次盤點差異寫入主檔；ST 庫存與 ST 歷史完全不變。"""
+    try:
+        preview = build_st_reconcile_preview(
+            path,
+            cutoff_at,
+            cutoff_batch_code=batch_code,
+            source_filename=source_filename,
+        )
+    except ValueError as error:
+        raise StaleReconcilePreviewError(
+            f"盤點來源或主檔已變更，請重新試算後再按確認：{error}"
+        ) from error
+    if not preview_token or not hmac.compare_digest(preview_token, preview.get("preview_token") or ""):
+        raise StaleReconcilePreviewError("盤點來源或主檔已變更，請重新試算後再按確認")
+
     rows = {row['part_number']: row for row in preview['parts']}
-    invalid_parts = sorted(set(selected_parts or []) - set(rows))
+    invalid_parts = sorted(set(selected_parts) - set(rows))
     if invalid_parts:
         raise ValueError(f"勾選的料號不可對帳或不在本次盤點資料中：{'、'.join(invalid_parts)}")
-    chosen = [row for part, row in rows.items() if (selected_parts is None or part in selected_parts) and row['physical_qty'] is not None]
-    if not chosen:
-        raise ValueError('沒有可建立停損點的實盤料號')
-    current_stock = db.get_st_inventory_stock()
-    updates, parts, adjustments, defect_ids = {}, [], [], []
-    for row in chosen:
-        part = row['part_number']
-        target = row['target_current']
-        updates[part] = target
-        parts.append(dict(row, theoretical_qty=row['expected_count'], aligned_qty=target))
-        adjustments.append(dict(part_number=part, adjust_qty=round(target - current_stock.get(part, 0), 6),
-                                reason=ST_RECONCILE_ADJUSTMENT_REASON, actor='reconcile'))
-        defect_ids.extend(row['defective_record_ids'])
-    # 所有來源與選取皆驗證成功後才開始寫入；逐料號基準設於庫存鎖定時間。
-    aligned_at = session['started_at']
-    note = json.dumps(dict(cutoff_batch_code=preview['cutoff_batch_code'], cutoff_at=cutoff_at,
-                           count_date=preview['count_date'], source_columns=preview['source_columns'],
-                           parts=[{key: row[key] for key in ('part_number', 'physical_qty', 'cutoff_main', 'current_main',
-                                  'defect_delta', 'defective_record_ids', 'target_current')} for row in chosen]), ensure_ascii=False)
-    updated = db.update_st_inventory_stock(updates, reason=ST_RECONCILE_ADJUSTMENT_REASON, actor='reconcile')
-    alignment_id = db.create_st_reconcile_alignment(aligned_at=aligned_at, source_filename=source_filename,
-                                                     note=note, parts=parts, adjustments=adjustments)
-    absorbed = db.mark_inventory_history_absorbed(alignment_id, cutoff_at, list(updates), defective_record_ids=defect_ids)
-    summary = dict(alignment_id=alignment_id, aligned_at=aligned_at, part_count=len(parts), updated_count=updated,
-                   adjusted_count=sum(abs(row['adjust_qty']) > 1e-6 for row in adjustments),
-                   total_abs_adjust_qty=round(sum(abs(row['adjust_qty']) for row in adjustments), 6),
-                   absorbed_defective_records=absorbed['defective_records'], absorbed_supplements=absorbed['supplements'])
-    return dict(ok=True, format='genlin', mode='stop_loss', count_date=preview['count_date'],
-                cutoff_batch_code=preview['cutoff_batch_code'], source_columns=preview['source_columns'],
-                summary=summary, preview_summary=preview['summary'], parts=parts, adjustments=adjustments)
+    chosen = [rows[part] for part in selected_parts if rows[part]['physical_qty'] is not None]
+    if len(chosen) != len(selected_parts):
+        raise ValueError('勾選料號包含未填實盤數量，未寫入任何資料')
+
+    session = db.get_active_inventory_count_session('st')
+    if not session or session['cutoff_at'] != cutoff_at or session['cutoff_code'] != batch_code:
+        raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
+    main_path = str(db.get_setting('main_file_path') or '').strip()
+    if not main_path or not Path(main_path).is_file():
+        raise ValueError('找不到目前主檔，未寫入任何資料')
+    suffix = Path(main_path).suffix.lower()
+    if suffix not in {'.xlsx', '.xlsm'}:
+        raise ValueError('目前主檔格式不支援安全寫入，請先轉成 xlsx 或 xlsm')
+
+    workbook = openpyxl.load_workbook(main_path, keep_vba=(suffix == '.xlsm'))
+    backup_path = ''
+    write_started = False
+    snapshot_state: dict | None = None
+    try:
+        ws = workbook.worksheets[0]
+        anchor_col = validate_insertion_anchor(ws, batch_code)
+        matching_cols = [
+            col
+            for col in range(1, ws.max_column + 1)
+            if str(ws.cell(row=1, column=col).value or '').strip() == batch_code
+        ]
+        insertion_col = anchor_col + 3 * len(matching_cols)
+        selected_rows = _validate_reconcile_rows(ws, insertion_col, selected_parts)
+
+        insert_columns(ws, insertion_col, 3)
+        _copy_adjustment_group_style(ws, insertion_col)
+        ws.cell(row=1, column=insertion_col).value = f"盤點調整 {preview['count_date']} 增加"
+        ws.cell(row=1, column=insertion_col + 1).value = '扣除數量'
+        ws.cell(row=1, column=insertion_col + 2).value = '結存'
+
+        result_parts: list[dict] = []
+        adjustments: list[dict] = []
+        for row in chosen:
+            part = row['part_number']
+            row_idx = selected_rows[part]
+            adjustment = round(float(row['main_adjustment']), 6)
+            ws.cell(row=row_idx, column=insertion_col).value = _display_number(max(adjustment, 0.0))
+            ws.cell(row=row_idx, column=insertion_col + 1).value = _display_number(max(-adjustment, 0.0))
+            recalc = recalc_batch_balances_for_cell(ws, row=row_idx, col=insertion_col)
+            if not recalc.get('recalculated') or recalc.get('current_stock') is None:
+                raise ValueError(f"主檔料號 {part} 無法安全重算後續結存，未寫入任何資料")
+            main_after = round(float(recalc['current_stock']), 6)
+            target_main = round(float(row['target_main']), 6)
+            if abs(main_after - target_main) > 1e-6:
+                raise ValueError(
+                    f"主檔料號 {part} 重算結果 {main_after:g} 與目標 {target_main:g} 不一致，未寫入任何資料"
+                )
+            item = dict(
+                row,
+                main_before=float(row['current_main']),
+                main_after=main_after,
+                target_main=target_main,
+                target_current=target_main,
+                main_adjustment=adjustment,
+            )
+            result_parts.append(item)
+            adjustments.append({
+                'part_number': part,
+                'adjust_qty': adjustment,
+                'main_before': float(row['current_main']),
+                'main_after': main_after,
+            })
+
+        snapshot_state = db.capture_inventory_snapshot_state()
+        backup_path = backup_main_file(main_path, str(BACKUP_DIR))
+        write_started = True
+        _save_workbook_atomically(workbook, main_path)
+        snapshot_count = refresh_snapshot_from_main(main_path)
+        if snapshot_count <= 0:
+            raise RuntimeError('主檔已寫入但庫存快照同步失敗')
+        summary = dict(
+            alignment_id=None,
+            session_id=int(session['id']),
+            part_count=len(result_parts),
+            updated_count=len(result_parts),
+            adjusted_count=sum(abs(row['adjust_qty']) > 1e-6 for row in adjustments),
+            total_abs_adjust_qty=round(sum(abs(row['adjust_qty']) for row in adjustments), 6),
+            absorbed_defective_records=0,
+            absorbed_supplements=0,
+            snapshot_count=snapshot_count,
+        )
+        response = dict(
+            ok=True,
+            format='genlin',
+            mode='stop_loss',
+            count_date=preview['count_date'],
+            cutoff_batch_code=batch_code,
+            source_columns=preview['source_columns'],
+            preview_token=preview['preview_token'],
+            backup_path=backup_path,
+            session_completed=True,
+            summary=summary,
+            preview_summary=preview['summary'],
+            parts=result_parts,
+            adjustments=adjustments,
+        )
+        workbook.close()
+        workbook = None
+        # 工作階段完成是最後一個可能失敗的步驟；成功後直接回傳，不再執行可能拋錯的工作。
+        if not db.finish_inventory_count_session(
+            int(session['id']),
+            status='completed',
+            source_filename=source_filename,
+        ):
+            raise RuntimeError('盤點工作階段完成失敗')
+        return response
+    except Exception as error:
+        if backup_path and write_started:
+            rollback_errors: list[str] = []
+            try:
+                _restore_main_from_backup(backup_path, main_path)
+            except Exception as rollback_error:
+                rollback_errors.append(f"主檔還原失敗：{rollback_error}")
+            try:
+                db.restore_inventory_snapshot_state(snapshot_state or {})
+                try:
+                    from app.routers.main_file import invalidate_main_data_cache
+                    invalidate_main_data_cache()
+                except ImportError:
+                    pass
+            except Exception as rollback_error:
+                rollback_errors.append(f"快照狀態還原失敗：{rollback_error}")
+            if rollback_errors:
+                raise RuntimeError(f"{error}；{'；'.join(rollback_errors)}") from error
+        raise
+    finally:
+        if workbook is not None:
+            try:
+                workbook.close()
+            except Exception:
+                pass
 
 
 def commit_st_reconcile_stop_loss(
@@ -659,17 +956,28 @@ def commit_st_reconcile_stop_loss(
     source_filename: str = "",
     part_numbers: list[str] | None = None,
     cutoff_label: str = "",
+    preview_token: str = "",
 ) -> dict[str, Any]:
-    preview = build_st_reconcile_preview(path, cutoff_date, cutoff_batch_code=cutoff_label, source_filename=source_filename)
-    if preview.get("format") != "genlin":
-        raise ValueError("停損點 commit 目前只支援庚霖實際庫存格式")
     selected_parts = _normalize_part_numbers(part_numbers)
     if part_numbers is not None and not selected_parts:
         raise ValueError("請至少勾選 1 支料號再建立停損點")
-    selected_part_set = set(selected_parts or [])
 
     if cutoff_label:
-        return _commit_batch_genlin(preview, cutoff_date, source_filename or Path(path).name, selected_parts)
+        if not selected_parts:
+            raise ValueError("請至少勾選 1 支料號再寫入主檔")
+        return _commit_batch_genlin(
+            path,
+            cutoff_date,
+            source_filename or Path(path).name,
+            cutoff_label,
+            selected_parts,
+            str(preview_token or '').strip(),
+        )
+
+    preview = build_st_reconcile_preview(path, cutoff_date, cutoff_batch_code=cutoff_label, source_filename=source_filename)
+    if preview.get("format") != "genlin":
+        raise ValueError("停損點 commit 目前只支援庚霖實際庫存格式")
+    selected_part_set = set(selected_parts or [])
 
     cutoff_for_anchor = _normalize_cutoff_for_query(cutoff_date)
     current_stock = db.get_st_inventory_stock()

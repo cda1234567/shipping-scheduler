@@ -1222,14 +1222,71 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('row.expected_count', index_html)
         self.assertIn('row.preserved_delta', index_html)
         self.assertIn('row.current_main', index_html)
-        self.assertIn('row.target_current', index_html)
+        self.assertIn('row?.target_main ?? row?.target_current', index_html)
+        self.assertIn('row?.main_adjustment', index_html)
         self.assertIn('Number(row.physical_qty) - Number(row.expected_count)', index_html)
         self.assertIn('截止批次 ${esc(report.cutoff_batch_code)}', index_html)
         self.assertIn('const cutoffBatch = String(_lastStReconcilePreview.cutoff_batch_code || "").trim();', index_html)
-        self.assertIn('截止批次結存 ${total("cutoff_main")}', index_html)
-        self.assertIn('截止批次結存 + 已含不良 = 預期盤點；實盤差異；保留後續批次；目前目標', index_html)
+        self.assertIn('目前主檔 → 調整後主檔', index_html)
+        self.assertIn('主檔調整量', index_html)
+        self.assertIn('ST（不會修改）', index_html)
         self.assertIn('共 ${parts.length} 料${countDate', index_html)
         self.assertIn('${esc(summaryText)}', index_html)
+
+    def test_st_reconcile_safe_selection_and_commit_confirmation(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('const ST_RECONCILE_MATCHED_CATEGORY = "無差異";', index_html)
+        self.assertIn('row.category === ST_RECONCILE_MATCHED_CATEGORY && !getStReconcileWarning(row)', index_html)
+        self.assertIn('data-default-safe="${defaultSelected ? "true" : "false"}"', index_html)
+        self.assertIn('input.checked = input.dataset.defaultSafe === "true";', index_html)
+        self.assertIn('>全選無差異</button>', index_html)
+        self.assertIn('>清除選取</button>', index_html)
+        self.assertNotIn('id="btn-st-reconcile-select-all" type="button">全選</button>', index_html)
+        self.assertIn('⚠ 有差異，預設不勾（請逐支核對）', index_html)
+        self.assertIn('.sort((a, b) => adjustmentMagnitude(b) - adjustmentMagnitude(a))', index_html)
+        self.assertIn('套用已核對 ${selectedCount} 支並結束盤點（未勾不變）', index_html)
+        self.assertIn('系統會先備份目前主檔，再把勾選料號寫入主檔；未勾選料號不變，ST 庫存不會修改。', index_html)
+        self.assertIn('主檔絕對調整合計', index_html)
+        self.assertIn('請再次確認：已逐支核對上方 before → after 明細', index_html)
+        self.assertIn('if (requiresPreviewToken && selectedDifferenceRows.length)', index_html)
+        self.assertIn('if (requiresPreviewToken) await handleMainMutation();', index_html)
+        self.assertIn('主檔已備份並完成盤點', index_html)
+
+    def test_st_reconcile_legacy_commit_keeps_st_stop_loss_workflow(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('設為 ST 停損點（${selectedCount} 支料）', index_html)
+        self.assertIn('const confirmed = requiresPreviewToken', index_html)
+        self.assertIn('將已勾選的 ${partCount} 支料號設為 ST 停損點', index_html)
+        self.assertIn('系統會更新 ST 庫存基準並保留盤點日後的 ST 異動，未勾選料號不變。', index_html)
+        self.assertIn('requiresPreviewToken ? "正在備份並寫入主檔..." : "正在建立 ST 停損點..."', index_html)
+        self.assertIn('ST 盤點停損點已建立', index_html)
+        self.assertIn('else await refreshStInventoryInMain();', index_html)
+
+    def test_st_reconcile_invalidates_stale_preview_and_sends_token(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn('function clearStReconcilePreview(', index_html)
+        self.assertIn('_lastStReconcilePreview = null;', index_html)
+        self.assertIn('"st-reconcile-cutoff-batch")?.addEventListener("change"', index_html)
+        self.assertIn('"st-reconcile-cutoff")?.addEventListener("change"', index_html)
+        self.assertIn('clearStReconcilePreview("盤點檔已變更，請重新試算。")', index_html)
+        self.assertIn('clearStReconcilePreview("盤點工作階段已變更，請重新試算。")', index_html)
+        self.assertIn('const previewToken = String(_lastStReconcilePreview.preview_token || "").trim();', index_html)
+        self.assertIn('function stReconcilePreviewRequiresToken(', index_html)
+        self.assertIn('String(report?.cutoff_batch_code || "").trim() && hasBatchLedger', index_html)
+        self.assertIn('const requiresPreviewToken = stReconcilePreviewRequiresToken();', index_html)
+        self.assertIn('if (requiresPreviewToken && !previewToken)', index_html)
+        self.assertIn('if (previewToken) formData.append("preview_token", previewToken);', index_html)
+        self.assertIn('const missingRequiredToken = batchLedger && !_lastStReconcilePreview?.preview_token;', index_html)
+        self.assertIn('if (requiresPreviewToken && /重新試算|已變更/.test(message))', index_html)
+        self.assertIn('clearStReconcilePreview("盤點資料已變更，請重新試算後再核對。")', index_html)
+        self.assertIn('試算失敗：" + error.message', index_html)
+        self.assertIn('盤點套用失敗：" + message', index_html)
 
     def test_st_reconcile_uncovered_displays_unknown_main_parts_separately(self):
         root = Path(__file__).resolve().parents[1]

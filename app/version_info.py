@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.30.1"
+APP_VERSION = "v2026.09.30.2"
 APP_RELEASED_AT = "2026-09-30"
-APP_HEADLINE = "庚霖盤點對帳修正"
+APP_HEADLINE = "盤點套用安全確認"
 APP_CHANGELOG = [
+    {
+        "title": "盤點套用安全確認",
+        "items": [
+            "修正盤點套用位置：會先備份並調整主檔，ST 庫存只顯示供核對、不會修改。",
+            "有差異的料號不再預先勾選；確認前會逐支顯示目前主檔、調整後主檔與調整量，未勾選料號維持不變。",
+        ],
+    },
     {
         "title": "庚霖盤點對帳修正",
         "items": [

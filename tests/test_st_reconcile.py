@@ -419,9 +419,7 @@ class StReconcileCommitTests(unittest.TestCase):
         self.assertEqual(uncovered["SELF-9"]["total_qty"], 15)
         self.assertEqual(uncovered["SELF-9"]["record_count"], 2)
 
-    def test_batch_cutoff_absorbs_own_batch_and_replays_only_later_batches(self):
-        # 鎖死雙扣回歸：選批次 6-1 時，6-1 自己的消耗（audit 時間晚於 dispatched_at）
-        # 必須落在盤點吸收側，只有 6-1 之後的批次被重放。
+    def test_batch_cutoff_requires_explicit_main_selection_and_never_falls_back_to_st_write(self):
         self._insert_snapshot(100)
         order_cursor = self.conn.execute(
             "INSERT INTO orders(po_number, model, status, code) VALUES('PO-6-1', 'MODEL-A', 'dispatched', '6-1')"
@@ -454,17 +452,17 @@ class StReconcileCommitTests(unittest.TestCase):
             wb.close()
             db.set_setting('main_file_path', str(main_path))
             db.start_inventory_count_session(cutoff_at=resolved['cutoff_at'], cutoff_code='6-1')
-            result = commit_st_reconcile_stop_loss(
-                path,
-                resolved["cutoff_at"],
-                source_filename="batch-cutoff_2026-06-29.xlsx",
-                cutoff_label=resolved["code"],
-            )
+            st_before = db.get_st_inventory_stock()["PART-1"]
+            with self.assertRaisesRegex(ValueError, "至少勾選"):
+                commit_st_reconcile_stop_loss(
+                    path,
+                    resolved["cutoff_at"],
+                    source_filename="batch-cutoff_2026-06-29.xlsx",
+                    cutoff_label=resolved["code"],
+                )
 
-            self.assertTrue(result["ok"])
-            # 目標 = 實盤 68 + 只有 6-30 那筆 -20 → 48（雙扣錯誤會算出 18）
-            self.assertEqual(db.get_st_inventory_stock()["PART-1"], 48)
-            self.assertEqual(result["adjustments"][0]["adjust_qty"], -2)
+            self.assertEqual(db.get_st_inventory_stock()["PART-1"], st_before)
+            self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM st_reconcile_alignments").fetchone()[0], 0)
 
 
 class StReconcileCutoffBatchTests(unittest.TestCase):

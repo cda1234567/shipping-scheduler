@@ -1132,6 +1132,54 @@ def get_latest_st_reconcile_anchor(
     }
 
 
+def capture_inventory_snapshot_state() -> dict:
+    """完整保存主檔快照，供跨檔案/DB 寫入失敗時精確補償。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT part_number, stock_qty, moq, moq_manual, description, snapshot_at "
+            "FROM inventory_snapshot ORDER BY part_number"
+        ).fetchall()
+        setting = conn.execute(
+            "SELECT value FROM settings WHERE key='main_part_count'"
+        ).fetchone()
+    return {
+        "rows": [dict(row) for row in rows],
+        "main_part_count_exists": setting is not None,
+        "main_part_count": str(setting["value"] or "") if setting else "",
+    }
+
+
+def restore_inventory_snapshot_state(state: dict) -> None:
+    """逐欄還原 capture_inventory_snapshot_state 的內容與相關設定。"""
+    rows = list((state or {}).get("rows") or [])
+    with get_conn() as conn:
+        conn.execute("DELETE FROM inventory_snapshot")
+        conn.executemany(
+            "INSERT INTO inventory_snapshot("
+            "part_number, stock_qty, moq, moq_manual, description, snapshot_at"
+            ") VALUES(?,?,?,?,?,?)",
+            [
+                (
+                    str(row.get("part_number") or ""),
+                    float(row.get("stock_qty") or 0),
+                    float(row.get("moq") or 0),
+                    int(row.get("moq_manual") or 0),
+                    str(row.get("description") or ""),
+                    str(row.get("snapshot_at") or ""),
+                )
+                for row in rows
+            ],
+        )
+        if (state or {}).get("main_part_count_exists"):
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES('main_part_count', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str((state or {}).get("main_part_count") or ""),),
+            )
+        else:
+            conn.execute("DELETE FROM settings WHERE key='main_part_count'")
+
+
 def get_latest_st_reconcile_anchors(
     cutoff_at: str,
     part_numbers: list[str] | None = None,

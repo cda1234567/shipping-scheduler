@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -10,12 +11,14 @@ from .. import database as db
 from ..config import DATA_DIR
 from ..models import InventoryCountStartRequest
 from ..services.st_reconcile import (
+    StaleReconcilePreviewError,
     build_st_reconcile_preview,
     commit_st_reconcile_stop_loss,
     resolve_cutoff_batch,
 )
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 RECONCILE_UPLOAD_DIR = DATA_DIR / "st_reconcile"
 RECONCILE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -139,6 +142,7 @@ async def commit_st_reconcile(
     cutoff_batch_code: str | None = Form(None),
     file: UploadFile = File(...),
     part_numbers: list[str] | None = Form(None),
+    preview_token: str = Form(""),
 ):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
@@ -149,11 +153,15 @@ async def commit_st_reconcile(
         raise HTTPException(409, "請先開始盤點並鎖定庫存，再建立停損點")
     if str(active_session.get("cutoff_at") or "") != cutoff_text:
         raise HTTPException(400, "盤點截止點與目前鎖定的盤點工作階段不一致")
+    selected_parts = _normalize_part_numbers(part_numbers)
+    if batch_label and not selected_parts:
+        raise HTTPException(400, "請至少勾選 1 支料號再寫入主檔")
+    if batch_label and not str(preview_token or "").strip():
+        raise HTTPException(409, "找不到本次試算憑證，請重新試算後再按確認")
 
     content = await file.read(MAX_RECONCILE_UPLOAD_BYTES + 1)
     if len(content) > MAX_RECONCILE_UPLOAD_BYTES:
         raise HTTPException(400, "盤點檔案超過 10MB，請縮小後再上傳")
-    selected_parts = _normalize_part_numbers(part_numbers)
     if part_numbers is not None and not selected_parts:
         raise HTTPException(400, "請至少勾選 1 支料號再建立停損點")
 
@@ -166,18 +174,25 @@ async def commit_st_reconcile(
             source_filename=file.filename or "",
             part_numbers=selected_parts,
             cutoff_label=batch_label,
+            preview_token=preview_token,
         )
-        db.finish_inventory_count_session(
-            int(active_session["id"]),
-            status="completed",
-            alignment_id=int(result["summary"]["alignment_id"]),
-            source_filename=file.filename or "",
-        )
-        db.log_activity(
-            "inventory_count_completed",
-            f"盤點 #{active_session['id']} 完成，對齊 {result['summary']['part_count']} 支料",
-        )
+        if not result.get("session_completed"):
+            db.finish_inventory_count_session(
+                int(active_session["id"]),
+                status="completed",
+                alignment_id=int(result["summary"]["alignment_id"]),
+                source_filename=file.filename or "",
+            )
+        try:
+            db.log_activity(
+                "inventory_count_completed",
+                f"盤點 #{active_session['id']} 完成，對齊 {result['summary']['part_count']} 支料",
+            )
+        except Exception:
+            log.exception("inventory count completed but activity log failed")
         return result
+    except StaleReconcilePreviewError as error:
+        raise HTTPException(409, str(error)) from error
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except Exception as error:

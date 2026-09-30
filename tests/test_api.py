@@ -2709,6 +2709,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["vendor"], "新廠商")
         self.assertEqual(vendor, "新廠商")
 
+    def test_inventory_count_lock_blocks_main_vendor_update(self):
+        with patch("main.get_inventory_count_lock", return_value={"id": 7, "status": "active"}):
+            response = self.client.patch(
+                "/api/main-file/vendor",
+                json={"part_number": "IC-100", "vendor": "不應寫入"},
+            )
+
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.json()["code"], "inventory_count_locked")
+
     def test_purchase_reminder_status_endpoint_persists_status(self):
         expected = {
             "part_number": "IC-100",

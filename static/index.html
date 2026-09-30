@@ -443,7 +443,7 @@
           <div id="st-reconcile-assumptions" class="st-reconcile-assumptions"></div>
           <div id="st-reconcile-result" class="st-reconcile-result"></div>
           <div class="st-reconcile-commit-row" id="st-reconcile-commit-row" style="display:none">
-            <button class="btn btn-danger btn-sm" id="btn-st-reconcile-commit" type="button">設為停損點（以庚霖實際數字重設基準）</button>
+            <button class="btn btn-danger btn-sm" id="btn-st-reconcile-commit" type="button" disabled>套用已核對 0 支並結束盤點（未勾不變）</button>
             <div id="st-reconcile-commit-status" class="desktop-status-meta"></div>
           </div>
         </section>
@@ -944,6 +944,22 @@ let _lastStReconcilePreview = null;
 let _stReconcileCutoffMode = "batch";
 let _activeStInventoryCount = null;
 const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
+const ST_RECONCILE_MATCHED_CATEGORY = "無差異";
+
+function clearStReconcilePreview(message = "資料已變更，請重新試算後再核對。") {
+  _lastStReconcilePreview = null;
+  const result = document.getElementById("st-reconcile-result");
+  const assumptions = document.getElementById("st-reconcile-assumptions");
+  const commitRow = document.getElementById("st-reconcile-commit-row");
+  const commitStatus = document.getElementById("st-reconcile-commit-status");
+  const status = document.getElementById("st-reconcile-status");
+  if (result) result.innerHTML = "";
+  if (assumptions) assumptions.innerHTML = "";
+  if (commitRow) commitRow.style.display = "none";
+  if (commitStatus) commitStatus.textContent = "";
+  if (status) status.textContent = message;
+  updateStReconcileCommitCount();
+}
 
 async function loadStReconcileCutoffOptions() {
   const select = document.getElementById("st-reconcile-cutoff-batch");
@@ -984,6 +1000,7 @@ function appendStReconcileCutoff(formData) {
 }
 
 document.getElementById("btn-st-reconcile-cutoff-mode")?.addEventListener("click", () => {
+  clearStReconcilePreview();
   _stReconcileCutoffMode = _stReconcileCutoffMode === "batch" ? "date" : "batch";
   const batchField = document.getElementById("st-reconcile-cutoff-batch-field");
   const dateField = document.getElementById("st-reconcile-cutoff-date-field");
@@ -1015,13 +1032,21 @@ function renderStInventoryCountSession() {
 }
 
 async function loadStInventoryCountSession() {
+  const previousSessionId = _activeStInventoryCount?.id ?? null;
+  let loadError = null;
   try {
     const data = await apiJson("/api/reconcile/st/session");
     _activeStInventoryCount = data?.active || null;
-  } catch (_) {
+  } catch (error) {
     _activeStInventoryCount = null;
+    loadError = error;
   }
+  if (previousSessionId !== (_activeStInventoryCount?.id ?? null)) clearStReconcilePreview();
   renderStInventoryCountSession();
+  if (loadError) {
+    const status = document.getElementById("st-reconcile-session-status");
+    if (status) status.textContent = `盤點狀態讀取失敗：${loadError.message}`;
+  }
 }
 
 async function startStInventoryCount() {
@@ -1034,9 +1059,12 @@ async function startStInventoryCount() {
   try {
     const result = await apiPost("/api/reconcile/st/session/start", fields);
     _activeStInventoryCount = result.session || null;
+    clearStReconcilePreview("盤點工作階段已變更，請重新試算。");
     renderStInventoryCountSession();
     showToast("盤點已開始，庫存異動已鎖定", { tone: "success" });
   } catch (error) {
+    const status = document.getElementById("st-reconcile-session-status");
+    if (status) status.textContent = `無法開始盤點：${error.message}`;
     showToast(`無法開始盤點：${error.message}`, { tone: "error" });
   }
 }
@@ -1046,9 +1074,12 @@ async function cancelStInventoryCount() {
   try {
     await apiPost("/api/reconcile/st/session/cancel");
     _activeStInventoryCount = null;
+    clearStReconcilePreview("盤點已取消，舊試算已清除。");
     renderStInventoryCountSession();
     showToast("盤點已取消，庫存鎖定已解除");
   } catch (error) {
+    const status = document.getElementById("st-reconcile-session-status");
+    if (status) status.textContent = `取消盤點失敗：${error.message}`;
     showToast(`取消盤點失敗：${error.message}`, { tone: "error" });
   }
 }
@@ -1114,8 +1145,40 @@ function renderStReconcileAssumptions(items = []) {
     .join("");
 }
 
+function getStReconcileTargetMain(row) {
+  const value = row?.target_main ?? row?.target_current;
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function getStReconcileMainAdjustment(row) {
+  if (row?.main_adjustment != null && row.main_adjustment !== "") {
+    const adjustment = Number(row.main_adjustment);
+    if (Number.isFinite(adjustment)) return adjustment;
+  }
+  const current = Number(row?.current_main);
+  const target = getStReconcileTargetMain(row);
+  return Number.isFinite(current) && target != null ? target - current : null;
+}
+
+function getStReconcileWarning(row) {
+  if (row?.warning) return String(row.warning);
+  if (Array.isArray(row?.warnings) && row.warnings.length) return row.warnings.join("、");
+  return row?.has_warning ? "系統標示需人工確認" : "";
+}
+
 function isSelectableStReconcilePart(row) {
-  return row?.part_number && row?.category !== ST_RECONCILE_SKIP_CATEGORY;
+  const physical = Number(row?.physical_qty);
+  if (!row?.part_number || row?.category === ST_RECONCILE_SKIP_CATEGORY || row?.physical_qty == null || !Number.isFinite(physical)) return false;
+  const hasMainLedger = row?.current_main != null || row?.target_main != null || row?.target_current != null;
+  return !hasMainLedger || (Number.isFinite(Number(row.current_main)) && getStReconcileTargetMain(row) != null);
+}
+
+function isDefaultSelectedStReconcilePart(row, hasLedger) {
+  if (!isSelectableStReconcilePart(row)) return false;
+  if (!hasLedger) return true;
+  return row.category === ST_RECONCILE_MATCHED_CATEGORY && !getStReconcileWarning(row);
 }
 
 function getSelectedStReconcileParts() {
@@ -1124,12 +1187,22 @@ function getSelectedStReconcileParts() {
     .filter(Boolean);
 }
 
+function stReconcilePreviewRequiresToken(report = _lastStReconcilePreview) {
+  const parts = report?.parts || [];
+  const hasBatchLedger = parts.some(row => row?.cutoff_main != null || row?.current_main != null);
+  return Boolean(String(report?.cutoff_batch_code || "").trim() && hasBatchLedger);
+}
+
 function updateStReconcileCommitCount() {
   const button = document.getElementById("btn-st-reconcile-commit");
   const selectedCount = getSelectedStReconcileParts().length;
   if (button) {
-    button.textContent = `設為停損點（${selectedCount} 支料）`;
-    button.disabled = selectedCount === 0 || !_activeStInventoryCount;
+    const batchLedger = stReconcilePreviewRequiresToken();
+    button.textContent = batchLedger
+      ? `套用已核對 ${selectedCount} 支並結束盤點（未勾不變）`
+      : `設為 ST 停損點（${selectedCount} 支料）`;
+    const missingRequiredToken = batchLedger && !_lastStReconcilePreview?.preview_token;
+    button.disabled = selectedCount === 0 || !_activeStInventoryCount || missingRequiredToken;
   }
 }
 
@@ -1142,7 +1215,7 @@ function bindStReconcileSelectionControls() {
     input.addEventListener("change", updateStReconcileCommitCount);
   });
   selectAllBtn?.addEventListener("click", () => {
-    checks.forEach(input => { input.checked = true; });
+    checks.forEach(input => { input.checked = input.dataset.defaultSafe === "true"; });
     updateStReconcileCommitCount();
   });
   clearBtn?.addEventListener("click", () => {
@@ -1165,12 +1238,13 @@ function renderStReconcilePreview(report) {
   const bookColumn = String(sourceColumns.book || "F").trim() || "F";
   const physicalColumn = String(sourceColumns.physical || "G").trim() || "G";
   const countDate = String(report?.count_date || "").trim();
-  const hasLedger = isStopLoss && parts.some(row => row.cutoff_main != null || row.target_current != null);
+  const hasLedger = isStopLoss && parts.some(row => row.cutoff_main != null || row.target_main != null || row.target_current != null);
+  const showCurrentSt = hasLedger && parts.some(row => row.current_st != null);
   const summaryText = Object.entries(summary)
     .map(([key, value]) => `${key} ${value}`)
     .join("、");
 
-  const rows = parts.map(row => {
+  const renderRow = row => {
     const countDiff = hasLedger && row.physical_qty != null && row.expected_count != null
       ? Number(row.physical_qty) - Number(row.expected_count)
       : row.book_vs_physical_diff ?? row.diff;
@@ -1181,28 +1255,38 @@ function renderStReconcilePreview(report) {
         : "";
     if (isStopLoss) {
       const selectable = isSelectableStReconcilePart(row);
+      const targetMain = getStReconcileTargetMain(row);
+      const mainAdjustment = getStReconcileMainAdjustment(row);
+      const warning = getStReconcileWarning(row);
+      const defaultSelected = isDefaultSelectedStReconcilePart(row, hasLedger);
+      const adjustmentClass = Number(mainAdjustment ?? 0) < 0
+        ? "is-negative"
+        : Number(mainAdjustment ?? 0) > 0
+          ? "is-positive"
+          : "";
       const ledgerCells = hasLedger ? `
           <td class="num">${row.cutoff_main == null ? "—" : formatReconcileQty(row.cutoff_main)}</td>
           <td class="num">${row.defect_delta == null ? "—" : formatReconcileQty(row.defect_delta)}</td>
           <td class="num">${row.expected_count == null ? "—" : formatReconcileQty(row.expected_count)}</td>
           <td class="num">${row.preserved_delta == null ? "—" : formatReconcileQty(row.preserved_delta)}</td>
-          <td class="num">${row.current_main == null ? "—" : formatReconcileQty(row.current_main)}</td>
-          <td class="num">${row.target_current == null ? "—" : formatReconcileQty(row.target_current)}</td>` : `
+          <td class="num">${row.current_main == null || targetMain == null ? "—" : `${formatReconcileQty(row.current_main)} → ${formatReconcileQty(targetMain)}`}</td>
+          <td class="num ${adjustmentClass}">${mainAdjustment == null ? "—" : `${mainAdjustment > 0 ? "+" : ""}${formatReconcileQty(mainAdjustment)}`}</td>
+          ${showCurrentSt ? `<td class="num">${row.current_st == null ? "—" : formatReconcileQty(row.current_st)}</td>` : ""}` : `
           <td class="num">${formatReconcileQty(row.theoretical)}</td>`;
       return `
-        <tr>
+        <tr data-reconcile-kind="${defaultSelected ? "matched" : selectable ? "difference" : "unavailable"}">
           <td>
             ${selectable
-              ? `<input class="st-reconcile-part-check" type="checkbox" data-part="${esc(row.part_number)}" checked aria-label="選取 ${esc(row.part_number)}">`
+              ? `<input class="st-reconcile-part-check" type="checkbox" data-part="${esc(row.part_number)}" data-default-safe="${defaultSelected ? "true" : "false"}"${defaultSelected ? " checked" : ""} aria-label="選取 ${esc(row.part_number)}">`
               : ""}
           </td>
           <td class="st-reconcile-part">${esc(row.part_number)}</td>
           <td>${esc(row.description || "")}</td>
           <td class="num">${formatReconcileQty(row.book_qty)}</td>
-          <td class="num">${formatReconcileQty(row.physical_qty)}</td>
+          <td class="num">${row.physical_qty == null ? "未填" : formatReconcileQty(row.physical_qty)}</td>
           ${ledgerCells}
           <td class="num ${diffClass}">${countDiff == null ? "—" : formatReconcileQty(countDiff)}</td>
-          <td>${esc(row.category || "")}</td>
+          <td>${esc(row.category || "")}${warning ? `<div class="is-negative">${esc(warning)}</div>` : ""}</td>
         </tr>`;
     }
     return `
@@ -1214,7 +1298,27 @@ function renderStReconcilePreview(report) {
         <td class="num ${diffClass}">${row.diff == null ? "-" : formatReconcileQty(row.diff)}</td>
         <td>${esc(row.category || "")}</td>
       </tr>`;
-  }).join("");
+  };
+
+  const adjustmentMagnitude = row => {
+    const adjustment = getStReconcileMainAdjustment(row);
+    const fallback = row.diff ?? row.book_vs_physical_diff ?? 0;
+    return Math.abs(Number(adjustment ?? fallback) || 0);
+  };
+  const unavailableParts = parts.filter(row => !isSelectableStReconcilePart(row));
+  const matchedParts = parts.filter(row => isSelectableStReconcilePart(row) && isDefaultSelectedStReconcilePart(row, hasLedger));
+  const differenceParts = parts
+    .filter(row => isSelectableStReconcilePart(row) && !isDefaultSelectedStReconcilePart(row, hasLedger))
+    .sort((a, b) => adjustmentMagnitude(b) - adjustmentMagnitude(a));
+  const groupedRows = isStopLoss
+    ? [
+        ["⚠ 有差異，預設不勾（請逐支核對）", differenceParts],
+        ["✓ 無差異，可直接套用", matchedParts],
+        ["無法套用（不會寫入）", unavailableParts],
+      ].filter(([, rows]) => rows.length)
+    : [["", parts]];
+  const tableColumnCount = isStopLoss ? (hasLedger ? (showCurrentSt ? 14 : 13) : 8) : 6;
+  const rows = groupedRows.map(([label, groupParts]) => `${label ? `<tr class="st-reconcile-section-row"><td colspan="${tableColumnCount}" style="font-weight:700;background:rgba(148,163,184,.16)">${esc(label)}（${groupParts.length} 支）</td></tr>` : ""}${groupParts.map(renderRow).join("")}`).join("");
 
   resultEl.innerHTML = `
     <div class="st-reconcile-group">
@@ -1222,11 +1326,11 @@ function renderStReconcilePreview(report) {
         <h4>${isStopLoss ? "庚霖停損點試算" : "盤點對帳試算"}</h4>
         <span class="desktop-status-meta">${esc(report?.sheet_name || "")}，共 ${parts.length} 料${countDate ? `；自動辨識盤點日期 ${esc(countDate)}` : ""}${report?.cutoff_batch_code ? `；截止批次 ${esc(report.cutoff_batch_code)}` : ""}；${esc(summaryText)}</span>
       </div>
-      ${hasLedger ? '<div class="desktop-status-meta">截止批次結存 + 已含不良 = 預期盤點；實盤差異；保留後續批次；目前目標</div>' : ""}
+      ${hasLedger ? '<div class="desktop-status-meta">先核對預期盤點與庚霖實盤，再確認「目前主檔 → 調整後主檔」。有差異的料不會自動勾選；ST 只供參考、不會修改。</div>' : ""}
       ${isStopLoss ? `
         <div class="st-reconcile-commit-row">
-          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-select-all" type="button">全選</button>
-          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-clear-selection" type="button">取消全選</button>
+          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-select-all" type="button">全選無差異</button>
+          <button class="btn btn-secondary btn-sm" id="btn-st-reconcile-clear-selection" type="button">清除選取</button>
         </div>
       ` : ""}
       <div class="st-reconcile-table-wrap">
@@ -1237,11 +1341,11 @@ function renderStReconcilePreview(report) {
               <th>料號</th>
               <th>說明</th>
               ${isStopLoss
-                ? `<th>帳面／辰尚 ${esc(bookColumn)}</th><th>庚霖實盤 ${esc(physicalColumn)}</th>${hasLedger ? "<th>截止批次結存</th><th>已含不良</th><th>預期盤點</th><th>保留後續批次</th><th>目前主檔</th><th>目前目標</th><th>實盤差異</th>" : `<th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th>`}<th>分類</th>`
+                ? `<th>帳面／辰尚 ${esc(bookColumn)}</th><th>庚霖實盤 ${esc(physicalColumn)}</th>${hasLedger ? `<th>截止批次結存</th><th>已含不良</th><th>預期盤點</th><th>保留後續批次</th><th>目前主檔 → 調整後主檔</th><th>主檔調整量</th>${showCurrentSt ? "<th>ST（不會修改）</th>" : ""}<th>實盤差異</th>` : `<th>系統理論值</th><th>${esc(bookColumn)}-${esc(physicalColumn)}</th>`}<th>分類</th>`
                 : "<th>實盤</th><th>系統理論值</th><th>差異</th><th>分類</th>"}
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="${isStopLoss ? (hasLedger ? 13 : 8) : 6}">沒有可試算的料號。</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="${tableColumnCount}">沒有可試算的料號。</td></tr>`}</tbody>
         </table>
       </div>
       ${renderStReconcileUncovered(report)}
@@ -1266,20 +1370,23 @@ async function handleStReconcilePreview() {
     showToast("請先選擇停損批次或輸入截止日");
     return;
   }
+  clearStReconcilePreview("試算中...");
   statusEl.textContent = "試算中...";
   try {
     const report = await apiJson("/api/reconcile/st/preview", { method: "POST", body: formData });
     _lastStReconcilePreview = report;
     statusEl.textContent = report.mode === "stop_loss"
-      ? "庚霖格式試算完成，可進行停損點確認。"
+      ? "庚霖格式試算完成；請先核對有差異的料號，再套用已勾選項目。"
       : "試算完成。";
     renderStReconcileAssumptions(report.assumptions || []);
     renderStReconcilePreview(report);
   } catch (error) {
     _lastStReconcilePreview = null;
     statusEl.textContent = "試算失敗：" + error.message;
+    renderStReconcileAssumptions([]);
     document.getElementById("st-reconcile-result").innerHTML = "";
     document.getElementById("st-reconcile-commit-row").style.display = "none";
+    updateStReconcileCommitCount();
   }
 }
 
@@ -1289,6 +1396,13 @@ async function handleStReconcileCommit() {
   const file = fileInput?.files?.[0];
   if (!_lastStReconcilePreview || _lastStReconcilePreview.mode !== "stop_loss") {
     showToast("請先完成庚霖格式試算");
+    return;
+  }
+  const previewToken = String(_lastStReconcilePreview.preview_token || "").trim();
+  const requiresPreviewToken = stReconcilePreviewRequiresToken();
+  if (requiresPreviewToken && !previewToken) {
+    showToast("這份試算沒有安全驗證碼，請重新試算後再套用", { tone: "error" });
+    clearStReconcilePreview("試算已失效，請重新試算後再核對。");
     return;
   }
   if (!_activeStInventoryCount) {
@@ -1311,36 +1425,72 @@ async function handleStReconcileCommit() {
   const countDate = String(_lastStReconcilePreview.count_date || "").trim();
   const cutoffBatch = String(_lastStReconcilePreview.cutoff_batch_code || "").trim();
   const selectedRows = (_lastStReconcilePreview.parts || []).filter(row => selectedParts.includes(String(row.part_number || "").trim().toUpperCase()));
-  const hasLedger = selectedRows.length === partCount && selectedRows.every(row =>
-    ["cutoff_main", "defect_delta", "expected_count", "physical_qty", "preserved_delta", "current_main", "target_current"]
-      .every(key => row[key] != null && Number.isFinite(Number(row[key]))));
-  const total = key => formatReconcileQty(selectedRows.reduce((sum, row) => sum + Number(row[key]), 0));
-  const countDiff = formatReconcileQty(selectedRows.reduce((sum, row) => sum + Number(row.physical_qty) - Number(row.expected_count), 0));
-  const confirmed = confirm(
-    `這會以${countDate ? ` ${countDate} ` : ""}盤點結果，調整已勾選的 ${partCount} 支料號${cutoffBatch ? `（截止批次 ${cutoffBatch}）` : ""}。${bookColumn} 欄是帳面／辰尚，${physicalColumn} 欄是庚霖實盤。\n\n` +
-    (hasLedger
-      ? `截止批次結存 ${total("cutoff_main")} + 已含不良 ${total("defect_delta")} = 預期盤點 ${total("expected_count")}；實盤差異 ${countDiff}；保留後續批次 ${total("preserved_delta")}；目前主檔 ${total("current_main")} → 目前目標 ${total("target_current")}。\n`
-      : "截止批次結存 + 已含不良 = 預期盤點；實盤差異會留下調帳紀錄；保留後續批次後，寫入目前目標庫存。\n") +
-    "要繼續嗎？"
+  const changedRows = selectedRows
+    .map(row => ({ row, adjustment: getStReconcileMainAdjustment(row), target: getStReconcileTargetMain(row) }))
+    .filter(item => item.adjustment != null && Math.abs(item.adjustment) > 1e-6)
+    .sort((a, b) => Math.abs(b.adjustment) - Math.abs(a.adjustment));
+  const selectedDifferenceRows = selectedRows.filter(row =>
+    row.category !== ST_RECONCILE_MATCHED_CATEGORY || Boolean(getStReconcileWarning(row)) || Math.abs(getStReconcileMainAdjustment(row) || 0) > 1e-6
   );
+  const absoluteAdjustmentTotal = changedRows.reduce((sum, item) => sum + Math.abs(item.adjustment), 0);
+  const changeLines = changedRows.slice(0, 10).map(({ row, adjustment, target }) => {
+    const sign = adjustment > 0 ? "+" : "";
+    return `${row.part_number}：${formatReconcileQty(row.current_main)} → ${formatReconcileQty(target)}（${sign}${formatReconcileQty(adjustment)}）`;
+  });
+  if (changedRows.length > 10) changeLines.push(`另有 ${changedRows.length - 10} 支有差異`);
+  const confirmed = requiresPreviewToken
+    ? confirm(
+        `將套用已核對的 ${partCount} 支料號${countDate ? `（盤點日 ${countDate}）` : ""}${cutoffBatch ? `，截止批次 ${cutoffBatch}` : ""}。\n` +
+        `系統會先備份目前主檔，再把勾選料號寫入主檔；未勾選料號不變，ST 庫存不會修改。\n` +
+        `${bookColumn} 欄是帳面／辰尚，${physicalColumn} 欄是庚霖實盤。\n\n` +
+        `${changeLines.length ? `${changeLines.join("\n")}\n\n` : "沒有主檔數量差異。\n\n"}主檔絕對調整合計：${formatReconcileQty(absoluteAdjustmentTotal)}\n` +
+        "確定套用並結束盤點嗎？"
+      )
+    : confirm(
+        `這會以${countDate ? ` ${countDate} ` : ""}盤點結果，將已勾選的 ${partCount} 支料號設為 ST 停損點。\n` +
+        `${bookColumn} 欄是帳面／辰尚，${physicalColumn} 欄是庚霖實盤；系統會更新 ST 庫存基準並保留盤點日後的 ST 異動，未勾選料號不變。\n\n` +
+        "確定建立 ST 停損點並結束盤點嗎？"
+      );
   if (!confirmed) return;
+  if (requiresPreviewToken && selectedDifferenceRows.length) {
+    const confirmedDifferences = confirm(
+      `你勾選了 ${selectedDifferenceRows.length} 支有差異或警告的料號，主檔絕對調整合計 ${formatReconcileQty(absoluteAdjustmentTotal)}。\n` +
+      "請再次確認：已逐支核對上方 before → after 明細，確定寫入主檔？"
+    );
+    if (!confirmedDifferences) return;
+  }
 
   const formData = new FormData();
   formData.append("file", file);
+  if (previewToken) formData.append("preview_token", previewToken);
   appendStReconcileCutoff(formData);
   selectedParts.forEach(part => formData.append("part_numbers", part));
-  commitStatus.textContent = "正在建立停損點...";
+  commitStatus.textContent = requiresPreviewToken ? "正在備份並寫入主檔..." : "正在建立 ST 停損點...";
   try {
     const result = await apiJson("/api/reconcile/st/commit", { method: "POST", body: formData });
     const summary = result.summary || {};
-    commitStatus.textContent = `已建立停損點 #${summary.alignment_id}，對齊 ${summary.part_count} 料，調帳 ${summary.adjusted_count} 料。`;
-    showToast("盤點停損點已建立", { tone: "success", duration: 5000 });
+    const completedId = summary.session_id ?? summary.alignment_id ?? "—";
+    commitStatus.textContent = requiresPreviewToken
+      ? `已完成盤點 #${completedId}，套用 ${summary.part_count} 支，調整主檔 ${summary.adjusted_count} 支。`
+      : `已建立 ST 停損點 #${completedId}，對齊 ${summary.part_count} 支，調整 ST ${summary.adjusted_count} 支。`;
+    showToast(
+      requiresPreviewToken ? "主檔已備份並完成盤點" : "ST 盤點停損點已建立",
+      { tone: "success", duration: 5000 }
+    );
     _activeStInventoryCount = null;
+    clearStReconcilePreview("盤點已完成；舊試算已清除。");
     renderStInventoryCountSession();
-    await refreshStInventoryInMain();
+    if (requiresPreviewToken) await handleMainMutation();
+    else await refreshStInventoryInMain();
   } catch (error) {
-    commitStatus.textContent = "停損點建立失敗：" + error.message;
-    showToast("停損點建立失敗：" + error.message, { tone: "error", duration: 5000 });
+    const message = String(error?.message || error);
+    if (requiresPreviewToken && /重新試算|已變更/.test(message)) {
+      clearStReconcilePreview("盤點資料已變更，請重新試算後再核對。");
+      showToast("盤點資料已變更，請重新試算", { tone: "error", duration: 5000 });
+      return;
+    }
+    commitStatus.textContent = "盤點套用失敗：" + message;
+    showToast("盤點套用失敗：" + message, { tone: "error", duration: 5000 });
   }
 }
 
@@ -1361,6 +1511,13 @@ document.getElementById("btn-st-reconcile-file")?.addEventListener("click", even
 document.getElementById("st-reconcile-file")?.addEventListener("change", e => {
   const fileNameEl = document.getElementById("st-reconcile-file-name");
   if (fileNameEl) fileNameEl.textContent = e.target.files?.[0]?.name || "尚未選擇檔案";
+  clearStReconcilePreview("盤點檔已變更，請重新試算。");
+});
+document.getElementById("st-reconcile-cutoff-batch")?.addEventListener("change", () => {
+  clearStReconcilePreview("截止批次已變更，請重新試算。");
+});
+document.getElementById("st-reconcile-cutoff")?.addEventListener("change", () => {
+  clearStReconcilePreview("截止日已變更，請重新試算。");
 });
 document.getElementById("btn-st-reconcile-commit")?.addEventListener("click", () => {
   void handleStReconcileCommit();
