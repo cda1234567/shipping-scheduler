@@ -428,6 +428,18 @@ body {
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-weight: 700;
 }
+.st-reconcile-mapping-panel {
+  display: grid;
+  gap: 8px;
+}
+.st-reconcile-mapping-choice {
+  min-width: 320px;
+  max-width: 560px;
+}
+.st-reconcile-mapping-choice .defective-resolution-actions {
+  grid-template-columns: auto minmax(180px, 1fr);
+  margin-top: 0;
+}
 .st-reconcile-table .is-negative {
   color: #dc2626;
   font-weight: 700;

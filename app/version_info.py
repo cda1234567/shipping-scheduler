@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.30.2"
+APP_VERSION = "v2026.09.30.3"
 APP_RELEASED_AT = "2026-09-30"
-APP_HEADLINE = "盤點套用安全確認"
+APP_HEADLINE = "盤點料號推薦與人工選料"
 APP_CHANGELOG = [
+    {
+        "title": "盤點料號推薦",
+        "items": [
+            "庚霖盤點料號在主檔找不到時，會列出相近主檔料號，可點選推薦或自行輸入；未選仍跳過，不會自動替換。",
+            "選料後必須重新試算，畫面會顯示來源料號與選定主檔料號；人工選料不會自動勾選，核對並確認後才套用。",
+        ],
+    },
     {
         "title": "盤點套用安全確認",
         "items": [

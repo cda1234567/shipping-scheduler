@@ -943,17 +943,28 @@ document.getElementById("btn-refresh-app").addEventListener("click", () => {
 let _lastStReconcilePreview = null;
 let _stReconcileCutoffMode = "batch";
 let _activeStInventoryCount = null;
+let _stReconcilePartMappings = {};
+let _stReconcilePreviewRevision = 0;
 const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
 const ST_RECONCILE_MATCHED_CATEGORY = "無差異";
 
-function clearStReconcilePreview(message = "資料已變更，請重新試算後再核對。") {
+function clearStReconcilePreview(message = "資料已變更，請重新試算後再核對。", { preserveMappings = false, preserveMappingControls = false } = {}) {
   _lastStReconcilePreview = null;
+  _stReconcilePreviewRevision += 1;
+  if (!preserveMappings) _stReconcilePartMappings = {};
   const result = document.getElementById("st-reconcile-result");
   const assumptions = document.getElementById("st-reconcile-assumptions");
   const commitRow = document.getElementById("st-reconcile-commit-row");
   const commitStatus = document.getElementById("st-reconcile-commit-status");
   const status = document.getElementById("st-reconcile-status");
-  if (result) result.innerHTML = "";
+  if (result) {
+    const controls = preserveMappingControls ? result.querySelector(".st-reconcile-mapping-panel") : null;
+    if (controls) {
+      Array.from(controls.parentElement.children).forEach(child => {
+        if (child !== controls) child.remove();
+      });
+    } else result.replaceChildren();
+  }
   if (assumptions) assumptions.innerHTML = "";
   if (commitRow) commitRow.style.display = "none";
   if (commitStatus) commitStatus.textContent = "";
@@ -1092,17 +1103,59 @@ function formatReconcileQty(value) {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
 }
 
+function renderStReconcileMappingChoice(sourcePart, suggestions = []) {
+  return `<div class="st-reconcile-mapping-choice" data-source-part="${esc(sourcePart)}">
+    <div class="defective-resolution-actions">
+      <button class="btn btn-secondary btn-sm st-reconcile-mapping-skip" type="button">跳過／取消選料</button>
+      <input class="st-reconcile-mapping-target" type="text" value="${esc(_stReconcilePartMappings[sourcePart] || "")}" placeholder="輸入正確主檔料號" aria-label="${esc(sourcePart)} 的正確主檔料號">
+    </div>
+    ${suggestions.length ? `<div class="defective-resolution-suggestions">${suggestions.slice(0, 5).map(suggestion =>
+      `<button class="defective-resolution-suggestion st-reconcile-mapping-suggestion" type="button" data-part="${esc(suggestion.part_number || "")}">${esc(suggestion.part_number || "")}（主檔 ${esc(formatReconcileQty(suggestion.stock_qty))}）</button>`
+    ).join("")}</div>` : ""}
+  </div>`;
+}
+
+function setStReconcilePartMapping(choice, target) {
+  const source = String(choice?.dataset.sourcePart || "").trim().toUpperCase();
+  if (!source) return;
+  const normalizedTarget = String(target || "").trim().toUpperCase();
+  if ((_stReconcilePartMappings[source] || "") === normalizedTarget) return;
+  if (normalizedTarget) _stReconcilePartMappings[source] = normalizedTarget;
+  else delete _stReconcilePartMappings[source];
+  clearStReconcilePreview("料號選擇已變更，請重新試算再核對；尚未寫入庫存。", { preserveMappings: true, preserveMappingControls: true });
+}
+
+document.getElementById("st-reconcile-result")?.addEventListener("input", event => {
+  if (!event.target.matches(".st-reconcile-mapping-target")) return;
+  setStReconcilePartMapping(event.target.closest(".st-reconcile-mapping-choice"), event.target.value);
+});
+document.getElementById("st-reconcile-result")?.addEventListener("click", event => {
+  const suggestion = event.target.closest(".st-reconcile-mapping-suggestion");
+  const skip = event.target.closest(".st-reconcile-mapping-skip");
+  if (suggestion || skip) {
+    const choice = (suggestion || skip).closest(".st-reconcile-mapping-choice");
+    const input = choice?.querySelector(".st-reconcile-mapping-target");
+    if (input) input.value = suggestion?.dataset.part || "";
+    setStReconcilePartMapping(choice, input?.value || "");
+  }
+  if (event.target.closest(".st-reconcile-mapping-preview")) void handleStReconcilePreview();
+});
+
 function renderStReconcileUncovered(report) {
   const items = report?.uncovered_parts || [];
-  if (!items.length) return "";
+  const mappings = report?.part_mappings || {};
+  const mappedEntries = Object.entries(mappings);
+  if (!items.length && !mappedEntries.length) return "";
   const unknownItems = items.filter(item => item.reason != null);
   const uncoveredItems = items.filter(item => item.reason == null);
+  const showMappingChoices = Boolean(report?.cutoff_batch_code && (unknownItems.some(item => item.can_map) || mappedEntries.length));
   const unknownRows = unknownItems.map(item => `
     <tr>
       <td>${esc(item.part_number || "")}</td>
       <td>${esc(Array.isArray(item.source_part_numbers) ? item.source_part_numbers.join("、") : String(item.source_part_numbers || ""))}</td>
       <td class="num">${item.physical_qty == null ? "未填" : esc(formatReconcileQty(item.physical_qty))}</td>
       <td>${esc(item.reason || "")}</td>
+      ${showMappingChoices ? `<td>${item.can_map ? renderStReconcileMappingChoice(String(item.source_part_number || item.part_number || "").trim().toUpperCase(), item.suggestions || []) : "主檔結存需先確認，不能換料"}</td>` : ""}
     </tr>`).join("");
   const windowStart = String(report?.uncovered_window_start || "").replace("T", " ").slice(0, 16);
   const rows = uncoveredItems.map(item => `
@@ -1113,6 +1166,7 @@ function renderStReconcileUncovered(report) {
       <td>${esc(String(item.last_at || "").replace("T", " ").slice(0, 16))}</td>
     </tr>`).join("");
   return `
+    <div class="st-reconcile-mapping-panel">
     ${unknownItems.length ? `
     <div class="st-reconcile-group-head" style="margin-top:14px">
       <h4>⚠ 主檔無有效結存（${unknownItems.length} 支）</h4>
@@ -1120,10 +1174,16 @@ function renderStReconcileUncovered(report) {
     </div>
     <div class="st-reconcile-table-wrap">
       <table class="st-reconcile-table">
-        <thead><tr><th>料號</th><th>來源料號</th><th>庚霖實盤</th><th>原因</th></tr></thead>
+        <thead><tr><th>料號</th><th>來源料號</th><th>庚霖實盤</th><th>原因</th>${showMappingChoices ? "<th>選擇正確主檔料號（留空跳過）</th>" : ""}</tr></thead>
         <tbody>${unknownRows}</tbody>
       </table>
     </div>` : ""}
+    ${mappedEntries.length ? `<div class="st-reconcile-group-head" style="margin-top:14px"><h4>已選料號（${mappedEntries.length} 支，仍須核對）</h4></div>
+      <div class="st-reconcile-table-wrap"><table class="st-reconcile-table"><thead><tr><th>來源 → 主檔料號</th><th>修改選料</th></tr></thead><tbody>${mappedEntries.map(([source, target]) =>
+        `<tr><td class="st-reconcile-part">${esc(source)} → ${esc(target)}</td><td>${renderStReconcileMappingChoice(source)}</td></tr>`
+      ).join("")}</tbody></table></div>` : ""}
+    ${showMappingChoices ? `<div class="st-reconcile-commit-row"><button class="btn btn-secondary btn-sm st-reconcile-mapping-preview" type="button">套用料號選擇並重新試算</button><span class="desktop-status-meta">選料只用於本次盤點；重新試算不會寫入庫存，未選仍跳過。</span></div>` : ""}
+    </div>
     ${uncoveredItems.length ? `
     <div class="st-reconcile-group-head" style="margin-top:14px">
       <h4>⚠ 未被盤點覆蓋（${uncoveredItems.length} 支，多為自備料）</h4>
@@ -1177,6 +1237,7 @@ function isSelectableStReconcilePart(row) {
 
 function isDefaultSelectedStReconcilePart(row, hasLedger) {
   if (!isSelectableStReconcilePart(row)) return false;
+  if (row.manual_mapping) return false;
   if (!hasLedger) return true;
   return row.category === ST_RECONCILE_MATCHED_CATEGORY && !getStReconcileWarning(row);
 }
@@ -1202,7 +1263,7 @@ function updateStReconcileCommitCount() {
       ? `套用已核對 ${selectedCount} 支並結束盤點（未勾不變）`
       : `設為 ST 停損點（${selectedCount} 支料）`;
     const missingRequiredToken = batchLedger && !_lastStReconcilePreview?.preview_token;
-    button.disabled = selectedCount === 0 || !_activeStInventoryCount || missingRequiredToken;
+    button.disabled = !_lastStReconcilePreview || selectedCount === 0 || !_activeStInventoryCount || missingRequiredToken;
   }
 }
 
@@ -1280,7 +1341,7 @@ function renderStReconcilePreview(report) {
               ? `<input class="st-reconcile-part-check" type="checkbox" data-part="${esc(row.part_number)}" data-default-safe="${defaultSelected ? "true" : "false"}"${defaultSelected ? " checked" : ""} aria-label="選取 ${esc(row.part_number)}">`
               : ""}
           </td>
-          <td class="st-reconcile-part">${esc(row.part_number)}</td>
+          <td class="st-reconcile-part">${row.manual_mapping ? `${esc((row.source_part_numbers || []).join("、"))} → ` : ""}${esc(row.part_number)}</td>
           <td>${esc(row.description || "")}</td>
           <td class="num">${formatReconcileQty(row.book_qty)}</td>
           <td class="num">${row.physical_qty == null ? "未填" : formatReconcileQty(row.physical_qty)}</td>
@@ -1370,10 +1431,21 @@ async function handleStReconcilePreview() {
     showToast("請先選擇停損批次或輸入截止日");
     return;
   }
-  clearStReconcilePreview("試算中...");
+  const mappingEntries = Object.entries(_stReconcilePartMappings);
+  if (new Set(mappingEntries.map(([, target]) => target)).size !== mappingEntries.length) {
+    showToast("多個盤點料號不能選同一支主檔料號，請先修改選料", { tone: "error" });
+    return;
+  }
+  if (getStReconcileCutoffFields()?.cutoff_batch_code && mappingEntries.length) {
+    formData.append("part_mappings", JSON.stringify(_stReconcilePartMappings));
+  }
+  clearStReconcilePreview("試算中...", { preserveMappings: true, preserveMappingControls: true });
+  const requestRevision = _stReconcilePreviewRevision;
   statusEl.textContent = "試算中...";
   try {
     const report = await apiJson("/api/reconcile/st/preview", { method: "POST", body: formData });
+    if (requestRevision !== _stReconcilePreviewRevision) return;
+    _stReconcilePartMappings = { ...(report.part_mappings || {}) };
     _lastStReconcilePreview = report;
     statusEl.textContent = report.mode === "stop_loss"
       ? "庚霖格式試算完成；請先核對有差異的料號，再套用已勾選項目。"
@@ -1381,10 +1453,10 @@ async function handleStReconcilePreview() {
     renderStReconcileAssumptions(report.assumptions || []);
     renderStReconcilePreview(report);
   } catch (error) {
+    if (requestRevision !== _stReconcilePreviewRevision) return;
     _lastStReconcilePreview = null;
     statusEl.textContent = "試算失敗：" + error.message;
     renderStReconcileAssumptions([]);
-    document.getElementById("st-reconcile-result").innerHTML = "";
     document.getElementById("st-reconcile-commit-row").style.display = "none";
     updateStReconcileCommitCount();
   }
@@ -1399,6 +1471,7 @@ async function handleStReconcileCommit() {
     return;
   }
   const previewToken = String(_lastStReconcilePreview.preview_token || "").trim();
+  const previewMappings = { ...(_lastStReconcilePreview.part_mappings || {}) };
   const requiresPreviewToken = stReconcilePreviewRequiresToken();
   if (requiresPreviewToken && !previewToken) {
     showToast("這份試算沒有安全驗證碼，請重新試算後再套用", { tone: "error" });
@@ -1463,6 +1536,7 @@ async function handleStReconcileCommit() {
   const formData = new FormData();
   formData.append("file", file);
   if (previewToken) formData.append("preview_token", previewToken);
+  if (requiresPreviewToken && Object.keys(previewMappings).length) formData.append("part_mappings", JSON.stringify(previewMappings));
   appendStReconcileCutoff(formData);
   selectedParts.forEach(part => formData.append("part_numbers", part));
   commitStatus.textContent = requiresPreviewToken ? "正在備份並寫入主檔..." : "正在建立 ST 停損點...";

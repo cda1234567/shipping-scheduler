@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import sqlite3
 import unittest
 from contextlib import contextmanager
@@ -10,7 +11,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from fastapi import HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
 from app import database as db
@@ -29,7 +31,7 @@ class BatchReconcileTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.conn = sqlite3.connect(':memory:')
+        self.conn = sqlite3.connect(':memory:', check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(db._CREATE_SQL)
         self.addCleanup(self.conn.close)
@@ -94,17 +96,18 @@ class BatchReconcileTests(unittest.TestCase):
         ])
         db.start_inventory_count_session(cutoff_at='2026-09-19T10:00:00', cutoff_code='9-12')
 
-    def preview(self):
+    def preview(self, mappings=None):
         return build_st_reconcile_preview(
             str(self.count),
             '2026-09-19T10:00:00',
             cutoff_batch_code='9-12',
             source_filename=self.count.name,
+            part_mappings=mappings,
         )
 
-    def commit(self, *, parts=None, token=None):
+    def commit(self, *, parts=None, token=None, mappings=None):
         if token is None:
-            token = self.preview()['preview_token']
+            token = self.preview(mappings)['preview_token']
         return commit_st_reconcile_stop_loss(
             str(self.count),
             '2026-09-19T10:00:00',
@@ -112,7 +115,21 @@ class BatchReconcileTests(unittest.TestCase):
             source_filename=self.count.name,
             part_numbers=parts or ['EC-20128A-TAB'],
             preview_token=token,
+            part_mappings=mappings,
         )
+
+    def set_count_part(self, row, part):
+        wb = load_workbook(self.count)
+        wb.active.cell(row, 4).value = part
+        wb.save(self.count)
+        wb.close()
+
+    def invalidate_cutoff(self, row):
+        wb = load_workbook(self.main)
+        for col in (8, 11, 14, 17):
+            wb.active.cell(row, col).value = None
+        wb.save(self.main)
+        wb.close()
 
     @staticmethod
     def file_hash(path: Path) -> str:
@@ -139,6 +156,167 @@ class BatchReconcileTests(unittest.TestCase):
             [-2848, -2848, 351, 769, 3968, 3199],
         )
         self.assertEqual(other['current_st'], 9236)
+
+    def test_missing_part_suggestions_use_valid_unoccupied_main_balance_not_st(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        self.conn.execute("INSERT INTO st_inventory_snapshot(part_number,stock_qty) VALUES('EC-20128A-TA8',12345)")
+        report = self.preview()
+        missing = report['uncovered_parts'][0]
+        self.assertEqual(missing['source_part_number'], 'EC-20128A-TA8')
+        self.assertTrue(missing['can_map'])
+        self.assertEqual(missing['suggestions'], [{'part_number': 'EC-20128A-TAB', 'stock_qty': 635}])
+        self.assertEqual(report['part_mappings'], {})
+
+    def test_st_only_exact_part_does_not_block_main_tab_alias(self):
+        self.set_count_part(5, 'EC-20128A')
+        self.conn.execute("INSERT INTO st_inventory_snapshot(part_number,stock_qty) VALUES('EC-20128A',12345)")
+        row = next(row for row in self.preview()['parts'] if row['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['source_part_numbers'], ['EC-20128A'])
+        self.assertEqual(row['expected_count'], 771)
+        self.assertNotIn('manual_mapping', row)
+
+    def test_mapping_normalizes_and_uses_target_defects_and_main_balances(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        report = self.preview({' ec-20128a-ta8 ': ' ec-20128a-tab '})
+        self.assertEqual(report['part_mappings'], {'EC-20128A-TA8': 'EC-20128A-TAB'})
+        row = next(row for row in report['parts'] if row['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['source_part_numbers'], ['EC-20128A-TA8'])
+        self.assertTrue(row['manual_mapping'])
+        self.assertIn('EC-20128A-TA8 → EC-20128A-TAB', row['warnings'][0])
+        self.assertEqual([row[key] for key in ('physical_qty', 'defect_delta', 'expected_count', 'target_main', 'main_adjustment')], [771, -9, 771, 635, 0])
+        self.assertEqual(report['uncovered_parts'], [])
+
+    def test_mapped_commit_only_writes_selected_target_and_preserves_source_stock(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        mappings = {'EC-20128A-TA8': 'EC-20128A-TAB'}
+        before_st = db.get_st_inventory_stock()
+        result = self.commit(mappings=mappings)
+        self.assertEqual(result['part_mappings'], mappings)
+        self.assertEqual(result['parts'][0]['source_part_numbers'], ['EC-20128A-TA8'])
+        self.assertEqual(result['parts'][0]['main_after'], 635)
+        self.assertEqual(db.get_st_inventory_stock(), before_st)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM st_reconcile_alignments').fetchone()[0], 0)
+        self.assertEqual(read_stock(str(self.main))['EC-30037A-TAB'], 769)
+        self.assertEqual(parse_st_reconcile_file(str(self.count))['rows'][0]['part_number'], 'EC-20128A-TA8')
+
+    def test_exact_and_alias_matches_cannot_be_manually_overridden(self):
+        with self.assertRaisesRegex(ValueError, '已匹配主檔'):
+            self.preview({'EC-20128A-TAB': 'PART-KEEP'})
+        self.set_count_part(5, 'EC-20128A')
+        with self.assertRaisesRegex(ValueError, '已匹配主檔'):
+            self.preview({'EC-20128A': 'PART-KEEP'})
+
+    def test_existing_main_part_without_valid_balance_cannot_be_mapped(self):
+        self.invalidate_cutoff(2)
+        row = self.preview()['uncovered_parts'][0]
+        self.assertFalse(row['can_map'])
+        self.assertEqual(row['suggestions'], [])
+        self.assertIn('請先檢查主檔', row['reason'])
+        with self.assertRaisesRegex(ValueError, '已匹配主檔'):
+            self.preview({'EC-20128A-TAB': 'PART-KEEP'})
+
+    def test_target_requires_effective_main_cutoff_and_current_balance(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        self.invalidate_cutoff(2)
+        with self.assertRaisesRegex(ValueError, '有效截止批次及目前結存'):
+            self.preview({'EC-20128A-TA8': 'EC-20128A-TAB'})
+        self.assertNotIn('EC-20128A-TAB', [item['part_number'] for item in self.preview()['uncovered_parts'][0]['suggestions']])
+        with self.assertRaisesRegex(ValueError, '有效截止批次及目前結存'):
+            self.preview({'EC-20128A-TA8': 'ST-ONLY'})
+
+    def test_mapping_rejects_unknown_sources_and_malformed_schema(self):
+        invalid_mappings = [[], {'EC-20128A-TAB': 1}, {'': 'PART-KEEP'}, {'EC-20128A-TAB': ''}, {' ec-20128a-tab ': 'PART-KEEP', 'EC-20128A-TAB': 'PART-KEEP'}]
+        for mappings in invalid_mappings:
+            with self.subTest(mappings=mappings), self.assertRaises(ValueError):
+                self.preview(mappings)
+        with self.assertRaisesRegex(ValueError, '不在本次盤點表'):
+            self.preview({'NOT-IN-FILE': 'EC-20128A-TAB'})
+
+    def test_mapping_cannot_merge_different_sources_or_occupied_exact_target(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        with self.assertRaisesRegex(ValueError, '不會自動合併'):
+            self.preview({'EC-20128A-TA8': 'PART-KEEP'})
+        self.set_count_part(6, 'EC-20128A-TA9')
+        with self.assertRaisesRegex(ValueError, '不會自動合併'):
+            self.preview({'EC-20128A-TA8': 'EC-20128A-TAB', 'EC-20128A-TA9': 'EC-20128A-TAB'})
+        self.set_count_part(6, 'EC-20128A')
+        with self.assertRaisesRegex(ValueError, '不會自動合併'):
+            self.preview({'EC-20128A-TA8': 'EC-20128A-TAB'})
+
+    def test_same_source_duplicate_rows_keep_original_sum_after_mapping(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        self.set_count_part(6, 'EC-20128A-TA8')
+        row = next(row for row in self.preview({'EC-20128A-TA8': 'EC-20128A-TAB'})['parts'] if row['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['source_part_numbers'], ['EC-20128A-TA8'])
+        self.assertEqual(row['physical_qty'], 1122)
+        self.assertEqual(row['book_qty'], -2068)
+
+    def test_mapping_change_requires_new_preview_token_and_writes_nothing(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        token = self.preview()['preview_token']
+        before = self.file_hash(self.main)
+        mappings = {'EC-20128A-TA8': 'EC-20128A-TAB'}
+        self.assertNotEqual(token, self.preview(mappings)['preview_token'])
+        with self.assertRaisesRegex(StaleReconcilePreviewError, '重新試算'):
+            self.commit(token=token, mappings=mappings)
+        self.assertEqual(self.file_hash(self.main), before)
+        self.assertIsNotNone(db.get_active_inventory_count_session('st'))
+        self.assertFalse((Path(self.tmp.name) / 'backups').exists())
+
+    def test_invalid_mapping_commit_is_input_error_and_does_not_write(self):
+        before = self.file_hash(self.main)
+        with self.assertRaises(st_reconcile.PartMappingError):
+            self.commit(mappings={'EC-20128A-TAB': 'PART-KEEP'}, token=self.preview()['preview_token'])
+        self.assertEqual(self.file_hash(self.main), before)
+        self.assertIsNotNone(db.get_active_inventory_count_session('st'))
+
+    def test_legacy_nonempty_mappings_are_rejected_without_writes(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        before_st = db.get_st_inventory_stock()
+        mappings = {'EC-20128A-TA8': 'EC-20128A-TAB'}
+        with self.assertRaisesRegex(ValueError, '只支援選擇截止批次'):
+            build_st_reconcile_preview(str(self.count), '2026-09-19', part_mappings=mappings)
+        with self.assertRaisesRegex(ValueError, '只支援選擇截止批次'):
+            commit_st_reconcile_stop_loss(str(self.count), '2026-09-19', part_mappings=mappings)
+        self.assertEqual(db.get_st_inventory_stock(), before_st)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM st_reconcile_alignments').fetchone()[0], 0)
+
+    def test_api_json_mapping_validation_precedes_file_reads(self):
+        invalid_json = ['not json', '[]', 'null', '"text"', '{"A": 1}', '{"A": "B", "A": "C"}', '{" a ": "B", "A": "C"}']
+        for raw in invalid_json:
+            for endpoint in (reconcile_router.preview_st_reconcile, reconcile_router.commit_st_reconcile):
+                upload = UploadFile(filename=self.count.name, file=io.BytesIO(self.count.read_bytes()))
+                with self.subTest(raw=raw, endpoint=endpoint.__name__), self.assertRaises(HTTPException) as raised:
+                    asyncio.run(endpoint(file=upload, part_mappings=raw))
+                self.assertEqual(raised.exception.status_code, 400)
+                self.assertEqual(upload.file.tell(), 0)
+
+    def test_api_form_mapping_is_forwarded_and_token_change_returns_409(self):
+        self.set_count_part(5, 'EC-20128A-TA8')
+        app = FastAPI()
+        app.include_router(reconcile_router.router)
+        old_token = self.preview()['preview_token']
+        before = self.file_hash(self.main)
+        with (
+            TestClient(app) as client,
+            patch.object(reconcile_router, '_resolve_cutoff', return_value=('2026-09-19T10:00:00', '9-12')),
+            patch.object(reconcile_router, 'RECONCILE_UPLOAD_DIR', Path(self.tmp.name)),
+        ):
+            form = {'cutoff_batch_code': '9-12', 'part_mappings': json.dumps({' ec-20128a-ta8 ': ' ec-20128a-tab '})}
+            files = {'file': (self.count.name, self.count.read_bytes(), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
+            response = client.post('/reconcile/st/preview', data=form, files=files)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['part_mappings'], {'EC-20128A-TA8': 'EC-20128A-TAB'})
+            form.update(part_numbers='EC-20128A-TAB', preview_token=old_token)
+            response = client.post('/reconcile/st/commit', data=form, files=files)
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn('重新試算', response.json()['detail'])
+            form['part_mappings'] = json.dumps({'EC-20128A-TAB': 'PART-KEEP'})
+            response = client.post('/reconcile/st/commit', data=form, files=files)
+            self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.file_hash(self.main), before)
+        self.assertIsNotNone(db.get_active_inventory_count_session('st'))
+        self.assertFalse((Path(self.tmp.name) / 'backups').exists())
 
     def test_commit_writes_only_selected_main_and_never_st_or_alignment(self):
         st_before = db.get_st_inventory_stock()

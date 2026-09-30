@@ -28,6 +28,7 @@ from .main_file_lock import serialized_main_file_write
 from .main_file_recalc import _stock_events, recalc_batch_balances_for_cell
 from .main_insertion import insert_columns, validate_insertion_anchor
 from .merge_to_main import PART_COL, _save_workbook_atomically, backup_main_file
+from .overrun_deduction import suggest_main_part_numbers
 from .xls_reader import open_workbook_any
 
 CUSTOMER_HEADER = "客戶編號"
@@ -52,6 +53,10 @@ CATEGORY_GENLIN_BLANK_PHYSICAL = "未填實盤，跳過"
 
 class StaleReconcilePreviewError(ValueError):
     """盤點試算所依據的檔案或資料已變更。"""
+
+
+class PartMappingError(ValueError):
+    """盤點來源料號與主檔料號的人工對應不合法。"""
 
 ASSUMPTIONS = [
     "本試算只讀取上傳盤點表，不會寫入 ST 庫存，也不會建立對齊點。",
@@ -119,6 +124,24 @@ def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
         if part and part != "[]"
     ]
     return list(dict.fromkeys(normalized))
+
+
+def normalize_reconcile_part_mappings(values: dict[str, str] | None) -> dict[str, str]:
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise PartMappingError("料號對應格式需為原料號與主檔料號的對照表")
+    normalized: dict[str, str] = {}
+    for source, target in values.items():
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise PartMappingError("料號對應的原料號與主檔料號都需為文字")
+        source_part, target_part = _normalize_part(source), _normalize_part(target)
+        if not source_part or not target_part:
+            raise PartMappingError("料號對應的原料號與主檔料號不可空白")
+        if source_part in normalized:
+            raise PartMappingError(f"原料號 {source_part} 有重複的料號對應")
+        normalized[source_part] = target_part
+    return normalized
 
 
 def _try_float(value: Any) -> float:
@@ -502,6 +525,7 @@ def _batch_preview_token(
     batch_code: str,
     session: dict,
     rows: list[dict],
+    part_mappings: dict[str, str],
 ) -> str:
     """鎖定盤點來源、主檔、工作階段及所有可選料號的試算依據。"""
     payload = {
@@ -514,6 +538,7 @@ def _batch_preview_token(
         "count_date": parsed.get("count_date") or "",
         "source_sha256": parsed.get("source_sha256") or "",
         "main_sha256": _sha256_file(main_path),
+        "part_mappings": part_mappings,
         "parts": [
             {
                 key: row.get(key)
@@ -538,7 +563,8 @@ def _batch_preview_token(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, source_filename: str, tol: float) -> dict:
+def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, source_filename: str, tol: float,
+                                part_mappings: dict[str, str]) -> dict:
     count_date = parsed.get('count_date') or ''
     if not count_date and source_filename:
         for match in re.finditer(r'(?<!\d)(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?!\d)', source_filename):
@@ -561,12 +587,29 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
     stocks = read_batch_stock(main_path, batch_code)
     current_st = db.get_st_inventory_stock()
-    available = set(read_stock(main_path)) | set(current_st)
+    available = set(read_stock(main_path))
+    source_parts = {_normalize_part(row['part_number']) for row in parsed['rows']}
+    resolved_parts = {source: _resolve_part(source, available) for source in source_parts}
+    for source, target in part_mappings.items():
+        if source not in source_parts:
+            raise PartMappingError(f'原料號 {source} 不在本次盤點表中')
+        if resolved_parts[source] in available:
+            raise PartMappingError(f'原料號 {source} 已匹配主檔，不可改成其他料號；若無有效結存請先檢查主檔')
+        if target not in stocks:
+            raise PartMappingError(f'選定料號 {target} 不是具有有效截止批次及目前結存的主檔料號')
+        resolved_parts[source] = target
+    sources_by_target: dict[str, list[str]] = defaultdict(list)
+    for source, target in resolved_parts.items():
+        sources_by_target[target].append(source)
+    for target, sources in sources_by_target.items():
+        if len(sources) > 1 and any(source in part_mappings for source in sources):
+            raise PartMappingError(f'原料號 {"、".join(sorted(sources))} 同時對應到 {target}，請分開核對，不會自動合併')
+    candidate_stock = {part: values['current_main'] for part, values in stocks.items() if part not in sources_by_target}
     defects = db.get_defective_interval_parts(cutoff_at, count_at)
     combined = {}
     for source_row in parsed['rows']:
         source_part = _normalize_part(source_row['part_number'])
-        part = _resolve_part(source_part, available)
+        part = resolved_parts[source_part]
         row = combined.setdefault(part, dict(part_number=part, source_part_numbers=[], description=source_row.get('description') or '', book_qty=0.0, physical_qty=None))
         if source_part not in row['source_part_numbers']:
             row['source_part_numbers'].append(source_part)
@@ -578,7 +621,14 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
     summary = _build_genlin_summary()
     for part, row in sorted(combined.items()):
         if part not in stocks:
-            uncovered.append(dict(row, reason=f'主檔找不到料號 {part} 的有效截止批次或目前結存，無法對帳'))
+            can_map = part not in available
+            reason = (f'主檔找不到料號 {part}，可人工選擇正確料號後重新試算' if can_map
+                      else f'主檔料號 {part} 已存在，但無有效截止批次或目前結存；請先檢查主檔，不可改成其他料號')
+            uncovered.append(dict(row,
+                                  source_part_number=row['source_part_numbers'][0],
+                                  can_map=can_map,
+                                  suggestions=suggest_main_part_numbers(part, candidate_stock) if can_map else [],
+                                  reason=reason))
             continue
         row.update(stocks[part])
         row.update(defects.get(part, {'defect_delta': 0.0, 'defective_record_ids': []}))
@@ -594,6 +644,10 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         row['book_vs_physical_diff'] = round(row['book_qty'] - physical, 6) if physical is not None else None
         row['category'] = CATEGORY_GENLIN_BLANK_PHYSICAL if physical is None else CATEGORY_MATCHED if abs(row['diff']) <= tol else CATEGORY_STOP_LOSS
         row['notes'] = ['後續批次異動保留，現在庫存以主檔結存重算']
+        if any(source in part_mappings for source in row['source_part_numbers']):
+            row['manual_mapping'] = True
+            row['warnings'] = [f'人工選定料號：{source} → {part}，請重新核對數量'
+                               for source in row['source_part_numbers'] if source in part_mappings]
         summary[row['category']] += 1
         rows.append(row)
     preview_token = _batch_preview_token(
@@ -603,10 +657,11 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         batch_code=batch_code,
         session=session,
         rows=rows,
+        part_mappings=part_mappings,
     )
     return dict(format='genlin', mode='stop_loss', cutoff_date=cutoff_at, cutoff_batch_code=batch_code,
                 count_date=count_date, sheet_name=parsed['sheet_name'], source_columns=parsed['source_columns'],
-                preview_token=preview_token,
+                preview_token=preview_token, part_mappings=part_mappings,
                 parts=rows, summary=summary, categories={key: [row for row in rows if row['category'] == key] for key in summary},
                 uncovered_parts=uncovered, assumptions=[
                     _build_genlin_assumptions(parsed['source_columns'])[0],
@@ -618,13 +673,17 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
 
 
 def build_st_reconcile_preview(path: str, cutoff_date: str, *, tol: float = 1e-6,
-                               cutoff_batch_code: str = '', source_filename: str = '') -> dict[str, Any]:
+                               cutoff_batch_code: str = '', source_filename: str = '',
+                               part_mappings: dict[str, str] | None = None) -> dict[str, Any]:
+    normalized_mappings = normalize_reconcile_part_mappings(part_mappings)
     parsed = parse_st_reconcile_file(path)
+    if normalized_mappings and (parsed.get('format') != 'genlin' or not cutoff_batch_code):
+        raise PartMappingError('人工料號對應只支援選擇截止批次的庚霖主檔盤點')
     part_numbers = [str(row.get("part_number") or "") for row in parsed["rows"] if row.get("part_number")]
     cutoff_for_query = _normalize_cutoff_for_query(cutoff_date)
     if parsed.get("format") == "genlin":
         if cutoff_batch_code:
-            return _build_batch_genlin_preview(parsed, cutoff_for_query, cutoff_batch_code, source_filename, tol)
+            return _build_batch_genlin_preview(parsed, cutoff_for_query, cutoff_batch_code, source_filename, tol, normalized_mappings)
         return _build_genlin_preview(parsed, cutoff_date, cutoff_for_query, tol)
 
     theoretical = theoretical_stock_with_details(cutoff_for_query, part_numbers=part_numbers)
@@ -791,6 +850,7 @@ def _commit_batch_genlin(
     batch_code: str,
     selected_parts: list[str],
     preview_token: str,
+    part_mappings: dict[str, str],
 ) -> dict:
     """把批次盤點差異寫入主檔；ST 庫存與 ST 歷史完全不變。"""
     try:
@@ -799,7 +859,10 @@ def _commit_batch_genlin(
             cutoff_at,
             cutoff_batch_code=batch_code,
             source_filename=source_filename,
+            part_mappings=part_mappings,
         )
+    except PartMappingError:
+        raise
     except ValueError as error:
         raise StaleReconcilePreviewError(
             f"盤點來源或主檔已變更，請重新試算後再按確認：{error}"
@@ -905,6 +968,7 @@ def _commit_batch_genlin(
             cutoff_batch_code=batch_code,
             source_columns=preview['source_columns'],
             preview_token=preview['preview_token'],
+            part_mappings=preview['part_mappings'],
             backup_path=backup_path,
             session_completed=True,
             summary=summary,
@@ -957,7 +1021,9 @@ def commit_st_reconcile_stop_loss(
     part_numbers: list[str] | None = None,
     cutoff_label: str = "",
     preview_token: str = "",
+    part_mappings: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    normalized_mappings = normalize_reconcile_part_mappings(part_mappings)
     selected_parts = _normalize_part_numbers(part_numbers)
     if part_numbers is not None and not selected_parts:
         raise ValueError("請至少勾選 1 支料號再建立停損點")
@@ -972,9 +1038,11 @@ def commit_st_reconcile_stop_loss(
             cutoff_label,
             selected_parts,
             str(preview_token or '').strip(),
+            normalized_mappings,
         )
 
-    preview = build_st_reconcile_preview(path, cutoff_date, cutoff_batch_code=cutoff_label, source_filename=source_filename)
+    preview = build_st_reconcile_preview(path, cutoff_date, cutoff_batch_code=cutoff_label,
+                                        source_filename=source_filename, part_mappings=normalized_mappings)
     if preview.get("format") != "genlin":
         raise ValueError("停損點 commit 目前只支援庚霖實際庫存格式")
     selected_part_set = set(selected_parts or [])

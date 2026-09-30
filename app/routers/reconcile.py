@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -14,6 +16,7 @@ from ..services.st_reconcile import (
     StaleReconcilePreviewError,
     build_st_reconcile_preview,
     commit_st_reconcile_stop_loss,
+    normalize_reconcile_part_mappings,
     resolve_cutoff_batch,
 )
 
@@ -108,12 +111,34 @@ def _normalize_part_numbers(values: list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(normalized))
 
 
+def _parse_part_mappings(value: str) -> dict[str, str]:
+    def unique_object(pairs):
+        result = {}
+        for source, target in pairs:
+            if source in result:
+                raise ValueError(f'原料號 {source} 有重複的料號對應')
+            result[source] = target
+        return result
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=unique_object)
+        if not isinstance(parsed, dict):
+            raise ValueError('料號對應需為原料號與主檔料號的對照表')
+        return normalize_reconcile_part_mappings(parsed)
+    except (json.JSONDecodeError, TypeError, RecursionError) as error:
+        raise HTTPException(400, '料號對應格式錯誤，請重新選擇料號後試算') from error
+    except ValueError as error:
+        raise HTTPException(400, f'料號對應格式錯誤：{error}') from error
+
+
 @router.post("/reconcile/st/preview")
 async def preview_st_reconcile(
     cutoff_date: str | None = Form(None),
     cutoff_batch_code: str | None = Form(None),
     file: UploadFile = File(...),
+    part_mappings: Annotated[str, Form()] = "{}",
 ):
+    mappings = _parse_part_mappings(part_mappings)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
         raise HTTPException(400, "盤點對帳只支援 xlsx / xls / xlsm")
@@ -127,7 +152,8 @@ async def preview_st_reconcile(
     try:
         temp_path.write_bytes(content)
         return build_st_reconcile_preview(str(temp_path), cutoff_text,
-                                          cutoff_batch_code=batch_label, source_filename=file.filename or '')
+                                          cutoff_batch_code=batch_label, source_filename=file.filename or '',
+                                          part_mappings=mappings)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
     except Exception as error:
@@ -143,7 +169,9 @@ async def commit_st_reconcile(
     file: UploadFile = File(...),
     part_numbers: list[str] | None = Form(None),
     preview_token: str = Form(""),
+    part_mappings: Annotated[str, Form()] = "{}",
 ):
+    mappings = _parse_part_mappings(part_mappings)
     ext = Path(file.filename or "").suffix.lower()
     if ext not in {".xlsx", ".xls", ".xlsm"}:
         raise HTTPException(400, "盤點對帳只支援 xlsx / xls / xlsm")
@@ -175,6 +203,7 @@ async def commit_st_reconcile(
             part_numbers=selected_parts,
             cutoff_label=batch_label,
             preview_token=preview_token,
+            part_mappings=mappings,
         )
         if not result.get("session_completed"):
             db.finish_inventory_count_session(

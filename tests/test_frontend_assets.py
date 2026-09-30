@@ -1300,3 +1300,16 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('esc(formatReconcileQty(item.physical_qty))', index_html)
         self.assertIn('esc(item.reason || "")', index_html)
         self.assertIn('未被盤點覆蓋（${uncoveredItems.length}', index_html)
+
+    def test_st_reconcile_manual_mapping_is_explicit_and_invalidates_preview(self):
+        root = Path(__file__).resolve().parents[1]
+        index_html = (root / "static" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('suggestions.slice(0, 5)', index_html)
+        self.assertIn('item.can_map ? renderStReconcileMappingChoice', index_html)
+        self.assertIn('if (row.manual_mapping) return false;', index_html)
+        self.assertIn('preserveMappings: true, preserveMappingControls: true', index_html)
+        self.assertIn('if (child !== controls) child.remove();', index_html)
+        self.assertIn('if (requestRevision !== _stReconcilePreviewRevision) return;', index_html)
+        self.assertIn('const previewMappings = { ...(_lastStReconcilePreview.part_mappings || {}) };', index_html)
+        self.assertIn('formData.append("part_mappings", JSON.stringify(previewMappings));', index_html)
+        self.assertIn('套用料號選擇並重新試算', index_html)
