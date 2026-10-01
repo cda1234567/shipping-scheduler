@@ -304,7 +304,7 @@ def _validate_formula_ast(node) -> bool:
     return True
 
 
-def _evaluate_numeric_formula(formula, data_rows, formula_rows) -> float | None:
+def _evaluate_numeric_formula(formula, data_rows, formula_rows, *, cell_value_resolver=None) -> float | None:
     if not _is_formula(formula):
         return None
 
@@ -319,7 +319,8 @@ def _evaluate_numeric_formula(formula, data_rows, formula_rows) -> float | None:
 
     def replace_cell(match):
         cell_ref = match.group(0)
-        value = _cell_formula_ref_value(data_rows, formula_rows, cell_ref)
+        value = (cell_value_resolver(cell_ref) if cell_value_resolver is not None
+                 else _cell_formula_ref_value(data_rows, formula_rows, cell_ref))
         if value is None:
             raise ValueError(f"unsupported formula cell value: {cell_ref}")
         return str(float(value))

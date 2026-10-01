@@ -207,6 +207,11 @@ async def get_main_data():
     if _main_data_cache is not None and current_mtime == _main_data_cache_mtime:
         return _main_data_cache
 
+    try:
+        live_stock = read_stock(main_path)
+    except Exception as exc:
+        raise HTTPException(422, f"主檔庫存讀取失敗：{exc}") from exc
+
     snapshot = db.get_snapshot()
     if snapshot:
         snapshot = _repair_legacy_snapshot_if_needed(main_path, snapshot)
@@ -217,13 +222,8 @@ async def get_main_data():
         live_moq.update(snapshot_moq)
         moq = live_moq
     else:
-        stock = read_stock(main_path)
+        stock = dict(live_stock)
         moq = read_moq(main_path)
-
-    try:
-        live_stock = read_stock(main_path)
-    except Exception:
-        live_stock = dict(stock)
     try:
         vendors = read_vendors(main_path)
     except Exception:

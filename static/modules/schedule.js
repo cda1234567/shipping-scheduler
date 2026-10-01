@@ -8,6 +8,7 @@ let _rows = [];
 let _bomData = {};
 let _stock = {};
 let _liveStock = {};
+let _mainStockLoadError = "";
 let _moq = {};
 let _vendors = {};
 let _purchaseReminderStatuses = {};
@@ -999,7 +1000,12 @@ async function loadMainData() {
     _vendors = d.vendors || {};
     _purchaseReminderStatuses = d.purchase_reminder_statuses || {};
     _partFirstOrder = d.part_first_order || {};
-  } catch (_) { _stock = {}; _liveStock = {}; _moq = {}; _vendors = {}; _purchaseReminderStatuses = {}; _partFirstOrder = {}; }
+    _mainStockLoadError = "";
+  } catch (error) {
+    _stock = {}; _liveStock = {}; _moq = {}; _vendors = {}; _purchaseReminderStatuses = {}; _partFirstOrder = {};
+    _mainStockLoadError = `主檔庫存讀取失敗：${error?.message || "請重新整理後再試"}`;
+    showToast(_mainStockLoadError, { tone: "error" });
+  }
 }
 
 async function loadStInventoryData() {
@@ -1739,13 +1745,13 @@ function calculateDisplayShortageAmount(partNumber, endingStock) {
   return Math.max(0, getDisplayMinStock(partNumber) - Number(endingStock || 0));
 }
 
-/** 從主檔目前庫存找出已違反 shortage rule 門檻的料號。 */
+/** 從主檔各料號最右結存找出負數料號，避免讀到排程用的起始快照。 */
 function buildMainStockNegativeItems() {
-  if (!_stock || !Object.keys(_stock).length) return [];
+  if (!_liveStock || !Object.keys(_liveStock).length) return [];
 
   const descLookup = buildPartDescriptionLookup();
   const items = [];
-  for (const [part, stockQty] of Object.entries(_stock)) {
+  for (const [part, stockQty] of Object.entries(_liveStock)) {
     const key = normalizePartKey(part);
     if (!key) continue;
 
@@ -5480,6 +5486,13 @@ async function exportPurchaseReminders(items) {
   }
 }
 
+function renderMainStockReadError(scroll) {
+  if (!_mainStockLoadError) return false;
+  scroll.innerHTML = `<div class="no-shortage-msg" role="alert">${esc(_mainStockLoadError)}</div>`;
+  setRightPanelBadge(0);
+  return true;
+}
+
 function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
   _rightPanelMode = "shortages";
   _lastShortagePanelData = {
@@ -5491,6 +5504,8 @@ function renderShortagePanel(shortages, csShortages = [], mainDeficits = []) {
   const orderShortageCount = shortages.length + csShortages.length;
   const totalCount = orderShortageCount + mainDeficits.length;
   updateRightPanelTabs(totalCount);
+
+  if (renderMainStockReadError(scroll)) return;
 
   if (_rightPanelActiveTab === "purchase") {
     renderPurchaseReminderPanel();
@@ -5859,6 +5874,7 @@ function renderPostDispatchPanel() {
   _rightPanelActiveTab = "shortages";
   updateRightPanelTabs(_postDispatchShortages.length);
   const scroll = document.getElementById("right-scroll");
+  if (renderMainStockReadError(scroll)) return;
   if (!_postDispatchShortages.length) {
     scroll.innerHTML = '<div class="no-shortage-msg">無缺料</div>';
     setRightPanelBadge(0);

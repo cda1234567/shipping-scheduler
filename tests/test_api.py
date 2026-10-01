@@ -2640,6 +2640,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.main_file.db.get_snapshot", return_value=snapshot), \
                  patch("app.routers.main_file.find_legacy_snapshot_stock_fixes", return_value={}), \
                  patch("app.routers.main_file.db.update_snapshot_stock", return_value=0), \
+                 patch("app.routers.main_file.read_stock", return_value={"AAA": 5}), \
                  patch("app.routers.main_file.read_moq", return_value={"AAA": 99, "BBB": 12}):
                 response = self.client.get("/api/main-file/data")
 
@@ -2673,6 +2674,7 @@ class ApiTests(unittest.TestCase):
                  patch("app.routers.main_file.find_legacy_snapshot_stock_fixes", return_value={"AAA": 0.0}), \
                  patch("app.routers.main_file.db.update_snapshot_stock", return_value=1), \
                  patch("app.routers.main_file.db.log_activity"), \
+                 patch("app.routers.main_file.read_stock", return_value={"AAA": 0, "BBB": 5}), \
                  patch("app.routers.main_file.read_moq", return_value={"AAA": 99, "BBB": 12}):
                 response = self.client.get("/api/main-file/data")
 

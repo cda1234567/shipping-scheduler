@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.09.30.4"
-APP_RELEASED_AT = "2026-09-30"
-APP_HEADLINE = "盤點選料版面整理"
+APP_VERSION = "v2026.10.01.1"
+APP_RELEASED_AT = "2026-10-01"
+APP_HEADLINE = "補料區主檔結存判斷修正"
 APP_CHANGELOG = [
+    {
+        "title": "補料區主檔結存",
+        "items": [
+            "補料區改用主檔各料號最右側的目前結存判斷負數，不再誤用起始庫存快照。",
+            "未勾選訂單也會列出主檔目前缺料；已補平的料不會因舊快照仍是負數而誤列。",
+            "主檔最右結存的算術公式與千分位數字可正確讀取；無法判讀時會明確提示，不再把前一欄用量當庫存。",
+        ],
+    },
     {
         "title": "盤點選料版面",
         "items": [

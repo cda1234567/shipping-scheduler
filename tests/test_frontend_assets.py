@@ -255,7 +255,7 @@ class FrontendAssetTests(unittest.TestCase):
 
         self.assertIn('import { calculate } from "./calculator.js";', schedule_module)
         self.assertIn("function buildMainStockNegativeItems()", schedule_module)
-        self.assertIn("for (const [part, stockQty] of Object.entries(_stock))", schedule_module)
+        self.assertIn("for (const [part, stockQty] of Object.entries(_liveStock))", schedule_module)
         self.assertIn("const threshold = getDisplayMinStock(key);", schedule_module)
         self.assertIn("const shortageAmount = calculateDisplayShortageAmount(key, currentStock);", schedule_module)
         self.assertIn('vendor: normalizeVendorName(_vendors?.[key]),', schedule_module)
@@ -273,6 +273,79 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("const isMainStockItem = Boolean(s?._main_stock_level);", schedule_module)
         self.assertIn('data-main-supplement="true"', schedule_module)
         self.assertIn('isMainStockItem ? "" : `', schedule_module)
+
+    def test_right_panel_uses_current_main_stock_independently_of_checked_orders(self):
+        root = Path(__file__).resolve().parents[1]
+        script = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import { isOrderScopedPart } from './static/modules/shortage_rules.js';
+import { esc } from './static/modules/api.js';
+const source = fs.readFileSync('./static/modules/schedule.js', 'utf8')
+  .replace(/^import .*;\r?\n/gm, '')
+  .replace(/^export /gm, '');
+const cases = [
+  { stock: { 'PART-A': 100 }, live_stock: { 'PART-A': -25 }, expected: { 'PART-A': -25 } },
+  { stock: { 'PART-A': -25 }, live_stock: { 'PART-A': 100 }, expected: {} },
+  { stock: {}, live_stock: { 'PART-B': -10 }, expected: { 'PART-B': -10 } },
+  { stock: { 'PART-A': -25 }, live_stock: { 'PART-A': 0 }, expected: {} },
+  { stock: { 'PART-A': -25 }, live_stock: {}, expected: {} },
+  {
+    stock: { 'PART-A': 100, 'PART-B': -20 },
+    live_stock: { 'PART-A': -25, 'PART-B': 10, 'PART-C': -8 },
+    expected: { 'PART-A': -25, 'PART-C': -8 },
+  },
+];
+for (const fixture of cases) {
+  for (const checkedIds of [[], [7]]) {
+    const context = vm.createContext({
+      console, isOrderScopedPart,
+      localStorage: { getItem: () => null },
+      apiJson: async () => fixture,
+    });
+    vm.runInContext(source, context);
+    vm.runInContext(`
+      _rows = [{ id: 7, code: '1-1', model: 'UNRELATED' }];
+      _checkedIds = new Set(${JSON.stringify(checkedIds)});
+    `, context);
+    await vm.runInContext('loadMainData()', context);
+    const result = vm.runInContext('buildRightPanelShortageData()', context);
+    assert.deepEqual(
+      Object.fromEntries(result.shortages.map(item => [item.part_number, item.current_stock])),
+      fixture.expected,
+      `snapshot=${JSON.stringify(fixture.stock)}, live=${JSON.stringify(fixture.live_stock)}, checked=${checkedIds}`,
+    );
+    assert.ok(result.shortages.every(item => item._main_stock_level && item.resulting_stock < 0));
+  }
+}
+const scroll = { innerHTML: '' };
+const context = vm.createContext({
+  console, isOrderScopedPart, esc,
+  localStorage: { getItem: () => null },
+  document: { getElementById: () => scroll },
+  apiJson: async () => { throw new Error('主檔料號 <PART> 的 K2 結存無法讀取'); },
+  showToast: () => {},
+});
+vm.runInContext(source, context);
+vm.runInContext('updateRightPanelTabs = () => {}; setRightPanelBadge = () => {};', context);
+await vm.runInContext('loadMainData()', context);
+for (const render of ['renderShortagePanel([])', 'renderPostDispatchPanel()']) {
+  vm.runInContext(render, context);
+  assert.ok(scroll.innerHTML.includes('主檔庫存讀取失敗'));
+  assert.ok(scroll.innerHTML.includes('&lt;PART&gt;'));
+  assert.ok(!scroll.innerHTML.includes('無缺料'));
+}
+context.apiJson = async () => ({ stock: {}, live_stock: {} });
+await vm.runInContext('loadMainData()', context);
+vm.runInContext('renderShortagePanel([])', context);
+assert.ok(scroll.innerHTML.includes('無缺料'));
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script], cwd=root,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]

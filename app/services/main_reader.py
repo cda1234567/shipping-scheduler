@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 import re
 
 import openpyxl
+from openpyxl.utils.cell import coordinate_to_tuple, get_column_letter
 
 from ..config import cfg
 from .main_file_lock import serialized_main_file_write
+from .bom_parser import _evaluate_numeric_formula
 from .xls_reader import open_workbook_any
 
 _PART_COL = None
@@ -48,7 +51,8 @@ def _try_float(v) -> float | None:
     if v is None:
         return None
     try:
-        return float(v)
+        number = float(v.strip().replace(",", "") if isinstance(v, str) else v)
+        return number if math.isfinite(number) else None
     except (ValueError, TypeError):
         return None
 
@@ -73,22 +77,70 @@ def find_current_stock_from_row_values(row_vals) -> float:
 
 
 def read_stock(path: str) -> dict[str, float]:
-    """讀取主檔目前庫存，永遠忽略 MOQ 左右非庫存欄位。"""
+    """唯讀最右結存；無快取的算術公式直接計算，不把用量誤當庫存。"""
     wb = open_workbook_any(path, read_only=True, data_only=True)
-    ws = wb.worksheets[0]
-    result: dict[str, float] = {}
-    pc = _part_col()
+    formula_wb = None
+    try:
+        formula_wb = open_workbook_any(path, read_only=True, data_only=False)
+        data_rows = list(wb.worksheets[0].iter_rows(values_only=True))
+        formula_rows = list(formula_wb.worksheets[0].iter_rows(values_only=True))
+        resolved = {}
+        resolving = set()
 
-    for row_vals in ws.iter_rows(min_row=2, values_only=True):
-        if not row_vals:
-            continue
-        part = str(row_vals[pc] or "").strip()
-        if not part:
-            continue
-        result[part.upper()] = find_current_stock_from_row_values(row_vals)
+        def resolve_cell(row: int, col: int) -> float | None:
+            key = (row, col)
+            if key in resolved:
+                return resolved[key]
+            if key in resolving:
+                return None
+            raw = formula_rows[row][col] if row < len(formula_rows) and col < len(formula_rows[row]) else None
+            cached = data_rows[row][col] if row < len(data_rows) and col < len(data_rows[row]) else None
+            if isinstance(raw, str) and raw.strip().startswith("="):
+                resolving.add(key)
 
-    wb.close()
-    return result
+                def reference_value(cell_ref: str) -> float | None:
+                    ref_row, ref_col = coordinate_to_tuple(cell_ref.replace("$", ""))
+                    return resolve_cell(ref_row - 1, ref_col - 1)
+
+                try:
+                    number = _evaluate_numeric_formula(raw, (), (), cell_value_resolver=reference_value)
+                finally:
+                    resolving.remove(key)
+                if number is None:
+                    number = _try_float(cached)
+            else:
+                number = 0.0 if raw is None or str(raw).strip() == "" else _try_float(raw)
+            resolved[key] = number
+            return number
+
+        result: dict[str, float] = {}
+        pc = _part_col()
+        for row_idx, row in enumerate(formula_rows[1:], start=1):
+            part = str(row[pc] or "").strip().upper() if len(row) > pc else ""
+            if not part:
+                continue
+            # 歷史欄群可能以機種名當表頭，不依表頭限制最右結存的位置。
+            columns = range(len(row) - 1, _stock_search_start_col() - 1, -1)
+            result[part] = 0.0
+            for col in columns:
+                raw = row[col] if col < len(row) else None
+                if raw is None or str(raw).strip() == "":
+                    continue
+                number = resolve_cell(row_idx, col)
+                if number is None:
+                    if (isinstance(raw, str) and raw.strip().startswith("=")) or str(raw).strip().lower() in {
+                        "nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity",
+                        "#div/0!", "#value!", "#ref!", "#num!", "#name?", "#n/a", "#null!",
+                    }:
+                        raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 結存無法讀取，請確認公式或數值")
+                    continue
+                result[part] = number
+                break
+        return result
+    finally:
+        wb.close()
+        if formula_wb is not None:
+            formula_wb.close()
 
 
 def read_batch_stock(path: str, batch_code: str) -> dict[str, dict[str, float]]:
