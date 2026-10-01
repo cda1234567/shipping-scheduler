@@ -12,7 +12,7 @@ import json
 import os
 import shutil
 import tempfile
-from math import copysign, floor
+from math import copysign, floor, isclose
 from pathlib import Path
 
 import openpyxl
@@ -24,6 +24,7 @@ from ..models import calc_suggested_qty
 from .local_time import local_now
 from .main_file_lock import serialized_main_file_write
 from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
+from .main_reader import read_stock, read_stock_cells, _try_float as _stock_number
 from .bom_substitutions import allocate_substitution, find_rule, normalize_part
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
@@ -43,7 +44,7 @@ STOCK_SEARCH_START_COL = MOQ_COL + 1
 DISPATCH_BATCH_MANIFEST_FORMAT = "shipping_scheduler_dispatch_batch_v1"
 
 
-def _save_workbook_atomically(workbook, main_path: str) -> None:
+def _save_workbook_atomically(workbook, main_path: str, *, validate=None) -> None:
     """先在同目錄完成 Excel，再一次替換主檔，讀取端不會看到半套 ZIP。"""
     target = Path(main_path)
     fd, temp_name = tempfile.mkstemp(
@@ -54,6 +55,8 @@ def _save_workbook_atomically(workbook, main_path: str) -> None:
     os.close(fd)
     try:
         workbook.save(temp_name)
+        if validate is not None:
+            validate(temp_name)
         os.replace(temp_name, target)
     finally:
         temp_path = Path(temp_name)
@@ -916,15 +919,6 @@ def merge_row_to_main(
     }
 
 
-def _find_latest_stock_col(ws, row_idx: int, max_col: int) -> int | None:
-    """找到該列最右邊有數值的欄位 index（從 max_col 往左掃）。"""
-    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
-        value = _try_float(ws.cell(row=row_idx, column=col_idx).value)
-        if value is not None:
-            return col_idx
-    return None
-
-
 @serialized_main_file_write
 def supplement_part_in_main(
     main_path: str,
@@ -940,6 +934,8 @@ def supplement_part_in_main(
     if not part_key:
         return {"ok": False, "message": "料號不能為空"}
 
+    stock_cells = read_stock_cells(main_path)
+    expected_stock = {part: cell["stock_qty"] for part, cell in stock_cells.items()}
     backup_path = backup_main_file(main_path, backup_dir) if backup_dir else None
 
     workbook = openpyxl.load_workbook(main_path, keep_vba=(Path(main_path).suffix.lower() == ".xlsm"))
@@ -951,35 +947,52 @@ def supplement_part_in_main(
             row_idx, _ = _ensure_main_part_row(ws, part_row_map, part_key)
 
         max_col = ws.max_column
-        stock_col = _find_latest_stock_col(ws, row_idx, max_col)
+        current_cell = stock_cells.get(part_key) or {}
+        stock_col = current_cell.get("col")
         if stock_col is None:
             stock_col = _find_sheet_latest_stock_col(ws, max_col) or max(STOCK_SEARCH_START_COL, max_col)
 
-        current_stock = _try_float(ws.cell(row=row_idx, column=stock_col).value) or 0.0
+        current_stock = float(current_cell.get("stock_qty") or 0.0)
         new_stock = current_stock + supplement_qty
+        if new_stock == current_stock:
+            raise ValueError("補料數量太小，無法寫入目前庫存的數值精度，主檔未變更")
         supplement_col = None
 
-        event = find_latest_supplement_event_for_row(ws, row_idx)
+        event = find_latest_supplement_event_for_row(ws, row_idx, max_balance_col=stock_col)
+        stock_cell = ws.cell(row=row_idx, column=stock_col)
         if event is not None:
             supplement_col = int(event["start_col"])
             supplement_cell = ws.cell(row=row_idx, column=supplement_col)
-            existing_supplement = _try_float(supplement_cell.value) or 0.0
-            supplement_cell.value = _format_main_supplement_value(existing_supplement + supplement_qty)
-            recalc_result = recalc_batch_balances_for_cell(ws, row=row_idx, col=supplement_col)
-            recalculated_stock = _try_float(recalc_result.get("current_stock"))
-            if recalculated_stock is not None:
-                new_stock = recalculated_stock
+            original = supplement_cell.value
+            if isinstance(original, str) and original.strip().startswith("="):
+                supplement_cell.value = f"=({original.strip()[1:]})+{supplement_qty:.17g}"
+            else:
+                existing_supplement = _stock_number(original)
+                if existing_supplement is None and original is not None and str(original).strip():
+                    raise ValueError(f"補料欄 {supplement_cell.coordinate} 的數值無法讀取")
+                supplement_cell.value = _format_main_supplement_value((existing_supplement or 0.0) + supplement_qty)
+            recalc_batch_balances_for_cell(ws, row=row_idx, col=supplement_col)
         else:
-            # 尚無可辨識的批次欄時保留舊行為，至少讓庫存能正確補回。
-            ws.cell(row=row_idx, column=stock_col).value = new_stock
-            for col_idx in range(stock_col + 1, max_col + 1):
-                cell = ws.cell(row=row_idx, column=col_idx)
-                val = _try_float(cell.value)
-                if val is not None:
-                    cell.value = val + supplement_qty
+            # 歷史欄群沒有批次碼，仍在讀取端認定的最右結存補料。
+            original = stock_cell.value
+            stock_cell.value = (f"=({original.strip()[1:]})+{supplement_qty:.17g}"
+                                if isinstance(original, str) and original.strip().startswith("=") else new_stock)
+
+        expected_stock[part_key] = new_stock
+
+        def verify_saved_stock(staged_path: str) -> None:
+            nonlocal new_stock
+            actual = read_stock(staged_path)
+            tolerance = min(1e-9, abs(supplement_qty) * 1e-6)
+            if set(actual) != set(expected_stock) or any(
+                not isclose(actual[part], value, rel_tol=0, abs_tol=tolerance)
+                for part, value in expected_stock.items()
+            ):
+                raise ValueError(f"補料 {part_key} 的庫存核對失敗，主檔未變更")
+            new_stock = actual[part_key]
 
         ensure_main_header_wrap(ws)
-        _save_workbook_atomically(workbook, main_path)
+        _save_workbook_atomically(workbook, main_path, validate=verify_saved_stock)
     finally:
         workbook.close()
 

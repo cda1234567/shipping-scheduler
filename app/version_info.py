@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.01.1"
+APP_VERSION = "v2026.10.01.2"
 APP_RELEASED_AT = "2026-10-01"
-APP_HEADLINE = "補料區主檔結存判斷修正"
+APP_HEADLINE = "補料後清單與庫存同步修正"
 APP_CHANGELOG = [
+    {
+        "title": "補料後維持原清單",
+        "items": [
+            "在主檔缺料清單補完一支料後，會繼續顯示其他仍為負數的料，不再跳回只列已發料副檔的清單。",
+            "主檔補料與庫存讀取使用相同結存位置，支援公式與千分位數字；保存前會核對補料結果與其他料號庫存。",
+        ],
+    },
     {
         "title": "補料區主檔結存",
         "items": [

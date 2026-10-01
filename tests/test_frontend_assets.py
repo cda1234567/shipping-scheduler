@@ -347,6 +347,87 @@ assert.ok(scroll.innerHTML.includes('無缺料'));
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    def test_main_supplement_preserves_the_original_panel_and_other_negative_parts(self):
+        root = Path(__file__).resolve().parents[1]
+        script = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import { calculate } from './static/modules/calculator.js';
+import { isOrderScopedPart } from './static/modules/shortage_rules.js';
+import { esc, fmt } from './static/modules/api.js';
+const source = fs.readFileSync('./static/modules/schedule.js', 'utf8')
+  .replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '');
+for (const mode of ['shortages', 'postDispatch']) {
+  for (const checkedIds of [[], [7]]) {
+    const stock = { 'EC-20148A': -236, 'DONE-NEG': -8, 'MAIN-ONLY': -7 };
+    const scroll = { innerHTML: '', querySelectorAll: () => [], querySelector: () => null };
+    let mainRefreshes = 0;
+    const context = vm.createContext({
+      console, calculate, isOrderScopedPart, esc, fmt,
+      localStorage: { getItem: () => null },
+      document: {
+        getElementById: id => id === 'right-scroll' ? scroll : null,
+        querySelectorAll: () => [], querySelector: () => null,
+      },
+      showToast: () => {},
+      apiJson: async path => {
+        if (path === '/api/main-file/data') return { stock: { ...stock }, live_stock: { ...stock } };
+        if (path === '/api/schedule/rows') return { rows: [{ id: 7, model: 'UNRELATED' }] };
+        if (path === '/api/schedule/completed') return {
+          rows: [{ id: 9, code: '1-1', model: 'DONE' }],
+          committed_merge_drafts: { 9: { shortages: [
+            { part_number: 'EC-20148A', resulting_stock: -236, shortage_amount: 336 },
+            { part_number: 'DONE-NEG', resulting_stock: -8, shortage_amount: 8 },
+          ] } },
+        };
+        return {};
+      },
+      apiPost: async (path, body) => {
+        assert.equal(path, '/api/schedule/supplement-part');
+        assert.equal(body.part_number, 'EC-20148A');
+        const before = stock[body.part_number];
+        stock[body.part_number] += body.supplement_qty;
+        return { part_number: body.part_number, stock_before: before, stock_after: stock[body.part_number] };
+      },
+    });
+    vm.runInContext(source, context);
+    context.refreshMain = async () => { mainRefreshes += 1; };
+    vm.runInContext(`
+      _onRefreshMain = refreshMain;
+      _checkedIds = new Set(${JSON.stringify(checkedIds)});
+      renderSchedule = () => {
+        const data = buildRightPanelShortageData();
+        renderShortagePanel(data.shortages, data.csShortages);
+      };
+      renderCompletedTab = () => {};
+    `, context);
+    await vm.runInContext('refresh()', context);
+    if (mode === 'postDispatch') vm.runInContext('showPostDispatchShortages()', context);
+    const visibleParts = () => [...new Set([...scroll.innerHTML.matchAll(/data-part="([^"]+)"/g)].map(m => m[1]))].sort();
+    assert.deepEqual(visibleParts(), mode === 'shortages'
+      ? ['DONE-NEG', 'EC-20148A', 'MAIN-ONLY'] : ['DONE-NEG', 'EC-20148A']);
+    const input = { value: '10000', dataset: { part: 'EC-20148A', mainSupplement: 'true' } };
+    const row = { querySelector: selector => selector === '.right-panel-supplement-input' ? input : null };
+    context.button = {
+      dataset: { part: 'EC-20148A', mainSupplement: 'true' },
+      closest: () => row, textContent: '補主檔', isConnected: true,
+    };
+    await vm.runInContext('saveRightPanelSupplement(button)', context);
+    assert.equal(stock['EC-20148A'], 9764);
+    assert.equal(mainRefreshes, 1);
+    assert.equal(vm.runInContext('_rightPanelMode', context), mode);
+    assert.deepEqual(visibleParts(), mode === 'shortages' ? ['DONE-NEG', 'MAIN-ONLY'] : ['DONE-NEG']);
+    assert.ok(!scroll.innerHTML.includes('EC-20148A'));
+  }
+}
+"""
+        completed = subprocess.run(
+            ["node", "--input-type=module", "-e", script], cwd=root,
+            capture_output=True, text=True, encoding="utf-8",
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_right_panel_shortages_reuse_cross_model_consolidation_for_normal_parts(self):
         root = Path(__file__).resolve().parents[1]
         schedule_module = (root / "static" / "modules" / "schedule.js").read_text(encoding="utf-8")

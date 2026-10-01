@@ -1682,12 +1682,15 @@ def supplement_part(req: SupplementPartRequest):
     main_path = str(db.get_setting("main_file_path") or "").strip()
     if not main_path or not Path(main_path).exists():
         raise HTTPException(400, "請先載入主檔")
-    result = supplement_part_in_main(
-        main_path,
-        req.part_number,
-        req.supplement_qty,
-        backup_dir=str(BACKUP_DIR),
-    )
+    try:
+        result = supplement_part_in_main(
+            main_path,
+            req.part_number,
+            req.supplement_qty,
+            backup_dir=str(BACKUP_DIR),
+        )
+    except ValueError as exc:
+        raise HTTPException(422, f"補料未寫入：{exc}") from exc
     if not result.get("ok"):
         raise HTTPException(400, result.get("message", "補料失敗"))
     refresh_snapshot_from_main(main_path)

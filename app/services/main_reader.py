@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import math
 import re
+from typing import Any, Callable
 
 import openpyxl
 from openpyxl.utils.cell import coordinate_to_tuple, get_column_letter
@@ -77,6 +78,46 @@ def find_current_stock_from_row_values(row_vals) -> float:
 
 
 def read_stock(path: str) -> dict[str, float]:
+    return {part: cell["stock_qty"] for part, cell in read_stock_cells(path).items()}
+
+
+def create_main_cell_resolver(
+    read_formula: Callable[[int, int], Any],
+    read_cached: Callable[[int, int], Any] | None = None,
+) -> Callable[[int, int], float | None]:
+    """共用主檔算術公式讀取器；儲存格來源按需讀取，循環或無法計算時回傳 None。"""
+    resolved = {}
+    resolving = set()
+
+    def resolve_cell(row: int, col: int) -> float | None:
+        key = (row, col)
+        if key in resolved:
+            return resolved[key]
+        if key in resolving:
+            return None
+        raw = read_formula(row, col)
+        if isinstance(raw, str) and raw.strip().startswith("="):
+            resolving.add(key)
+
+            def reference_value(cell_ref: str) -> float | None:
+                ref_row, ref_col = coordinate_to_tuple(cell_ref.replace("$", ""))
+                return resolve_cell(ref_row - 1, ref_col - 1)
+
+            try:
+                number = _evaluate_numeric_formula(raw, (), (), cell_value_resolver=reference_value)
+            finally:
+                resolving.remove(key)
+            if number is None and read_cached is not None:
+                number = _try_float(read_cached(row, col))
+        else:
+            number = 0.0 if raw is None or str(raw).strip() == "" else _try_float(raw)
+        resolved[key] = number
+        return number
+
+    return resolve_cell
+
+
+def read_stock_cells(path: str) -> dict[str, dict]:
     """唯讀最右結存；無快取的算術公式直接計算，不把用量誤當庫存。"""
     wb = open_workbook_any(path, read_only=True, data_only=True)
     formula_wb = None
@@ -84,36 +125,12 @@ def read_stock(path: str) -> dict[str, float]:
         formula_wb = open_workbook_any(path, read_only=True, data_only=False)
         data_rows = list(wb.worksheets[0].iter_rows(values_only=True))
         formula_rows = list(formula_wb.worksheets[0].iter_rows(values_only=True))
-        resolved = {}
-        resolving = set()
+        resolve_cell = create_main_cell_resolver(
+            lambda row, col: formula_rows[row][col] if row < len(formula_rows) and col < len(formula_rows[row]) else None,
+            lambda row, col: data_rows[row][col] if row < len(data_rows) and col < len(data_rows[row]) else None,
+        )
 
-        def resolve_cell(row: int, col: int) -> float | None:
-            key = (row, col)
-            if key in resolved:
-                return resolved[key]
-            if key in resolving:
-                return None
-            raw = formula_rows[row][col] if row < len(formula_rows) and col < len(formula_rows[row]) else None
-            cached = data_rows[row][col] if row < len(data_rows) and col < len(data_rows[row]) else None
-            if isinstance(raw, str) and raw.strip().startswith("="):
-                resolving.add(key)
-
-                def reference_value(cell_ref: str) -> float | None:
-                    ref_row, ref_col = coordinate_to_tuple(cell_ref.replace("$", ""))
-                    return resolve_cell(ref_row - 1, ref_col - 1)
-
-                try:
-                    number = _evaluate_numeric_formula(raw, (), (), cell_value_resolver=reference_value)
-                finally:
-                    resolving.remove(key)
-                if number is None:
-                    number = _try_float(cached)
-            else:
-                number = 0.0 if raw is None or str(raw).strip() == "" else _try_float(raw)
-            resolved[key] = number
-            return number
-
-        result: dict[str, float] = {}
+        result: dict[str, dict] = {}
         pc = _part_col()
         for row_idx, row in enumerate(formula_rows[1:], start=1):
             part = str(row[pc] or "").strip().upper() if len(row) > pc else ""
@@ -121,7 +138,7 @@ def read_stock(path: str) -> dict[str, float]:
                 continue
             # 歷史欄群可能以機種名當表頭，不依表頭限制最右結存的位置。
             columns = range(len(row) - 1, _stock_search_start_col() - 1, -1)
-            result[part] = 0.0
+            result[part] = {"row": row_idx + 1, "col": None, "stock_qty": 0.0}
             for col in columns:
                 raw = row[col] if col < len(row) else None
                 if raw is None or str(raw).strip() == "":
@@ -134,7 +151,7 @@ def read_stock(path: str) -> dict[str, float]:
                     }:
                         raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 結存無法讀取，請確認公式或數值")
                     continue
-                result[part] = number
+                result[part] = {"row": row_idx + 1, "col": col + 1, "stock_qty": number}
                 break
         return result
     finally:

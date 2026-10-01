@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .main_reader import create_main_cell_resolver, _try_float as _stock_number
+
 _BATCH_CODE_RE = re.compile(r"^\d+-\d+$")
 _DEDUCT_HEADER_KEYWORDS = ("扣帳",)
 _REVERSE_HEADER_KEYWORDS = ("回復", "恢復")
@@ -17,12 +19,7 @@ def _is_blank(value: Any) -> bool:
 
 
 def _to_number(value: Any) -> float | None:
-    if _is_blank(value):
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return _stock_number(value)
 
 
 def _display_number(value: float) -> int | float:
@@ -107,12 +104,16 @@ def _stock_events(ws) -> list[dict[str, int | str]]:
     return sorted(events, key=lambda item: int(item["start_col"]))
 
 
-def find_latest_supplement_event_for_row(ws, row: int) -> dict[str, int | str] | None:
+def find_latest_supplement_event_for_row(ws, row: int, *, max_balance_col: int | None = None) -> dict[str, int | str] | None:
     """找該列最右側可安全寫入補料的庫存事件。"""
     for event in reversed(_stock_events(ws)):
         start_col = int(event["start_col"])
         balance_col = int(event["balance_col"])
-        if _to_number(ws.cell(row=row, column=balance_col).value) is None:
+        if max_balance_col is not None and balance_col > max_balance_col:
+            continue
+        balance = ws.cell(row=row, column=balance_col).value
+        is_formula = isinstance(balance, str) and balance.strip().startswith("=")
+        if _to_number(balance) is None and not (max_balance_col is not None and is_formula):
             continue
 
         kind = str(event["kind"])
@@ -198,6 +199,39 @@ def _last_balance(ws, row: int, first_event_col: int) -> float | None:
 
 
 def recalc_batch_balances_for_cell(
+    ws,
+    *,
+    row: int,
+    col: int,
+    snapshot_stock: dict[str, float] | None = None,
+) -> dict:
+    """重算時讀取公式現值，完成或失敗後都保留原式，避免後續重算抹掉補料。"""
+    if row <= 1 or not _part_number(ws, row) or _event_for_cell(_stock_events(ws), col) is None:
+        return _recalc_batch_balances_for_cell(ws, row=row, col=col, snapshot_stock=snapshot_stock)
+    max_row, max_col = ws.max_row, ws.max_column
+    resolver = create_main_cell_resolver(
+        lambda r, c: ws.cell(row=r + 1, column=c + 1).value if 0 <= r < max_row and 0 <= c < max_col else None,
+    )
+    formulas = {
+        c: ws.cell(row=row, column=c).value
+        for c in range(_STOCK_FALLBACK_COL, max_col + 1)
+        if isinstance(ws.cell(row=row, column=c).value, str)
+        and ws.cell(row=row, column=c).value.strip().startswith("=")
+    }
+    values = {c: resolver(row - 1, c - 1) for c in formulas}
+    for c, value in values.items():
+        if value is None:
+            raise ValueError(f"主檔料號 {_part_number(ws, row)} 的 {ws.cell(row=row, column=c).coordinate} 公式無法重算")
+    try:
+        for c, value in values.items():
+            ws.cell(row=row, column=c).value = value
+        return _recalc_batch_balances_for_cell(ws, row=row, col=col, snapshot_stock=snapshot_stock)
+    finally:
+        for c, formula in formulas.items():
+            ws.cell(row=row, column=c).value = formula
+
+
+def _recalc_batch_balances_for_cell(
     ws,
     *,
     row: int,

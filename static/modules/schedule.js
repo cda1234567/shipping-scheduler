@@ -5615,6 +5615,7 @@ async function saveRightPanelSupplement(button) {
 
   try {
     if (isMainSupplement) {
+      const wasPostDispatchPanel = _rightPanelMode === "postDispatch";
       const result = await apiPost("/api/schedule/supplement-part", {
         part_number: part,
         supplement_qty: qty,
@@ -5625,7 +5626,7 @@ async function saveRightPanelSupplement(button) {
       );
       await refresh();
       await refreshCompleted();
-      showPostDispatchShortages();
+      if (wasPostDispatchPanel) showPostDispatchShortages();
       if (_onRefreshMain) await _onRefreshMain();
       return;
     }
