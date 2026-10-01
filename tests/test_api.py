@@ -1056,7 +1056,9 @@ class ApiTests(unittest.TestCase):
         mock_log.assert_called_once()
 
     def test_delete_overrun_batch_uses_overrun_reverse_header(self):
-        with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+        with patch("app.routers.defectives.backup_main_file", return_value="backup.xlsx"), \
+             patch("app.routers.defectives.db.capture_inventory_snapshot_state", return_value={}), \
+             patch("app.routers.defectives.db.get_defective_batches", return_value=[{
             "id": 88,
             "filename": "加工多打｜MODEL-A｜+10 pcs",
             "imported_at": "2026-03-20T08:00:00",
@@ -1086,7 +1088,9 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(mock_reverse.call_args.kwargs["entry_header"], "加工多打回復")
 
     def test_delete_batch_rebuilds_active_merge_drafts_after_reverse(self):
-        with patch("app.routers.defectives.db.get_defective_batches", return_value=[{
+        with patch("app.routers.defectives.backup_main_file", return_value="backup.xlsx"), \
+             patch("app.routers.defectives.db.capture_inventory_snapshot_state", return_value={}), \
+             patch("app.routers.defectives.db.get_defective_batches", return_value=[{
             "id": 88,
             "filename": "不良品批次.xlsx",
             "imported_at": "2026-03-20T08:00:00",

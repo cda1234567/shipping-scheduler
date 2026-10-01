@@ -105,6 +105,7 @@ class MainReconcileTests(unittest.TestCase):
 
             wb = openpyxl.load_workbook(main_path)
             ws = wb.active
+            ws.cell(row=1, column=first_row["col_j"] + 1).value = "結存"
             ws.cell(row=first_row["row_idx"], column=first_row["col_j"] + 1).value = 999
             wb.save(main_path)
             wb.close()

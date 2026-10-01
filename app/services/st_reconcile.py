@@ -526,6 +526,7 @@ def _batch_preview_token(
     session: dict,
     rows: list[dict],
     part_mappings: dict[str, str],
+    main_sha256: str,
 ) -> str:
     """鎖定盤點來源、主檔、工作階段及所有可選料號的試算依據。"""
     payload = {
@@ -537,7 +538,7 @@ def _batch_preview_token(
         "batch_code": batch_code,
         "count_date": parsed.get("count_date") or "",
         "source_sha256": parsed.get("source_sha256") or "",
-        "main_sha256": _sha256_file(main_path),
+        "main_sha256": main_sha256,
         "part_mappings": part_mappings,
         "parts": [
             {
@@ -554,6 +555,8 @@ def _batch_preview_token(
                     "expected_count",
                     "target_main",
                     "main_adjustment",
+                    "source_rows",
+                    "blocked_reason",
                 )
             }
             for row in rows
@@ -561,6 +564,60 @@ def _batch_preview_token(
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _read_reconcile_history(main_path: str, batch_code: str, count_date: str) -> tuple[dict, set[str]]:
+    """主檔即調整帳本，還原備份或換年度後只採用檔案仍存在的事件。"""
+    workbook = openpyxl.load_workbook(main_path, keep_vba=Path(main_path).suffix.lower() == '.xlsm')
+    try:
+        ws = workbook.worksheets[0]
+        anchor = validate_insertion_anchor(ws, batch_code)
+        cutoff_end = max(col + 2 for col in range(anchor, ws.max_column + 1)
+                         if str(ws.cell(1, col).value or '').strip() == batch_code)
+        history: dict[str, dict] = {}
+        reversal_ids: set[str] = set()
+        archived_reversals = db.get_defective_reversal_history()
+        for event in _stock_events(ws):
+            kind = event['kind']
+            if kind not in ('reconcile', 'reverse'):
+                continue
+            col = int(event['start_col'])
+            header = ws.cell(1, col)
+            match = re.search(r'盤點調整 (\d{4}-\d{2}-\d{2})', str(header.value or ''))
+            event_date = match.group(1) if match else ''
+            reversal_id = (header.comment.text.removeprefix('defective-reversal:').strip()
+                           if header.comment and header.comment.text.startswith('defective-reversal:') else '')
+            for row_idx in range(2, ws.max_row + 1):
+                part = _normalize_part(ws.cell(row_idx, PART_COL).value)
+                increase = ws.cell(row_idx, col).value
+                decrease = ws.cell(row_idx, col + 1).value if int(event['balance_col']) == col + 2 else 0
+                if not part or (increase is None and decrease is None):
+                    continue
+                item = history.setdefault(part, {'prior_adjustment': 0.0, 'blocked_reason': ''})
+                if kind == 'reverse':
+                    if col <= cutoff_end:
+                        continue
+                    if increase in (None, 0) and decrease in (None, 0):
+                        continue
+                    known_qty = archived_reversals.get(reversal_id, {}).get(part)
+                    if (known_qty is None or not isinstance(increase, (int, float))
+                            or abs(float(increase) - known_qty) > 1e-6 or decrease not in (None, 0)):
+                        item['blocked_reason'] = '主檔回復紀錄缺少可核對的不良品歷史，請先核對原始扣帳與回復日期'
+                    else:
+                        reversal_ids.add(reversal_id)
+                    continue
+                if not event_date:
+                    item['blocked_reason'] = '主檔既有盤點調整缺少日期，請先核對'
+                elif event_date > count_date:
+                    item['blocked_reason'] = f'此料已套用 {event_date} 盤點，不可再套用較舊的 {count_date} 盤點'
+                elif col > cutoff_end:
+                    if any(value is not None and not isinstance(value, (int, float)) for value in (increase, decrease)):
+                        item['blocked_reason'] = '主檔既有盤點調整量無法辨識，請先核對'
+                    else:
+                        item['prior_adjustment'] += float(increase or 0) - float(decrease or 0)
+        return history, reversal_ids
+    finally:
+        workbook.close()
 
 
 def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, source_filename: str, tol: float,
@@ -585,7 +642,9 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
     session = db.get_active_inventory_count_session('st')
     if not session or session['cutoff_at'] != cutoff_at or session['cutoff_code'] != batch_code:
         raise ValueError('請先開始相同截止批次的盤點並鎖定庫存')
+    main_sha256 = _sha256_file(main_path)
     stocks = read_batch_stock(main_path, batch_code)
+    history, reversal_ids = _read_reconcile_history(main_path, batch_code, count_date)
     current_st = db.get_st_inventory_stock()
     available = set(read_stock(main_path))
     source_parts = {_normalize_part(row['part_number']) for row in parsed['rows']}
@@ -605,12 +664,13 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         if len(sources) > 1 and any(source in part_mappings for source in sources):
             raise PartMappingError(f'原料號 {"、".join(sorted(sources))} 同時對應到 {target}，請分開核對，不會自動合併')
     candidate_stock = {part: values['current_main'] for part, values in stocks.items() if part not in sources_by_target}
-    defects = db.get_defective_interval_parts(cutoff_at, count_at)
+    defects = db.get_defective_interval_parts(cutoff_at, count_at, reversal_ids=reversal_ids)
     combined = {}
     for source_row in parsed['rows']:
         source_part = _normalize_part(source_row['part_number'])
         part = resolved_parts[source_part]
-        row = combined.setdefault(part, dict(part_number=part, source_part_numbers=[], description=source_row.get('description') or '', book_qty=0.0, physical_qty=None))
+        row = combined.setdefault(part, dict(part_number=part, source_part_numbers=[], source_rows=[], warnings=[], description=source_row.get('description') or '', book_qty=0.0, physical_qty=None))
+        row['source_rows'].append(dict(part_number=source_part, book_qty=source_row.get('book_qty'), physical_qty=source_row.get('physical_qty')))
         if source_part not in row['source_part_numbers']:
             row['source_part_numbers'].append(source_part)
         row['book_qty'] += float(source_row.get('book_qty') or 0)
@@ -620,6 +680,12 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
     uncovered = []
     summary = _build_genlin_summary()
     for part, row in sorted(combined.items()):
+        if len(row['source_rows']) > 1:
+            row['warnings'].append('多筆來源合併，請逐筆核對料號與實盤數量')
+        if any(source['physical_qty'] is None for source in row['source_rows']):
+            row['physical_qty'] = None
+            row['blocked_reason'] = '來源有未填實盤數量，請補齊後重新試算'
+            row['warnings'].append(row['blocked_reason'])
         if part not in stocks:
             can_map = part not in available
             reason = (f'主檔找不到料號 {part}，可人工選擇正確料號後重新試算' if can_map
@@ -631,8 +697,15 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
                                   reason=reason))
             continue
         row.update(stocks[part])
+        part_history = history.get(part, {'prior_adjustment': 0.0})
+        row['prior_adjustment'] = part_history['prior_adjustment']
+        if part_history.get('blocked_reason'):
+            row['blocked_reason'] = part_history['blocked_reason']
+        if row.get('blocked_reason'):
+            row['warnings'].append(row['blocked_reason'])
+            row['physical_qty'] = None
         row.update(defects.get(part, {'defect_delta': 0.0, 'defective_record_ids': []}))
-        row['expected_count'] = round(row['cutoff_main'] + row['defect_delta'], 6)
+        row['expected_count'] = round(row['cutoff_main'] + row['defect_delta'] + row['prior_adjustment'], 6)
         row['theoretical'] = row['expected_count']
         row['preserved_delta'] = round(row['current_main'] - row['expected_count'], 6)
         physical = row['physical_qty']
@@ -646,10 +719,12 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         row['notes'] = ['後續批次異動保留，現在庫存以主檔結存重算']
         if any(source in part_mappings for source in row['source_part_numbers']):
             row['manual_mapping'] = True
-            row['warnings'] = [f'人工選定料號：{source} → {part}，請重新核對數量'
-                               for source in row['source_part_numbers'] if source in part_mappings]
+            row['warnings'].extend(f'人工選定料號：{source} → {part}，請重新核對數量'
+                                   for source in row['source_part_numbers'] if source in part_mappings)
         summary[row['category']] += 1
         rows.append(row)
+    if db.get_setting('main_file_path') != main_path or _sha256_file(main_path) != main_sha256:
+        raise ValueError('試算期間主檔已變更，請重新試算')
     preview_token = _batch_preview_token(
         parsed=parsed,
         main_path=main_path,
@@ -658,14 +733,15 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         session=session,
         rows=rows,
         part_mappings=part_mappings,
+        main_sha256=main_sha256,
     )
     return dict(format='genlin', mode='stop_loss', cutoff_date=cutoff_at, cutoff_batch_code=batch_code,
                 count_date=count_date, sheet_name=parsed['sheet_name'], source_columns=parsed['source_columns'],
-                preview_token=preview_token, part_mappings=part_mappings,
+                preview_token=preview_token, part_mappings=part_mappings, main_sha256=main_sha256,
                 parts=rows, summary=summary, categories={key: [row for row in rows if row['category'] == key] for key in summary},
                 uncovered_parts=uncovered, assumptions=[
                     _build_genlin_assumptions(parsed['source_columns'])[0],
-                    f'盤點日期 {count_date}；預期實盤＝主檔截止批次 {batch_code} 結存－截止後至盤點日不良扣帳。',
+                    f'盤點日期 {count_date}；預期實盤＝主檔截止批次 {batch_code} 結存＋期間不良扣帳與回復＋已套用盤點調整。',
                     '後續批次異動保留；主檔目標＝實盤＋主檔目前結存－預期實盤。只更新勾選料號。',
                     'ST 庫存僅供警示，不會由本次主檔盤點調整寫入或吸收歷史。',
                     '提交時會重讀來源、主檔與不良明細；資料有變動時必須重新試算。',
@@ -893,6 +969,8 @@ def _commit_batch_genlin(
     write_started = False
     snapshot_state: dict | None = None
     try:
+        if db.get_setting('main_file_path') != main_path or _sha256_file(main_path) != preview['main_sha256']:
+            raise StaleReconcilePreviewError('試算後主檔已變更，請重新試算')
         ws = workbook.worksheets[0]
         anchor_col = validate_insertion_anchor(ws, batch_code)
         matching_cols = [
@@ -942,6 +1020,8 @@ def _commit_batch_genlin(
                 'main_after': main_after,
             })
 
+        if db.get_setting('main_file_path') != main_path or _sha256_file(main_path) != preview['main_sha256']:
+            raise StaleReconcilePreviewError('寫入前主檔已變更，請重新試算')
         snapshot_state = db.capture_inventory_snapshot_state()
         backup_path = backup_main_file(main_path, str(BACKUP_DIR))
         write_started = True

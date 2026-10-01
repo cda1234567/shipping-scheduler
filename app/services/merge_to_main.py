@@ -24,7 +24,7 @@ from ..models import calc_suggested_qty
 from .local_time import local_now
 from .main_file_lock import serialized_main_file_write
 from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
-from .main_reader import read_stock, read_stock_cells, _try_float as _stock_number
+from .main_reader import read_stock, read_stock_cells, read_latest_stock_from_sheet, main_balance_columns, _try_float as _stock_number
 from .bom_substitutions import allocate_substitution, find_rule, normalize_part
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
@@ -116,13 +116,7 @@ def _build_part_row_map(ws) -> dict[str, int]:
 
 
 def _read_latest_stock(ws, row_idx: int, max_col: int) -> float:
-    current_stock = 0.0
-    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
-        value = _try_float(ws.cell(row=row_idx, column=col_idx).value)
-        if value is not None:
-            current_stock = value
-            break
-    return current_stock
+    return read_latest_stock_from_sheet(ws, row_idx, max_col)
 
 
 def _copy_main_row_style(ws, source_row_idx: int, target_row_idx: int, max_col: int) -> None:
@@ -230,11 +224,8 @@ def _ensure_main_part_row(
 
 
 def _find_sheet_latest_stock_col(ws, max_col: int) -> int | None:
-    for col_idx in range(max_col, STOCK_SEARCH_START_COL - 1, -1):
-        for row_idx in range(2, ws.max_row + 1):
-            if _try_float(ws.cell(row=row_idx, column=col_idx).value) is not None:
-                return col_idx
-    return None
+    balances, _ = main_balance_columns([ws.cell(1, col).value for col in range(1, max_col + 1)])
+    return max(balances) + 1 if balances else None
 
 
 def clear_cell_fill(cell) -> None:

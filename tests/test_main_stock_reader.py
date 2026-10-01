@@ -77,7 +77,7 @@ class MainStockReaderTests(unittest.TestCase):
             wb.close()
             self.assertEqual(read_stock(str(path)), {"PART": 1043})
 
-    def test_unsupported_formula_uses_existing_numeric_cache_without_modifying_file(self):
+    def test_unsupported_formula_rejects_possibly_stale_cache_without_modifying_file(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "main.xlsx"
             self._workbook(path, [["PART", "", 100, "", None, None, None,
@@ -94,7 +94,8 @@ class MainStockReaderTests(unittest.TestCase):
                         data = ET.tostring(root)
                     target.writestr(item, data)
             original_bytes = path.read_bytes()
-            self.assertEqual(read_stock(str(path)), {"PART": -25})
+            with self.assertRaisesRegex(ValueError, r"PART.*K2"):
+                read_stock(str(path))
             self.assertEqual(path.read_bytes(), original_bytes)
 
     def test_main_data_reports_unreadable_stock_instead_of_using_snapshot(self):

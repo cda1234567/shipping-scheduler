@@ -142,6 +142,225 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(parsed['rows'][0]['physical_qty'], 771)
         self.assertEqual(parsed['count_date'], '2026-09-23')
 
+    def restart_session(self):
+        session = db.get_active_inventory_count_session('st')
+        if session:
+            db.finish_inventory_count_session(session['id'], status='cancelled')
+        db.start_inventory_count_session(cutoff_at='2026-09-19T10:00:00', cutoff_code='9-12')
+
+    def test_repeat_count_uses_main_adjustments_and_only_corrects_changed_quantity(self):
+        part = 'EC-30037A-TAB'
+        self.assertEqual(self.commit(parts=[part])['parts'][0]['main_after'], 3968)
+        self.restart_session()
+        self.assertEqual(self.commit(parts=[part])['parts'][0]['main_adjustment'], 0)
+        self.restart_session()
+        wb = load_workbook(self.count)
+        wb.active['G6'] = 361
+        wb.save(self.count)
+        wb.close()
+        result = self.commit(parts=[part])['parts'][0]
+        self.assertEqual(result['main_adjustment'], 10)
+        self.assertEqual(result['main_after'], 3978)
+        self.assertEqual(read_stock(str(self.main))['EC-20128A-TAB'], 635)
+
+    def test_partial_commit_allows_other_parts_and_older_count_only_blocks_counted_part(self):
+        self.commit(parts=['EC-30037A-TAB'])
+        self.restart_session()
+        self.assertEqual(self.commit(parts=['EC-20128A-TAB'])['parts'][0]['main_after'], 635)
+        self.restart_session()
+        wb = load_workbook(self.count)
+        wb.active['A1'] = '盤點日期 2026/9/22'
+        wb.save(self.count)
+        wb.close()
+        rows = {row['part_number']: row for row in self.preview()['parts']}
+        self.assertIsNone(rows['EC-30037A-TAB']['physical_qty'])
+        self.assertIn('較舊', rows['EC-30037A-TAB']['blocked_reason'])
+        self.assertEqual(rows['PART-KEEP']['physical_qty'], 50)
+        before = self.file_hash(self.main)
+        with self.assertRaisesRegex(ValueError, '未填實盤'):
+            self.commit(parts=['EC-30037A-TAB'])
+        self.assertEqual(self.file_hash(self.main), before)
+
+    def test_restored_main_does_not_retain_adjustment_from_later_file(self):
+        original = self.main.read_bytes()
+        self.commit(parts=['EC-30037A-TAB'])
+        self.main.write_bytes(original)
+        self.restart_session()
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-30037A-TAB')
+        self.assertEqual(row['prior_adjustment'], 0)
+        self.assertEqual(row['main_adjustment'], 3199)
+
+    def test_alias_sources_preserve_blank_rows_and_never_commit_partial_sum(self):
+        for duplicate_part in ('EC-20128A', 'EC-20128A-TAB'):
+            with self.subTest(source=duplicate_part):
+                wb = load_workbook(self.count)
+                wb.active.cell(8, 4, duplicate_part)
+                wb.active.cell(8, 6, 10)
+                wb.save(self.count)
+                wb.close()
+                row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+                self.assertEqual(len(row['source_rows']), 2)
+                self.assertEqual([r['physical_qty'] for r in row['source_rows']], [771, None])
+                self.assertIsNone(row['physical_qty'])
+                self.assertTrue(row['warnings'])
+                before = self.file_hash(self.main)
+                with self.assertRaisesRegex(ValueError, '未填實盤'):
+                    self.commit()
+                self.assertEqual(self.file_hash(self.main), before)
+
+    def test_complete_alias_sources_warn_and_show_each_quantity(self):
+        wb = load_workbook(self.count)
+        wb.active.cell(8, 4, 'EC-20128A')
+        wb.active.cell(8, 6, 10)
+        wb.active.cell(8, 7, 10)
+        wb.save(self.count)
+        wb.close()
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['physical_qty'], 781)
+        self.assertEqual(len(row['source_rows']), 2)
+        self.assertTrue(row['warnings'])
+
+    def test_main_change_during_preview_is_rejected(self):
+        original = st_reconcile.read_batch_stock
+        def changed_main(*args):
+            result = original(*args)
+            wb = load_workbook(self.main)
+            wb.active['T2'] = 123
+            wb.save(self.main)
+            wb.close()
+            return result
+        with patch.object(st_reconcile, 'read_batch_stock', side_effect=changed_main):
+            with self.assertRaisesRegex(ValueError, '試算期間主檔已變更'):
+                self.preview()
+
+    def test_legacy_reversal_without_history_blocks_only_affected_part(self):
+        wb = load_workbook(self.main)
+        ws = wb.active
+        for col, value in ((21, '不良品回復'), (22, '使用數量'), (23, '結存')):
+            ws.cell(1, col, value)
+        for col, value in ((21, 5), (22, 0), (23, 640)):
+            ws.cell(2, col, value)
+        wb.save(self.main)
+        wb.close()
+        rows = {row['part_number']: row for row in self.preview()['parts']}
+        self.assertIsNone(rows['EC-20128A-TAB']['physical_qty'])
+        self.assertIn('歷史', rows['EC-20128A-TAB']['blocked_reason'])
+        self.assertEqual(rows['EC-30037A-TAB']['main_adjustment'], 3199)
+
+    def prepare_defective_reversal(self):
+        self.restart_session()
+        db.finish_inventory_count_session(db.get_active_inventory_count_session('st')['id'], status='cancelled')
+        self.conn.execute('DELETE FROM defective_records')
+        wb = load_workbook(self.main)
+        for col, value in ((18, '不良品扣帳'), (19, '使用數量'), (20, '結存')):
+            wb.active.cell(1, col).value = value
+        for col, value in ((18, 0), (19, 5), (20, 775)):
+            wb.active.cell(2, col).value = value
+        wb.save(self.main)
+        wb.close()
+        wb = load_workbook(self.count)
+        wb.active['G5'] = 775
+        wb.save(self.count)
+        wb.close()
+        with patch.object(db, '_now', return_value='2026-09-20T10:00:00'):
+            batch_id = db.create_defective_batch('defect.xlsx', main_file_mtime=self.main.stat().st_mtime)
+            db.create_defective_record(dict(batch_id=batch_id, part_number='EC-20128A-TAB', defective_qty=5))
+        return batch_id
+
+    def delete_defective_batch(self, batch_id):
+        from app.routers import defectives
+        with patch.object(defectives, 'BACKUP_DIR', Path(self.tmp.name) / 'backups'), \
+                patch.object(defectives, '_refresh_active_merge_drafts_after_main_change'):
+            return asyncio.run(defectives.delete_batch(batch_id))
+
+    def test_reversal_after_count_preserves_original_deduction_history(self):
+        batch_id = self.prepare_defective_reversal()
+        with patch.object(db, '_now', return_value='2026-09-24T10:00:00'):
+            result = self.delete_defective_batch(batch_id)
+        self.assertEqual(result['reversed_count'], 1)
+        self.assertEqual(db.get_defective_batches(), [])
+        self.restart_session()
+        row = self.commit()['parts'][0]
+        self.assertEqual(row['expected_count'], 775)
+        self.assertEqual(row['main_after'], 780)
+        self.assertEqual(row['main_adjustment'], 0)
+
+    def test_reversal_before_count_and_restore_use_present_main_events_only(self):
+        batch_id = self.prepare_defective_reversal()
+        before_reversal = self.main.read_bytes()
+        with patch.object(db, '_now', return_value='2026-09-22T10:00:00'):
+            self.delete_defective_batch(batch_id)
+        self.restart_session()
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['defect_delta'], 0)
+        self.main.write_bytes(before_reversal)
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['defect_delta'], -5)
+        self.assertEqual(row['main_adjustment'], 0)
+        self.conn.execute('UPDATE defective_deleted_history SET main_period_id=999')
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['defect_delta'], 0)
+
+    def test_reversal_archive_failure_rolls_back_main_snapshot_and_keeps_records(self):
+        batch_id = self.prepare_defective_reversal()
+        before = self.file_hash(self.main)
+        snapshot = db.capture_inventory_snapshot_state()
+        self.conn.execute("CREATE TRIGGER reject_history BEFORE INSERT ON defective_deleted_history BEGIN SELECT RAISE(ABORT, 'archive failed'); END")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'archive failed'):
+            self.delete_defective_batch(batch_id)
+        self.assertEqual(self.file_hash(self.main), before)
+        self.assertEqual(db.capture_inventory_snapshot_state(), snapshot)
+        self.assertEqual(len(db.get_defective_batches()), 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM defective_deleted_history').fetchone()[0], 0)
+
+    def test_reversal_save_failure_keeps_original_main_and_database(self):
+        from app.services import defective_deduction
+        batch_id = self.prepare_defective_reversal()
+        before = self.file_hash(self.main)
+        with patch.object(defective_deduction, '_save_workbook_atomically', side_effect=OSError('save failed')):
+            with self.assertRaisesRegex(OSError, 'save failed'):
+                self.delete_defective_batch(batch_id)
+        self.assertEqual(self.file_hash(self.main), before)
+        self.assertEqual(len(db.get_defective_batches()), 1)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM defective_deleted_history').fetchone()[0], 0)
+
+    def test_same_part_records_reverse_total_and_post_commit_hook_failure_still_succeeds(self):
+        from app.routers import defectives
+        batch_id = self.prepare_defective_reversal()
+        with patch.object(db, '_now', return_value='2026-09-21T10:00:00'):
+            db.create_defective_record(dict(batch_id=batch_id, part_number='EC-20128A-TAB', defective_qty=4))
+        wb = load_workbook(self.main)
+        wb.active['S2'] = 9
+        wb.active['T2'] = 771
+        wb.save(self.main)
+        wb.close()
+        wb = load_workbook(self.count)
+        wb.active['G5'] = 771
+        wb.save(self.count)
+        wb.close()
+        self.conn.execute('UPDATE defective_batches SET main_file_mtime=0 WHERE id=?', (batch_id,))
+        with patch.object(defectives, 'BACKUP_DIR', Path(self.tmp.name) / 'backups'), \
+                patch.object(db, '_now', return_value='2026-09-24T10:00:00'), \
+                patch.object(defectives, '_refresh_active_merge_drafts_after_main_change', side_effect=RuntimeError('draft failed')):
+            result = asyncio.run(defectives.delete_batch(batch_id))
+        self.assertTrue(result['ok'])
+        self.assertEqual(read_stock(str(self.main))['EC-20128A-TAB'], 780)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM defective_deleted_history').fetchone()[0], 2)
+        self.restart_session()
+        row = self.commit()['parts'][0]
+        self.assertEqual(row['main_after'], 780)
+        self.assertEqual(row['defect_delta'], -9)
+
+    def test_deleting_record_only_keeps_historical_deduction(self):
+        record_id = self.conn.execute("SELECT id FROM defective_records WHERE defective_qty=4").fetchone()[0]
+        before = self.file_hash(self.main)
+        db.delete_defective_record(record_id)
+        self.assertIsNone(db.get_defective_record(record_id))
+        row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
+        self.assertEqual(row['defect_delta'], -9)
+        self.assertEqual(row['main_adjustment'], 0)
+        self.assertEqual(self.file_hash(self.main), before)
+
     def test_preview_uses_main_ledger_and_st_is_warning_only(self):
         rows = {row['part_number']: row for row in self.preview()['parts']}
         ec = rows['EC-20128A-TAB']

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -24,6 +25,8 @@ from ..services.defective_deduction import (
 )
 from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed
 from ..services.merge_to_main import backup_main_file
+from ..services.main_file_lock import serialized_main_file_write
+from ..services.st_reconcile import _restore_main_from_backup
 from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.overrun_deduction import (
     apply_overrun_import_confirmations,
@@ -824,6 +827,11 @@ async def replay_after_rollback(req: DefectiveReplayRequest):
 
 @router.delete("/batches/{batch_id}")
 async def delete_batch(batch_id: int):
+    return _delete_batch_with_history(batch_id)
+
+
+@serialized_main_file_write
+def _delete_batch_with_history(batch_id: int):
     # 先取出該批次的所有紀錄，用來回寫主檔
     batches = db.get_defective_batches()
     target_batch = next((b for b in batches if b["id"] == batch_id), None)
@@ -831,18 +839,27 @@ async def delete_batch(batch_id: int):
         raise HTTPException(404, "找不到批次")
     ensure_defective_batch_delete_allowed(target_batch)
 
+    decorated_batch = _decorate_batch(target_batch)
+    batch_name = decorated_batch.get("filename", f"#{batch_id}")
+    batch_label = "加工多打批次" if decorated_batch.get("batch_type") == "overrun" else "不良品批次"
     records = target_batch.get("items") or []
-    reverse_items = [
-        {"part_number": r["part_number"], "defective_qty": r["defective_qty"]}
-        for r in records
-        if r.get("defective_qty") and r["defective_qty"] > 0
-    ]
+    reverse_quantities: dict[str, float] = {}
+    for record in records:
+        if float(record.get('defective_qty') or 0) > 0:
+            part = str(record['part_number']).strip().upper()
+            reverse_quantities[part] = reverse_quantities.get(part, 0.0) + float(record['defective_qty'])
+    reverse_items = [{'part_number': part, 'defective_qty': qty} for part, qty in reverse_quantities.items()]
 
     # 比對主檔 mtime — 如果主檔已被更換就不回寫
     reversed_count = 0
+    reversed_parts: set[str] = set()
+    reversal_id = uuid.uuid4().hex
+    reversed_at = db._now()
     main_file_changed = False
     batch_mtime = float(target_batch.get("main_file_mtime") or 0)
     current_mtime = _get_main_file_mtime()
+    backup_path = ''
+    snapshot_state = None
 
     if reverse_items:
         main_path = str(db.get_setting("main_file_path") or "").strip()
@@ -853,28 +870,46 @@ async def delete_batch(batch_id: int):
             main_file_changed = True
         else:
             reverse_header = OVERRUN_REVERSE_HEADER if _detect_batch_type(target_batch) == "overrun" else "不良品回復"
-            result = reverse_defectives_from_main(
-                main_path,
-                reverse_items,
-                backup_dir=str(BACKUP_DIR),
-                entry_header=reverse_header,
-            )
-            reversed_count = result["reversed_count"]
-            refresh_snapshot_from_main(main_path)
-            _refresh_active_merge_drafts_after_main_change()
+            backup_path = backup_main_file(main_path, str(BACKUP_DIR))
+            snapshot_state = db.capture_inventory_snapshot_state()
+            try:
+                result = reverse_defectives_from_main(
+                    main_path,
+                    reverse_items,
+                    entry_header=reverse_header,
+                    reversal_id=reversal_id,
+                )
+                reversed_count = result["reversed_count"]
+                reversed_parts = {str(item['part_number']).strip().upper() for item in result.get('results', [])}
+                refresh_snapshot_from_main(main_path)
+            except Exception:
+                _restore_main_from_backup(backup_path, main_path)
+                db.restore_inventory_snapshot_state(snapshot_state)
+                raise
 
     # 刪除 DB 紀錄
-    if not db.delete_defective_batch(batch_id):
-        raise HTTPException(404, "刪除失敗")
-
-    decorated_batch = _decorate_batch(target_batch)
-    batch_name = decorated_batch.get("filename", f"#{batch_id}")
-    batch_label = "加工多打批次" if decorated_batch.get("batch_type") == "overrun" else "不良品批次"
+    try:
+        if not db.delete_defective_batch(batch_id, reversed_parts=reversed_parts,
+                                        reversed_at=reversed_at, reversal_id=reversal_id):
+            raise HTTPException(404, "刪除失敗")
+    except Exception:
+        if backup_path:
+            _restore_main_from_backup(backup_path, main_path)
+            db.restore_inventory_snapshot_state(snapshot_state)
+        raise
+    if backup_path:
+        try:
+            _refresh_active_merge_drafts_after_main_change()
+        except Exception:
+            log.exception('刪除批次成功，但待發料草稿更新失敗')
     if main_file_changed:
         detail = f"{batch_name}：主檔已更換，僅刪除紀錄（未回寫庫存）"
     else:
         detail = f"{batch_name}：已回復 {reversed_count} 筆庫存"
-    db.log_activity(f"刪除{batch_label}", detail)
+    try:
+        db.log_activity(f"刪除{batch_label}", detail)
+    except Exception:
+        log.exception('刪除批次成功，但活動紀錄寫入失敗')
 
     return {
         "ok": True,

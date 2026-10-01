@@ -441,6 +441,16 @@ CREATE TABLE IF NOT EXISTS defective_records (
 
 CREATE INDEX IF NOT EXISTS idx_defective_status ON defective_records(status);
 CREATE INDEX IF NOT EXISTS idx_defective_order ON defective_records(order_id);
+CREATE TABLE IF NOT EXISTS defective_deleted_history (
+    record_id INTEGER PRIMARY KEY,
+    part_number TEXT NOT NULL,
+    defective_qty REAL NOT NULL,
+    created_at TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    reversed_at TEXT NOT NULL DEFAULT '',
+    reversal_id TEXT NOT NULL DEFAULT '',
+    main_period_id INTEGER NOT NULL DEFAULT 0
+);
 CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_inventory_count_sessions_status ON inventory_count_sessions(scope, status, id);
 """
@@ -1427,8 +1437,9 @@ def get_defective_part_totals(cutoff_at: str, after_at: str = "") -> list[dict]:
     ]
 
 
-def get_defective_interval_parts(cutoff_at: str, count_at: str) -> dict[str, dict]:
+def get_defective_interval_parts(cutoff_at: str, count_at: str, *, reversal_ids: set[str] | None = None) -> dict[str, dict]:
     """盤點日期內有效扣帳；含已吸收列，讓同一盤點重算結果保持一致。"""
+    period_id = get_current_main_period_id()
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT id, part_number, defective_qty FROM defective_records "
@@ -1436,12 +1447,40 @@ def get_defective_interval_parts(cutoff_at: str, count_at: str) -> dict[str, dic
             "AND defective_qty>0 ORDER BY id",
             (cutoff_at, count_at),
         ).fetchall()
+        history = conn.execute(
+            "SELECT * FROM defective_deleted_history WHERE main_period_id=?",
+            (period_id,),
+        ).fetchall()
     result: dict[str, dict] = {}
     for row in rows:
         part = str(row['part_number'] or '').strip().upper()
         item = result.setdefault(part, {'defect_delta': 0.0, 'defective_record_ids': []})
         item['defect_delta'] -= float(row['defective_qty'])
         item['defective_record_ids'].append(int(row['id']))
+    for row in history:
+        part = str(row['part_number'] or '').strip().upper()
+        item = result.setdefault(part, {'defect_delta': 0.0, 'defective_record_ids': []})
+        if cutoff_at < row['created_at'] <= count_at:
+            item['defect_delta'] -= float(row['defective_qty'])
+            item['defective_record_ids'].append(int(row['record_id']))
+        if (row['reversal_id'] in (reversal_ids or set())
+                and cutoff_at < row['reversed_at'] <= count_at):
+            item['defect_delta'] += float(row['defective_qty'])
+    return result
+
+
+def get_defective_reversal_history() -> dict[str, dict[str, float]]:
+    """供主檔回復事件核對；未留歷史的舊回復不能猜測原扣帳日期。"""
+    period_id = get_current_main_period_id()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT reversal_id, part_number, SUM(defective_qty) AS qty "
+            "FROM defective_deleted_history WHERE reversal_id<>'' AND main_period_id=? "
+            "GROUP BY reversal_id, part_number", (period_id,),
+        ).fetchall()
+    result: dict[str, dict[str, float]] = {}
+    for row in rows:
+        result.setdefault(row['reversal_id'], {})[row['part_number']] = float(row['qty'])
     return result
 
 
@@ -4155,13 +4194,38 @@ def update_defective_record(record_id: int, data: dict) -> bool:
 
 
 def delete_defective_record(record_id: int) -> bool:
+    period_id = get_current_main_period_id()
     with get_conn() as conn:
+        _archive_deleted_defectives(conn, 'id=?', record_id, period_id=period_id)
         cur = conn.execute("DELETE FROM defective_records WHERE id=?", (record_id,))
     return cur.rowcount > 0
 
 
-def delete_defective_batch(batch_id: int) -> bool:
+def _archive_deleted_defectives(conn, predicate: str, identifier: int, *,
+                               period_id: int,
+                               reversed_parts: set[str] | None = None,
+                               reversed_at: str = '', reversal_id: str = '') -> None:
+    rows = conn.execute(f"SELECT * FROM defective_records WHERE {predicate}", (identifier,)).fetchall()
+    for row in rows:
+        if float(row['defective_qty'] or 0) <= 0 or row['status'] not in ('open', 'confirmed', 'closed'):
+            continue
+        part = str(row['part_number']).strip().upper()
+        reversed_part = part in (reversed_parts or set())
+        conn.execute(
+            "INSERT INTO defective_deleted_history "
+            "(record_id,part_number,defective_qty,created_at,deleted_at,reversed_at,reversal_id,main_period_id) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (row['id'], part, row['defective_qty'], row['created_at'], _now(),
+             reversed_at if reversed_part else '', reversal_id if reversed_part else '', period_id),
+        )
+
+
+def delete_defective_batch(batch_id: int, *, reversed_parts: set[str] | None = None,
+                          reversed_at: str = '', reversal_id: str = '') -> bool:
+    period_id = get_current_main_period_id()
     with get_conn() as conn:
+        _archive_deleted_defectives(conn, 'batch_id=?', batch_id, period_id=period_id, reversed_parts=reversed_parts,
+                                   reversed_at=reversed_at, reversal_id=reversal_id)
         conn.execute("DELETE FROM defective_records WHERE batch_id=?", (batch_id,))
         cur = conn.execute("DELETE FROM defective_batches WHERE id=?", (batch_id,))
     return cur.rowcount > 0

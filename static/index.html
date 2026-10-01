@@ -945,8 +945,27 @@ let _stReconcileCutoffMode = "batch";
 let _activeStInventoryCount = null;
 let _stReconcilePartMappings = {};
 let _stReconcilePreviewRevision = 0;
+let _stReconcileActionBusy = false;
+let _stReconcileSessionRevision = 0;
 const ST_RECONCILE_SKIP_CATEGORY = "未填實盤，跳過";
 const ST_RECONCILE_MATCHED_CATEGORY = "無差異";
+
+async function runStReconcileAction(action) {
+  if (_stReconcileActionBusy) return;
+  _stReconcileActionBusy = true;
+  _stReconcilePreviewRevision += 1;
+  _stReconcileSessionRevision += 1;
+  const controls = Array.from(document.querySelectorAll(".st-reconcile-card button, .st-reconcile-card input, .st-reconcile-card select"));
+  const disabledBefore = controls.map(control => control.disabled);
+  controls.forEach(control => { control.disabled = true; });
+  try {
+    await action();
+  } finally {
+    _stReconcileActionBusy = false;
+    controls.forEach((control, index) => { if (control.isConnected) control.disabled = disabledBefore[index]; });
+    renderStInventoryCountSession();
+  }
+}
 
 function clearStReconcilePreview(message = "資料已變更，請重新試算後再核對。", { preserveMappings = false, preserveMappingControls = false } = {}) {
   _lastStReconcilePreview = null;
@@ -1011,6 +1030,7 @@ function appendStReconcileCutoff(formData) {
 }
 
 document.getElementById("btn-st-reconcile-cutoff-mode")?.addEventListener("click", () => {
+  if (_stReconcileActionBusy) return;
   clearStReconcilePreview();
   _stReconcileCutoffMode = _stReconcileCutoffMode === "batch" ? "date" : "batch";
   const batchField = document.getElementById("st-reconcile-cutoff-batch-field");
@@ -1034,21 +1054,24 @@ function renderStInventoryCountSession() {
       ? `盤點進行中：截止 ${active.cutoff_code || String(active.cutoff_at || "").replace("T", " ").slice(0, 19)}，庫存異動已暫停。`
       : "目前沒有進行中的盤點。";
   }
-  if (startButton) startButton.disabled = Boolean(active);
+  if (startButton) startButton.disabled = _stReconcileActionBusy || Boolean(active);
   if (cancelButton) cancelButton.style.display = active ? "inline-flex" : "none";
-  if (modeButton) modeButton.disabled = Boolean(active);
-  if (batchSelect) batchSelect.disabled = Boolean(active);
-  if (dateInput) dateInput.disabled = Boolean(active);
+  if (modeButton) modeButton.disabled = _stReconcileActionBusy || Boolean(active);
+  if (batchSelect) batchSelect.disabled = _stReconcileActionBusy || Boolean(active);
+  if (dateInput) dateInput.disabled = _stReconcileActionBusy || Boolean(active);
   updateStReconcileCommitCount();
 }
 
 async function loadStInventoryCountSession() {
+  const requestRevision = _stReconcileSessionRevision;
   const previousSessionId = _activeStInventoryCount?.id ?? null;
   let loadError = null;
   try {
     const data = await apiJson("/api/reconcile/st/session");
+    if (requestRevision !== _stReconcileSessionRevision) return;
     _activeStInventoryCount = data?.active || null;
   } catch (error) {
+    if (requestRevision !== _stReconcileSessionRevision) return;
     _activeStInventoryCount = null;
     loadError = error;
   }
@@ -1061,6 +1084,10 @@ async function loadStInventoryCountSession() {
 }
 
 async function startStInventoryCount() {
+  return runStReconcileAction(performStInventoryCountStart);
+}
+
+async function performStInventoryCountStart() {
   const fields = getStReconcileCutoffFields();
   if (!fields) {
     showToast("請先選擇停損批次或輸入截止日", { tone: "error" });
@@ -1081,6 +1108,10 @@ async function startStInventoryCount() {
 }
 
 async function cancelStInventoryCount() {
+  return runStReconcileAction(performStInventoryCountCancel);
+}
+
+async function performStInventoryCountCancel() {
   if (!confirm("取消盤點後會解除庫存鎖定，尚未提交的盤點數不會寫入。要取消嗎？")) return;
   try {
     await apiPost("/api/reconcile/st/session/cancel");
@@ -1116,6 +1147,7 @@ function renderStReconcileMappingChoice(sourcePart, suggestions = []) {
 }
 
 function setStReconcilePartMapping(choice, target) {
+  if (_stReconcileActionBusy) return;
   const source = String(choice?.dataset.sourcePart || "").trim().toUpperCase();
   if (!source) return;
   const normalizedTarget = String(target || "").trim().toUpperCase();
@@ -1130,6 +1162,7 @@ document.getElementById("st-reconcile-result")?.addEventListener("input", event 
   setStReconcilePartMapping(event.target.closest(".st-reconcile-mapping-choice"), event.target.value);
 });
 document.getElementById("st-reconcile-result")?.addEventListener("click", event => {
+  if (_stReconcileActionBusy) return;
   const suggestion = event.target.closest(".st-reconcile-mapping-suggestion");
   const skip = event.target.closest(".st-reconcile-mapping-skip");
   if (suggestion || skip) {
@@ -1231,9 +1264,8 @@ function getStReconcileMainAdjustment(row) {
 }
 
 function getStReconcileWarning(row) {
-  if (row?.warning) return String(row.warning);
-  if (Array.isArray(row?.warnings) && row.warnings.length) return row.warnings.join("、");
-  return row?.has_warning ? "系統標示需人工確認" : "";
+  const warnings = [row?.blocked_reason, row?.warning, ...(Array.isArray(row?.warnings) ? row.warnings : [])].filter(Boolean);
+  return warnings.length ? [...new Set(warnings)].join("、") : row?.has_warning ? "系統標示需人工確認" : "";
 }
 
 function isSelectableStReconcilePart(row) {
@@ -1245,7 +1277,7 @@ function isSelectableStReconcilePart(row) {
 
 function isDefaultSelectedStReconcilePart(row, hasLedger) {
   if (!isSelectableStReconcilePart(row)) return false;
-  if (row.manual_mapping) return false;
+  if (row.manual_mapping || (row.source_rows || []).length > 1 || (row.source_part_numbers || []).length > 1) return false;
   if (!hasLedger) return true;
   return row.category === ST_RECONCILE_MATCHED_CATEGORY && !getStReconcileWarning(row);
 }
@@ -1271,7 +1303,7 @@ function updateStReconcileCommitCount() {
       ? `套用已核對 ${selectedCount} 支並結束盤點（未勾不變）`
       : `設為 ST 停損點（${selectedCount} 支料）`;
     const missingRequiredToken = batchLedger && !_lastStReconcilePreview?.preview_token;
-    button.disabled = !_lastStReconcilePreview || selectedCount === 0 || !_activeStInventoryCount || missingRequiredToken;
+    button.disabled = _stReconcileActionBusy || !_lastStReconcilePreview || selectedCount === 0 || !_activeStInventoryCount || missingRequiredToken;
   }
 }
 
@@ -1284,10 +1316,12 @@ function bindStReconcileSelectionControls() {
     input.addEventListener("change", updateStReconcileCommitCount);
   });
   selectAllBtn?.addEventListener("click", () => {
+    if (_stReconcileActionBusy) return;
     checks.forEach(input => { input.checked = input.dataset.defaultSafe === "true"; });
     updateStReconcileCommitCount();
   });
   clearBtn?.addEventListener("click", () => {
+    if (_stReconcileActionBusy) return;
     checks.forEach(input => { input.checked = false; });
     updateStReconcileCommitCount();
   });
@@ -1349,7 +1383,7 @@ function renderStReconcilePreview(report) {
               ? `<input class="st-reconcile-part-check" type="checkbox" data-part="${esc(row.part_number)}" data-default-safe="${defaultSelected ? "true" : "false"}"${defaultSelected ? " checked" : ""} aria-label="選取 ${esc(row.part_number)}">`
               : ""}
           </td>
-          <td class="st-reconcile-part">${row.manual_mapping ? `${esc((row.source_part_numbers || []).join("、"))} → ` : ""}${esc(row.part_number)}</td>
+          <td class="st-reconcile-part">${row.manual_mapping ? `${esc((row.source_part_numbers || []).join("、"))} → ` : ""}${esc(row.part_number)}${(row.source_rows || []).length > 1 ? `<div class="desktop-status-meta">合併來源：${row.source_rows.map(source => `${esc(source.part_number)}（實盤 ${source.physical_qty == null ? "未填" : esc(formatReconcileQty(source.physical_qty))}）`).join("、")}</div>` : ""}</td>
           <td>${esc(row.description || "")}</td>
           <td class="num">${formatReconcileQty(row.book_qty)}</td>
           <td class="num">${row.physical_qty == null ? "未填" : formatReconcileQty(row.physical_qty)}</td>
@@ -1381,7 +1415,7 @@ function renderStReconcilePreview(report) {
     .sort((a, b) => adjustmentMagnitude(b) - adjustmentMagnitude(a));
   const groupedRows = isStopLoss
     ? [
-        ["⚠ 有差異，預設不勾（請逐支核對）", differenceParts],
+        ["⚠ 需逐支核對，預設不勾", differenceParts],
         ["✓ 無差異，可直接套用", matchedParts],
         ["無法套用（不會寫入）", unavailableParts],
       ].filter(([, rows]) => rows.length)
@@ -1426,6 +1460,7 @@ function renderStReconcilePreview(report) {
 }
 
 async function handleStReconcilePreview() {
+  if (_stReconcileActionBusy) return;
   const fileInput = document.getElementById("st-reconcile-file");
   const statusEl = document.getElementById("st-reconcile-status");
   const file = fileInput?.files?.[0];
@@ -1471,6 +1506,10 @@ async function handleStReconcilePreview() {
 }
 
 async function handleStReconcileCommit() {
+  return runStReconcileAction(performStReconcileCommit);
+}
+
+async function performStReconcileCommit() {
   const fileInput = document.getElementById("st-reconcile-file");
   const commitStatus = document.getElementById("st-reconcile-commit-status");
   const file = fileInput?.files?.[0];
@@ -1562,8 +1601,12 @@ async function handleStReconcileCommit() {
     _activeStInventoryCount = null;
     clearStReconcilePreview("盤點已完成；舊試算已清除。");
     renderStInventoryCountSession();
-    if (requiresPreviewToken) await handleMainMutation();
-    else await refreshStInventoryInMain();
+    try {
+      if (requiresPreviewToken) await handleMainMutation();
+      else await refreshStInventoryInMain();
+    } catch (error) {
+      showToast("盤點已完成，畫面更新失敗，請重新整理：" + error.message, { tone: "error", duration: 5000 });
+    }
   } catch (error) {
     const message = String(error?.message || error);
     if (requiresPreviewToken && /重新試算|已變更/.test(message)) {
@@ -1588,17 +1631,21 @@ document.getElementById("btn-st-reconcile-cancel")?.addEventListener("click", ()
 document.getElementById("btn-st-reconcile-file")?.addEventListener("click", event => {
   event.preventDefault();
   event.stopPropagation();
+  if (_stReconcileActionBusy) return;
   document.getElementById("st-reconcile-file")?.click();
 });
 document.getElementById("st-reconcile-file")?.addEventListener("change", e => {
+  if (_stReconcileActionBusy) return;
   const fileNameEl = document.getElementById("st-reconcile-file-name");
   if (fileNameEl) fileNameEl.textContent = e.target.files?.[0]?.name || "尚未選擇檔案";
   clearStReconcilePreview("盤點檔已變更，請重新試算。");
 });
 document.getElementById("st-reconcile-cutoff-batch")?.addEventListener("change", () => {
+  if (_stReconcileActionBusy) return;
   clearStReconcilePreview("截止批次已變更，請重新試算。");
 });
 document.getElementById("st-reconcile-cutoff")?.addEventListener("change", () => {
+  if (_stReconcileActionBusy) return;
   clearStReconcilePreview("截止日已變更，請重新試算。");
 });
 document.getElementById("btn-st-reconcile-commit")?.addEventListener("click", () => {

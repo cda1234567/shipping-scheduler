@@ -98,9 +98,10 @@ window.mockToasts = [];
 function esc(value) { return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function showToast(message) { window.mockToasts.push(message); }
 function apiJson(url, options) {
-  return new Promise((resolve, reject) => window.mockRequests.push({ url, values: Object.fromEntries(options.body.entries()), parts: options.body.getAll('part_numbers'), resolve, reject }));
+  return new Promise((resolve, reject) => window.mockRequests.push({ url, values: options?.body ? Object.fromEntries(options.body.entries()) : {}, parts: options?.body?.getAll('part_numbers') || [], resolve, reject }));
 }
-async function apiPost() { return {}; }
+window.mockSessionRequests = [];
+async function apiPost(url) { window.mockSessionRequests.push(url); return {}; }
 async function handleMainMutation() {}
 async function refreshStInventoryInMain() {}
 window.confirm = () => true;
@@ -109,7 +110,7 @@ window.confirm = () => true;
 window.mappingTest = {
   render(report) { _lastStReconcilePreview = report; _stReconcilePartMappings = { ...(report.part_mappings || {}) }; renderStReconcilePreview(report); },
   active(session) { _activeStInventoryCount = session; renderStInventoryCountSession(); },
-  snapshot() { return { mappings: _stReconcilePartMappings, preview: _lastStReconcilePreview, revision: _stReconcilePreviewRevision }; }
+  snapshot() { return { mappings: _stReconcilePartMappings, preview: _lastStReconcilePreview, revision: _stReconcilePreviewRevision, activeSession: _activeStInventoryCount }; }
 };
 """
     exact = {"part_number": "EC-EXACT-TAB", "source_part_numbers": ["EC-EXACT-TAB"], "physical_qty": 10,
@@ -179,9 +180,24 @@ window.mappingTest = {
             assert page.evaluate("mockRequests[2].values.preview_token") == "mapped-token"
             assert page.evaluate("JSON.parse(mockRequests[2].values.part_mappings)") == {"IC-MISSING": "IC-TARGET-0"}
             assert set(page.evaluate("mockRequests[2].parts")) == {"EC-EXACT-TAB", "IC-TARGET-0"}
+            # 慢回應期間雙擊、重新試算、取消與改選都不能建立競爭請求。
+            for selector in ("#btn-st-reconcile-commit", "#btn-st-reconcile-preview", "#btn-st-reconcile-cancel",
+                             "#st-reconcile-file", ".st-reconcile-mapping-target", "#btn-st-reconcile-select-all"):
+                expect(page.locator(selector)).to_be_disabled()
+            page.evaluate("""() => {
+              for (const id of ['btn-st-reconcile-commit', 'btn-st-reconcile-preview', 'btn-st-reconcile-cancel']) {
+                document.getElementById(id).dispatchEvent(new MouseEvent('click', {bubbles: true}));
+              }
+              document.querySelector('.st-reconcile-mapping-skip').dispatchEvent(new MouseEvent('click', {bubbles: true}));
+            }""")
+            assert page.evaluate("mockRequests.length") == 3
+            assert page.evaluate("mockSessionRequests.length") == 0
+            assert page.evaluate("mappingTest.snapshot().mappings") == {"IC-MISSING": "IC-TARGET-0"}
             page.evaluate("mockRequests[2].resolve({summary: {session_id: 1, part_count: 2, adjusted_count: 0}})")
             expect(page.locator("#st-reconcile-result")).to_be_empty()
             assert page.evaluate("mappingTest.snapshot().mappings") == {}
+            expect(page.locator("#btn-st-reconcile-start")).to_be_enabled()
+            expect(page.locator("#st-reconcile-file")).to_be_enabled()
 
             page.evaluate("mappingTest.active({id: 2, cutoff_code: '9-12', cutoff_at: '2026-09-12'})")
             page.evaluate("report => mappingTest.render(report)", report)
@@ -200,8 +216,54 @@ window.mappingTest = {
             assert page.evaluate("mockRequests[4].values.part_mappings ?? null") is None
             page.evaluate("report => mockRequests[4].resolve(report)", legacy)
             expect(page.locator("#btn-st-reconcile-commit")).to_be_enabled()
+            # 取消確認與網路失敗都會解鎖；重試只送一次並可完成。
+            page.evaluate("window.confirm = () => false")
+            page.locator("#btn-st-reconcile-commit").click()
+            expect(page.locator("#btn-st-reconcile-commit")).to_be_enabled()
+            assert page.evaluate("mockRequests.length") == 5
+            page.evaluate("window.confirm = () => true")
+            page.locator("#btn-st-reconcile-commit").click()
+            page.evaluate("mockRequests[5].reject(new Error('連線中斷'))")
+            expect(page.locator("#btn-st-reconcile-commit")).to_be_enabled()
+            expect(page.locator("#st-reconcile-commit-status")).to_contain_text("連線中斷")
+            page.locator("#btn-st-reconcile-commit").click()
+            assert page.evaluate("mockRequests.length") == 7
+            assert page.evaluate("mockRequests[6].values.cutoff_date") == "2026-09-12"
+            page.evaluate("mockRequests[6].resolve({summary: {alignment_id: 2, part_count: 1, adjusted_count: 0}})")
+            expect(page.locator("#st-reconcile-result")).to_be_empty()
+            expect(page.locator("#btn-st-reconcile-start")).to_be_enabled()
+
+            # 有多來源即使合計恰好無差異也要人工核對；部分未填不得選取。
+            combined = copy.deepcopy(report)
+            combined["parts"] = [
+                {**exact, "part_number": "EC-MULTI", "source_part_numbers": ["EC-MULTI", "EC-MULTI-TAB"],
+                 "source_rows": [{"part_number": "EC-MULTI", "physical_qty": 4},
+                                 {"part_number": "EC-MULTI-TAB", "physical_qty": 6}]},
+                {**exact, "part_number": "EC-PARTIAL", "physical_qty": None, "blocked_reason": "部分來源未填實盤，請補齊後再試算",
+                 "source_part_numbers": ["EC-PARTIAL", "EC-PARTIAL-TAB"],
+                 "source_rows": [{"part_number": "EC-PARTIAL", "physical_qty": 4},
+                                 {"part_number": "EC-PARTIAL-TAB", "physical_qty": None}]}]
+            page.evaluate("mappingTest.active({id: 4, cutoff_code: '9-12', cutoff_at: '2026-09-12'})")
+            page.evaluate("report => mappingTest.render(report)", combined)
+            multi_check = page.locator('.st-reconcile-part-check[data-part="EC-MULTI"]')
+            expect(multi_check).not_to_be_checked()
+            page.locator("#btn-st-reconcile-select-all").click()
+            expect(multi_check).not_to_be_checked()
+            expect(page.locator('.st-reconcile-part-check[data-part="EC-PARTIAL"]')).to_have_count(0)
+            expect(page.locator("#st-reconcile-result")).to_contain_text("EC-MULTI-TAB（實盤 6）")
+            expect(page.locator("#st-reconcile-result")).to_contain_text("EC-PARTIAL-TAB（實盤 未填）")
+            expect(page.locator("#st-reconcile-result")).to_contain_text("部分來源未填實盤，請補齊後再試算")
+            # 提交前已送出的舊狀態查詢，不能在成功後把已結束盤點復活。
+            page.evaluate("void loadStInventoryCountSession()")
+            multi_check.check()
+            page.locator("#btn-st-reconcile-commit").click()
+            page.evaluate("mockRequests[8].resolve({summary: {session_id: 4, part_count: 1, adjusted_count: 0}})")
+            expect(page.locator("#st-reconcile-result")).to_be_empty()
+            page.evaluate("mockRequests[7].resolve({active: {id: 4, cutoff_code: '9-12'}})")
+            assert page.evaluate("mappingTest.snapshot().activeSession") is None
+            expect(page.locator("#btn-st-reconcile-start")).to_be_enabled()
             assert not errors, errors
-            print("PASS: 推薦上限、不自動選料、連續打字不失焦、選料重算、舊回應失效、人工料不預勾、提交同份 mapping/token、完成與換檔清除、日期相容。")
+            print("PASS: 選料與舊回應回歸、提交防重入/衝突操作鎖定、取消與失敗可重試、日期相容、多來源明細不預勾/未填不可選。")
             output = ROOT / ".omc/artifacts/reconcile-layout-2026-09-30"
             output.mkdir(parents=True, exist_ok=True)
             before_html = subprocess.check_output(["git", "show", "HEAD:static/index.html"], cwd=ROOT).decode("utf-8")

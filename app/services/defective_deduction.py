@@ -27,6 +27,7 @@ from .merge_to_main import (
     _read_latest_stock,
     _round_away,
     backup_main_file,
+    _save_workbook_atomically,
     clear_cell_fill,
     ensure_main_header_wrap,
 )
@@ -223,6 +224,7 @@ def reverse_defectives_from_main(
     items: list[dict],
     backup_dir: str | None = None,
     entry_header: str = "不良品回復",
+    reversal_id: str = "",
 ) -> dict:
     """
     將已扣帳的數量加回主檔（刪除批次時用）。
@@ -238,6 +240,14 @@ def reverse_defectives_from_main(
 
     is_xlsm = Path(main_path).suffix.lower() == ".xlsm"
     wb = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
+    try:
+        return _reverse_defectives_workbook(wb, main_path, items, entry_header, reversal_id, backup_path)
+    finally:
+        wb.close()
+
+
+def _reverse_defectives_workbook(wb, main_path: str, items: list[dict], entry_header: str,
+                                reversal_id: str, backup_path: str | None) -> dict:
     ws = _get_main_worksheet(wb)
     part_row_map = _build_part_row_map(ws)
     max_col = ws.max_column
@@ -250,6 +260,9 @@ def reverse_defectives_from_main(
     ts_label = local_now().strftime("%m/%d %H:%M")
     reverse_header = ws.cell(row=1, column=col_reverse)
     reverse_header.value = str(entry_header or "不良品回復").strip() or "不良品回復"
+    if reversal_id:
+        from openpyxl.comments import Comment
+        reverse_header.comment = Comment(f"defective-reversal:{reversal_id}", "shipping-scheduler")
     reverse_header.font = HEADER_FONT
     reverse_header.fill = REVERSE_HEADER_FILL
     reverse_header.alignment = CENTER_ALIGN
@@ -301,8 +314,7 @@ def reverse_defectives_from_main(
         })
 
     ensure_main_header_wrap(ws)
-    wb.save(main_path)
-    wb.close()
+    _save_workbook_atomically(wb, main_path)
 
     return {
         "backup_path": backup_path,

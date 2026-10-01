@@ -103,7 +103,8 @@ class MainSupplementTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             supplement_part_in_main(str(self.path), "PART-A", 25)
         self.assertEqual(self.path.read_bytes(), original)
-        self.assertEqual(read_stock(str(self.path))["PART-A"], -25)
+        with self.assertRaisesRegex(ValueError, r"PART-A.*K2"):
+            read_stock(str(self.path))
 
     def test_large_stock_cannot_hide_a_supplement_omitted_by_the_balance_formula(self):
         self._build([1_000_000_000, 0, 0, "=H2-J2"])

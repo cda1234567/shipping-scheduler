@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.01.2"
+APP_VERSION = "v2026.10.01.3"
 APP_RELEASED_AT = "2026-10-01"
-APP_HEADLINE = "補料後清單與庫存同步修正"
+APP_HEADLINE = "盤點與公式庫存核對修正"
 APP_CHANGELOG = [
+    {
+        "title": "盤點與庫存核對",
+        "items": [
+            "修正重複盤點與不良品歷史回復後的計算，並統一盤點、補料與發料的公式結存讀值。",
+            "盤點套用期間暫停重複提交與選料修改；合併來源逐筆顯示數量，未填完整的料號無法套用。",
+        ],
+    },
     {
         "title": "補料後維持原清單",
         "items": [

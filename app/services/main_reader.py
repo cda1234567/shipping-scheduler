@@ -83,9 +83,8 @@ def read_stock(path: str) -> dict[str, float]:
 
 def create_main_cell_resolver(
     read_formula: Callable[[int, int], Any],
-    read_cached: Callable[[int, int], Any] | None = None,
 ) -> Callable[[int, int], float | None]:
-    """共用主檔算術公式讀取器；儲存格來源按需讀取，循環或無法計算時回傳 None。"""
+    """共用主檔算術公式讀取器；無法現算就回傳 None，不使用可能過期的 Excel 快取。"""
     resolved = {}
     resolving = set()
 
@@ -107,8 +106,6 @@ def create_main_cell_resolver(
                 number = _evaluate_numeric_formula(raw, (), (), cell_value_resolver=reference_value)
             finally:
                 resolving.remove(key)
-            if number is None and read_cached is not None:
-                number = _try_float(read_cached(row, col))
         else:
             number = 0.0 if raw is None or str(raw).strip() == "" else _try_float(raw)
         resolved[key] = number
@@ -117,18 +114,75 @@ def create_main_cell_resolver(
     return resolve_cell
 
 
+def main_balance_columns(headers) -> tuple[set[int], dict[str, list[int]]]:
+    """辨認結存欄（0-based），包含空白批次碼的歷史三欄組。"""
+    balances: set[int] = set()
+    batches: dict[str, list[int]] = {}
+    occupied: set[int] = set()
+    idx = _stock_search_start_col()
+    while idx < len(headers):
+        header = str(headers[idx] or "").strip()
+        next_header = str(headers[idx + 1] or "").strip() if idx + 1 < len(headers) else ""
+        if re.fullmatch(r"\d+-\d+", header):
+            end = idx + 2
+            batches.setdefault(header, []).append(end)
+        elif any(word in header for word in ("扣帳", "回復", "恢復", "盤點調整")):
+            end = idx + (2 if "盤點調整" in header or next_header in {
+                "使用數量", "扣帳數量", "扣除數量", "用量",
+            } else 1)
+        elif any(word in header for word in ("結存", "結餘", "盤點", "庫存", "期初", "不良")) or header.lower() in {"stock", "balance"} or idx == 7:
+            end = idx
+        else:
+            idx += 1
+            continue
+        if end < len(headers):
+            balances.add(end)
+        occupied.update(range(idx, end + 1))
+        idx = end + 1
+    # 先辨認有名稱的事件，避免歷史欄群跨過下一個批次，把 PO/用量誤當結存。
+    for idx in range(8, len(headers) - 2):
+        if any(col in occupied for col in (idx, idx + 1, idx + 2)):
+            continue
+        if str(headers[idx] or "").strip():
+            continue
+        po = str(headers[idx + 1] or "").strip()
+        model = str(headers[idx + 2] or "").strip()
+        if po and model and (idx - 1 in balances or _try_float(po) is not None or po.upper().startswith("PO")):
+            balances.add(idx + 2)
+            occupied.update((idx, idx + 1, idx + 2))
+    return balances, batches
+
+
+def _latest_balance(row: int, columns, read_raw, resolver, part: str) -> tuple[int | None, float | None]:
+    for col in sorted(columns, reverse=True):
+        raw = read_raw(row, col)
+        if raw is None or str(raw).strip() == "":
+            continue
+        number = resolver(row, col)
+        if number is None:
+            raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row + 1} 結存無法讀取，請確認公式或數值")
+        return col, number
+    return None, None
+
+
+def read_latest_stock_from_sheet(ws, row: int, max_col: int) -> float:
+    """供發料讀取記憶體內主檔，與盤點/庫存畫面使用相同結存與公式規則。"""
+    balances, _ = main_balance_columns([ws.cell(1, col).value for col in range(1, max_col + 1)])
+    read_raw = lambda r, c: ws.cell(r + 1, c + 1).value
+    resolver = create_main_cell_resolver(read_raw)
+    part = str(ws.cell(row, _part_col() + 1).value or "").strip().upper()
+    _, number = _latest_balance(row - 1, balances, read_raw, resolver, part)
+    return number if number is not None else 0.0
+
+
 def read_stock_cells(path: str) -> dict[str, dict]:
     """唯讀最右結存；無快取的算術公式直接計算，不把用量誤當庫存。"""
-    wb = open_workbook_any(path, read_only=True, data_only=True)
-    formula_wb = None
+    wb = open_workbook_any(path, read_only=True, data_only=False)
     try:
-        formula_wb = open_workbook_any(path, read_only=True, data_only=False)
-        data_rows = list(wb.worksheets[0].iter_rows(values_only=True))
-        formula_rows = list(formula_wb.worksheets[0].iter_rows(values_only=True))
-        resolve_cell = create_main_cell_resolver(
-            lambda row, col: formula_rows[row][col] if row < len(formula_rows) and col < len(formula_rows[row]) else None,
-            lambda row, col: data_rows[row][col] if row < len(data_rows) and col < len(data_rows[row]) else None,
-        )
+        formula_rows = list(wb.worksheets[0].iter_rows(values_only=True))
+        read_raw = lambda row, col: formula_rows[row][col] if 0 <= row < len(formula_rows) and 0 <= col < len(formula_rows[row]) else None
+        resolve_cell = create_main_cell_resolver(read_raw)
+        columns, _ = main_balance_columns(formula_rows[0] if formula_rows else ())
 
         result: dict[str, dict] = {}
         pc = _part_col()
@@ -136,69 +190,35 @@ def read_stock_cells(path: str) -> dict[str, dict]:
             part = str(row[pc] or "").strip().upper() if len(row) > pc else ""
             if not part:
                 continue
-            # 歷史欄群可能以機種名當表頭，不依表頭限制最右結存的位置。
-            columns = range(len(row) - 1, _stock_search_start_col() - 1, -1)
-            result[part] = {"row": row_idx + 1, "col": None, "stock_qty": 0.0}
-            for col in columns:
-                raw = row[col] if col < len(row) else None
-                if raw is None or str(raw).strip() == "":
-                    continue
-                number = resolve_cell(row_idx, col)
-                if number is None:
-                    if (isinstance(raw, str) and raw.strip().startswith("=")) or str(raw).strip().lower() in {
-                        "nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity",
-                        "#div/0!", "#value!", "#ref!", "#num!", "#name?", "#n/a", "#null!",
-                    }:
-                        raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 結存無法讀取，請確認公式或數值")
-                    continue
-                result[part] = {"row": row_idx + 1, "col": col + 1, "stock_qty": number}
-                break
+            col, number = _latest_balance(row_idx, columns, read_raw, resolve_cell, part)
+            result[part] = {"row": row_idx + 1, "col": col + 1 if col is not None else None,
+                            "stock_qty": number if number is not None else 0.0}
         return result
     finally:
         wb.close()
-        if formula_wb is not None:
-            formula_wb.close()
 
 
 def read_batch_stock(path: str, batch_code: str) -> dict[str, dict[str, float]]:
     """唯讀取得各料指定批次與現在結存，不把補料、用量或 MOQ 當庫存。"""
-    wb = open_workbook_any(path, read_only=True, data_only=True)
+    wb = open_workbook_any(path, read_only=True, data_only=False)
     try:
         ws = wb.worksheets[0]
-        headers = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
-        batch_ends = []
-        balance_cols = {7}  # 歷史主檔起始盤點 H 欄（0-based）
-        input_cols = set()
-        for idx, value in enumerate(headers):
-            header = str(value or '').strip()
-            if re.fullmatch(r'\d+-\d+', header):
-                balance_cols.add(idx + 2)
-                input_cols.update((idx, idx + 1))
-                if header == batch_code:
-                    batch_ends.append(idx + 2)
-            elif any(word in header for word in ('扣帳', '回復', '恢復', '盤點調整')):
-                next_header = str(headers[idx + 1] or '').strip() if idx + 1 < len(headers) else ''
-                end = idx + (2 if '盤點調整' in header or next_header in {'使用數量', '扣帳數量', '扣除數量', '用量'} else 1)
-                balance_cols.add(end)
-                input_cols.update(range(idx, end))
-            elif any(word in header for word in ('結存', '結餘', '盤點', '庫存')):
-                balance_cols.add(idx)
+        rows = list(ws.iter_rows(values_only=True))
+        balance_cols, batches = main_balance_columns(rows[0] if rows else ())
+        batch_ends = batches.get(batch_code, [])
         if not batch_ends:
             raise ValueError(f'主檔找不到截止批次 {batch_code}')
         # 空白批次碼的歷史三欄組仍有 row 1 結存表頭；不猜測任意數值欄。
-        balance_cols.difference_update(input_cols)
         cutoff_boundary = max(batch_ends)
+        read_raw = lambda row, col: rows[row][col] if 0 <= row < len(rows) and 0 <= col < len(rows[row]) else None
+        resolver = create_main_cell_resolver(read_raw)
         result = {}
-        for row in ws.iter_rows(min_row=2, values_only=True):
+        for row_idx, row in enumerate(rows[1:], start=1):
             part = str(row[_part_col()] or '').strip().upper()
             if not part:
                 continue
             def latest(columns):
-                for col in sorted(columns, reverse=True):
-                    value = _try_float(row[col]) if col < len(row) else None
-                    if value is not None:
-                        return value
-                return None
+                return _latest_balance(row_idx, columns, read_raw, resolver, part)[1]
             cutoff = latest(batch_ends)
             if cutoff is None:
                 cutoff = latest(col for col in balance_cols if col <= cutoff_boundary)
