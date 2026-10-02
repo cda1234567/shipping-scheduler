@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.01.3"
-APP_RELEASED_AT = "2026-10-01"
-APP_HEADLINE = "盤點與公式庫存核對修正"
+APP_VERSION = "v2026.10.02.1"
+APP_RELEASED_AT = "2026-10-02"
+APP_HEADLINE = "副檔依料號分區排序"
 APP_CHANGELOG = [
+    {
+        "title": "副檔依料號分區排序",
+        "items": [
+            "新生成的副檔會在各區塊內依 C 欄料號排序，自備、客供與耗材等區塊維持分開。",
+            "料件整列資料、公式與格式一併移動，支援單筆與批次下載。",
+        ],
+    },
     {
         "title": "盤點與庫存核對",
         "items": [

@@ -44,6 +44,7 @@ from ..services.bom_revision import (
     snapshot_bom_revision,
 )
 from ..services.download_names import append_minute_timestamp, build_bom_dispatch_filename, build_generated_filename
+from ..services.bom_sorting import sort_bom_sections
 from ..services.main_reader import find_legacy_snapshot_stock_fixes, read_stock
 from ..services.order_supplements import build_order_supplement_allocations, merge_order_supplement_allocations
 from ..services.shortage_rules import (
@@ -1166,6 +1167,7 @@ async def dispatch_download_bom(req: BomDispatchDownloadRequest):
             source_order_qty=bom.get("order_qty"),
         )
         _write_bom_header_values(wb.active, po_number, order_qty_source)
+        sort_bom_sections(wb.active)
         buffer = save_workbook_bytes_with_recalc(wb, output_name)
         wb.close()
         buffer.seek(0)

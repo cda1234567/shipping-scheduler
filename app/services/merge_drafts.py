@@ -34,6 +34,7 @@ from .bom_quantity import (
     get_component_effective_needed_qty,
 )
 from .bom_substitutions import allocate_substitution, find_rule
+from .bom_sorting import sort_bom_sections
 from .main_reader import find_current_stock_cell_from_row_values, read_moq, read_stock
 from ..models import calc_suggested_qty
 from .shortage_rules import (
@@ -710,6 +711,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict], *, root_dir: Path 
                 source_order_qty=plan.get("source_order_qty"),
             )
             _write_bom_header_values(sheet, plan.get("po_number", ""), plan.get("order_qty"))
+            sort_bom_sections(sheet)
             save_workbook_with_recalc(workbook, output_path)
         finally:
             workbook.close()
