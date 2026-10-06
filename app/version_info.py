@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.1"
+APP_VERSION = "v2026.10.06.2"
 APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "發料單跟隨主檔最新補料"
+APP_HEADLINE = "盤點實盤固定讀取 Excel G 欄"
 APP_CHANGELOG = [
+    {
+        "title": "盤點實盤固定讀取 G 欄",
+        "items": [
+            "庚霖盤點表固定使用 Excel G 欄的實盤數量；G 欄空白時保持未填實盤，不再改讀總庫存。",
+        ],
+    },
     {
         "title": "發料單跟隨主檔最新補料",
         "items": [

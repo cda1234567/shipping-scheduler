@@ -749,7 +749,7 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(result, expected)
         self.assertEqual(commit_mock.call_args.kwargs['preview_token'], '')
 
-    def test_aggregate_only_falls_back_and_filename_date_is_detected(self):
+    def test_blank_g_does_not_fall_back_to_total_and_filename_date_is_detected(self):
         wb = load_workbook(self.count)
         ws = wb.active
         ws['A1'] = None
@@ -759,8 +759,8 @@ class BatchReconcileTests(unittest.TestCase):
         wb.save(self.count)
         wb.close()
         parsed = parse_st_reconcile_file(str(self.count))
-        self.assertEqual(parsed['source_columns'], {'book': 'V', 'physical': 'U'})
-        self.assertEqual(parsed['rows'][0]['physical_qty'], 33179)
+        self.assertEqual(parsed['source_columns'], {'book': 'V', 'physical': 'G'})
+        self.assertIsNone(parsed['rows'][0]['physical_qty'])
         self.assertEqual(parsed['count_date'], '2026-09-23')
 
     def test_same_batch_rightmost_valid_and_blank_falls_back(self):

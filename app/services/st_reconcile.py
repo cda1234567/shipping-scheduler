@@ -205,6 +205,8 @@ def _find_genlin_header_row(ws) -> tuple[int, dict[str, int]]:
             book_col, physical_col = production_book_col, total_physical_col
         if part_col < 0 or book_col < 0 or physical_col < 0:
             continue
+        # 庚霖實盤固定讀 G 欄，空白時也不可改用總庫存。
+        physical_col = 6
         desc_col = next(
             (
                 idx
