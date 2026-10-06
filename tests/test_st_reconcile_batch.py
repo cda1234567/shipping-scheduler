@@ -136,6 +136,9 @@ class BatchReconcileTests(unittest.TestCase):
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def prepare_count_example(self, *, defect_supply=0, defect_usage=20, legacy=False):
+        self.conn.execute('DELETE FROM defective_records')
+        self.conn.execute("INSERT INTO defective_records(part_number,defective_qty,status,created_at) VALUES(?,?,?,?)",
+                          ('EC-20128A-TAB', defect_usage, 'open', '2026-09-24T10:00:00'))
         wb = Workbook()
         ws = wb.active
         ws.append(['料號', '廠商', 'MOQ', None, None, None, None, '盤點',
@@ -161,7 +164,7 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(result['main_after'], 50)  # Andy：70 + 發20 - 用40。
         wb = load_workbook(self.main)
         ws = wb.active
-        self.assertEqual([ws.cell(2, c).value for c in (15, 16, 18, 19, 20)], [0, 20, 20, 40, 50])
+        self.assertEqual([ws.cell(2, c).value for c in (15, 16, 18, 19, 20)], [None, None, 20, 40, 50])
         wb.close()
         self.restart_session()
         result = self.commit()['parts'][0]
@@ -175,6 +178,7 @@ class BatchReconcileTests(unittest.TestCase):
                 self.prepare_count_example(defect_supply=supply, defect_usage=usage, legacy=legacy)
                 wb = load_workbook(self.main)
                 wb.active.cell(1, 12).value = '加工多打扣帳'
+                self.conn.execute("UPDATE defective_records SET action_taken='加工多打扣帳'")
                 wb.save(self.main)
                 wb.close()
                 result = self.commit()['parts'][0]
@@ -292,6 +296,51 @@ class BatchReconcileTests(unittest.TestCase):
             self.commit()
         self.assertEqual(self.main.read_bytes(), before)
         self.assertIsNotNone(db.get_active_inventory_count_session('st'))
+
+    def test_absorption_archives_exact_records_and_restore_recovers_active_list(self):
+        from app.routers import defectives
+        self.prepare_count_example()
+        batch_id = db.create_defective_batch('mixed.xlsx')
+        self.conn.execute('UPDATE defective_records SET batch_id=?', (batch_id,))
+        db.create_defective_record(dict(batch_id=batch_id, part_number='OTHER', defective_qty=6))
+        original = self.main.read_bytes()
+        records_before = db.get_defective_records()
+        self.commit()
+        listed = asyncio.run(defectives.list_batches())
+        self.assertEqual([r['part_number'] for b in listed['batches'] for r in b['items']], ['OTHER'])
+        self.assertEqual([r['part_number'] for b in listed['archived_batches'] for r in b['items']], ['EC-20128A-TAB'])
+        self.assertFalse(listed['batches'][0]['can_delete'])
+        with self.assertRaises(HTTPException):
+            asyncio.run(defectives.delete_batch(batch_id))
+        self.assertEqual(db.get_defective_records(), records_before)
+        self.main.write_bytes(original)
+        listed = asyncio.run(defectives.list_batches())
+        self.assertEqual(sum(len(b['items']) for b in listed['batches']), 2)
+        self.assertEqual(listed['archived_batches'], [])
+
+    def test_absorbed_records_leave_effective_queries_and_restore_with_main(self):
+        self.prepare_count_example()
+        batch_id = db.create_defective_batch('effective.xlsx')
+        self.conn.execute('UPDATE defective_records SET batch_id=?', (batch_id,))
+        original = self.main.read_bytes()
+        self.commit()
+        self.assertEqual(db.get_defective_part_totals('2099-01-01'), [])
+        self.assertEqual(db.get_defective_interval_parts('2026-01-01', '2099-01-01'), {})
+        self.assertEqual(db.get_defective_records_after('2026-01-01'), [])
+        db.create_defective_record(dict(batch_id=batch_id, part_number='EC-20128A-TAB', defective_qty=7))
+        self.assertEqual(db.get_defective_part_totals('2099-01-01')[0]['total_qty'], 7)
+        self.assertEqual([r['defective_qty'] for r in db.get_defective_records_after('2026-01-01')], [7])
+        self.main.write_bytes(original)
+        self.assertEqual(db.get_defective_part_totals('2099-01-01')[0]['total_qty'], 27)
+        self.assertEqual(len(db.get_defective_records_after('2026-01-01')), 2)
+
+    def test_absorption_rejects_unmatched_live_records_without_writing(self):
+        self.prepare_count_example()
+        self.conn.execute('UPDATE defective_records SET defective_qty=21')
+        before = self.main.read_bytes()
+        with self.assertRaisesRegex(ValueError, '明細與主檔不一致'):
+            self.commit()
+        self.assertEqual(self.main.read_bytes(), before)
 
     def test_parser_prefers_fg_and_preserves_exact_tab(self):
         parsed = parse_st_reconcile_file(str(self.count))

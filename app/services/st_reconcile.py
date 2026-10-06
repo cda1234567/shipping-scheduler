@@ -30,6 +30,7 @@ from .main_file_recalc import _stock_events, recalc_batch_balances_for_cell
 from .main_insertion import insert_columns, validate_insertion_anchor
 from .merge_to_main import PART_COL, _save_workbook_atomically, backup_main_file
 from .overrun_deduction import suggest_main_part_numbers
+from .count_absorption import plan_count_absorption, clear_absorbed_cells
 from .xls_reader import open_workbook_any
 
 CUSTOMER_HEADER = "客戶編號"
@@ -985,10 +986,21 @@ def _commit_batch_genlin(
         ws.cell(row=1, column=insertion_col).value = f"盤點調整 {preview['count_date']} 增加"
         ws.cell(row=1, column=insertion_col + 1).value = '扣除數量'
         ws.cell(row=1, column=insertion_col + 2).value = '結存'
-        from .inventory_restore_guard import COUNT_COMMENT_PREFIX
+        from .inventory_restore_guard import COUNT_COMMENT_PREFIX, get_count_absorbed_record_ids
         records = db.get_defective_records()
+        batch_periods = {batch['id']: batch.get('main_period_id', 0) for batch in db.get_defective_batches()}
+        records = [dict(record, main_period_id=batch_periods.get(record.get('batch_id'))) for record in records]
         boundary = dict(parts=[row['part_number'] for row in chosen], cutoff_at=cutoff_at,
                         max_record_id=max((int(row['id']) for row in records), default=0))
+        absorption = plan_count_absorption(
+            ws, insertion_col + 3, selected_parts, records, cutoff_at=cutoff_at,
+            max_record_id=boundary['max_record_id'], excluded_record_ids=get_count_absorbed_record_ids(),
+            current_period_id=db.get_current_main_period_id(),
+        )
+        boundary['absorbed_record_ids'] = absorption['record_ids']
+        boundary['cleared_cells'] = absorption['cleared_cells']
+        boundary['session_id'] = int(session['id'])
+        clear_absorbed_cells(ws, absorption)
         ws.cell(row=1, column=insertion_col).comment = Comment(
             COUNT_COMMENT_PREFIX + json.dumps(boundary, ensure_ascii=False), 'shipping-scheduler',
         )
@@ -999,8 +1011,9 @@ def _commit_batch_genlin(
             part = row['part_number']
             row_idx = selected_rows[part]
             adjustment = round(float(row['main_adjustment']), 6)
-            ws.cell(row=row_idx, column=insertion_col).value = _display_number(max(adjustment, 0.0))
-            ws.cell(row=row_idx, column=insertion_col + 1).value = _display_number(max(-adjustment, 0.0))
+            ledger_adjustment = round(adjustment + absorption['parts'][part]['delta'], 6)
+            ws.cell(row=row_idx, column=insertion_col).value = _display_number(max(ledger_adjustment, 0.0))
+            ws.cell(row=row_idx, column=insertion_col + 1).value = _display_number(max(-ledger_adjustment, 0.0))
             recalc = recalc_batch_balances_for_cell(ws, row=row_idx, col=insertion_col)
             if not recalc.get('recalculated') or recalc.get('current_stock') is None:
                 raise ValueError(f"主檔料號 {part} 無法安全重算後續結存，未寫入任何資料")
@@ -1042,7 +1055,8 @@ def _commit_batch_genlin(
             updated_count=len(result_parts),
             adjusted_count=sum(abs(row['adjust_qty']) > 1e-6 for row in adjustments),
             total_abs_adjust_qty=round(sum(abs(row['adjust_qty']) for row in adjustments), 6),
-            absorbed_defective_records=0,
+            absorbed_defective_records=len(absorption['record_ids']),
+            cleared_defective_cells=absorption['cleared_cells'],
             absorbed_supplements=0,
             snapshot_count=snapshot_count,
         )

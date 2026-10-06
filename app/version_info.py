@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.5"
+APP_VERSION = "v2026.10.06.6"
 APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "盤點表格精簡為三個數字欄"
+APP_HEADLINE = "盤點併入並封存已吸收的不良品與多打"
 APP_CHANGELOG = [
+    {
+        "title": "盤點真正併入不良品與多打",
+        "items": [
+            "已吸收項目從主檔選中料號的扣帳格清除，調整欄同步修正，後續發料用量與最新結存保持正確。",
+            "精確核對的原始扣帳移至已併入盤點歷史，未選料與新增扣帳保留，主檔還原後歷史狀態同步恢復。",
+        ],
+    },
     {
         "title": "盤點表格精簡",
         "items": [

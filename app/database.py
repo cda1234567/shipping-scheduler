@@ -1423,6 +1423,11 @@ def get_defective_part_totals(cutoff_at: str, after_at: str = "") -> list[dict]:
     if window_start:
         sql += " AND created_at>?"
         params.append(window_start)
+    from .services.inventory_restore_guard import get_count_absorbed_record_ids
+    absorbed_ids = sorted(get_count_absorbed_record_ids())
+    if absorbed_ids:
+        sql += f" AND id NOT IN ({','.join('?' for _ in absorbed_ids)})"
+        params.extend(absorbed_ids)
     sql += " GROUP BY UPPER(TRIM(part_number)) ORDER BY SUM(defective_qty) DESC, part_number"
     with get_conn() as conn:
         rows = conn.execute(sql, params).fetchall()
@@ -1452,7 +1457,11 @@ def get_defective_interval_parts(cutoff_at: str, count_at: str, *, reversal_ids:
             (period_id,),
         ).fetchall()
     result: dict[str, dict] = {}
+    from .services.inventory_restore_guard import get_count_absorbed_record_ids
+    absorbed_ids = get_count_absorbed_record_ids()
     for row in rows:
+        if int(row['id']) in absorbed_ids:
+            continue
         part = str(row['part_number'] or '').strip().upper()
         item = result.setdefault(part, {'defect_delta': 0.0, 'defective_record_ids': []})
         item['defect_delta'] -= float(row['defective_qty'])
@@ -4124,7 +4133,7 @@ def get_defective_batch_summaries_after(imported_after: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-def get_defective_records_after(created_after: str) -> list[dict]:
+def get_defective_records_after(created_after: str, *, include_count_absorbed: bool = False) -> list[dict]:
     cutoff = str(created_after or "").strip()
     if not cutoff:
         return []
@@ -4143,7 +4152,9 @@ def get_defective_records_after(created_after: str) -> list[dict]:
             """,
             (cutoff,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    from .services.inventory_restore_guard import get_count_absorbed_record_ids
+    absorbed_ids = set() if include_count_absorbed else get_count_absorbed_record_ids()
+    return [dict(row) for row in rows if int(row['id']) not in absorbed_ids]
 
 
 def get_defective_batch_summaries_after_id(batch_id: int) -> list[dict]:

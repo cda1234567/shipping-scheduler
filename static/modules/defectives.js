@@ -1,6 +1,7 @@
 import { apiJson, apiFetch, apiPost, showToast, esc, fmt } from "./api.js";
 
 let _batches = [];
+let _archivedBatches = [];
 let _overrunPreview = null;
 let _overrunPreviewSignature = "";
 let _resolutionContext = null;
@@ -38,8 +39,10 @@ export async function refreshDefectives(options = {}) {
   try {
     const d = await apiJson("/api/defectives/batches");
     _batches = d.batches || [];
+    _archivedBatches = d.archived_batches || [];
   } catch (_) {
     _batches = [];
+    _archivedBatches = [];
   }
   if (collapseAll) {
     _collapsed.clear();
@@ -636,8 +639,10 @@ function renderBatches() {
   const container = document.getElementById("defective-list");
   if (!container) return;
 
+  const archivedItems = _archivedBatches.flatMap(batch => batch.items || []);
+  const archiveHtml = archivedItems.length ? `<details><summary>已併入盤點（${archivedItems.length} 筆，僅供查帳）</summary><table class="analytics-table"><thead><tr><th>料號</th><th>扣帳數量</th><th>建立時間</th></tr></thead><tbody>${archivedItems.map(item => `<tr><td>${esc(item.part_number)}</td><td>${fmt(item.defective_qty)}</td><td>${esc((item.created_at || "").replace("T", " ").slice(0, 16))}</td></tr>`).join("")}</tbody></table></details>` : "";
   if (!_batches.length) {
-    container.innerHTML = '<div class="no-shortage-msg">目前沒有扣帳紀錄</div>';
+    container.innerHTML = '<div class="no-shortage-msg">目前沒有有效扣帳紀錄</div>' + archiveHtml;
     return;
   }
 
@@ -703,7 +708,7 @@ function renderBatches() {
 
     html += "</div>";
     return html;
-  }).join("");
+  }).join("") + archiveHtml;
 }
 
 // ── Global handlers ─────────────────────────────────────────────────────────

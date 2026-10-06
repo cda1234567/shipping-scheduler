@@ -33,6 +33,16 @@ def _read_count_boundaries(path: str, modified_ns: int, size: int) -> tuple:
         workbook.close()
 
 
+def get_count_absorbed_record_ids() -> set[int]:
+    path = db.get_setting('main_file_path')
+    if not path or not Path(path).is_file():
+        return set()
+    stat = Path(path).stat()
+    return {int(record_id)
+            for boundary in _read_count_boundaries(path, stat.st_mtime_ns, stat.st_size)
+            for record_id in boundary.get('absorbed_record_ids', [])}
+
+
 def is_count_protected_record(record: dict) -> bool:
     path = db.get_setting('main_file_path')
     if not path or not Path(path).is_file():
@@ -123,5 +133,8 @@ def ensure_defective_replay_allowed(cutoff: str) -> None:
     if rows:
         raise HTTPException(400, "退回後曾刪除不良品或加工多打批次，無法安全一鍵補回，請手動核對主檔。")
 
-    if any(is_count_protected_record(row) for row in db.get_defective_records_after(normalized_cutoff)):
+    active_records = db.get_defective_records_after(normalized_cutoff)
+    if not active_records and db.get_defective_records_after(normalized_cutoff, include_count_absorbed=True):
+        raise HTTPException(400, ABSORBED_HISTORY_MESSAGE)
+    if any(is_count_protected_record(row) for row in active_records):
         raise HTTPException(400, COUNT_HISTORY_MESSAGE)

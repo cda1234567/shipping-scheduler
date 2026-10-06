@@ -25,7 +25,7 @@ from ..services.defective_deduction import (
 )
 from ..services.inventory_restore_guard import (
     ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed,
-    is_count_protected_record, COUNT_HISTORY_MESSAGE,
+    is_count_protected_record, COUNT_HISTORY_MESSAGE, get_count_absorbed_record_ids,
 )
 from ..services.merge_to_main import backup_main_file
 from ..services.main_file_lock import serialized_main_file_write
@@ -270,8 +270,18 @@ def _finalize_defective_import(
 @router.get("/batches")
 async def list_batches():
     """取得所有匯入批次（含明細）。"""
-    batches = [_decorate_batch(batch) for batch in db.get_defective_batches()]
-    return {"batches": batches}
+    absorbed_ids = get_count_absorbed_record_ids()
+    batches, archived_batches = [], []
+    for batch in db.get_defective_batches():
+        decorated = _decorate_batch(batch)  # 安全檢查仍看完整批次，不能整批刪掉封存項目。
+        active = [item for item in batch['items'] if item['id'] not in absorbed_ids]
+        archived = [item for item in batch['items'] if item['id'] in absorbed_ids]
+        if active or not batch['items']:
+            batches.append(dict(decorated, items=active))
+        if archived:
+            archived_batches.append(dict(decorated, items=archived, can_delete=False,
+                                         can_add_file=False, history_state='已併入盤點'))
+    return {"batches": batches, "archived_batches": archived_batches}
 
 
 @router.post("/import-preview")
