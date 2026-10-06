@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.4"
+APP_VERSION = "v2026.10.06.5"
 APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "盤點試算與套用使用相同起始庫存"
+APP_HEADLINE = "盤點表格精簡為三個數字欄"
 APP_CHANGELOG = [
+    {
+        "title": "盤點表格精簡",
+        "items": [
+            "批次盤點只保留庚霖實盤、目前主檔(不良/多打未扣)、實盤差異三個數字欄，沿用原有盤點比較數字。",
+            "料號、說明、勾選與分類保留；計算、預設勾選與套用規則不變。",
+        ],
+    },
     {
         "title": "盤點套用起始庫存",
         "items": [
