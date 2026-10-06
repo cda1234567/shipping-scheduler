@@ -254,6 +254,45 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(self.main.read_bytes(), before)
         self.assertEqual(db.get_defective_records(), records)
 
+    def test_early_count_column_is_used_when_h_and_cutoff_batches_are_blank(self):
+        for starting in (3, '=1+2'):
+            with self.subTest(starting=starting):
+                self.restart_session()
+                wb = Workbook()
+                ws = wb.active
+                ws.append(['料號', '廠商', 'MOQ', '期末說明', '盤點', None, None, '盤點',
+                           '9-12', None, '結存', '9-12', None, '結存', '10-4', 'PO', 'MODEL'])
+                ws.append(['OC-10921B-TAB', '', 100, None, starting, None, None, None,
+                           None, None, None, None, None, None, 200, 200, 3])
+                wb.save(self.main)
+                wb.close()
+                wb = load_workbook(self.count)
+                wb.active['D5'] = 'OC-10921B-TAB'
+                wb.active['G5'] = 3
+                wb.save(self.count)
+                wb.close()
+                preview = self.preview()
+                row = next(row for row in preview['parts'] if row['part_number'] == 'OC-10921B-TAB')
+                self.assertEqual((row['cutoff_main'], row['current_main'], row['target_main']), (3, 3, 3))
+                result = self.commit(parts=['OC-10921B-TAB'], token=preview['preview_token'])
+                self.assertEqual(result['parts'][0]['main_after'], 3)
+                wb = load_workbook(self.main)
+                self.assertEqual(wb.active['E2'].value, starting)
+                self.assertEqual([wb.active.cell(2, col).value for col in (18, 19, 20)], [200, 200, 3])
+                wb.close()
+
+    def test_inconsistent_later_balance_still_blocks_without_writing(self):
+        self.prepare_count_example()
+        wb = load_workbook(self.main)
+        wb.active.cell(2, 17).value = 53  # 真正不守恆，不能用修改目標或補差額掩蓋。
+        wb.save(self.main)
+        wb.close()
+        before = self.main.read_bytes()
+        with self.assertRaisesRegex(ValueError, '重算結果 50 與目標 53 不一致'):
+            self.commit()
+        self.assertEqual(self.main.read_bytes(), before)
+        self.assertIsNotNone(db.get_active_inventory_count_session('st'))
+
     def test_parser_prefers_fg_and_preserves_exact_tab(self):
         parsed = parse_st_reconcile_file(str(self.count))
         self.assertEqual(parsed['source_columns'], {'book': 'F', 'physical': 'G'})

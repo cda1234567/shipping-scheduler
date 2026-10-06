@@ -8,6 +8,35 @@ from app.services.main_file_recalc import recalc_batch_balances_for_cell
 
 
 class MainFileRecalcTests(unittest.TestCase):
+    def test_initial_count_columns_keep_zero_and_ignore_usage(self):
+        for early, recent, expected in ((3, None, 3), (0, None, 0), (3, 0, 0), ('=1+2', None, 3)):
+            with self.subTest(early=early, recent=recent):
+                wb = openpyxl.Workbook()
+                try:
+                    ws = wb.active
+                    ws.append(['料號', '廠商', 'MOQ', '說明', '盤點', None, None, '盤點', '1-1', 'PO', 'MODEL'])
+                    ws.append(['P', '', 999, None, early, 888, None, recent, 200, 200, expected])
+                    result = recalc_batch_balances_for_cell(ws, row=2, col=9)
+                    self.assertEqual(result['current_stock'], expected)
+                    self.assertEqual(ws['E2'].value, early)
+                finally:
+                    wb.close()
+
+    def test_newer_unnamed_batch_balance_precedes_older_named_balance(self):
+        wb = openpyxl.Workbook()
+        try:
+            ws = wb.active
+            ws.append(['料號', '廠商', 'MOQ', None, '盤點', None, None, '盤點',
+                       '1-1', 'PO-A', 'MODEL-A', None, 'PO-B', 'MODEL-B', '1-2', 'PO-C', 'MODEL-C'])
+            ws.append(['P', '', 999, None, 3, None, None, None, 100, 0, 103, 0, 103, 0, 20, 40, -20])
+            result = recalc_batch_balances_for_cell(ws, row=2, col=15)
+            self.assertEqual(result['current_stock'], -20)
+            ws['N2'] = 'bad-balance'
+            with self.assertRaisesRegex(ValueError, '結存無法讀取'):
+                recalc_batch_balances_for_cell(ws, row=2, col=15)
+        finally:
+            wb.close()
+
     def _build_sheet(self):
         wb = openpyxl.Workbook()
         ws = wb.active

@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.3"
+APP_VERSION = "v2026.10.06.4"
 APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "盤點吸收不良品與多打，後續發料照常計算"
+APP_HEADLINE = "盤點試算與套用使用相同起始庫存"
 APP_CHANGELOG = [
+    {
+        "title": "盤點套用起始庫存",
+        "items": [
+            "重算採用與試算相同的盤點／結存欄，修正起始庫存在 E 欄、H 欄空白時套用誤判不一致。",
+            "保留主檔重算核對；不良品／多打吸收與後續補料、用量的計算方式不變。",
+        ],
+    },
     {
         "title": "盤點吸收不良品與多打",
         "items": [

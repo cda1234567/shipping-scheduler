@@ -3,7 +3,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .main_reader import create_main_cell_resolver, _try_float as _stock_number
+from .main_reader import (
+    create_main_cell_resolver, main_balance_columns, _latest_balance,
+    _try_float as _stock_number,
+)
 
 _BATCH_CODE_RE = re.compile(r"^\d+-\d+$")
 _DEDUCT_HEADER_KEYWORDS = ("扣帳",)
@@ -139,10 +142,14 @@ def _event_for_cell(events: list[dict[str, int | str]], col: int) -> dict[str, i
 
 
 def _previous_balance(ws, row: int, events: list[dict[str, int | str]], start_col: int) -> float | None:
-    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
-        value = _to_number(ws.cell(row=row, column=int(event["balance_col"])).value)
-        if value is not None:
-            return value
+    # 與試算共用結存欄辨識，包含 E 欄盤點與空白批次碼的歷史結存。
+    columns, _ = main_balance_columns([ws.cell(1, col).value for col in range(1, start_col)])
+    max_row, max_col = ws.max_row, ws.max_column
+    read_raw = lambda r, c: ws.cell(r + 1, c + 1).value if 0 <= r < max_row and 0 <= c < max_col else None
+    resolver = create_main_cell_resolver(read_raw)
+    previous = _latest_balance(row - 1, columns, read_raw, resolver, _part_number(ws, row))[1]
+    if previous is not None:
+        return previous
 
     # 歷史主檔約 8.8% 批次組的批次碼表頭是空白，上面的事件掃描看不到它們的結存
     # （UC-60021A / AC-20169B 兩案的共同病根）。改用與寫入路徑 _read_latest_stock
