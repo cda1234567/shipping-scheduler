@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import io
+import asyncio
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from app.routers import bom as bom_router
+from app.routers.main_file import EditCellRequest, edit_main_cell
 from app.routers.dispatch import DispatchRequest, _build_dispatch_result_by_order, _build_order_dispatch_context, _generate_dispatch_response, _get_selected_orders, _load_committed_main_supplements
 from app.services.dispatch_form_generator import generate_dispatch_form
 
@@ -19,6 +22,62 @@ class DispatchGenerationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(app)
+
+    def test_saved_main_preview_overrides_old_decisions_in_generated_workbook(self):
+        # 使用真正的預覽儲存與 Excel 生成，舊決策和舊副檔刻意保留。
+        for old_decision in ("Shortage", "MarkHasPO", "IgnoreOnce", "CreateRequirement"):
+            with self.subTest(decision=old_decision), tempfile.TemporaryDirectory() as temp_dir, ExitStack() as stack:
+                main_path = Path(temp_dir) / "main.xlsx"
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.append(["料號", "廠商", "MOQ", None, None, None, None, "盤點", "6-2", "PO-62", "MODEL-A"])
+                ws.append(["PART-EDIT", "Vendor", 10, "=1+2", None, None, None, 100, 20, 30, 90])
+                ws.append(["PART-CLEAR", "Vendor", 10, None, None, None, None, 100, 40, 30, 110])
+                ws.append(["PART-KEEP", "Vendor", 10, None, None, None, None, 100, 50, 30, 120])
+                wb.save(main_path)
+                wb.close()
+                order = {"id": 62, "code": "6-2", "status": "dispatched", "model": "MODEL-A", "po_number": "PO-62"}
+                supplements = {62: {"PART-EDIT": 20, "PART-CLEAR": 40, "PART-KEEP": 50}}
+                overrides = {
+                    "get_setting": lambda key, default="": str(main_path) if key == "main_file_path" else default,
+                    "get_order": lambda order_id: order,
+                    "get_order_by_code": lambda code: order,
+                    "get_snapshot": lambda: {},
+                    "update_snapshot_stock": lambda values: 1,
+                    "get_order_supplements": lambda ids: supplements,
+                    "replace_order_supplements": lambda ids, values: supplements.update(values),
+                    "get_active_merge_drafts": lambda *args: [],
+                    "get_all_bom_components_by_model": lambda: {"MODEL-A": [{"part_number": part} for part in supplements[62]]},
+                    "get_decisions_for_order": lambda order_id: {"PART-EDIT": old_decision},
+                    "get_st_inventory_stock": lambda: {},
+                    "log_activity": lambda *args: None,
+                }
+                for name, replacement in overrides.items():
+                    stack.enter_context(patch(f"app.routers.dispatch.db.{name}", side_effect=replacement))
+                stack.enter_context(patch("app.routers.main_file.backup_main_file"))
+                stack.enter_context(patch("app.routers.dispatch._build_dispatch_result_by_order", return_value={}))
+                stack.enter_context(patch("app.routers.dispatch.tempfile.mkdtemp", return_value=temp_dir))
+                stack.enter_context(patch("app.routers.dispatch._get_active_reviewed_drafts_by_order", return_value={
+                    62: {"supplements": {"PART-EDIT": 20, "PART-CLEAR": 40}},
+                }))
+
+                for row, value in ((2, "275"), (3, "0")):
+                    result = asyncio.run(edit_main_cell(EditCellRequest(row=row, col=9, value=value)))
+                    self.assertTrue(result["supplement_synced"])
+                saved_bytes = main_path.read_bytes()
+                request = type("Request", (), {"query_params": {}, "headers": {}})()
+                response = _generate_dispatch_response(DispatchRequest(order_ids=[62]), request)
+                generated = openpyxl.load_workbook(response.path, data_only=True)
+                items = {row[2]: row[4] for row in generated.active.iter_rows(min_row=3, values_only=True) if row[2]}
+                generated.close()
+                self.assertEqual(items, {"PART-EDIT": 275, "PART-KEEP": 50})
+                self.assertEqual(main_path.read_bytes(), saved_bytes)
+                saved = openpyxl.load_workbook(main_path, data_only=False)
+                self.assertEqual(saved.active["D2"].value, "=1+2")
+                self.assertEqual(saved.active["I4"].value, 50)
+                self.assertEqual(saved.active["J2"].value, 30)
+                self.assertEqual(saved.active["K2"].value, 345)
+                saved.close()
 
     def test_selected_orders_include_dispatched_and_completed_orders(self):
         orders = {

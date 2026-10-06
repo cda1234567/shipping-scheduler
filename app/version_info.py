@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.02.1"
-APP_RELEASED_AT = "2026-10-02"
-APP_HEADLINE = "副檔依料號分區排序"
+APP_VERSION = "v2026.10.06.1"
+APP_RELEASED_AT = "2026-10-06"
+APP_HEADLINE = "發料單跟隨主檔最新補料"
 APP_CHANGELOG = [
+    {
+        "title": "發料單跟隨主檔最新補料",
+        "items": [
+            "主檔預覽修改補料後，已發料訂單重新生成發料單會使用最新數量，不再被舊缺料或略過決策遮蔽。",
+            "主檔已清空的補料不再從舊副檔帶回。",
+        ],
+    },
     {
         "title": "副檔依料號分區排序",
         "items": [

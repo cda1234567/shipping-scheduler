@@ -174,6 +174,9 @@ def _build_order_dispatch_context(
         if use_main_supplements
         else saved_supplements.get(order_id, {})
     )
+    if use_main_supplements:
+        # 已寫主檔後不再回填舊副檔，否則主檔清空的補料會重新出現。
+        active_draft = None
     draft_supplements = {}
     if active_draft:
         for raw_part, raw_qty in (active_draft.get("supplements") or {}).items():
@@ -197,6 +200,11 @@ def _build_order_dispatch_context(
             *(result.get("shortages") or []),
             *(result.get("customer_material_shortages") or []),
         ]
+    if use_main_supplements:
+        # 主檔已有實際補料時，優先顯示最新數量，不受舊缺料／略過決策遮蔽。
+        for part, qty in stored_order_supplements.items():
+            if qty > 0:
+                decisions[part] = "CreateRequirement"
     shortages_by_part = {
         _normalize_part_key(item.get("part_number")): item
         for item in shortage_items
