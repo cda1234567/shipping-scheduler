@@ -16,6 +16,7 @@ from typing import Any
 
 import openpyxl
 from openpyxl.utils import get_column_letter
+from openpyxl.comments import Comment
 
 from app import database as db
 from app.config import BACKUP_DIR
@@ -578,45 +579,40 @@ def _read_reconcile_history(main_path: str, batch_code: str, count_date: str) ->
                          if str(ws.cell(1, col).value or '').strip() == batch_code)
         history: dict[str, dict] = {}
         reversal_ids: set[str] = set()
-        archived_reversals = db.get_defective_reversal_history()
         for event in _stock_events(ws):
             kind = event['kind']
-            if kind not in ('reconcile', 'reverse'):
-                continue
             col = int(event['start_col'])
-            header = ws.cell(1, col)
-            match = re.search(r'盤點調整 (\d{4}-\d{2}-\d{2})', str(header.value or ''))
+            header = str(ws.cell(1, col).value or '').strip()
+            is_defect = header in {'不良品扣帳', '加工多打扣帳', '不良品回復', '加工多打回復'}
+            if kind != 'reconcile' and not is_defect:
+                continue
+            if is_defect and col <= cutoff_end:
+                continue
+            match = re.search(r'盤點調整 (\d{4}-\d{2}-\d{2})', header)
             event_date = match.group(1) if match else ''
-            reversal_id = (header.comment.text.removeprefix('defective-reversal:').strip()
-                           if header.comment and header.comment.text.startswith('defective-reversal:') else '')
             for row_idx in range(2, ws.max_row + 1):
                 part = _normalize_part(ws.cell(row_idx, PART_COL).value)
                 increase = ws.cell(row_idx, col).value
-                decrease = ws.cell(row_idx, col + 1).value if int(event['balance_col']) == col + 2 else 0
-                if not part or (increase is None and decrease is None):
+                has_usage = int(event['balance_col']) == col + 2
+                decrease = ws.cell(row_idx, col + 1).value if has_usage else 0
+                if not part or (increase is None and decrease in (None, 0)):
                     continue
-                item = history.setdefault(part, {'prior_adjustment': 0.0, 'blocked_reason': ''})
-                if kind == 'reverse':
-                    if col <= cutoff_end:
-                        continue
-                    if increase in (None, 0) and decrease in (None, 0):
-                        continue
-                    known_qty = archived_reversals.get(reversal_id, {}).get(part)
-                    if (known_qty is None or not isinstance(increase, (int, float))
-                            or abs(float(increase) - known_qty) > 1e-6 or decrease not in (None, 0)):
-                        item['blocked_reason'] = '主檔回復紀錄缺少可核對的不良品歷史，請先核對原始扣帳與回復日期'
-                    else:
-                        reversal_ids.add(reversal_id)
+                item = history.setdefault(part, {'prior_adjustment': 0.0, 'defect_delta': 0.0, 'blocked_reason': ''})
+                if any(value is not None and not isinstance(value, (int, float)) for value in (increase, decrease)):
+                    item['blocked_reason'] = '主檔既有盤點或不良品／多打數量無法辨識，請先核對'
                     continue
-                if not event_date:
+                delta = float(increase or 0) - float(decrease or 0)
+                if is_defect:
+                    # 舊版兩欄扣帳以正數表示扣除；三欄則保留加回與扣除的正負淨額。
+                    if not has_usage and kind == 'deduct':
+                        delta = -delta
+                    item['defect_delta'] += delta
+                elif not event_date:
                     item['blocked_reason'] = '主檔既有盤點調整缺少日期，請先核對'
                 elif event_date > count_date:
                     item['blocked_reason'] = f'此料已套用 {event_date} 盤點，不可再套用較舊的 {count_date} 盤點'
                 elif col > cutoff_end:
-                    if any(value is not None and not isinstance(value, (int, float)) for value in (increase, decrease)):
-                        item['blocked_reason'] = '主檔既有盤點調整量無法辨識，請先核對'
-                    else:
-                        item['prior_adjustment'] += float(increase or 0) - float(decrease or 0)
+                    item['prior_adjustment'] += delta
         return history, reversal_ids
     finally:
         workbook.close()
@@ -666,7 +662,7 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         if len(sources) > 1 and any(source in part_mappings for source in sources):
             raise PartMappingError(f'原料號 {"、".join(sorted(sources))} 同時對應到 {target}，請分開核對，不會自動合併')
     candidate_stock = {part: values['current_main'] for part, values in stocks.items() if part not in sources_by_target}
-    defects = db.get_defective_interval_parts(cutoff_at, count_at, reversal_ids=reversal_ids)
+    defects = db.get_defective_interval_parts(cutoff_at, '9999-12-31T23:59:59', reversal_ids=reversal_ids)
     combined = {}
     for source_row in parsed['rows']:
         source_part = _normalize_part(source_row['part_number'])
@@ -706,7 +702,8 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
         if row.get('blocked_reason'):
             row['warnings'].append(row['blocked_reason'])
             row['physical_qty'] = None
-        row.update(defects.get(part, {'defect_delta': 0.0, 'defective_record_ids': []}))
+        row['defect_delta'] = part_history.get('defect_delta', 0.0)
+        row['defective_record_ids'] = defects.get(part, {}).get('defective_record_ids', []) if 'defect_delta' in part_history else []
         row['expected_count'] = round(row['cutoff_main'] + row['defect_delta'] + row['prior_adjustment'], 6)
         row['theoretical'] = row['expected_count']
         row['preserved_delta'] = round(row['current_main'] - row['expected_count'], 6)
@@ -743,8 +740,8 @@ def _build_batch_genlin_preview(parsed: dict, cutoff_at: str, batch_code: str, s
                 parts=rows, summary=summary, categories={key: [row for row in rows if row['category'] == key] for key in summary},
                 uncovered_parts=uncovered, assumptions=[
                     _build_genlin_assumptions(parsed['source_columns'])[0],
-                    f'盤點日期 {count_date}；預期實盤＝主檔截止批次 {batch_code} 結存＋期間不良扣帳與回復＋已套用盤點調整。',
-                    '後續批次異動保留；主檔目標＝實盤＋主檔目前結存－預期實盤。只更新勾選料號。',
+                    f'盤點日期 {count_date}；截止批次 {batch_code} 後、套用前已存在的不良品／多打淨額併入盤點，不再重複加扣。',
+                    '後續發料、用料及其他異動照常計算；只更新勾選料號，原始不良品／多打明細保留查帳。',
                     'ST 庫存僅供警示，不會由本次主檔盤點調整寫入或吸收歷史。',
                     '提交時會重讀來源、主檔與不良明細；資料有變動時必須重新試算。',
                 ])
@@ -988,6 +985,13 @@ def _commit_batch_genlin(
         ws.cell(row=1, column=insertion_col).value = f"盤點調整 {preview['count_date']} 增加"
         ws.cell(row=1, column=insertion_col + 1).value = '扣除數量'
         ws.cell(row=1, column=insertion_col + 2).value = '結存'
+        from .inventory_restore_guard import COUNT_COMMENT_PREFIX
+        records = db.get_defective_records()
+        boundary = dict(parts=[row['part_number'] for row in chosen], cutoff_at=cutoff_at,
+                        max_record_id=max((int(row['id']) for row in records), default=0))
+        ws.cell(row=1, column=insertion_col).comment = Comment(
+            COUNT_COMMENT_PREFIX + json.dumps(boundary, ensure_ascii=False), 'shipping-scheduler',
+        )
 
         result_parts: list[dict] = []
         adjustments: list[dict] = []

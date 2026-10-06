@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.2"
+APP_VERSION = "v2026.10.06.3"
 APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "盤點實盤固定讀取 Excel G 欄"
+APP_HEADLINE = "盤點吸收不良品與多打，後續發料照常計算"
 APP_CHANGELOG = [
+    {
+        "title": "盤點吸收不良品與多打",
+        "items": [
+            "以截止批次後主檔實際存在的不良品／多打淨額併入實盤，後續發料、補料及用量仍依原正負計算。",
+            "原始明細保留查帳，重複套用不會重複抵銷；盤點前舊扣帳刪除或補回須先核對。",
+        ],
+    },
     {
         "title": "盤點實盤固定讀取 G 欄",
         "items": [

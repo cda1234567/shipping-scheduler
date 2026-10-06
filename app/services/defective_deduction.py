@@ -330,6 +330,9 @@ DEFECTIVE_DEDUCT_HEADER = "不良品扣帳"
 
 def replay_defectives_after(main_path: str, cutoff: str) -> dict:
     records = db.get_defective_records_after(cutoff)
+    from .inventory_restore_guard import is_count_protected_record, COUNT_HISTORY_MESSAGE
+    if any(is_count_protected_record(record) for record in records):
+        raise ValueError(COUNT_HISTORY_MESSAGE)
     if not records:
         refresh_snapshot_from_main(main_path)
         return {"replayed_batches": 0, "replayed_records": 0, "skipped_parts": []}

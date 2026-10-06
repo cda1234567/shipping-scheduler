@@ -135,6 +135,125 @@ class BatchReconcileTests(unittest.TestCase):
     def file_hash(path: Path) -> str:
         return hashlib.sha256(path.read_bytes()).hexdigest()
 
+    def prepare_count_example(self, *, defect_supply=0, defect_usage=20, legacy=False):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(['料號', '廠商', 'MOQ', None, None, None, None, '盤點',
+                   '9-12', None, '結存', '不良品扣帳', '使用數量', '結存', '10-1', None, '結存'])
+        ws.append(['EC-20128A-TAB', '', 1, None, None, None, None, 90,
+                   0, 0, 90, defect_supply, defect_usage, 90 + defect_supply - defect_usage,
+                   20, 40, 70 + defect_supply - defect_usage])
+        if legacy:
+            ws.delete_cols(13)
+            ws.cell(1, 13).value = '結存'
+            ws.cell(2, 12).value = defect_usage
+        wb.save(self.main)
+        wb.close()
+        wb = load_workbook(self.count)
+        wb.active['G5'] = 70
+        wb.save(self.count)
+        wb.close()
+
+    def test_count_absorbs_defect_but_keeps_later_supply_and_usage(self):
+        self.prepare_count_example()
+        result = self.commit()['parts'][0]
+        self.assertEqual(result['defect_delta'], -20)
+        self.assertEqual(result['main_after'], 50)  # Andy：70 + 發20 - 用40。
+        wb = load_workbook(self.main)
+        ws = wb.active
+        self.assertEqual([ws.cell(2, c).value for c in (15, 16, 18, 19, 20)], [0, 20, 20, 40, 50])
+        wb.close()
+        self.restart_session()
+        result = self.commit()['parts'][0]
+        self.assertEqual(result['main_adjustment'], 0)
+        self.assertEqual(result['main_after'], 50)
+
+    def test_count_absorbs_signed_overrun_and_legacy_deduction(self):
+        for supply, usage, legacy in ((0, 20, False), (30, 10, False), (0, 20, True)):
+            with self.subTest(supply=supply, usage=usage, legacy=legacy):
+                self.restart_session()
+                self.prepare_count_example(defect_supply=supply, defect_usage=usage, legacy=legacy)
+                wb = load_workbook(self.main)
+                wb.active.cell(1, 12).value = '加工多打扣帳'
+                wb.save(self.main)
+                wb.close()
+                result = self.commit()['parts'][0]
+                self.assertEqual(result['main_after'], 50)
+                self.assertEqual(result['defect_delta'], supply - usage)
+
+    def test_count_protects_ambiguous_old_records_but_not_new_or_restored_main(self):
+        from app.services.inventory_restore_guard import is_count_protected_record, ensure_defective_batch_delete_allowed
+        from app.routers import defectives
+        self.prepare_count_example()
+        before = self.main.read_bytes()
+        old = db.get_defective_records()[0]  # 含盤點檔日期之後才建立的舊扣帳。
+        self.commit()
+        self.assertTrue(is_count_protected_record(old))
+        with self.assertRaisesRegex(HTTPException, '400'):
+            ensure_defective_batch_delete_allowed({'items': [old]})
+        with self.assertRaises(HTTPException):
+            asyncio.run(defectives.delete_record(old['id']))
+        new_id = db.create_defective_record(dict(part_number=old['part_number'], defective_qty=1))
+        self.assertFalse(is_count_protected_record(db.get_defective_record(new_id)))
+        self.main.write_bytes(before)
+        self.assertFalse(is_count_protected_record(old))
+
+    def test_newer_count_left_of_cutoff_still_blocks_older_count(self):
+        from app.services.main_insertion import insert_columns
+        wb = load_workbook(self.main)
+        ws = wb.active
+        insert_columns(ws, 9, 3)
+        for col, value in ((9, '盤點調整 2026-09-24 增加'), (10, '扣除數量'), (11, '結存')):
+            ws.cell(1, col).value = value
+        for col, value in ((9, 1), (10, 0), (11, 901)):
+            ws.cell(2, col).value = value
+        wb.save(self.main)
+        wb.close()
+        row = next(row for row in self.preview()['parts'] if row['part_number'] == 'EC-20128A-TAB')
+        self.assertIsNone(row['physical_qty'])
+        self.assertIn('較舊', row['blocked_reason'])
+
+    def test_other_deduction_remains_outside_count_absorption(self):
+        from app.services.defective_deduction import deduct_defectives_from_main
+        self.prepare_count_example()
+        deduct_defectives_from_main(str(self.main), [{'part_number': 'EC-20128A-TAB', 'defective_qty': 3}],
+                                   entry_header='其他調整扣帳')
+        row = self.commit()['parts'][0]
+        self.assertEqual(row['defect_delta'], -20)
+        self.assertEqual(row['main_after'], 47)
+
+    def test_post_count_new_defect_deducts_until_next_count(self):
+        from app.services.defective_deduction import deduct_defectives_from_main
+        from app.services.inventory_restore_guard import is_count_protected_record
+        self.prepare_count_example()
+        self.commit()
+        deduct_defectives_from_main(str(self.main), [{'part_number': 'EC-20128A-TAB', 'defective_qty': 7}])
+        new_id = db.create_defective_record(dict(part_number='EC-20128A-TAB', defective_qty=7))
+        self.assertEqual(read_stock(str(self.main))['EC-20128A-TAB'], 43)
+        self.assertFalse(is_count_protected_record(db.get_defective_record(new_id)))
+        self.restart_session()
+        result = self.commit()['parts'][0]
+        self.assertEqual(result['main_after'], 50)
+        self.assertEqual(result['main_adjustment'], 7)
+
+    def test_old_replay_returns_400_without_touching_main_or_records(self):
+        from app.routers import defectives
+        from app.models import DefectiveReplayRequest
+        self.prepare_count_example()
+        # 真實 replay 查詢會 join 批次，讓測試紀錄完整。
+        batch_id = db.create_defective_batch('existing-defect.xlsx')
+        self.conn.execute('UPDATE defective_records SET batch_id=?', (batch_id,))
+        self.commit()
+        before = self.main.read_bytes()
+        records = db.get_defective_records()
+        with patch.object(defectives, 'backup_main_file') as backup:
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(defectives.replay_after_rollback(DefectiveReplayRequest(cutoff='2026-09-19T10:00:00')))
+        self.assertEqual(caught.exception.status_code, 400)
+        backup.assert_not_called()
+        self.assertEqual(self.main.read_bytes(), before)
+        self.assertEqual(db.get_defective_records(), records)
+
     def test_parser_prefers_fg_and_preserves_exact_tab(self):
         parsed = parse_st_reconcile_file(str(self.count))
         self.assertEqual(parsed['source_columns'], {'book': 'F', 'physical': 'G'})
@@ -166,7 +285,7 @@ class BatchReconcileTests(unittest.TestCase):
     def test_partial_commit_allows_other_parts_and_older_count_only_blocks_counted_part(self):
         self.commit(parts=['EC-30037A-TAB'])
         self.restart_session()
-        self.assertEqual(self.commit(parts=['EC-20128A-TAB'])['parts'][0]['main_after'], 635)
+        self.assertEqual(self.commit(parts=['EC-20128A-TAB'])['parts'][0]['main_after'], 626)
         self.restart_session()
         wb = load_workbook(self.count)
         wb.active['A1'] = '盤點日期 2026/9/22'
@@ -233,7 +352,7 @@ class BatchReconcileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '試算期間主檔已變更'):
                 self.preview()
 
-    def test_legacy_reversal_without_history_blocks_only_affected_part(self):
+    def test_legacy_reversal_uses_actual_main_amount_without_guessing_db_history(self):
         wb = load_workbook(self.main)
         ws = wb.active
         for col, value in ((21, '不良品回復'), (22, '使用數量'), (23, '結存')):
@@ -243,8 +362,8 @@ class BatchReconcileTests(unittest.TestCase):
         wb.save(self.main)
         wb.close()
         rows = {row['part_number']: row for row in self.preview()['parts']}
-        self.assertIsNone(rows['EC-20128A-TAB']['physical_qty'])
-        self.assertIn('歷史', rows['EC-20128A-TAB']['blocked_reason'])
+        self.assertEqual(rows['EC-20128A-TAB']['defect_delta'], 5)
+        self.assertEqual(rows['EC-20128A-TAB']['target_main'], 626)
         self.assertEqual(rows['EC-30037A-TAB']['main_adjustment'], 3199)
 
     def prepare_defective_reversal(self):
@@ -281,9 +400,9 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(db.get_defective_batches(), [])
         self.restart_session()
         row = self.commit()['parts'][0]
-        self.assertEqual(row['expected_count'], 775)
-        self.assertEqual(row['main_after'], 780)
-        self.assertEqual(row['main_adjustment'], 0)
+        self.assertEqual(row['expected_count'], 780)
+        self.assertEqual(row['main_after'], 775)
+        self.assertEqual(row['main_adjustment'], -5)
 
     def test_reversal_before_count_and_restore_use_present_main_events_only(self):
         batch_id = self.prepare_defective_reversal()
@@ -299,7 +418,7 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(row['main_adjustment'], 0)
         self.conn.execute('UPDATE defective_deleted_history SET main_period_id=999')
         row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
-        self.assertEqual(row['defect_delta'], 0)
+        self.assertEqual(row['defect_delta'], -5)
 
     def test_reversal_archive_failure_rolls_back_main_snapshot_and_keeps_records(self):
         batch_id = self.prepare_defective_reversal()
@@ -348,17 +467,17 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM defective_deleted_history').fetchone()[0], 2)
         self.restart_session()
         row = self.commit()['parts'][0]
-        self.assertEqual(row['main_after'], 780)
-        self.assertEqual(row['defect_delta'], -9)
+        self.assertEqual(row['main_after'], 771)
+        self.assertEqual(row['defect_delta'], 0)
 
-    def test_deleting_record_only_keeps_historical_deduction(self):
+    def test_db_only_deduction_does_not_affect_main_reconciliation(self):
         record_id = self.conn.execute("SELECT id FROM defective_records WHERE defective_qty=4").fetchone()[0]
         before = self.file_hash(self.main)
         db.delete_defective_record(record_id)
         self.assertIsNone(db.get_defective_record(record_id))
         row = next(r for r in self.preview()['parts'] if r['part_number'] == 'EC-20128A-TAB')
-        self.assertEqual(row['defect_delta'], -9)
-        self.assertEqual(row['main_adjustment'], 0)
+        self.assertEqual(row['defect_delta'], 0)
+        self.assertEqual(row['main_adjustment'], -9)
         self.assertEqual(self.file_hash(self.main), before)
 
     def test_preview_uses_main_ledger_and_st_is_warning_only(self):
@@ -366,7 +485,7 @@ class BatchReconcileTests(unittest.TestCase):
         ec = rows['EC-20128A-TAB']
         self.assertEqual(
             [ec[key] for key in ('cutoff_main', 'defect_delta', 'expected_count', 'current_main', 'preserved_delta', 'target_main', 'main_adjustment')],
-            [780, -9, 771, 635, -136, 635, 0],
+            [780, 0, 780, 635, -145, 626, -9],
         )
         self.assertEqual(ec['current_st'], 22000)
         other = rows['EC-30037A-TAB']
@@ -391,7 +510,7 @@ class BatchReconcileTests(unittest.TestCase):
         self.conn.execute("INSERT INTO st_inventory_snapshot(part_number,stock_qty) VALUES('EC-20128A',12345)")
         row = next(row for row in self.preview()['parts'] if row['part_number'] == 'EC-20128A-TAB')
         self.assertEqual(row['source_part_numbers'], ['EC-20128A'])
-        self.assertEqual(row['expected_count'], 771)
+        self.assertEqual(row['expected_count'], 780)
         self.assertNotIn('manual_mapping', row)
 
     def test_mapping_normalizes_and_uses_target_defects_and_main_balances(self):
@@ -402,7 +521,7 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(row['source_part_numbers'], ['EC-20128A-TA8'])
         self.assertTrue(row['manual_mapping'])
         self.assertIn('EC-20128A-TA8 → EC-20128A-TAB', row['warnings'][0])
-        self.assertEqual([row[key] for key in ('physical_qty', 'defect_delta', 'expected_count', 'target_main', 'main_adjustment')], [771, -9, 771, 635, 0])
+        self.assertEqual([row[key] for key in ('physical_qty', 'defect_delta', 'expected_count', 'target_main', 'main_adjustment')], [771, 0, 780, 626, -9])
         self.assertEqual(report['uncovered_parts'], [])
 
     def test_mapped_commit_only_writes_selected_target_and_preserves_source_stock(self):
@@ -412,7 +531,7 @@ class BatchReconcileTests(unittest.TestCase):
         result = self.commit(mappings=mappings)
         self.assertEqual(result['part_mappings'], mappings)
         self.assertEqual(result['parts'][0]['source_part_numbers'], ['EC-20128A-TA8'])
-        self.assertEqual(result['parts'][0]['main_after'], 635)
+        self.assertEqual(result['parts'][0]['main_after'], 626)
         self.assertEqual(db.get_st_inventory_stock(), before_st)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM st_reconcile_alignments').fetchone()[0], 0)
         self.assertEqual(read_stock(str(self.main))['EC-30037A-TAB'], 769)
@@ -567,6 +686,10 @@ class BatchReconcileTests(unittest.TestCase):
         self.assertEqual(db.get_snapshot_stock()['EC-30037A-TAB'], 3968)
 
     def test_zero_adjustment_inserts_event_and_recalculates_later_balance(self):
+        wb = load_workbook(self.count)
+        wb.active['G5'] = 780
+        wb.save(self.count)
+        wb.close()
         result = self.commit(parts=['EC-20128A-TAB'])
         self.assertEqual(result['parts'][0]['main_adjustment'], 0)
         self.assertEqual(result['parts'][0]['main_after'], 635)
@@ -581,10 +704,10 @@ class BatchReconcileTests(unittest.TestCase):
         wb.save(self.count)
         wb.close()
         result = self.commit(parts=['EC-20128A-TAB'])
-        self.assertEqual(result['parts'][0]['main_adjustment'], -1)
-        self.assertEqual(result['parts'][0]['main_after'], 634)
+        self.assertEqual(result['parts'][0]['main_adjustment'], -10)
+        self.assertEqual(result['parts'][0]['main_after'], 625)
         wb = load_workbook(self.main, data_only=False)
-        self.assertEqual([wb.active.cell(2, col).value for col in (18, 19, 20, 23)], [0, 1, 779, 634])
+        self.assertEqual([wb.active.cell(2, col).value for col in (18, 19, 20, 23)], [0, 10, 770, 625])
         wb.close()
 
     def test_stale_token_writes_nothing_and_session_stays_active(self):

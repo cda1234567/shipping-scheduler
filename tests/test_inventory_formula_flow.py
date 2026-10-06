@@ -35,9 +35,13 @@ class InventoryFormulaFlowTests(unittest.TestCase):
 
     def test_formula_cutoff_preview_and_commit_preserve_matching_stock(self):
         self.edit({'Q2': '=N2+O2-P2'})
+        wb = load_workbook(self.case.count)
+        wb.active['G5'] = 780
+        wb.save(self.case.count)
+        wb.close()
         preview = self.case.preview()
         row = next(r for r in preview['parts'] if r['part_number'] == 'EC-20128A-TAB')
-        self.assertEqual((row['cutoff_main'], row['expected_count'], row['main_adjustment']), (780, 771, 0))
+        self.assertEqual((row['cutoff_main'], row['expected_count'], row['main_adjustment']), (780, 780, 0))
         self.case.commit(token=preview['preview_token'])
         self.assertEqual(read_stock(str(self.case.main))['EC-20128A-TAB'], 635)
         wb = load_workbook(self.case.main)

@@ -23,7 +23,10 @@ from ..services.defective_deduction import (
     replay_defectives_after,
     reverse_defectives_from_main,
 )
-from ..services.inventory_restore_guard import ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed
+from ..services.inventory_restore_guard import (
+    ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed,
+    is_count_protected_record, COUNT_HISTORY_MESSAGE,
+)
 from ..services.merge_to_main import backup_main_file
 from ..services.main_file_lock import serialized_main_file_write
 from ..services.st_reconcile import _restore_main_from_backup
@@ -83,6 +86,7 @@ def _decorate_batch(batch: dict) -> dict:
     data = dict(batch)
     batch_type = _detect_batch_type(data)
     absorbed = any(int(item.get("absorbed_by_alignment_id") or 0) > 0 for item in (data.get("items") or []))
+    count_protected = any(is_count_protected_record(item) for item in (data.get("items") or []))
     old_period = int(data.get("main_period_id") or 0) != db.get_current_main_period_id()
     data["batch_type"] = batch_type
     data["can_add_file"] = (
@@ -90,8 +94,8 @@ def _decorate_batch(batch: dict) -> dict:
         and not absorbed
         and not old_period
     )
-    data["can_delete"] = not absorbed and not old_period
-    data["history_state"] = "舊年度" if old_period else ("已由盤點吸收" if absorbed else "")
+    data["can_delete"] = not absorbed and not old_period and not count_protected
+    data["history_state"] = "舊年度" if old_period else ("已由盤點吸收" if absorbed else "盤點後需核對" if count_protected else "")
     return data
 
 
@@ -488,6 +492,8 @@ async def delete_record(record_id: int):
     record = db.get_defective_record(record_id)
     if not record:
         raise HTTPException(404, "找不到紀錄")
+    if is_count_protected_record(record):
+        raise HTTPException(400, COUNT_HISTORY_MESSAGE)
     if int(record.get("absorbed_by_alignment_id") or 0) > 0:
         raise HTTPException(400, "這筆紀錄已被盤點數量吸收，只能保留查帳")
     if record.get("batch_id"):

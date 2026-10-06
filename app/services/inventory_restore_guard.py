@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from functools import lru_cache
+import json
+from pathlib import Path
+
+import openpyxl
 from fastapi import HTTPException
 
 from .. import database as db
@@ -10,6 +15,37 @@ RESTORE_BLOCKED_MESSAGE = (
     "重新上傳後一定要重設快照。"
 )
 ABSORBED_HISTORY_MESSAGE = "這筆紀錄已被盤點數量吸收，只能保留查帳，不能再刪除或回復庫存。"
+COUNT_HISTORY_MESSAGE = "此料號已完成盤點，舊扣帳無法逐筆對應主檔，不能直接刪除或補回，請先核對。"
+COUNT_COMMENT_PREFIX = "inventory-count-boundary:"
+
+
+@lru_cache(maxsize=8)
+def _read_count_boundaries(path: str, modified_ns: int, size: int) -> tuple:
+    workbook = openpyxl.load_workbook(path, read_only=False)
+    try:
+        boundaries = []
+        for cell in workbook.worksheets[0][1]:
+            comment = cell.comment
+            if comment and comment.text.startswith(COUNT_COMMENT_PREFIX):
+                boundaries.append(json.loads(comment.text[len(COUNT_COMMENT_PREFIX):]))
+        return tuple(boundaries)
+    finally:
+        workbook.close()
+
+
+def is_count_protected_record(record: dict) -> bool:
+    path = db.get_setting('main_file_path')
+    if not path or not Path(path).is_file():
+        return False
+    stat = Path(path).stat()
+    return any(
+        str(record.get('part_number') or '').strip().upper() in boundary['parts']
+        and str(record.get('created_at') or '') > boundary['cutoff_at']
+        and 0 < int(record.get('id') or 0) <= boundary['max_record_id']
+        for boundary in _read_count_boundaries(path, stat.st_mtime_ns, stat.st_size)
+    )
+
+
 OLD_PERIOD_HISTORY_MESSAGE = "這筆紀錄屬於舊年度主檔，只能保留查帳，不能回復到目前主檔。"
 
 _ROLLBACK_BLOCKING_LOG_ACTIONS = (
@@ -42,6 +78,9 @@ def ensure_dispatch_rollback_allowed(session: dict | None) -> None:
 def ensure_defective_batch_delete_allowed(batch: dict | None) -> None:
     if not batch:
         return
+
+    if any(is_count_protected_record(row) for row in (batch.get("items") or [])):
+        raise HTTPException(400, COUNT_HISTORY_MESSAGE)
 
     if any(int(row.get("absorbed_by_alignment_id") or 0) > 0 for row in (batch.get("items") or [])):
         raise HTTPException(400, ABSORBED_HISTORY_MESSAGE)
@@ -83,3 +122,6 @@ def ensure_defective_replay_allowed(cutoff: str) -> None:
     )
     if rows:
         raise HTTPException(400, "退回後曾刪除不良品或加工多打批次，無法安全一鍵補回，請手動核對主檔。")
+
+    if any(is_count_protected_record(row) for row in db.get_defective_records_after(normalized_cutoff)):
+        raise HTTPException(400, COUNT_HISTORY_MESSAGE)
