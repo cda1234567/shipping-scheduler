@@ -8,6 +8,7 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from .. import database as db
 from ..config import DATA_DIR
@@ -228,3 +229,33 @@ async def commit_st_reconcile(
         raise HTTPException(400, f"盤點停損點提交失敗：{error}") from error
     finally:
         temp_path.unlink(missing_ok=True)
+
+
+class CountUndoRequest(BaseModel):
+    token: str
+
+
+@router.get('/reconcile/st/count-undo')
+async def get_count_undo_options():
+    from ..services.count_undo import list_count_undo
+    return list_count_undo()
+
+
+@router.get('/reconcile/st/count-undo/{session_id}/backup')
+async def download_count_backup(session_id: int):
+    from fastapi.responses import FileResponse
+    from ..services.count_undo import count_undo_backup
+    try:
+        path = count_undo_backup(session_id)
+        return FileResponse(path, filename=path.name)
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post('/reconcile/st/count-undo/{session_id}')
+async def undo_inventory_count(session_id: int, req: CountUndoRequest):
+    from ..services.count_undo import undo_main_count
+    try:
+        return undo_main_count(session_id, req.token)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error

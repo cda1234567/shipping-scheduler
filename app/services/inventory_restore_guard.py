@@ -60,6 +60,7 @@ OLD_PERIOD_HISTORY_MESSAGE = "這筆紀錄屬於舊年度主檔，只能保留�
 
 _ROLLBACK_BLOCKING_LOG_ACTIONS = (
     "main_file_upload",
+    "inventory_count_undone",
     "主檔編輯",
     "supplement_part",
     "刪除不良品批次",
@@ -127,7 +128,7 @@ def ensure_defective_replay_allowed(cutoff: str) -> None:
 
     rows = db.get_activity_logs_after(
         normalized_cutoff,
-        actions=("刪除不良品批次", "刪除加工多打批次"),
+        actions=("刪除不良品批次", "刪除加工多打批次", "inventory_count_undone"),
         limit=1,
     )
     if rows:

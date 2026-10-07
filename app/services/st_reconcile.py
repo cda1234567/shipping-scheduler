@@ -1078,11 +1078,14 @@ def _commit_batch_genlin(
         )
         workbook.close()
         workbook = None
+        from .count_undo import make_count_undo_receipt
+        undo_receipt = make_count_undo_receipt(main_path, backup_path)
         # 工作階段完成是最後一個可能失敗的步驟；成功後直接回傳，不再執行可能拋錯的工作。
         if not db.finish_inventory_count_session(
             int(session['id']),
             status='completed',
             source_filename=source_filename,
+            undo_receipt=undo_receipt,
         ):
             raise RuntimeError('盤點工作階段完成失敗')
         return response

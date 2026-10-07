@@ -1338,6 +1338,7 @@ def finish_inventory_count_session(
     status: str,
     alignment_id: int | None = None,
     source_filename: str = "",
+    undo_receipt: dict | None = None,
 ) -> bool:
     normalized_status = str(status or "").strip()
     if normalized_status not in {"completed", "cancelled"}:
@@ -1350,7 +1351,33 @@ def finish_inventory_count_session(
             "WHERE id=? AND status='active'",
             (normalized_status, now, alignment_id, str(source_filename or ""), int(session_id)),
         )
+        if cur.rowcount and undo_receipt is not None:
+            conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (f"main_count_undo_{session_id}", json.dumps(undo_receipt, ensure_ascii=False)))
     return bool(cur.rowcount)
+
+
+def main_count_undo_state(conn) -> dict:
+    """盤點撤回的 DB 異動指紋來源；不含快照與唯讀操作。"""
+    return {table: [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY {'record_id' if table == 'defective_deleted_history' else 'id'}")]
+            for table in ('defective_records', 'defective_batches', 'dispatch_sessions', 'dispatch_records', 'defective_deleted_history')}
+
+
+def apply_main_count_undo(conn, session_id: int, receipt: dict, stock: dict, moq: dict) -> None:
+    """與呼叫端同一交易更新快照、撤回憑證及稽核，不修改原盤點歷史。"""
+    old = {r['part_number']: dict(r) for r in conn.execute('SELECT * FROM inventory_snapshot')}
+    now = _now()
+    conn.execute('DELETE FROM inventory_snapshot')
+    for part in sorted(set(stock) | set(moq)):
+        prior = old.get(part, {})
+        manual = int(prior.get('moq_manual') or 0)
+        conn.execute('INSERT INTO inventory_snapshot(part_number,stock_qty,moq,moq_manual,description,snapshot_at) VALUES(?,?,?,?,?,?)',
+                     (part, stock.get(part, 0), prior.get('moq', 0) if manual else moq.get(part, 0), manual, prior.get('description', ''), now))
+    receipt['restored_at'] = now
+    for key, value in ((f'main_count_undo_{session_id}', json.dumps(receipt, ensure_ascii=False)), ('main_part_count', str(len(stock)))):
+        conn.execute('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, value))
+    conn.execute('INSERT INTO activity_logs(action,detail,created_at) VALUES(?,?,?)',
+                 ('inventory_count_undone', f"撤回主檔盤點 #{session_id}；備份={receipt['backup_name']}；撤回前備份={receipt['safety_backup_name']}；還原SHA256={receipt['backup_sha256']}", now))
 
 
 def mark_inventory_history_absorbed(

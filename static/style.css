@@ -351,6 +351,24 @@ body {
   line-height: 1.5;
   color: #8e8e93;
 }
+.st-count-undo-panel {
+  margin: 12px 0 20px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.st-count-undo-panel select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.st-count-undo-panel .desktop-status-meta {
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.st-count-undo-panel .st-reconcile-commit-row {
+  flex-wrap: wrap;
+}
 .st-reconcile-card {
   display: flex;
   flex-direction: column;

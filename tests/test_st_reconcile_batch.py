@@ -342,6 +342,143 @@ class BatchReconcileTests(unittest.TestCase):
             self.commit()
         self.assertEqual(self.main.read_bytes(), before)
 
+    def undo_options(self):
+        from app.services import count_undo
+        with patch.object(count_undo, 'BACKUP_DIR', Path(self.tmp.name) / 'backups'):
+            return count_undo.list_count_undo()['items']
+
+    def undo_count(self, token=None):
+        from app.services import count_undo
+        item = self.undo_options()[0]
+        with patch.object(count_undo, 'BACKUP_DIR', Path(self.tmp.name) / 'backups'):
+            return count_undo.undo_main_count(item['session_id'], token or item['token'])
+
+    def test_undo_restores_main_snapshot_and_effective_history_not_database(self):
+        from app.services.inventory_restore_guard import get_count_absorbed_record_ids, ensure_defective_replay_allowed, ensure_dispatch_rollback_allowed
+        self.prepare_count_example()
+        original = self.main.read_bytes()
+        old_stock = read_stock(str(self.main))
+        records = db.get_defective_records()
+        self.commit()
+        self.assertTrue(self.undo_options()[0]['can_undo'])
+        self.assertTrue(get_count_absorbed_record_ids())
+        result = self.undo_count()
+        self.assertEqual(self.main.read_bytes(), original)
+        self.assertEqual(db.get_defective_records(), records)
+        self.assertEqual(get_count_absorbed_record_ids(), set())
+        snapshot = {r['part_number']: r['stock_qty'] for r in self.conn.execute('SELECT * FROM inventory_snapshot')}
+        self.assertEqual(snapshot, old_stock)
+        self.assertTrue((Path(self.tmp.name) / 'backups' / result['safety_backup_name']).exists())
+        self.assertFalse(self.undo_options()[0]['can_undo'])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM activity_logs WHERE action='inventory_count_undone'").fetchone()[0], 1)
+        with self.assertRaises(ValueError):
+            self.undo_count('old-token')
+        with self.assertRaises(HTTPException):
+            ensure_defective_replay_allowed('2026-01-01')
+        with self.assertRaises(HTTPException):
+            ensure_dispatch_rollback_allowed({'dispatched_at': '2026-01-01'})
+        db.start_inventory_count_session(cutoff_at='2026-09-19T10:00:00', cutoff_code='9-12')
+        self.assertIsNotNone(db.get_active_inventory_count_session())
+
+    def test_undo_refuses_changed_main_but_backup_is_downloadable(self):
+        self.prepare_count_example()
+        result = self.commit()
+        wb = load_workbook(self.main)
+        wb.active['B2'] = '後續主檔修改'
+        wb.save(self.main)
+        wb.close()
+        item = self.undo_options()[0]
+        self.assertFalse(item['can_undo'])
+        self.assertTrue(item['can_download'])
+        before = self.main.read_bytes()
+        with self.assertRaisesRegex(ValueError, '主檔已有'):
+            self.undo_count('old')
+        self.assertEqual(self.main.read_bytes(), before)
+
+    def test_undo_refuses_new_defective_missing_backup_and_path_traversal(self):
+        self.prepare_count_example()
+        result = self.commit()
+        db.create_defective_record(dict(part_number='NEW', defective_qty=1))
+        self.assertIn('紀錄已有異動', self.undo_options()[0]['reason'])
+        Path(result['backup_path']).unlink()
+        self.assertFalse(self.undo_options()[0]['can_download'])
+        key = f"main_count_undo_{result['summary']['session_id']}"
+        receipt = json.loads(db.get_setting(key))
+        receipt['backup_name'] = '../main.xlsx'
+        db.set_setting(key, json.dumps(receipt))
+        self.assertIn('路徑不合法', self.undo_options()[0]['reason'])
+
+    def test_undo_log_failure_rolls_back_file_snapshot_and_receipt(self):
+        self.prepare_count_example()
+        self.commit()
+        # 用實體 SQLite 與原本 get_conn 驗證交易，不以共用記憶體連線模擬。
+        self.conn.commit()
+        disk_path = Path(self.tmp.name) / 'undo.db'
+        disk = sqlite3.connect(disk_path)
+        self.conn.backup(disk)
+        disk.close()
+        self.patcher.stop()
+        db_patch = patch.object(db, 'DB_PATH', disk_path)
+        db_patch.start()
+        self.addCleanup(db_patch.stop)
+        self.conn = sqlite3.connect(disk_path)
+        self.conn.row_factory = sqlite3.Row
+        self.addCleanup(self.conn.close)
+        before = self.main.read_bytes()
+        snapshot = db.capture_inventory_snapshot_state()
+        self.conn.execute("CREATE TRIGGER reject_undo BEFORE INSERT ON activity_logs WHEN NEW.action='inventory_count_undone' BEGIN SELECT RAISE(ABORT, 'undo log failed'); END")
+        self.conn.commit()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'undo log failed'):
+            self.undo_count()
+        self.assertEqual(self.main.read_bytes(), before)
+        self.assertEqual(db.capture_inventory_snapshot_state(), snapshot)
+        self.assertTrue(self.undo_options()[0]['can_undo'])
+
+    def test_undo_file_replace_failure_keeps_snapshot_and_receipt(self):
+        self.prepare_count_example()
+        self.commit()
+        before = self.main.read_bytes()
+        snapshot = db.capture_inventory_snapshot_state()
+        with patch.object(st_reconcile, '_restore_main_from_backup', side_effect=OSError('replace failed')):
+            with self.assertRaisesRegex(OSError, 'replace failed'):
+                self.undo_count()
+        self.assertEqual(self.main.read_bytes(), before)
+        self.assertEqual(db.capture_inventory_snapshot_state(), snapshot)
+        self.assertTrue(self.undo_options()[0]['can_undo'])
+
+    def test_legacy_undo_uses_repair_hashes_and_rechecks_absorbed_quantities(self):
+        from app.services import count_undo
+        from app.services.inventory_restore_guard import get_count_absorbed_record_ids
+        self.prepare_count_example()
+        result = self.commit()
+        session_id = result['summary']['session_id']
+        receipt = json.loads(db.get_setting(f'main_count_undo_{session_id}'))
+        report = dict(session_id=session_id, reference_sha256=receipt['backup_sha256'],
+                      output_sha256=receipt['main_sha256'], record_ids=sorted(get_count_absorbed_record_ids()),
+                      stock_changed_count=0, unselected_cells_changed=0, dispatch_supply_usage_changed=0)
+        root = Path(self.tmp.name)
+        (root / f'count{session_id}-repair-preview-new.json').write_text(json.dumps(report), encoding='utf-8')
+        self.conn.execute('DELETE FROM settings WHERE key=?', (f'main_count_undo_{session_id}',))
+        with patch.object(count_undo, 'DATA_DIR', root):
+            self.assertTrue(self.undo_options()[0]['can_undo'])
+            self.conn.execute('UPDATE defective_records SET defective_qty=defective_qty+1')
+            item = self.undo_options()[0]
+            self.assertFalse(item['can_undo'])
+            self.assertTrue(item['can_download'])
+            self.assertIn('數量與原備份不符', item['reason'])
+
+    def test_undo_stale_token_and_read_only_listing_do_not_write(self):
+        self.prepare_count_example()
+        self.commit()
+        before = self.main.read_bytes()
+        snapshot = db.capture_inventory_snapshot_state()
+        for _ in range(2):
+            self.assertTrue(self.undo_options()[0]['can_undo'])
+        with self.assertRaisesRegex(ValueError, '重新整理'):
+            self.undo_count('stale-token')
+        self.assertEqual(self.main.read_bytes(), before)
+        self.assertEqual(db.capture_inventory_snapshot_state(), snapshot)
+
     def test_parser_prefers_fg_and_preserves_exact_tab(self):
         parsed = parse_st_reconcile_file(str(self.count))
         self.assertEqual(parsed['source_columns'], {'book': 'F', 'physical': 'G'})

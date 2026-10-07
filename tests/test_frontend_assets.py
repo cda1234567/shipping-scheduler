@@ -1087,7 +1087,7 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('id="btn-run-db-backup"', index_html)
         self.assertIn('id="btn-db-backup-refresh"', index_html)
         self.assertIn('import { initDbBackup, refreshDbBackupPanel } from "/static/modules/db_backup.js";', index_html)
-        self.assertIn('if (btn.dataset.tab === "backups-tab") refreshDbBackupPanel();', index_html)
+        self.assertIn('if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }', index_html)
         self.assertIn(
             "await initDbBackup({ reloadApp: () => refreshCurrentView({ skipDirtyConfirm: true }), autoLoad: false });",
             index_html,

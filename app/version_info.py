@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.06.6"
-APP_RELEASED_AT = "2026-10-06"
-APP_HEADLINE = "盤點併入並封存已吸收的不良品與多打"
+APP_VERSION = "v2026.10.07.1"
+APP_RELEASED_AT = "2026-10-07"
+APP_HEADLINE = "主檔盤點備份可下載並安全撤回"
 APP_CHANGELOG = [
+    {
+        "title": "撤回主檔盤點",
+        "items": [
+            "盤點頁顯示最近盤點與備份時間，可下載盤點前主檔，確認後撤回安全可還原的盤點。",
+            "撤回前再次備份，同步庫存快照與已併入歷史；後續發料、不良或主檔有異動時阻擋覆蓋。",
+        ],
+    },
     {
         "title": "盤點真正併入不良品與多打",
         "items": [
