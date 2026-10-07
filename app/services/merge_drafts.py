@@ -35,7 +35,8 @@ from .bom_quantity import (
 )
 from .bom_substitutions import allocate_substitution, find_rule
 from .bom_sorting import sort_bom_sections
-from .main_reader import find_current_stock_cell_from_row_values, read_moq, read_stock
+from .main_reader import (read_moq, read_stock,
+                          main_balance_columns, create_main_cell_resolver, _latest_balance)
 from ..models import calc_suggested_qty
 from .shortage_rules import (
     calculate_current_order_shortage_amount,
@@ -305,6 +306,7 @@ def _write_dispatch_values_to_ws(
     purchase_parts: set[str] | None = None,
     target_order_qty: float | None = None,
     source_order_qty: float | None = None,
+    committed_quantities: dict[str, dict[str, float]] | None = None,
 ):
     _apply_target_order_qty_to_ws(ws, target_order_qty, source_order_qty=source_order_qty)
     part_col = cfg("excel.bom_part_col", 2) + 1
@@ -313,6 +315,7 @@ def _write_dispatch_values_to_ws(
     data_start = cfg("excel.bom_data_start_row", 5)
     dash_markers = {"-", "x", "X", "n", "N", "n/a", "N/A", "na", "NA", "?"}
     supplemented_parts: set[str] = set()
+    committed_rows: dict[str, list[int]] = {}
 
     for row_idx in range(data_start, ws.max_row + 1):
         part = normalize_part_key(ws.cell(row=row_idx, column=part_col).value)
@@ -335,6 +338,28 @@ def _write_dispatch_values_to_ws(
         target_h_cell.value = supplement_qty
         if supplement_qty and part in (purchase_parts or set()):
             target_h_cell.fill = ORANGE_FILL
+        if part in (committed_quantities or {}):
+            committed_rows.setdefault(part, []).append(row_idx)
+
+    # 已發料副本是主檔該批實際帳面，不再用 BOM 理論量重算已扣帳數字。
+    needed_col = cfg("excel.bom_needed_col", 5) + 1
+    balance_col = cfg("excel.bom_balance_col", 9) + 1
+    resolver = create_main_cell_resolver(lambda r, c: ws.cell(r + 1, c + 1).value)
+    for part, rows in committed_rows.items():
+        actual = committed_quantities[part]
+        weights = [max(resolver(row - 1, needed_col - 1) or 0, 0) for row in rows]
+        total_weight = sum(weights)
+        remaining = actual['usage']
+        balance = float(carry_overs.get(part, 0))
+        for index, row in enumerate(rows):
+            # 同料重複行只分攤一次總用量，最後一行保留主檔實際結存。
+            usage = remaining if index == len(rows) - 1 else round(actual['usage'] * (weights[index] / total_weight if total_weight else 1 / len(rows)), 6)
+            remaining -= usage
+            _set_cell_value(ws, row, g_col, balance)
+            balance += float(supplements.get(part, 0)) if index == 0 else 0
+            balance -= usage
+            _set_cell_value(ws, row, needed_col, usage)
+            _set_cell_value(ws, row, balance_col, actual['balance'] if index == len(rows) - 1 else balance)
 
 
 def _ensure_editable_bom_for_draft(bom: dict, *, sync_components: bool = True) -> dict:
@@ -709,6 +734,7 @@ def _write_draft_files(draft_id: int, file_plans: list[dict], *, root_dir: Path 
                 purchase_parts={normalize_part_key(part) for part in (plan.get("purchase_parts") or [])},
                 target_order_qty=plan.get("order_qty"),
                 source_order_qty=plan.get("source_order_qty"),
+                committed_quantities=plan.get("committed_quantities"),
             )
             _write_bom_header_values(sheet, plan.get("po_number", ""), plan.get("order_qty"))
             sort_bom_sections(sheet)
@@ -1102,106 +1128,25 @@ def _main_header_text(ws, col: int) -> str:
     return str(ws.cell(row=1, column=col).value or "").strip()
 
 
-def _main_adjustment_balance_col(ws, col: int) -> int:
-    next_header = _main_header_text(ws, col + 1)
-    if next_header in {"使用數量", "扣帳數量", "用量"}:
-        return col + 2
-    return col + 1
-
-
-def _main_adjustment_balance_col_from_headers(headers: tuple, col: int) -> int:
-    next_header = str(headers[col] or "").strip() if len(headers) > col else ""
-    if next_header in {"使用數量", "扣帳數量", "用量"}:
-        return col + 2
-    return col + 1
-
-
-def _main_stock_events(ws) -> list[dict[str, int | str]]:
-    events: list[dict[str, int | str]] = []
-    for col in range(1, ws.max_column + 1):
-        header = _main_header_text(ws, col)
-        if re.match(r"^\d+-\d+$", header):
-            events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
-        elif "回復" in header or "恢復" in header:
-            events.append({"kind": "reverse", "start_col": col, "balance_col": _main_adjustment_balance_col(ws, col)})
-        elif "扣帳" in header:
-            events.append({"kind": "deduct", "start_col": col, "balance_col": _main_adjustment_balance_col(ws, col)})
-    return sorted(events, key=lambda item: int(item["start_col"]))
-
-
 def _main_value_context(ws) -> dict:
-    part_col = cfg("excel.main_part_col", 0) + 1
-    header_values = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())
-    batch_cols_by_code: dict[str, list[int]] = {}
-    events: list[dict[str, int | str]] = []
-    for col, raw_header in enumerate(header_values, start=1):
-        header = str(raw_header or "").strip()
-        if re.match(r"^\d+-\d+$", header):
-            batch_cols_by_code.setdefault(header, []).append(col)
-            events.append({"kind": "batch", "start_col": col, "balance_col": col + 2})
-        elif "回復" in header or "恢復" in header:
-            events.append({"kind": "reverse", "start_col": col, "balance_col": _main_adjustment_balance_col_from_headers(tuple(header_values), col)})
-        elif "扣帳" in header:
-            events.append({"kind": "deduct", "start_col": col, "balance_col": _main_adjustment_balance_col_from_headers(tuple(header_values), col)})
-    row_map: dict[str, int] = {}
-    row_values_by_part: dict[str, tuple] = {}
-    for row_idx, row_values in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
-        part = normalize_part_key(row_values[part_col - 1] if len(row_values) >= part_col else None)
-        if part:
-            row_map[part] = row_idx
-            row_values_by_part[part] = tuple(row_values)
-    return {
-        "header_values": tuple(header_values),
-        "row_map": row_map,
-        "row_values_by_part": row_values_by_part,
-        "events": sorted(events, key=lambda item: int(item["start_col"])),
-        "batch_cols_by_code": batch_cols_by_code,
-        "components_by_bom": {},
-    }
+    # 與主檔庫存共用結存欄及公式規則；不可跳過盤點、零結存或無快取公式。
+    rows = list(ws.iter_rows(values_only=True))
+    headers = rows[0] if rows else ()
+    balances, batches = main_balance_columns(headers)
+    part_col = cfg("excel.main_part_col", 0)
+    row_map = {normalize_part_key(row[part_col]): index + 1 for index, row in enumerate(rows[1:], start=1)
+               if len(row) > part_col and normalize_part_key(row[part_col])}
+    read_raw = lambda r, c: rows[r][c] if 0 <= r < len(rows) and 0 <= c < len(rows[r]) else None
+    return {"header_values": tuple(headers), "row_map": row_map,
+            "balance_cols": balances, "read_raw": read_raw, "resolve_cell": create_main_cell_resolver(read_raw),
+            "batch_cols_by_code": {code: [end - 1 for end in ends] for code, ends in batches.items()},
+            "components_by_bom": {}}
 
 
-def _main_number(value) -> float | None:
-    if value is None or str(value).strip() == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _main_previous_stock_before_col(ws, row_idx: int, start_col: int, events: list[dict[str, int | str]]) -> float:
-    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
-        value = _main_number(ws.cell(row=row_idx, column=int(event["balance_col"])).value)
-        if value is not None:
-            return value
-
-    left_values = tuple(ws.cell(row=row_idx, column=col).value for col in range(1, start_col))
-    stock = find_current_stock_cell_from_row_values(left_values)
-    if stock is not None:
-        return stock
-
-    fallback_col = 8
-    value = _main_number(ws.cell(row=row_idx, column=fallback_col).value)
-    return value if value is not None else 0.0
-
-
-def _main_row_value(row_values: tuple, col: int):
-    if col <= 0 or len(row_values) < col:
-        return None
-    return row_values[col - 1]
-
-
-def _main_previous_stock_before_col_from_values(row_values: tuple, start_col: int, events: list[dict[str, int | str]]) -> float:
-    for event in reversed([item for item in events if int(item["start_col"]) < start_col]):
-        value = _main_number(_main_row_value(row_values, int(event["balance_col"])))
-        if value is not None:
-            return value
-
-    stock = find_current_stock_cell_from_row_values(row_values[: max(start_col - 1, 0)])
-    if stock is not None:
-        return stock
-
-    value = _main_number(_main_row_value(row_values, 8))
+def _main_previous_stock(context: dict, part: str, batch_col: int) -> float:
+    _, value = _latest_balance(context['row_map'][part] - 1,
+                               (col for col in context['balance_cols'] if col < batch_col - 1),
+                               context['read_raw'], context['resolve_cell'], part)
     return value if value is not None else 0.0
 
 
@@ -1280,19 +1225,18 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
     return candidates[0]
 
 
-def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> tuple[dict[str, float], dict[str, float]]:
+def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> tuple[dict[str, float], dict[str, float], dict[str, dict[str, float]]]:
     batch_col = _find_main_batch_col_for_file(ws, order, file_item, bom, context)
     if batch_col is None:
-        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
+        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}, {}
 
     context = context or _main_value_context(ws)
     row_map = context["row_map"]
-    row_values_by_part = context.get("row_values_by_part") or {}
-    events = context["events"]
     components_by_bom = context.setdefault("components_by_bom", {})
     bom_file_id = str(file_item.get("bom_file_id") or "")
     carry_overs: dict[str, float] = {}
     supplements: dict[str, float] = {}
+    actual_quantities: dict[str, dict[str, float]] = {}
     seen_parts: set[str] = set()
     if bom_file_id not in components_by_bom:
         components_by_bom[bom_file_id] = db.get_bom_components(bom_file_id)
@@ -1301,20 +1245,24 @@ def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict 
         if not part or part in seen_parts:
             continue
         seen_parts.add(part)
-        row_values = row_values_by_part.get(part)
         row_idx = row_map.get(part)
-        if row_values is None and row_idx is None:
+        if row_idx is None:
             continue
-        if row_values is not None:
-            carry_overs[part] = _main_previous_stock_before_col_from_values(row_values, batch_col, events)
-            supplements[part] = _main_number(_main_row_value(row_values, batch_col)) or 0.0
-        else:
-            carry_overs[part] = _main_previous_stock_before_col(ws, row_idx, batch_col, events)
-            supplements[part] = _main_number(ws.cell(row=row_idx, column=batch_col).value) or 0.0
+        carry_overs[part] = _main_previous_stock(context, part, batch_col)
+        supply = context['resolve_cell'](row_idx - 1, batch_col - 1)
+        if supply is None:
+            raise ValueError(f'主檔料號 {part} 的補料公式無法讀取，請先確認主檔')
+        supplements[part] = supply
+        usage = context['resolve_cell'](row_idx - 1, batch_col)
+        balance = context['resolve_cell'](row_idx - 1, batch_col + 1)
+        if usage is None or balance is None:
+            raise ValueError(f'主檔料號 {part} 的用量或結存公式無法讀取，請先確認主檔')
+        if context['read_raw'](row_idx - 1, batch_col + 1) is not None:
+            actual_quantities[part] = {'usage': usage, 'balance': balance}
 
     if not carry_overs and not supplements:
-        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}
-    return carry_overs, supplements
+        return file_item.get("carry_overs") or {}, file_item.get("supplements") or {}, {}
+    return carry_overs, supplements, actual_quantities
 
 
 def _sanitize_committed_archive_piece(value) -> str:
@@ -1394,7 +1342,7 @@ def _rebuild_committed_merge_draft_files(
     workbook = None
     try:
         if main_ws is None:
-            workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+            workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=False)
             ws = workbook.worksheets[0]
         else:
             ws = main_ws
@@ -1411,7 +1359,7 @@ def _rebuild_committed_merge_draft_files(
                     })
                 continue
 
-            carry_overs, supplements = _main_values_for_committed_file(ws, order, file_item, bom, main_context)
+            carry_overs, supplements, actual_quantities = _main_values_for_committed_file(ws, order, file_item, bom, main_context)
             file_plans.append({
                 "bom_file_id": bom_file_id,
                 "source_filename": str(file_item.get("source_filename") or bom.get("filename") or ""),
@@ -1422,6 +1370,7 @@ def _rebuild_committed_merge_draft_files(
                 "order_qty": coerce_qty(order.get("order_qty")) or None,
                 "source_order_qty": coerce_qty(bom.get("order_qty")),
                 "carry_overs": carry_overs,
+                "committed_quantities": actual_quantities,
                 "supplements": supplements,
                 "purchase_parts": [],
             })
@@ -1522,7 +1471,7 @@ def download_selected_committed_merge_drafts(order_ids: list[int], request: Requ
 
     file_entries: list[dict] = []
     missing_orders: list[int] = []
-    workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=True)
+    workbook = openpyxl.load_workbook(main_path, read_only=True, data_only=False)
     try:
         ws = workbook.worksheets[0]
         main_context = _main_value_context(ws)

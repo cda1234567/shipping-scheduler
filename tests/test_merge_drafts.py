@@ -35,6 +35,14 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(filename, "BOM_4500059234_20260422_1030.xlsx")
 
     def test_download_selected_committed_merge_drafts_rebuilds_from_main_batch_values(self):
+        self._assert_committed_download_values()
+
+    def test_committed_download_uses_count_formula_zero_and_negative_balance(self):
+        for physical in (771, 0, -5):
+            with self.subTest(physical=physical):
+                self._assert_committed_download_values(physical)
+
+    def _assert_committed_download_values(self, physical=None):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             main_path = root / "main.xlsx"
@@ -56,6 +64,14 @@ class MergeDraftDetailTests(unittest.TestCase):
             main_sheet.cell(row=2, column=12, value=0)
             main_sheet.cell(row=2, column=13, value=30)
             main_sheet.cell(row=2, column=14, value=50)
+            if physical is not None:
+                main_sheet.insert_cols(9, 3)
+                for col, value in ((9, '盤點調整 2026-09-23 增加'), (10, '扣除數量'), (11, '結存')):
+                    main_sheet.cell(1, col, value)
+                main_sheet.cell(2, 9, max(physical - 120, 0))
+                main_sheet.cell(2, 10, max(120 - physical, 0))
+                main_sheet.cell(2, 11, '=H2+I2-J2')
+                main_sheet.cell(2, 14, '=K2+L2-M2')
             main_workbook.save(main_path)
             main_workbook.close()
             source_path = root / "bom.xlsx"
@@ -132,11 +148,28 @@ class MergeDraftDetailTests(unittest.TestCase):
         rebuilt = load_workbook(entries[0]["path"], data_only=False)
         try:
             sheet = rebuilt.active
-            self.assertEqual(sheet.cell(row=5, column=7).value, 120)
+            self.assertEqual(sheet.cell(row=5, column=7).value, 120 if physical is None else physical)
             self.assertEqual(sheet.cell(row=5, column=8).value, 20)
-            self.assertEqual(sheet.cell(row=5, column=10).value, "=I5-F5")
+            self.assertEqual(sheet.cell(row=5, column=10).value, (120 if physical is None else physical) + 20 - 60)
+            from app.services.main_reader import create_main_cell_resolver
+            resolver = create_main_cell_resolver(lambda r, c: sheet.cell(r + 1, c + 1).value)
+            self.assertEqual(resolver(4, 9), (120 if physical is None else physical) + 20 - 60)
         finally:
             rebuilt.close()
+
+    def test_committed_duplicate_rows_allocate_usage_once_and_carry_balance(self):
+        workbook = Workbook()
+        ws = workbook.active
+        for row, needed in ((5, 1), (6, 2)):
+            ws.cell(row, 3, 'PART-1')
+            ws.cell(row, 6, needed)
+        merge_drafts._write_dispatch_values_to_ws(ws, {'PART-1': 2}, {'PART-1': 10},
+            committed_quantities={'PART-1': {'usage': 12, 'balance': 0}})
+        self.assertEqual([ws.cell(r, 6).value for r in (5, 6)], [4, 8])
+        self.assertEqual([ws.cell(r, 7).value for r in (5, 6)], [10, 8])
+        self.assertEqual([ws.cell(r, 8).value for r in (5, 6)], [2, 0])
+        self.assertEqual([ws.cell(r, 10).value for r in (5, 6)], [8, 0])
+        workbook.close()
 
     def test_previous_stock_before_col_uses_rightmost_left_value_when_batch_header_blank(self):
         workbook = Workbook()
@@ -154,20 +187,8 @@ class MergeDraftDetailTests(unittest.TestCase):
         worksheet.cell(row=2, column=117, value=144)
         worksheet.cell(row=2, column=118, value=129)
 
-        events = merge_drafts._main_stock_events(worksheet)
-        row_values = tuple(
-            worksheet.cell(row=2, column=col).value
-            for col in range(1, worksheet.max_column + 1)
-        )
-
-        self.assertEqual(
-            merge_drafts._main_previous_stock_before_col(worksheet, 2, 239, events),
-            129,
-        )
-        self.assertEqual(
-            merge_drafts._main_previous_stock_before_col_from_values(row_values, 239, events),
-            129,
-        )
+        context = merge_drafts._main_value_context(worksheet)
+        self.assertEqual(merge_drafts._main_previous_stock(context, 'UC-60021A', 239), 129)
 
     def test_download_active_merge_draft_keeps_existing_file_flow(self):
         with tempfile.TemporaryDirectory() as temp_dir:

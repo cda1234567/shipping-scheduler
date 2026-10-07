@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.07.1"
+APP_VERSION = "v2026.10.07.2"
 APP_RELEASED_AT = "2026-10-07"
-APP_HEADLINE = "主檔盤點備份可下載並安全撤回"
+APP_HEADLINE = "已發料副檔下載同步主檔盤點結存"
 APP_CHANGELOG = [
+    {
+        "title": "副檔沿用主檔盤點結存",
+        "items": [
+            "已發料頁下載副檔共用主檔預覽的結存與公式讀取規則，不再跳過盤點調整。",
+            "上批結存含零、負數及未快取公式都按主檔輸出，補料、用量及結存依主檔該批實際數字輸出。",
+        ],
+    },
     {
         "title": "撤回主檔盤點",
         "items": [

@@ -1516,7 +1516,10 @@ async def download_selected_schedule_drafts(req: BatchMergeRequest, request: Req
 
 @router.post("/schedule/completed/drafts/download")
 async def download_selected_completed_schedule_drafts(req: BatchMergeRequest, request: Request):
-    return await run_in_threadpool(lambda: download_selected_committed_merge_drafts(req.order_ids, request=request))
+    try:
+        return await run_in_threadpool(lambda: download_selected_committed_merge_drafts(req.order_ids, request=request))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("/schedule/drafts/{draft_id}/download")
