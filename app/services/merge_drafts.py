@@ -24,6 +24,7 @@ from .server_downloads import maybe_server_save_bytes_response, maybe_server_sav
 from .download_names import build_bom_dispatch_filename, build_generated_filename
 from .bom_editor import (
     build_bom_storage_payload,
+    get_bom_scrap_column,
     normalize_bom_record_to_editable,
     parse_bom_for_storage,
 )
@@ -245,7 +246,7 @@ def _apply_target_order_qty_to_ws(ws, target_order_qty: float | None, source_ord
     base_order_qty = coerce_qty(source_order_qty) or _read_ws_bom_order_qty(ws)
     part_col = cfg("excel.bom_part_col", 2) + 1
     qty_col = cfg("excel.bom_qty_per_board", 1) + 1
-    scrap_col = cfg("excel.bom_scrap_col", 4) + 1
+    scrap_col = get_bom_scrap_column(ws)
     needed_col = cfg("excel.bom_needed_col", 5) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
     h_col = cfg("excel.bom_h_col", 7) + 1

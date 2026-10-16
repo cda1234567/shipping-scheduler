@@ -3401,6 +3401,7 @@ class ApiTests(unittest.TestCase):
         with patch("app.routers.bom._get_required_bom", return_value=bom_record), \
              patch("app.routers.bom._ensure_editable_bom_record", return_value=bom_record), \
              patch("app.routers.bom.parse_bom_for_storage", return_value=parsed), \
+             patch("app.routers.bom.read_bom_editor_scrap_factors", return_value={}), \
              patch("app.routers.bom.db.save_bom_file") as mock_save_bom:
             response = self.client.get("/api/bom/bom-1/editor")
 

@@ -2196,6 +2196,7 @@ init().catch(error => {
         </div>
         <div class="editor-note" style="margin-top:10px">
           表格僅在畫面上依料號排序，儲存時仍會寫回原本 Excel 列號；此版本先支援編輯既有列，不做任意插列刪列。
+          拋料率以百分比輸入，例如 0.6 表示 0.6%；修改後儲存時會重新計算該列需求量。
         </div>
         <div class="bom-editor-table-wrap">
           <table class="bom-editor-table">
@@ -2205,6 +2206,7 @@ init().catch(error => {
                 <th>料號</th>
                 <th>說明</th>
                 <th>每板用量</th>
+                <th>拋料率（%）</th>
                 <th>需求量</th>
                 <th>跳過</th>
               </tr>

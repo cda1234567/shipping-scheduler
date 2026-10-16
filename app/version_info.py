@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.07.2"
-APP_RELEASED_AT = "2026-10-07"
-APP_HEADLINE = "已發料副檔下載同步主檔盤點結存"
+APP_VERSION = "v2026.10.16.1"
+APP_RELEASED_AT = "2026-10-16"
+APP_HEADLINE = "BOM 可逐料件調整拋料率"
 APP_CHANGELOG = [
+    {
+        "title": "BOM 拋料率設定",
+        "items": [
+            "編輯 BOM 時可逐料件查看及修改拋料率，使用百分比輸入，並支援調整為 0%。",
+            "儲存後同步更新需求量與後續副檔，其他料件的拋料率維持原設定。",
+        ],
+    },
     {
         "title": "副檔沿用主檔盤點結存",
         "items": [

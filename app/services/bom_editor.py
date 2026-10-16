@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import re
 from datetime import datetime
 from pathlib import Path
 
 import openpyxl
+from openpyxl.formula import Tokenizer
+from openpyxl.utils.cell import coordinate_from_string
 from openpyxl.worksheet.worksheet import Worksheet
 
 from ..config import BACKUP_DIR, BOM_DIR, cfg
 from ..models import BomEditorSaveRequest, BomFile
-from .bom_parser import parse_bom
+from .bom_parser import parse_bom, _detect_scrap_column, _evaluate_numeric_formula
+from .bom_quantity import coerce_scrap_factor
+from .workbook_recalc import mark_workbook_for_recalc
 from .xls_reader import open_workbook_any
 
 _BOM_BACKUP_DIR = BACKUP_DIR / "bom"
@@ -357,10 +362,62 @@ def _set_cell_value(ws: Worksheet, row_idx: int, col_idx: int, value):
     _resolve_cell_for_write(ws, row_idx, col_idx).value = value
 
 
-def _write_component_row(ws, row_idx: int, component):
+def get_bom_scrap_column(ws) -> int:
+    data_start = cfg("excel.bom_data_start_row", 5)
+    headers = list(ws.iter_rows(max_row=data_start - 1, values_only=True))
+    return _detect_scrap_column(headers, data_start, cfg("excel.bom_scrap_col", 4)) + 1
+
+
+def read_bom_editor_scrap_factors(path: str) -> dict[int, float]:
+    """編輯頁顯示工作表實際率；不以需求量反推的有效率覆蓋使用者設定。"""
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=False)
+    cached = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        ws = workbook.worksheets[0]
+        scrap_col = get_bom_scrap_column(ws) - 1
+        rows = list(ws.iter_rows(values_only=True))
+        cached_rows = list(cached.worksheets[0].iter_rows(values_only=True))
+        factors = {}
+        for row_idx in range(cfg("excel.bom_data_start_row", 5), len(rows) + 1):
+            raw = rows[row_idx - 1][scrap_col] if len(rows[row_idx - 1]) > scrap_col else None
+            if isinstance(raw, str) and raw.startswith("="):
+                value = _evaluate_numeric_formula(raw, cached_rows, rows)
+                if value is None:
+                    value = cached_rows[row_idx - 1][scrap_col]
+                raw = value if value is not None else raw
+            factors[row_idx] = coerce_scrap_factor(raw)
+        return factors
+    finally:
+        workbook.close()
+        cached.close()
+
+
+def _update_scrap_formula(formula: str, scrap_ref: str, qty_ref: str, order_refs: list[str], row_idx: int) -> str:
+    if any(token.type == "OPERAND" and token.subtype == "RANGE" and token.value.replace("$", "").upper() == scrap_ref.upper() for token in Tokenizer(formula).items):
+        return formula
+    def reference_pattern(coordinate):
+        column, row = coordinate_from_string(coordinate)
+        return rf"\$?{column}\$?{row}"
+
+    quantity = reference_pattern(qty_ref)
+    order = "(?:" + "|".join(reference_pattern(ref) for ref in order_refs) + ")"
+    base = rf"(?:{quantity}\s*\*\s*{order}|{order}\s*\*\s*{quantity})"
+    base = rf"(?:{base}|\(\s*{base}\s*\))"
+    # 只辨識完整的基本需求乘率，不把額外加項的常數誤當成拋料率。
+    multiplier = r"(?:1(?:\.\d+)?|\(\s*1\s*\+\s*(?:0(?:\.\d+)?|\.\d+)\s*\))"
+    body = formula[1:]
+    wrapper = re.fullmatch(r"(ROUND|ROUNDUP|ROUNDDOWN)\((.*),(\s*\d+\s*)\)", body, re.IGNORECASE)
+    core = wrapper.group(2) if wrapper else body
+    matched = re.fullmatch(rf"\s*{base}\s*\*\s*(?P<rate>{multiplier})\s*", core, re.IGNORECASE)
+    if not matched:
+        raise ValueError(f"第 {row_idx} 列需求量公式無法辨識拋料率，請先在 Excel 將公式改為引用 {scrap_ref}")
+    updated = core[:matched.start("rate")] + f"(1+{scrap_ref})" + core[matched.end("rate"):]
+    return f"={wrapper.group(1)}({updated},{wrapper.group(3)})" if wrapper else "=" + updated
+
+
+def _write_component_row(ws, row_idx: int, component, *, scrap_col: int, order_qty: float):
     part_col = cfg("excel.bom_part_col", 2) + 1
     desc_col = cfg("excel.bom_desc_col", 3) + 1
-    scrap_col = cfg("excel.bom_scrap_col", 4) + 1
     qty_col = cfg("excel.bom_qty_per_board", 1) + 1
     needed_col = cfg("excel.bom_needed_col", 5) + 1
     g_col = cfg("excel.bom_g_col", 6) + 1
@@ -368,11 +425,18 @@ def _write_component_row(ws, row_idx: int, component):
 
     _set_cell_value(ws, row_idx, part_col, component.part_number.strip())
     _set_cell_value(ws, row_idx, desc_col, component.description)
-    if float(component.scrap_factor or 0) > 0 or _is_empty_excel_value(_get_cell_value(ws, row_idx, scrap_col)):
-        _set_cell_value(ws, row_idx, scrap_col, component.scrap_factor)
     _set_cell_value(ws, row_idx, qty_col, component.qty_per_board)
     needed_cell = _resolve_cell_for_write(ws, row_idx, needed_col)
-    if not _is_formula_excel_cell(needed_cell):
+    if component.scrap_factor is not None:
+        scrap_cell = _resolve_cell_for_write(ws, row_idx, scrap_col)
+        if _is_formula_excel_cell(needed_cell):
+            order_refs = [_resolve_cell_for_write(ws, 1, cfg("excel.bom_order_qty_col", 10) + 1).coordinate, "G2"]
+            needed_cell.value = _update_scrap_formula(needed_cell.value, scrap_cell.coordinate, _resolve_cell_for_write(ws, row_idx, qty_col).coordinate, order_refs, row_idx)
+        else:
+            needed_cell.value = component.qty_per_board * order_qty * (1 + component.scrap_factor)
+        scrap_cell.value = component.scrap_factor
+        scrap_cell.number_format = "0.00%"
+    elif not _is_formula_excel_cell(needed_cell):
         needed_cell.value = component.needed_qty
 
     if component.is_dash:
@@ -395,26 +459,29 @@ def apply_bom_editor_changes(path: str, req: BomEditorSaveRequest):
     model_col = cfg("excel.bom_model_col", 2) + 1
     pcb_col = cfg("excel.bom_pcb_col", 3) + 1
     data_start = cfg("excel.bom_data_start_row", 5)
+    scrap_col = get_bom_scrap_column(ws)
 
     _set_cell_value(ws, 1, po_col, req.po_number)
     _set_cell_value(ws, 1, order_qty_col, req.order_qty)
     _set_cell_value(ws, 2, model_col, req.model)
     _set_cell_value(ws, 2, pcb_col, req.pcb)
 
-    seen_rows: set[int] = set()
-    for component in req.components:
-        row_idx = int(component.source_row)
-        if row_idx < data_start or row_idx > ws.max_row:
-            wb.close()
-            raise ValueError(f"找不到可更新的 BOM 列：{row_idx}")
-        if row_idx in seen_rows:
-            wb.close()
-            raise ValueError(f"BOM 列號重複：{row_idx}")
-        if not component.part_number.strip():
-            wb.close()
-            raise ValueError(f"BOM 第 {row_idx} 列料號不可為空白")
-        seen_rows.add(row_idx)
-        _write_component_row(ws, row_idx, component)
+    try:
+        seen_rows: set[int] = set()
+        for component in req.components:
+            row_idx = int(component.source_row)
+            if row_idx < data_start or row_idx > ws.max_row:
+                raise ValueError(f"找不到可更新的 BOM 列：{row_idx}")
+            if row_idx in seen_rows:
+                raise ValueError(f"BOM 列號重複：{row_idx}")
+            if not component.part_number.strip():
+                raise ValueError(f"BOM 第 {row_idx} 列料號不可為空白")
+            seen_rows.add(row_idx)
+            _write_component_row(ws, row_idx, component, scrap_col=scrap_col, order_qty=req.order_qty)
 
-    wb.save(str(workbook_path))
-    wb.close()
+        mark_workbook_for_recalc(wb)
+        wb.save(str(workbook_path))
+    finally:
+        wb.close()
+        if wb.vba_archive is not None:
+            wb.vba_archive.close()

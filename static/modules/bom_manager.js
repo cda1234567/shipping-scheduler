@@ -532,6 +532,7 @@ function renderEditor(bom) {
       <td><input type="text" class="bom-cell-input" data-field="part_number" value="${esc(component.part_number)}"></td>
       <td><input type="text" class="bom-cell-input" data-field="description" value="${esc(component.description || "")}"></td>
       <td><input type="number" class="bom-cell-input" data-field="qty_per_board" step="0.01" value="${component.qty_per_board ?? 0}"></td>
+      <td><input type="number" class="bom-cell-input" data-field="scrap_percent" min="0" max="99.99" step="0.01" value="${Number(((component.scrap_factor ?? 0) * 100).toFixed(10))}" data-original="${Number(((component.scrap_factor ?? 0) * 100).toFixed(10))}" aria-label="拋料率（%）"></td>
       <td><input type="number" class="bom-cell-input" data-field="needed_qty" step="0.01" value="${component.needed_qty ?? 0}"></td>
       <td>
         <label class="bom-check-label">
@@ -557,11 +558,17 @@ function readEditorPayload() {
     if (!partNumber) {
       throw new Error(`第 ${sourceRow} 列料號不可為空白`);
     }
+    const scrapInput = row.querySelector('[data-field="scrap_percent"]');
+    const scrapPercent = Number(scrapInput.value);
+    if (scrapInput.value.trim() === "" || !Number.isFinite(scrapPercent) || scrapPercent < 0 || scrapPercent >= 100) {
+      throw new Error(`第 ${sourceRow} 列拋料率請填入 0（含）至 100（不含）的百分比`);
+    }
     return {
       source_row: sourceRow,
       part_number: partNumber,
       description: String(getValue("description") || "").trim(),
       qty_per_board: getNumber("qty_per_board"),
+      ...(scrapPercent !== Number(scrapInput.dataset.original) ? { scrap_factor: scrapPercent / 100 } : {}),
       needed_qty: getNumber("needed_qty"),
       prev_qty_cs: parseFloat(row.dataset.prevQtyCs || "0") || 0,
       is_dash: isDash,
