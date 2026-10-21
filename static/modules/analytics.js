@@ -4,9 +4,21 @@ let _historyChart = null;
 let _historyGroupBy = "model";
 let _diffResult = null;
 let _partHistoryRequestId = 0;
+let _partSuggestRequestId = 0;
+let _partSuggestDebounceTimer = null;
+let _partSuggestItems = [];
+let _partSuggestActiveIndex = -1;
+
+const PART_SUGGEST_MATCH_LABELS = {
+  exact: "完全符合",
+  prefix: "開頭符合",
+  substring: "包含",
+  fuzzy: "相近",
+};
 
 export async function initAnalytics() {
   document.getElementById("part-history-form")?.addEventListener("submit", loadPartDispatchHistory);
+  setupPartSuggestions();
   document.getElementById("frequent-zero-months")?.addEventListener("change", loadFrequentZeroStock);
   document.getElementById("frequent-zero-min-orders")?.addEventListener("change", loadFrequentZeroStock);
   document.getElementById("btn-refresh-frequent-zero")?.addEventListener("click", loadFrequentZeroStock);
@@ -26,6 +38,10 @@ export async function refreshAnalytics() {
 
 async function loadPartDispatchHistory(event) {
   event?.preventDefault();
+  clearTimeout(_partSuggestDebounceTimer);
+  _partSuggestRequestId++;
+  const suggestDropdown = document.querySelector?.(".part-history-suggestions");
+  if (suggestDropdown) hidePartSuggestions(suggestDropdown);
   const input = document.getElementById("part-history-input");
   const result = document.getElementById("part-history-result");
   const button = document.getElementById("btn-part-history");
@@ -56,6 +72,111 @@ async function loadPartDispatchHistory(event) {
       button.disabled = false;
       button.textContent = "查詢";
     }
+  }
+}
+
+function setupPartSuggestions() {
+  const input = document.getElementById("part-history-input");
+  if (!input || typeof input.addEventListener !== "function" || typeof input.closest !== "function") return;
+  const field = input.closest(".part-history-part-field");
+  if (!field) return;
+
+  let dropdown = field.querySelector(".part-history-suggestions");
+  if (!dropdown) {
+    dropdown = document.createElement("div");
+    dropdown.className = "part-history-suggestions";
+    dropdown.hidden = true;
+    field.appendChild(dropdown);
+  }
+
+  input.addEventListener("input", () => {
+    const query = input.value.trim();
+    clearTimeout(_partSuggestDebounceTimer);
+    if (query.length < 2) {
+      hidePartSuggestions(dropdown);
+      return;
+    }
+    _partSuggestDebounceTimer = setTimeout(() => fetchPartSuggestions(query, dropdown), 200);
+  });
+
+  input.addEventListener("keydown", (event) => handlePartSuggestKeydown(event, dropdown, input));
+  input.addEventListener("blur", () => hidePartSuggestions(dropdown));
+
+  dropdown.addEventListener("mousedown", (event) => {
+    const item = event.target.closest(".part-suggest-item");
+    if (!item) return;
+    event.preventDefault();
+    selectPartSuggestion(item.dataset.part || "", input, dropdown);
+  });
+}
+
+async function fetchPartSuggestions(query, dropdown) {
+  const requestId = ++_partSuggestRequestId;
+  try {
+    const data = await apiJson(`/api/analytics/part-suggestions?q=${encodeURIComponent(query)}&limit=20`);
+    if (requestId !== _partSuggestRequestId) return;
+    renderPartSuggestions(dropdown, Array.isArray(data?.suggestions) ? data.suggestions : []);
+  } catch (_) {
+    if (requestId !== _partSuggestRequestId) return;
+    hidePartSuggestions(dropdown);
+  }
+}
+
+function renderPartSuggestions(dropdown, suggestions) {
+  _partSuggestItems = suggestions;
+  _partSuggestActiveIndex = -1;
+  if (!suggestions.length) {
+    dropdown.innerHTML = "";
+    dropdown.hidden = true;
+    return;
+  }
+  dropdown.innerHTML = suggestions.map((s, i) => `
+    <div class="part-suggest-item" data-index="${i}" data-part="${esc(s.part_number)}">
+      <span class="part-suggest-part">${esc(s.part_number)}</span>
+      <span class="part-suggest-match is-${esc(s.match)}">${esc(PART_SUGGEST_MATCH_LABELS[s.match] || s.match)}</span>
+    </div>`).join("");
+  dropdown.hidden = false;
+}
+
+function hidePartSuggestions(dropdown) {
+  dropdown.hidden = true;
+  dropdown.innerHTML = "";
+  _partSuggestItems = [];
+  _partSuggestActiveIndex = -1;
+}
+
+function updatePartSuggestActiveItem(dropdown) {
+  dropdown.querySelectorAll(".part-suggest-item").forEach((el, i) => {
+    el.classList.toggle("is-active", i === _partSuggestActiveIndex);
+  });
+}
+
+function selectPartSuggestion(partNumber, input, dropdown) {
+  if (!partNumber) return;
+  input.value = partNumber;
+  hidePartSuggestions(dropdown);
+  loadPartDispatchHistory();
+}
+
+function handlePartSuggestKeydown(event, dropdown, input) {
+  if (dropdown.hidden || !_partSuggestItems.length) return;
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    _partSuggestActiveIndex = (_partSuggestActiveIndex + 1) % _partSuggestItems.length;
+    updatePartSuggestActiveItem(dropdown);
+  } else if (event.key === "ArrowUp") {
+    event.preventDefault();
+    _partSuggestActiveIndex = _partSuggestActiveIndex <= 0
+      ? _partSuggestItems.length - 1
+      : _partSuggestActiveIndex - 1;
+    updatePartSuggestActiveItem(dropdown);
+  } else if (event.key === "Enter") {
+    if (_partSuggestActiveIndex >= 0) {
+      event.preventDefault();
+      selectPartSuggestion(_partSuggestItems[_partSuggestActiveIndex].part_number, input, dropdown);
+    }
+  } else if (event.key === "Escape") {
+    hidePartSuggestions(dropdown);
   }
 }
 

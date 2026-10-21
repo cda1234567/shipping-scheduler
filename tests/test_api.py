@@ -175,6 +175,57 @@ class ApiTests(unittest.TestCase):
             ["EC-30001A", "IC-10001A"],
         )
 
+    def test_analytics_part_suggestions_ranks_exact_prefix_substring_fuzzy(self):
+        candidates = [
+            "RES-10K-0603",
+            "RES-10K-0805",
+            "IC-M24-TAB",
+            "XIC-M24Y",
+        ]
+        with patch("app.routers.analytics.db.get_dispatch_part_numbers", return_value=candidates):
+            exact = self.client.get("/api/analytics/part-suggestions?q=RES-10K-0603")
+            prefix = self.client.get("/api/analytics/part-suggestions?q=IC-M24")
+            substring = self.client.get("/api/analytics/part-suggestions?q=M24Y")
+            typo_same_length = self.client.get("/api/analytics/part-suggestions?q=RES-10K-0604")
+            typo_partial = self.client.get("/api/analytics/part-suggestions?q=RSE-10K")
+
+        self.assertEqual(exact.status_code, 200)
+        self.assertEqual(exact.json()["suggestions"][0]["part_number"], "RES-10K-0603")
+        self.assertEqual(exact.json()["suggestions"][0]["match"], "exact")
+
+        prefix_matches = [s["part_number"] for s in prefix.json()["suggestions"]]
+        self.assertIn("IC-M24-TAB", prefix_matches)
+        self.assertEqual(prefix.json()["suggestions"][0]["match"], "prefix")
+
+        substring_matches = [s["part_number"] for s in substring.json()["suggestions"]]
+        self.assertIn("XIC-M24Y", substring_matches)
+        self.assertEqual(substring.json()["suggestions"][0]["match"], "substring")
+
+        typo_same_length_matches = [s["part_number"] for s in typo_same_length.json()["suggestions"]]
+        self.assertIn("RES-10K-0603", typo_same_length_matches)
+
+        typo_partial_matches = [s["part_number"] for s in typo_partial.json()["suggestions"]]
+        self.assertIn("RES-10K-0603", typo_partial_matches)
+
+    def test_analytics_part_suggestions_excludes_hidden_ec_parts(self):
+        candidates = ["EC-10001A", "EC-20002B", "IC-10001A"]
+        with patch("app.routers.analytics.db.get_dispatch_part_numbers", return_value=candidates):
+            response = self.client.get("/api/analytics/part-suggestions?q=EC-1")
+
+        self.assertEqual(response.status_code, 200)
+        matches = [s["part_number"] for s in response.json()["suggestions"]]
+        self.assertNotIn("EC-10001A", matches)
+        self.assertNotIn("EC-20002B", matches)
+
+    def test_analytics_part_suggestions_clamps_limit_and_short_query(self):
+        candidates = [f"IC-{i:04d}" for i in range(100)]
+        with patch("app.routers.analytics.db.get_dispatch_part_numbers", return_value=candidates):
+            too_short = self.client.get("/api/analytics/part-suggestions?q=I")
+            over_limit = self.client.get("/api/analytics/part-suggestions?q=IC-&limit=999")
+
+        self.assertEqual(too_short.json()["suggestions"], [])
+        self.assertLessEqual(len(over_limit.json()["suggestions"]), 50)
+
     def test_analytics_frequent_zero_stock_uses_history_schedule_and_both_stocks(self):
         with patch("app.routers.analytics.db.get_recent_dispatched_part_usage", return_value=[
             {

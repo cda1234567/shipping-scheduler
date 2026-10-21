@@ -4355,6 +4355,21 @@ def get_recent_dispatched_part_usage(months: int = 6) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_dispatch_part_numbers() -> list[str]:
+    """取得可查詢發料歷史的料號清單（沿用 get_part_dispatch_history 的口徑）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT UPPER(TRIM(dr.part_number)) AS part_number
+               FROM dispatch_records dr
+               JOIN orders o ON o.id = dr.order_id
+               WHERE o.status IN ('dispatched', 'completed')
+                 AND dr.dispatched_at != ''
+                 AND dr.decision != 'Shortage'
+                 AND TRIM(dr.part_number) != ''"""
+        ).fetchall()
+    return [row["part_number"] for row in rows]
+
+
 def get_part_dispatch_history(part_number: str, days: int = 30) -> list[dict]:
     """彙整已發料／已完成訂單的 BOM 用量，沿用分析頁排除缺料的口徑。"""
     normalized_part = str(part_number or "").strip().upper()

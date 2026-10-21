@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.16.1"
-APP_RELEASED_AT = "2026-10-16"
-APP_HEADLINE = "BOM 可逐料件調整拋料率"
+APP_VERSION = "v2026.10.22.1"
+APP_RELEASED_AT = "2026-10-22"
+APP_HEADLINE = "料號查詢支援部分輸入與錯字容錯"
 APP_CHANGELOG = [
+    {
+        "title": "料號查詢支援部分輸入與錯字容錯",
+        "items": [
+            "分析頁「料號發料查詢」輸入框打到第 2 個字即會顯示自動建議清單，不必記住完整料號。",
+            "建議清單依完全符合、開頭符合、包含到相近錯字排序，打錯一兩個字也能找到正確料號。",
+            "可用方向鍵選擇、Enter 套用或滑鼠點選；選定後自動帶入查詢，原有完整料號查詢行為不變。",
+        ],
+    },
     {
         "title": "BOM 拋料率設定",
         "items": [

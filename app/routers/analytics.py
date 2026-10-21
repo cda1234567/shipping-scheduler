@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
@@ -17,6 +18,108 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 def _is_hidden_analysis_part(part_number: object) -> bool:
     part = str(part_number or "").strip().upper()
     return part.startswith(("EC-1", "EC-2"))
+
+
+# ── 料號模糊建議 ──────────────────────────────────────────────────────────────
+
+_PART_STRIP_CHARS = ("-", " ", "_", ".")
+
+
+def _normalize_part_text(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _compact_part_text(value: str) -> str:
+    compact = value
+    for ch in _PART_STRIP_CHARS:
+        compact = compact.replace(ch, "")
+    return compact
+
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cost = 0 if ca == cb else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+        prev = curr
+    return prev[-1]
+
+
+def _best_window_similarity(query: str, candidate: str) -> float:
+    """以與 query 等長的候選子字串逐一比對，取最高相似度（處理部分輸入中的錯字）。"""
+    if not query or not candidate:
+        return 0.0
+    qlen = len(query)
+    if len(candidate) <= qlen:
+        return SequenceMatcher(None, query, candidate).ratio()
+    best = 0.0
+    for i in range(len(candidate) - qlen + 1):
+        ratio = SequenceMatcher(None, query, candidate[i:i + qlen]).ratio()
+        if ratio > best:
+            best = ratio
+    return best
+
+
+def rank_part_suggestions(query: str, candidates: list[str], limit: int = 20) -> list[dict]:
+    """依 query 比對候選料號並評分排序，供部分輸入／錯字容錯的自動建議使用。"""
+    normalized_query = _normalize_part_text(query)
+    normalized_limit = max(1, min(int(limit or 20), 50))
+    if not normalized_query:
+        return []
+    compact_query = _compact_part_text(normalized_query)
+
+    seen: set[str] = set()
+    scored: list[tuple[int, float, str, str, float]] = []
+
+    for cand in candidates:
+        normalized_cand = _normalize_part_text(cand)
+        if not normalized_cand or normalized_cand in seen:
+            continue
+        seen.add(normalized_cand)
+        compact_cand = _compact_part_text(normalized_cand)
+
+        if normalized_cand == normalized_query or compact_cand == compact_query:
+            scored.append((0, 0.0, normalized_cand, "exact", 1.0))
+            continue
+
+        if normalized_cand.startswith(normalized_query) or compact_cand.startswith(compact_query):
+            len_diff = max(len(normalized_cand) - len(normalized_query), 0)
+            score = max(0.8, round(0.95 - len_diff * 0.01, 4))
+            scored.append((1, float(len_diff), normalized_cand, "prefix", score))
+            continue
+
+        pos = normalized_cand.find(normalized_query)
+        if pos < 0:
+            pos = compact_cand.find(compact_query)
+        if pos >= 0:
+            score = max(0.5, round(0.75 - pos * 0.02 - len(normalized_cand) * 0.001, 4))
+            scored.append((2, pos * 1000.0 + len(normalized_cand), normalized_cand, "substring", score))
+            continue
+
+        max_dist = max(1, len(normalized_query) // 4)
+        dist = _levenshtein_distance(normalized_query, normalized_cand)
+        window_sim = _best_window_similarity(normalized_query, normalized_cand)
+        # 短輸入（<5 字）只認整串編輯距離，避免 3/4 字元相似就誤配一大堆料號
+        window_ok = len(normalized_query) >= 5 and window_sim >= 0.8
+        if dist <= max_dist or window_ok:
+            dist_score = 1 - dist / max(len(normalized_query), len(normalized_cand), 1)
+            # 模糊分數壓在 0.49 以下（永遠排在包含之後），但保留相對高低以便排序
+            score = round(0.49 * (0.5 * dist_score + 0.5 * window_sim), 4)
+            scored.append((3, -score, normalized_cand, "fuzzy", score))
+
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    return [
+        {"part_number": cand, "match": match, "score": score}
+        for _, _, cand, match, score in scored[:normalized_limit]
+    ]
 
 
 # ── 發料趨勢 ──────────────────────────────────────────────────────────────────
@@ -104,6 +207,22 @@ async def frequent_zero_stock(months: int = 6, min_orders: int = 3):
 
 
 # ── 發料歷史統計 ──────────────────────────────────────────────────────────────
+
+@router.get("/part-suggestions")
+def part_suggestions(q: str = "", limit: int = 20):
+    """輸入部分料號或含錯字時，提供自動建議清單。"""
+    normalized_limit = max(1, min(int(limit or 20), 50))
+    query = str(q or "").strip()
+    if len(query) < 2:
+        return {"query": query, "suggestions": []}
+
+    candidates = [
+        part for part in db.get_dispatch_part_numbers()
+        if not _is_hidden_analysis_part(part)
+    ]
+    suggestions = rank_part_suggestions(query, candidates, normalized_limit)
+    return {"query": query, "suggestions": suggestions}
+
 
 @router.get("/part-dispatch-history")
 def part_dispatch_history(part_number: str = "", days: int = 30):
