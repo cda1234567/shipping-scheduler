@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.22.2"
+APP_VERSION = "v2026.10.22.3"
 APP_RELEASED_AT = "2026-10-22"
-APP_HEADLINE = "系統時間改為台灣時間"
+APP_HEADLINE = "暫時隱藏海運出貨、ST 庫存、無MOQ包裝頁籤"
 APP_CHANGELOG = [
+    {
+        "title": "暫時隱藏三個頁籤",
+        "items": [
+            "上方頁籤暫時隱藏「海運出貨」、「ST 庫存」、「無MOQ包裝」，功能與資料都保留，之後可隨時恢復。",
+        ],
+    },
     {
         "title": "系統時間改為台灣時間",
         "items": [
