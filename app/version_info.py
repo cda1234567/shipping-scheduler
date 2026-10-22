@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.22.1"
+APP_VERSION = "v2026.10.22.2"
 APP_RELEASED_AT = "2026-10-22"
-APP_HEADLINE = "料號查詢支援部分輸入與錯字容錯"
+APP_HEADLINE = "系統時間改為台灣時間"
 APP_CHANGELOG = [
+    {
+        "title": "系統時間改為台灣時間",
+        "items": [
+            "容器時區改為 Asia/Taipei，資料庫備份檔名與時間不再比實際時間慢 8 小時。",
+        ],
+    },
     {
         "title": "料號查詢支援部分輸入與錯字容錯",
         "items": [

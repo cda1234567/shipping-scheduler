@@ -3,12 +3,13 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV APP_PORT=8765
+ENV TZ=Asia/Taipei
 
 WORKDIR /app
 
 COPY requirements-server.txt /app/requirements-server.txt
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-calc \
+    && apt-get install -y --no-install-recommends libreoffice-calc tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r /app/requirements-server.txt
 
