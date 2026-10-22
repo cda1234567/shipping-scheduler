@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.22.3"
+APP_VERSION = "v2026.10.22.4"
 APP_RELEASED_AT = "2026-10-22"
-APP_HEADLINE = "暫時隱藏海運出貨、ST 庫存、無MOQ包裝頁籤"
+APP_HEADLINE = "修正發料單：主檔同名舊批次的補料不再被算進新批次"
 APP_CHANGELOG = [
+    {
+        "title": "發料單不再誤算同名舊批次補料",
+        "items": [
+            "修正發料單：主檔同名舊批次的補料不再被算進新批次，例如舊 11-2 的 EC-40019A 補料不會再出現在新 11-2。",
+            "已發料訂單讀取主檔補料時，只採用 PO 表頭與訂單相符的批次欄；找不到相符 PO 時維持原本行為。",
+        ],
+    },
     {
         "title": "暫時隱藏三個頁籤",
         "items": [

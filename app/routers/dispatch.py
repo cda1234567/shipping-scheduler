@@ -320,6 +320,20 @@ def _load_committed_main_supplements(
             if re.match(r"^\d+-\d+$", code):
                 batch_cols_by_code.setdefault(code, []).append(col_idx)
 
+        def _cols_for_order(order: dict) -> list[int]:
+            # 主檔同一工作表可能殘留舊循環的同名批次（例如舊 11-2），
+            # 只取批次欄右側 PO 表頭屬於這張訂單的欄，避免把舊批次補料加總進來。
+            cols = batch_cols_by_code.get(str(order.get("code") or "").strip()) or []
+            po = re.sub(r"\D", "", str(order.get("po_number") or ""))
+            if not po:
+                return cols
+            matched = []
+            for col in cols:
+                header_po = re.sub(r"\D", "", str(first_row[col] if len(first_row) > col else "") or "")
+                if header_po and (header_po == po or (len(header_po) >= 5 and po.endswith(header_po))):
+                    matched.append(col)
+            return matched or cols
+
         order_parts: dict[int, list[str]] = {}
         relevant_parts: set[str] = set()
         relevant_cols: set[int] = set()
@@ -329,8 +343,7 @@ def _load_committed_main_supplements(
             except (KeyError, TypeError, ValueError):
                 continue
 
-            code = str(order.get("code") or "").strip()
-            batch_cols = batch_cols_by_code.get(code)
+            batch_cols = _cols_for_order(order)
             if not batch_cols:
                 continue
 
@@ -366,8 +379,7 @@ def _load_committed_main_supplements(
                 order_id = int(order["id"])
             except (KeyError, TypeError, ValueError):
                 continue
-            code = str(order.get("code") or "").strip()
-            batch_cols = batch_cols_by_code.get(code)
+            batch_cols = _cols_for_order(order)
             if not batch_cols:
                 continue
 

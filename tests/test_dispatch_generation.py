@@ -474,6 +474,34 @@ class DispatchGenerationTests(unittest.TestCase):
         self.assertEqual(worksheet.assert_scan_args, (2, 6, True))
         self.assertTrue(workbook.closed)
 
+    def test_committed_main_supplements_ignore_stale_same_code_batch_with_other_po(self):
+        # 主檔同一工作表殘留舊循環的 11-2（PO 58961），不可加總進新 11-2（PO 4500059651）。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            main_path = Path(temp_dir) / "main.xlsx"
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.append(["料號", None, None, "11-2", 58961, "T7U-REV-1.0",
+                       "11-1", "4500059651", "MODEL-A", "11-2", "4500059651", "MODEL-B"])
+            ws.append(["EC-40019A", None, None, 9000, 2575, 7905, 6000, 2318, 4140, None, 1738, 2402])
+            ws.append(["IC-SP3011", None, None, 6000, 0, 0, None, None, None, 3000, 0, 0])
+            wb.save(main_path)
+            orders = [
+                {"id": 234, "status": "dispatched", "po_number": "4500059651", "model": "MODEL-A", "code": "11-1"},
+                {"id": 235, "status": "dispatched", "po_number": "4500059651", "model": "MODEL-B", "code": "11-2"},
+                # 沒有任何 PO 表頭相符時，退回使用所有同名批次欄。
+                {"id": 900, "status": "dispatched", "po_number": "4500000000", "model": "MODEL-B", "code": "11-2"},
+            ]
+            bom_map = {
+                "MODEL-A": [{"part_number": "EC-40019A"}],
+                "MODEL-B": [{"part_number": "EC-40019A"}, {"part_number": "IC-SP3011"}],
+            }
+            with patch("app.routers.dispatch.db.get_setting", return_value=str(main_path)):
+                result = _load_committed_main_supplements(orders, bom_map)
+
+        self.assertEqual(result[234], {"EC-40019A": 6000})
+        self.assertEqual(result[235], {"IC-SP3011": 3000})
+        self.assertEqual(result[900], {"EC-40019A": 9000, "IC-SP3011": 9000})
+
     def test_dispatch_generate_5_1_ec_80004a_current_main_stock_plus_own_dispatch_record_is_enough(self):
         orders = [
             {
