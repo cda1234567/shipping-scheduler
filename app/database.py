@@ -370,6 +370,26 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     created_at TEXT NOT NULL DEFAULT ''
 );
 
+-- 從網站開到正航 ERP 的採購單本機紀錄（成功與失敗嘗試都記）
+CREATE TABLE IF NOT EXISTS erp_purchase_orders (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    bill_no       TEXT NOT NULL DEFAULT '',
+    target_db     TEXT NOT NULL DEFAULT '',
+    supplier_id   TEXT NOT NULL DEFAULT '',
+    supplier_name TEXT NOT NULL DEFAULT '',
+    remark        TEXT NOT NULL DEFAULT '',
+    lines_json    TEXT NOT NULL DEFAULT '[]',
+    sum_qty       REAL NOT NULL DEFAULT 0,
+    sum_amount    REAL NOT NULL DEFAULT 0,
+    sum_tax       REAL NOT NULL DEFAULT 0,
+    total         REAL NOT NULL DEFAULT 0,
+    actor         TEXT NOT NULL DEFAULT '',
+    client_ip     TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'ok',
+    error         TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS sea_shipments (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     filename        TEXT NOT NULL DEFAULT '',
@@ -3841,6 +3861,34 @@ def log_activity(action: str, detail: str = ""):
             "DELETE FROM activity_logs WHERE id NOT IN "
             "(SELECT id FROM activity_logs ORDER BY id DESC LIMIT 2000)"
         )
+
+
+def add_erp_purchase_order(rec: dict) -> int:
+    """寫入一筆正航採購單本機紀錄（status=ok 或 error）。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO erp_purchase_orders(
+                   bill_no, target_db, supplier_id, supplier_name, remark, lines_json,
+                   sum_qty, sum_amount, sum_tax, total, actor, client_ip, created_at, status, error)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                rec.get("bill_no", ""), rec.get("target_db", ""), rec.get("supplier_id", ""),
+                rec.get("supplier_name", ""), rec.get("remark", ""), rec.get("lines_json", "[]"),
+                float(rec.get("sum_qty") or 0), float(rec.get("sum_amount") or 0),
+                float(rec.get("sum_tax") or 0), float(rec.get("total") or 0),
+                rec.get("actor", ""), rec.get("client_ip", ""), _now(),
+                rec.get("status", "ok"), rec.get("error", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_erp_purchase_orders(limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM erp_purchase_orders ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_activity_logs(limit: int = 100) -> list[dict]:

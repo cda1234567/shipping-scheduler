@@ -11,6 +11,11 @@ services:
       # 正航 ERP 唯讀帳密（ERP_SQL_USER / ERP_SQL_PASSWORD）只放在本機檔案，不可提交到 git
       - path: ${ERP_ENV_FILE:-D:/secrets/shipping-erp.env}
         required: false
+      # 正航採購單寫入帳密（公司1測試帳：ERP_SQL_TEST_*；公司3正式帳：ERP_SQL_WRITE_USER_CHICOMP03 等），同樣不可提交到 git
+      - path: ${ERP_WRITE_ENV_FILE:-D:/secrets/shipping-erp-write.env}
+        required: false
+      - path: ${ERP_WRITE_ENV_FILE_COMP03:-D:/secrets/shipping-erp-comp03-write.env}
+        required: false
     environment:
       ERP_SQL_SERVER: ${ERP_SQL_SERVER:-10.0.0.1}
       ERP_SQL_PORT: ${ERP_SQL_PORT:-1433}
@@ -20,6 +25,10 @@ services:
       ERP_SQL_ENCRYPTION: ${ERP_SQL_ENCRYPTION:-off}
       ERP_SQL_TDS_VERSION: ${ERP_SQL_TDS_VERSION:-7.3}
       ERP_ST_AUTO_SYNC_MINUTES: ${ERP_ST_AUTO_SYNC_MINUTES:-60}
+      ERP_WRITE_TARGET: ${ERP_WRITE_TARGET:-CHIComp01}
+      ERP_PO_SALESMAN: ${ERP_PO_SALESMAN:-017}
+      ERP_PO_MAKER: ${ERP_PO_MAKER:-Andy}
+      ERP_PO_MAKER_ID: ${ERP_PO_MAKER_ID:-017}
     volumes:
       - scheduler-data:/app/data
       - D:/Download/excel:/app/user_downloads

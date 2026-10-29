@@ -1,5 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
+import { prefillPurchaseOrder } from "/static/modules/erp_purchase.js";
 
 const REFRESH_MS = 5 * 60 * 1000;
 const HIDE_ON_ORDER_KEY = "low-stock-hide-on-order";
@@ -164,7 +165,8 @@ function renderTable() {
       <td>${statusHtml(r.status)}</td>
       <td><input type="checkbox" data-act="toggle" ${r.enabled ? "checked" : ""} aria-label="啟用 ${part}"></td>
       <td>${esc(r.note)} <button class="low-stock-link" data-act="edit-note">編輯</button></td>
-      <td><button class="btn btn-danger btn-sm" data-act="remove">移除</button></td>
+      <td><button class="btn btn-secondary btn-sm" data-act="open-po" title="到「開採購單」頁籤，帶入此料號與建議數量">開採購單</button>
+        <button class="btn btn-danger btn-sm" data-act="remove">移除</button></td>
     </tr>`;
   }).join("");
 }
@@ -205,6 +207,15 @@ async function onTableClick(event) {
   if (!row) return;
   const act = target.dataset.act;
   if (act === "toggle") return; // 由 change 事件處理
+  if (act === "open-po") {
+    // 建議量 = 門檻 - 現有量 - 在途量，至少 1
+    const gap = row.threshold === null || row.threshold === undefined
+      ? 0
+      : Number(row.threshold) - Number(row.qty || 0) - Number(row.on_order_qty || 0);
+    document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
+    prefillPurchaseOrder(part, Math.max(1, Math.ceil(Math.max(gap, 0))));
+    return;
+  }
   if (act === "edit-threshold") {
     if (!requireEdit()) return;
     const value = promptNumber(`${part} 門檻（留空 = 恢復自動建議）`, row.threshold);

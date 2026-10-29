@@ -115,6 +115,7 @@
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
       <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
       <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
+      <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
@@ -349,6 +350,53 @@
         </div>
         <div id="st-packages-status" class="file-status">切到這頁後會自動讀取目前無 MOQ 的 ST 包裝資料。</div>
         <div id="st-packages-list" class="st-package-list"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 開採購單（寫入正航 ERP） ── -->
+    <div id="tab-erp-po-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div id="erp-po-badge" class="erp-po-badge">讀取設定中...</div>
+        <div class="erp-po-form">
+          <div class="erp-po-field erp-po-supplier-field">
+            <label for="erp-po-supplier-input">供應商</label>
+            <input type="text" id="erp-po-supplier-input" placeholder="輸入代號 / 簡稱 / 全名搜尋" autocomplete="off">
+            <ul id="erp-po-supplier-results" class="erp-po-results" hidden></ul>
+            <div id="erp-po-supplier-selected" class="erp-po-hint">尚未選擇供應商</div>
+          </div>
+          <div class="erp-po-field">
+            <label for="erp-po-salesman">採購員</label>
+            <input type="text" id="erp-po-salesman" value="017" autocomplete="off">
+          </div>
+          <div class="erp-po-field erp-po-remark-field">
+            <label for="erp-po-remark">備註</label>
+            <input type="text" id="erp-po-remark" autocomplete="off">
+          </div>
+        </div>
+        <div class="erp-po-table-wrap">
+          <table class="erp-po-table">
+            <thead>
+              <tr><th>#</th><th>料號</th><th>品名</th><th>數量</th><th>單價（未稅）</th><th>預計進貨日</th><th></th></tr>
+            </thead>
+            <tbody id="erp-po-lines"></tbody>
+          </table>
+        </div>
+        <div class="erp-po-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-erp-po-add-line" type="button">＋ 新增一行</button>
+          <span class="spacer"></span>
+          <button class="btn btn-primary" id="btn-erp-po-preview" type="button">預覽</button>
+        </div>
+        <div id="erp-po-preview" class="erp-po-preview" hidden></div>
+        <div id="erp-po-result" class="erp-po-result" hidden></div>
+        <h4 class="erp-po-history-title">已開立紀錄（本機）</h4>
+        <div class="erp-po-table-wrap">
+          <table class="erp-po-table">
+            <thead>
+              <tr><th>時間</th><th>單號</th><th>公司</th><th>供應商</th><th>明細</th><th class="num">含稅合計</th><th>狀態</th></tr>
+            </thead>
+            <tbody id="erp-po-history"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -924,6 +972,7 @@ import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/st
 import { initEditAuth } from "/static/modules/edit_auth.js";
 import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
+import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -938,6 +987,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
+    if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
@@ -2015,6 +2065,7 @@ async function init() {
   try { await initDefectives({ autoLoad: false }); } catch (e) { console.warn("initDefectives failed:", e); }
   try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
+  try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
 
   setBootProgress(78, "正在建立排程畫面...");
   await nextFrame();

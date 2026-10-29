@@ -349,3 +349,23 @@ class LowStockSettingsRequest(BaseModel):
     actual_lead_ratio: Optional[float] = None
     actual_lead_min_gap_days: Optional[float] = None
     on_order_max_overdue_days: Optional[float] = None
+
+
+# ── 正航 ERP 採購單 ───────────────────────────────────────────────────────────
+
+class ErpPoLine(BaseModel):
+    part_number: str
+    qty: float
+    price: float
+    pre_in_date: str  # YYYY-MM-DD
+
+
+class ErpPoRequest(BaseModel):
+    supplier_id: str
+    remark: str = ""
+    salesman: Optional[str] = None
+    lines: list[ErpPoLine]
+
+
+class ErpPoCreateRequest(ErpPoRequest):
+    confirm: bool = False

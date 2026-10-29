@@ -65,6 +65,14 @@
 - 下載落地資料夾（container 掛載）：`D:\Download\excel`
 - GitHub：`cda1234567/shipping-scheduler`；映像 ghcr.io
 
+### 正航採購單寫入（開採購單頁籤）
+
+- 目標公司：`ERP_WRITE_TARGET`（預設 `CHIComp01` 測試；正式為 `CHIComp03`）。頁面徽章會顯示目前寫入哪一家。
+- 公司1：沿用 `ERP_SQL_TEST_USER / ERP_SQL_TEST_PASSWORD / ERP_SQL_TEST_SERVER`（`ERP_SQL_TEST_DB` 預設 CHIComp01）。
+- 公司3：另建 `D:/secrets/shipping-erp-comp03-write.env`，放 `ERP_SQL_WRITE_USER_CHICOMP03`、`ERP_SQL_WRITE_PASSWORD_CHICOMP03`（可選 `ERP_SQL_WRITE_SERVER_CHICOMP03`，格式 `host,port`）。
+- **切換到公司3**：設 `ERP_WRITE_TARGET=CHIComp03` 後重建容器；先用預覽確認徽章為紅色「寫入：公司3（正式）」。寫入公司3時缺主檔不會自動複製（直接報錯）；寫入只新增、不改不刪，且本系統無法修改 / 刪除已開的單。
+- 本機紀錄在 SQLite `erp_purchase_orders`；帳密一律不進 repo。
+
 ## 7. 跟 Andy 的合作方式
 
 - 全程繁中白話，講結論不寫論文；選項用「三選一＋推薦哪個」。他說「幾支幾」＝批次代碼（6-1 這種）。

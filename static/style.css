@@ -5231,3 +5231,47 @@ body.desktop-dark .frequent-zero-usage li span {
 .low-stock-status.disabled { color: #9ca3af; }
 .low-stock-status.on_order { color: #6b7280; background: #e5e7eb; padding: 0 6px; border-radius: 8px; }
 .low-stock-link { border: none; background: none; color: #2563eb; font-size: 11px; cursor: pointer; padding: 0 2px; }
+
+/* ── 開採購單（正航 ERP） ── */
+.erp-po-shell { flex: 1; padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
+.erp-po-badge { padding: 14px 18px; border-radius: 10px; font-size: 22px; font-weight: 700; text-align: center; letter-spacing: 1px; }
+.erp-po-badge.is-test { background: #fef3c7; color: #92400e; border: 2px solid #f59e0b; }
+.erp-po-badge.is-prod { background: #fee2e2; color: #b91c1c; border: 2px solid #dc2626; }
+.erp-po-badge.is-unavailable { background: #e5e7eb; color: #4b5563; border: 2px solid #9ca3af; }
+.erp-po-badge-small { font-size: 15px; padding: 6px 12px; text-align: left; display: inline-block; }
+.erp-po-form { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+.erp-po-field { display: flex; flex-direction: column; gap: 3px; position: relative; font-size: 12px; color: #374151; }
+.erp-po-field input { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.erp-po-supplier-field { min-width: 280px; }
+.erp-po-remark-field { flex: 1; min-width: 220px; }
+.erp-po-hint { font-size: 11px; color: #6b7280; }
+.erp-po-hint.is-selected { color: #166534; font-size: 12px; font-weight: 600; }
+.erp-po-results {
+  position: absolute; top: 52px; left: 0; right: 0; z-index: 5; margin: 0; padding: 0; list-style: none;
+  max-height: 240px; overflow: auto; background: #fff; border: 1px solid #d1d5db; border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .12);
+}
+.erp-po-results[hidden] { display: none; }
+.erp-po-results li { padding: 6px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
+.erp-po-results li:hover { background: #eff6ff; }
+.erp-po-results li.is-empty { color: #9ca3af; cursor: default; }
+.erp-po-table-wrap { overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.erp-po-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.erp-po-table th, .erp-po-table td { padding: 6px 10px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: middle; }
+.erp-po-table th { background: #f8fafc; color: #374151; font-weight: 600; white-space: nowrap; }
+.erp-po-table .num { text-align: right; }
+.erp-po-table input { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; width: 100%; box-sizing: border-box; }
+.erp-po-table input.num { text-align: right; min-width: 90px; }
+.erp-po-table .mono, .erp-po-shell .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.erp-po-actions { display: flex; align-items: center; gap: 8px; }
+.erp-po-preview { border: 2px solid #94a3b8; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: #f8fafc; }
+.erp-po-preview[hidden], .erp-po-result[hidden] { display: none; }
+.erp-po-preview-head { font-size: 14px; }
+.erp-po-warn { padding: 6px 10px; border-radius: 6px; background: #fef3c7; color: #92400e; font-size: 12px; }
+.erp-po-totals { text-align: right; font-size: 14px; }
+.erp-po-result { padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+.erp-po-result.is-ok { background: #dcfce7; color: #166534; }
+.erp-po-result.is-error { background: #fee2e2; color: #b91c1c; }
+.erp-po-history-title { margin: 6px 0 0; font-size: 14px; color: #111827; }
+.erp-po-row-error { color: #b91c1c; background: #fef2f2; }
+.erp-po-actions .spacer { flex: 1; }
