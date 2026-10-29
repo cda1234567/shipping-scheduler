@@ -80,6 +80,11 @@
       <input type="file" id="st-inventory-file-input" accept=".xlsx,.xls,.xlsm">
     </div>
 
+    <div id="low-stock-notice" class="sidebar-section low-stock-notice" style="display:none">
+      <button type="button" id="low-stock-notice-btn" class="low-stock-notice-btn"></button>
+      <div id="low-stock-notice-meta" class="sidebar-meta"></div>
+    </div>
+
     <!-- 排程表 -->
     <div class="sidebar-section">
       <h3>排程表</h3>
@@ -109,6 +114,7 @@
       <button class="tab-btn" data-tab="calc-workspace">算料工作區</button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
       <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
+      <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
@@ -343,6 +349,62 @@
         </div>
         <div id="st-packages-status" class="file-status">切到這頁後會自動讀取目前無 MOQ 的 ST 包裝資料。</div>
         <div id="st-packages-list" class="st-package-list"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 低庫存提醒 ── -->
+    <div id="tab-low-stock-tab" class="tab-content">
+      <div class="low-stock-shell">
+        <div class="low-stock-header">
+          <div>
+            <h3 class="low-stock-title">常用料號低庫存提醒</h3>
+            <div class="low-stock-subtitle">依 ST 倉近期領用量與採購交期，建議常用料號與門檻；現有量取自本機 ST 庫存快照。</div>
+          </div>
+          <span class="spacer"></span>
+          <label class="low-stock-filter"><input type="checkbox" id="low-stock-only-low"> 只看低庫存</label>
+          <button class="btn btn-secondary btn-sm" id="btn-low-stock-settings-toggle">設定</button>
+          <button class="btn btn-primary btn-sm" id="btn-low-stock-suggest" title="從正航 ERP 重新計算常用料號與建議門檻（不會覆蓋手動設定）">重新建議</button>
+        </div>
+        <div id="low-stock-settings-panel" class="low-stock-panel" hidden>
+          <label>用量統計天數 <input type="number" id="low-stock-set-lookback" min="7" max="730" step="1"></label>
+          <label>最少單據數 <input type="number" id="low-stock-set-min-bills" min="1" max="50" step="1"></label>
+          <label>安全係數 <input type="number" id="low-stock-set-safety" min="0.1" max="10" step="0.1"></label>
+          <label>最低可撐天數 <input type="number" id="low-stock-set-min-cover" min="0" max="365" step="1"></label>
+          <label>預設交期（天） <input type="number" id="low-stock-set-default-lead" min="1" max="365" step="1"></label>
+          <button class="btn btn-primary btn-sm" id="btn-low-stock-save-settings">儲存設定</button>
+          <span class="low-stock-hint">儲存後會用已存的統計重算自動門檻；統計天數與最少單據數於下次「重新建議」生效。</span>
+        </div>
+        <form id="low-stock-add-form" class="low-stock-panel" autocomplete="off">
+          <label>料號 <input type="text" id="low-stock-add-part" placeholder="例如 EC-40019A" required></label>
+          <label>門檻（選填） <input type="number" id="low-stock-add-threshold" min="0" step="any" placeholder="空白=自動"></label>
+          <label>交期天數（選填） <input type="number" id="low-stock-add-lead" min="1" max="365" step="1" placeholder="空白=自動"></label>
+          <label>備註 <input type="text" id="low-stock-add-note"></label>
+          <button class="btn btn-secondary btn-sm" type="submit" id="btn-low-stock-add">新增料號</button>
+        </form>
+        <div id="low-stock-status" class="file-status">切到這頁後會讀取關注清單。</div>
+        <div class="low-stock-table-wrap">
+          <table class="low-stock-table">
+            <thead>
+              <tr>
+                <th>料號</th>
+                <th>品名</th>
+                <th class="num">現有量</th>
+                <th class="num">月均用量</th>
+                <th>交期(天)</th>
+                <th class="num">預定交期(天)</th>
+                <th class="num">實際交期(天)</th>
+                <th>延遲天數</th>
+                <th>門檻</th>
+                <th class="num">可撐天數</th>
+                <th>狀態</th>
+                <th>啟用</th>
+                <th>備註</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="low-stock-table-body"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -855,6 +917,7 @@ import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
 import { initEditAuth } from "/static/modules/edit_auth.js";
 import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
+import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -868,6 +931,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "st-inventory") refreshStInventoryInMain();
     if (btn.dataset.tab === "completed") refreshCompleted();
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
+    if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
@@ -1944,6 +2008,7 @@ async function init() {
   try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
   try { await initDefectives({ autoLoad: false }); } catch (e) { console.warn("initDefectives failed:", e); }
   try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
+  try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
 
   setBootProgress(78, "正在建立排程畫面...");
   await nextFrame();
@@ -1954,6 +2019,7 @@ async function init() {
   runBootBackground("renderBomGroups", renderBomGroups);
   runBootBackground("renderSubstitutionRules", renderSubstitutionRules);
   runBootBackground("refreshAlerts", refreshAlerts);
+  runBootBackground("refreshLowStockAlerts", refreshLowStockAlerts);
 }
 
 function setStatus(id, text, cls) {

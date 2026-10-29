@@ -442,6 +442,7 @@ async function handleErpSync() {
     const result = await apiPost("/api/system/st-inventory/erp-sync", {});
     await refreshStInventoryPanel();
     showToast(`ST 庫存已從正航更新（${result.part_count} 筆）`, { tone: "success" });
+    window.dispatchEvent(new CustomEvent("st-inventory-synced"));
     if (_onChanged) {
       try {
         await _onChanged(result);
@@ -490,6 +491,7 @@ async function handleUpload(event) {
     });
     await refreshStInventoryInMain({ silent: true });
     showToast(`ST 庫存已匯入：${result.filename}（${result.part_count} 筆）`, { tone: "success" });
+    window.dispatchEvent(new CustomEvent("st-inventory-synced"));
     if (_onChanged) {
       try {
         await _onChanged(result);

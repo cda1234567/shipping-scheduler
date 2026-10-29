@@ -314,3 +314,35 @@ class DefectiveImportConfirmRequest(BaseModel):
 
 class DefectiveReplayRequest(BaseModel):
     cutoff: str
+
+
+# ── 常用料號低庫存提醒 ────────────────────────────────────────────────────────
+
+class LowStockAddRequest(BaseModel):
+    part_number: str
+    threshold_qty: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    note: str = ""
+
+
+class LowStockUpdateRequest(BaseModel):
+    # 只有請求中實際出現的欄位才會更新（用 .dict(exclude_unset=True)）；threshold_qty / lead_time_days 為 null = 恢復自動
+    part_number: str
+    threshold_qty: Optional[float] = None
+    lead_time_days: Optional[float] = None
+    enabled: Optional[bool] = None
+    note: Optional[str] = None
+
+
+class LowStockRemoveRequest(BaseModel):
+    part_number: str
+
+
+class LowStockSettingsRequest(BaseModel):
+    lookback_days: Optional[float] = None
+    min_bills: Optional[float] = None
+    safety_factor: Optional[float] = None
+    min_cover_days: Optional[float] = None
+    default_lead_days: Optional[float] = None
+    lead_lookback_days: Optional[float] = None
+    lead_sample_size: Optional[float] = None

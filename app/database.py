@@ -32,7 +32,35 @@ _BOM_FILE_FALLBACK_DIRS = (BOM_DIR,)
 _BOM_REVISION_FALLBACK_DIRS = (BOM_HISTORY_DIR,)
 _MERGE_DRAFT_FILE_FALLBACK_DIRS = (MERGE_DRAFT_DIR,)
 
-_CREATE_SQL = """
+# 常用料號低庫存提醒：關注清單（part_number 一律 UPPER(TRIM())）
+LOW_STOCK_WATCH_SQL = """
+CREATE TABLE IF NOT EXISTS low_stock_watch (
+    part_number            TEXT PRIMARY KEY,
+    name                   TEXT NOT NULL DEFAULT '',
+    source                 TEXT NOT NULL DEFAULT 'auto',
+    enabled                INTEGER NOT NULL DEFAULT 1,
+    dismissed              INTEGER NOT NULL DEFAULT 0,
+    note                   TEXT NOT NULL DEFAULT '',
+    threshold_qty          REAL,
+    threshold_source       TEXT NOT NULL DEFAULT 'auto',
+    lead_time_days         REAL,
+    lead_time_source       TEXT NOT NULL DEFAULT 'default',
+    planned_lead_days      REAL,
+    actual_lead_days       REAL,
+    delay_days             REAL,
+    delay_samples          INTEGER NOT NULL DEFAULT 0,
+    avg_daily_usage        REAL,
+    usage_qty              REAL,
+    bill_count             INTEGER,
+    last_purchase_date     TEXT NOT NULL DEFAULT '',
+    last_purchase_supplier TEXT NOT NULL DEFAULT '',
+    suggested_at           TEXT NOT NULL DEFAULT '',
+    updated_at             TEXT NOT NULL DEFAULT '',
+    updated_by             TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_CREATE_SQL = LOW_STOCK_WATCH_SQL + """
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -557,6 +585,12 @@ def _repair_managed_paths(conn: sqlite3.Connection) -> int:
         recursive=True,
     )
     return repaired
+
+
+def ensure_low_stock_table() -> None:
+    """低庫存關注清單表（冪等；供 init_db 以外的一次性腳本呼叫）。"""
+    with get_conn() as conn:
+        conn.executescript(LOW_STOCK_WATCH_SQL)
 
 
 def init_db():

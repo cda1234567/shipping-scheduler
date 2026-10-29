@@ -16,6 +16,9 @@ const STATIC_EDIT_LOCK_SELECTORS = [
   "#btn-dedup-schedule",
   "#btn-create-folder",
   "#btn-save-bom-order",
+  "#btn-low-stock-suggest",
+  "#btn-low-stock-save-settings",
+  "#btn-low-stock-add",
 ];
 
 function setLockedElementState(element, locked) {
