@@ -70,3 +70,39 @@ def parse_st_inventory_file(path: str) -> dict:
         }
     finally:
         workbook.close()
+
+
+ST_SOURCE_ERP = "erp"
+ST_SOURCE_EXCEL = "excel"
+
+
+def apply_st_inventory_snapshot(
+    stock: dict[str, float],
+    descriptions: dict[str, str],
+    *,
+    source: str,
+    filename: str,
+    file_path: str = "",
+    actor: str = "system",
+    activity_detail: str = "",
+) -> dict:
+    """ST 庫存「整批取代快照」的唯一寫入路徑（Excel 上傳與 ERP 同步共用）。
+
+    語意與舊的 Excel 上傳完全相同：整批覆蓋 st_inventory_snapshot、寫 audit
+    （reason 固定 st_inventory_upload，reconcile baseline 才認得）、更新 settings 與 activity log。
+    """
+    from .. import database as db
+    from .local_time import local_now
+
+    db.save_st_inventory_snapshot(stock, descriptions, actor=actor)
+    part_count = len(stock)
+    loaded_at = local_now().isoformat(timespec="seconds")
+    db.set_setting("st_inventory_file_path", file_path)
+    db.set_setting("st_inventory_filename", filename)
+    db.set_setting("st_inventory_loaded_at", loaded_at)
+    db.set_setting("st_inventory_part_count", str(part_count))
+    db.set_setting("st_inventory_source", source)
+    db.set_setting("st_inventory_last_sync_error", "")
+    db.set_setting("st_inventory_last_sync_error_at", "")
+    db.log_activity("st_inventory_upload", activity_detail or f"{filename}, {part_count} 筆")
+    return {"part_count": part_count, "loaded_at": loaded_at}

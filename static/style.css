@@ -899,6 +899,8 @@ body.edit-auth-readonly #bom-upload-area {
 
 .st-inventory-erp-error[hidden] { display: none; }
 
+.st-inventory-sync-error { color: #b91c1c; }
+
 .st-inventory-empty {
   text-align: center;
   color: #8e8e93;

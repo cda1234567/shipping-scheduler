@@ -9,6 +9,7 @@ let _editAuthStatus = {
 const STATIC_EDIT_LOCK_SELECTORS = [
   "#btn-upload-main",
   "#btn-upload-st-inventory",
+  "#btn-erp-sync-st-inventory",
   "#btn-upload-schedule",
   "#btn-save-order",
   "#btn-batch-merge",

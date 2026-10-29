@@ -12,6 +12,7 @@ from app.database import init_db
 from app.routers import alerts, analytics, bom, defectives, dispatch, erp, logs, main_file, reconcile, schedule, sea_freight, st_inventory, system
 from app.services.edit_auth import EDIT_AUTH_REQUIRED_MESSAGE, get_edit_auth_status, request_requires_edit_auth
 from app.services.db_backup import database_backup_scheduler
+from app.services.st_erp_sync import st_erp_auto_sync_scheduler
 from app.services.backup_cleanup import cleanup_old_backups
 from app.services.main_preview import clean_main_preview_disk_cache
 from app.services.inventory_count_lock import (
@@ -62,10 +63,12 @@ async def lifespan(_: FastAPI):
         _sync_snapshot_on_startup()
         cleanup_old_backups()
         database_backup_scheduler.start()
+        st_erp_auto_sync_scheduler.start()
     try:
         yield
     finally:
         database_backup_scheduler.stop()
+        st_erp_auto_sync_scheduler.stop()
 
 
 app = FastAPI(title="出貨排程系統", version=APP_VERSION, lifespan=lifespan)

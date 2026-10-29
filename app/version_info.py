@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.29.1"
+APP_VERSION = "v2026.10.29.2"
 APP_RELEASED_AT = "2026-10-29"
-APP_HEADLINE = "ST 庫存頁籤改為即時讀取正航 ERP 庫存"
+APP_HEADLINE = "缺料 / 補料 / 發料改用正航 ERP 的 ST 庫存"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存改以正航 ERP 為準",
+        "items": [
+            "缺料、補料、發料、排程、BOM 使用的 ST 庫存快照，改為由正航 ERP（ST 倉 001）更新，取代手動上傳 Excel。",
+            "側邊欄新增主要按鈕「從正航更新」；Excel 上傳保留為小的備援按鈕。ST 庫存卡片顯示來源、最後同步時間、料號筆數，同步失敗時顯示錯誤。",
+            "從正航更新等同上傳一份全新 Excel：整批取代快照、寫入 ST 變動紀錄（reason 同為 st_inventory_upload，actor 為 erp_sync）。ERP 庫存已是實際庫存，不會再重複扣帳。",
+            "後端每 60 分鐘自動同步一次（環境變數 ERP_ST_AUTO_SYNC_MINUTES，0 = 關閉，最小 5）；盤點進行中會略過。",
+            "ERP 連不上、回傳 0 筆、或筆數少於現有快照 50% 時，完全不更動本機快照並顯示錯誤，不會清空資料。",
+            "新增 POST /api/system/st-inventory/erp-sync；/api/system/st-inventory/info 增加 source、last_sync_error 等欄位。",
+        ],
+    },
     {
         "title": "ST 庫存改讀正航 ERP",
         "items": [

@@ -27,6 +27,7 @@ def is_inventory_mutation_request(method: str, path: str) -> bool:
         "/api/main-file/cell",
         "/api/main-file/vendor",
         "/api/system/st-inventory/upload",
+        "/api/system/st-inventory/erp-sync",
         "/api/schedule/batch-dispatch",
         "/api/schedule/update-and-commit-drafts",
         "/api/schedule/supplement-part",

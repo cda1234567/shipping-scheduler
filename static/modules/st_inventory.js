@@ -1,4 +1,4 @@
-import { apiFetch, apiJson, apiPatch, showToast, esc } from "./api.js";
+import { apiFetch, apiJson, apiPatch, apiPost, showToast, esc } from "./api.js";
 
 let _initialized = false;
 let _busy = false;
@@ -21,6 +21,10 @@ export async function initStInventory({ onChanged, autoLoad = true } = {}) {
   document.getElementById("btn-upload-st-inventory")?.addEventListener("click", () => {
     if (_busy) return;
     document.getElementById("st-inventory-file-input")?.click();
+  });
+  document.getElementById("btn-erp-sync-st-inventory")?.addEventListener("click", () => {
+    if (_busy) return;
+    void handleErpSync();
   });
   document.getElementById("btn-refresh-st-inventory")?.addEventListener("click", () => {
     if (_busy) return;
@@ -376,6 +380,7 @@ function formatSignedQty(value) {
 function setBusy(nextBusy) {
   _busy = Boolean(nextBusy);
   [
+    "btn-erp-sync-st-inventory",
     "btn-upload-st-inventory",
     "btn-refresh-st-inventory",
   ].forEach(id => {
@@ -389,21 +394,26 @@ function renderInfo(info) {
   const metaEl = document.getElementById("st-inventory-meta");
   if (!statusEl || !metaEl) return;
 
+  const syncError = String(info?.last_sync_error || "").trim();
+  const errorLine = syncError
+    ? `<br><span class="st-inventory-sync-error">${esc(`正航同步失敗：${syncError}`)}</span>`
+    : "";
+
   if (!info?.loaded) {
-    statusEl.className = "file-status";
-    statusEl.innerHTML = "<span>尚未載入 ST 庫存</span>";
-    metaEl.innerHTML = '<span>支援 .xlsx / .xls / .xlsm</span>';
+    statusEl.className = syncError ? "file-status warn" : "file-status";
+    statusEl.innerHTML = `<span>尚未載入 ST 庫存</span>${errorLine}`;
+    metaEl.innerHTML = '<span>請按「從正航更新」（備援可上傳 .xlsx / .xls / .xlsm）</span>';
     return;
   }
 
-  const lines = [];
-  if (info.filename) lines.push(esc(info.filename));
+  const isErp = info.source === "erp";
+  const lines = [`來源：${esc(isErp ? "正航 ERP" : (info.filename || "Excel 上傳"))}`];
   if (Number(info.part_count || 0) > 0) lines.push(`${Number(info.part_count)} 筆料號`);
-  statusEl.className = "file-status ok";
-  statusEl.innerHTML = lines.map(line => `<span>${line}</span>`).join("<br>");
+  statusEl.className = syncError ? "file-status warn" : "file-status ok";
+  statusEl.innerHTML = lines.map(line => `<span>${line}</span>`).join("<br>") + errorLine;
 
   const meta = [];
-  if (info.loaded_at) meta.push(`最後匯入 ${formatDateTime(info.loaded_at)}`);
+  if (info.loaded_at) meta.push(`${isErp ? "最後同步" : "最後匯入"} ${formatDateTime(info.loaded_at)}`);
   meta.push("供缺料 / 補料判斷使用");
   metaEl.innerHTML = meta.map(line => `<span>${esc(line)}</span>`).join("<br>");
 }
@@ -417,7 +427,34 @@ function renderError(error) {
     statusEl.innerHTML = `<span>${esc(message)}</span>`;
   }
   if (metaEl) {
-    metaEl.innerHTML = '<span>請重新整理或重新上傳 ST 庫存檔</span>';
+    metaEl.innerHTML = '<span>請重新整理，或按「從正航更新」</span>';
+  }
+}
+
+async function handleErpSync() {
+  setBusy(true);
+  const statusEl = document.getElementById("st-inventory-status");
+  if (statusEl) {
+    statusEl.className = "file-status";
+    statusEl.innerHTML = "<span>從正航更新 ST 庫存中...</span>";
+  }
+  try {
+    const result = await apiPost("/api/system/st-inventory/erp-sync", {});
+    await refreshStInventoryPanel();
+    showToast(`ST 庫存已從正航更新（${result.part_count} 筆）`, { tone: "success" });
+    if (_onChanged) {
+      try {
+        await _onChanged(result);
+      } catch (error) {
+        showToast(`ST 庫存已更新，但排程刷新失敗：${error.message}`, { tone: "error", sticky: true });
+      }
+    }
+  } catch (error) {
+    // 後端失敗時本機快照不變；重新讀 info 讓卡片顯示來源與錯誤
+    await refreshStInventoryPanel();
+    showToast(`從正航更新失敗：${error.message}`, { tone: "error", sticky: true });
+  } finally {
+    setBusy(false);
   }
 }
 

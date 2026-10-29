@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
@@ -27,7 +28,8 @@ from ..services.st_package_breakdowns import (
     build_missing_moq_package_rows,
     save_missing_moq_package_text,
 )
-from ..services.st_inventory import parse_st_inventory_file
+from ..services import erp_stock, st_erp_sync
+from ..services.st_inventory import ST_SOURCE_EXCEL, ST_SOURCE_ERP, apply_st_inventory_snapshot, parse_st_inventory_file
 from ..version_info import get_app_meta
 
 router = APIRouter()
@@ -87,13 +89,16 @@ async def upload_st_inventory(file: UploadFile = File(...)):
         dest.unlink(missing_ok=True)
         raise HTTPException(400, f"ST 庫存解析失敗：{error}") from error
 
-    db.save_st_inventory_snapshot(parsed["stock"], parsed["descriptions"])
-    loaded_at = local_now().isoformat(timespec="seconds")
-    db.set_setting("st_inventory_file_path", str(dest))
-    db.set_setting("st_inventory_filename", file.filename or dest.name)
-    db.set_setting("st_inventory_loaded_at", loaded_at)
-    db.set_setting("st_inventory_part_count", str(parsed["part_count"]))
-    db.log_activity("st_inventory_upload", f"{file.filename}, {parsed['part_count']} 筆")
+    filename = file.filename or dest.name
+    applied = apply_st_inventory_snapshot(
+        parsed["stock"],
+        parsed["descriptions"],
+        source=ST_SOURCE_EXCEL,
+        filename=filename,
+        file_path=str(dest),
+        activity_detail=f"{file.filename}, {parsed['part_count']} 筆",
+    )
+    loaded_at = applied["loaded_at"]
 
     return {
         "ok": True,
@@ -104,15 +109,31 @@ async def upload_st_inventory(file: UploadFile = File(...)):
     }
 
 
+@router.post("/system/st-inventory/erp-sync")
+async def sync_st_inventory_from_erp():
+    """從正航 ERP 更新 ST 庫存快照（等同上傳一份新 Excel）。失敗時不動任何本機資料。"""
+    try:
+        return await run_in_threadpool(st_erp_sync.sync_st_inventory_from_erp)
+    except st_erp_sync.StErpSyncError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+
 @router.get("/system/st-inventory/info")
 async def get_st_inventory_info():
     file_path = str(db.get_setting("st_inventory_file_path") or "").strip()
     filename = str(db.get_setting("st_inventory_filename") or "").strip()
+    source = str(db.get_setting("st_inventory_source") or "").strip() or ST_SOURCE_EXCEL
     return {
         "loaded": bool(filename and db.get_st_inventory_snapshot()),
         "filename": filename or (Path(file_path).name if file_path else ""),
         "part_count": int(db.get_setting("st_inventory_part_count", "0")),
         "loaded_at": db.get_setting("st_inventory_loaded_at"),
+        "source": source,
+        "source_label": "正航 ERP" if source == ST_SOURCE_ERP else "Excel 上傳",
+        "last_sync_error": str(db.get_setting("st_inventory_last_sync_error") or ""),
+        "last_sync_error_at": str(db.get_setting("st_inventory_last_sync_error_at") or ""),
+        "erp_configured": erp_stock.is_configured(),
+        "auto_sync_minutes": st_erp_sync.parse_auto_sync_minutes(),
     }
 
 

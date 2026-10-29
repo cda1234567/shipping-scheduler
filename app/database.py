@@ -1028,7 +1028,11 @@ def get_snapshot() -> dict[str, dict]:
     }
 
 
-def save_st_inventory_snapshot(stock: dict[str, float], descriptions: dict[str, str] | None = None):
+def save_st_inventory_snapshot(
+    stock: dict[str, float],
+    descriptions: dict[str, str] | None = None,
+    actor: str = "system",
+):
     normalized_stock = {
         str(part).strip().upper(): float(qty or 0)
         for part, qty in (stock or {}).items()
@@ -1062,7 +1066,7 @@ def save_st_inventory_snapshot(stock: dict[str, float], descriptions: dict[str, 
                     old_qty=old_qty,
                     new_qty=new_qty,
                     reason="st_inventory_upload",
-                    actor="system",
+                    actor=actor,
                     changed_at=loaded_at,
                 )
 

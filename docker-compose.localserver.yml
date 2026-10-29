@@ -19,6 +19,7 @@ services:
       ERP_SQL_TIMEOUT: ${ERP_SQL_TIMEOUT:-5}
       ERP_SQL_ENCRYPTION: ${ERP_SQL_ENCRYPTION:-off}
       ERP_SQL_TDS_VERSION: ${ERP_SQL_TDS_VERSION:-7.3}
+      ERP_ST_AUTO_SYNC_MINUTES: ${ERP_ST_AUTO_SYNC_MINUTES:-60}
     volumes:
       - scheduler-data:/app/data
       - D:/Download/excel:/app/user_downloads

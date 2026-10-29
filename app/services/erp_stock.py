@@ -1,8 +1,8 @@
 """正航 ERP（SQL Server）ST 倉庫存讀取。
 
 只做唯讀 SELECT，連線設定一律來自環境變數，不寫死帳密。
-注意：此模組僅供「ST 庫存」頁籤顯示；缺料 / 發料 / 排程計算仍使用
-原本的 Excel 快照（st_inventory_snapshot），不受此處影響。
+此模組只負責讀取；缺料 / 發料 / 排程計算讀的是本機快照 st_inventory_snapshot，
+由 st_erp_sync.sync_st_inventory_from_erp() 把這裡讀到的資料整批寫入快照。
 """
 from __future__ import annotations
 

@@ -70,13 +70,13 @@
       <h3>ST 庫存</h3>
       <div id="st-inventory-status" class="file-status">尚未載入 ST 庫存</div>
       <div id="st-inventory-meta" class="sidebar-meta">
-        <span>供缺料 / 補料判斷使用</span><br>
-        <span>支援 .xlsx / .xls / .xlsm</span>
+        <span>供缺料 / 補料判斷使用</span>
       </div>
       <div style="display:flex;gap:6px">
-        <button class="btn btn-secondary btn-sm" style="flex:1" id="btn-upload-st-inventory">上傳 ST 庫存</button>
+        <button class="btn btn-primary btn-sm" style="flex:1" id="btn-erp-sync-st-inventory" title="從正航 ERP 讀取 ST 倉庫存並更新">從正航更新</button>
         <button class="btn btn-secondary btn-sm" id="btn-refresh-st-inventory" title="重新讀取">↻</button>
       </div>
+      <button class="btn btn-secondary btn-sm btn-full" style="margin-top:4px;font-size:11px;opacity:.8" id="btn-upload-st-inventory" title="備援：ERP 無法使用時，手動上傳 ST 庫存 Excel">改用 Excel 上傳（備援）</button>
       <input type="file" id="st-inventory-file-input" accept=".xlsx,.xls,.xlsm">
     </div>
 

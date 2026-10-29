@@ -1038,6 +1038,9 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('document.getElementById("btn-upload-st-inventory")', st_module)
         self.assertIn('document.getElementById("st-inventory-file-input")', st_module)
         self.assertIn("ST 庫存已匯入", st_module)
+        self.assertIn('id="btn-erp-sync-st-inventory"', index_html)
+        self.assertIn("從正航更新", index_html)
+        self.assertIn('apiPost("/api/system/st-inventory/erp-sync"', st_module)
 
         self.assertIn(".sidebar-meta", stylesheet)
         self.assertIn("body.desktop-dark .sidebar-meta", stylesheet)
