@@ -2,6 +2,7 @@ import { apiJson, apiFetch, apiPost, apiPatch, apiPut, showToast, hideToast, esc
 import { calculate } from "./calculator.js";
 import { isOrderScopedPart } from "./shortage_rules.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
+import { openShortagePurchase } from "./shortage_po.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _rows = [];
@@ -83,6 +84,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-create-folder")?.addEventListener("click", handleCreateFolder);
     document.getElementById("btn-completed-download-drafts")?.addEventListener("click", handleCompletedDownloadDrafts);
     document.getElementById("btn-completed-gen-dispatch")?.addEventListener("click", handleCompletedGenerateDispatch);
+    document.getElementById("btn-completed-shortage-po")?.addEventListener("click", handleCompletedShortagePurchase);
     document.getElementById("completed-select-all")?.addEventListener("change", handleCompletedSelectAllChange);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
     document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
@@ -4223,10 +4225,10 @@ async function handleModalWriteMain() {
     await new Promise(resolve => setTimeout(resolve, 200));
     const shortageCount = (result.shortages || []).length;
     if (shortageCount > 0) {
-      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 5000 });
+      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件，${shortageCount} 筆缺料待補`, { tone: "success", duration: 8000, action: shortagePurchaseToastAction(targetOrderIds) });
       showPostDispatchShortages(result.shortages);
     } else {
-      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success" });
+      showDispatchReconcileToast(result, `已寫入主檔 ${result.count} 筆，merge ${result.merged_parts} 個料件`, { tone: "success", duration: 8000, action: shortagePurchaseToastAction(targetOrderIds) });
     }
     if (isCalcWorkspaceActive()) closeShortageModal();
   } catch (error) {
@@ -4362,6 +4364,7 @@ function updateCompletedToolbarState() {
   }
   document.getElementById("btn-completed-download-drafts")?.toggleAttribute("disabled", count === 0);
   document.getElementById("btn-completed-gen-dispatch")?.toggleAttribute("disabled", count === 0);
+  document.getElementById("btn-completed-shortage-po")?.toggleAttribute("disabled", count === 0);
 }
 
 function handleCompletedSelectAllChange(event) {
@@ -4651,10 +4654,24 @@ async function handleCompletedGenerateDispatch() {
         timeout: 600000,
       },
     );
-    showDownloadToast(result, "發料單");
+    showDownloadToast(result, "發料單", { duration: 8000, action: shortagePurchaseToastAction(orderIds) });
   } catch (error) {
     showToast("已發料發料單生成失敗：" + error.message, { tone: "error", sticky: true });
   }
+}
+
+// 提示「前往缺料採購」的 toast 動作（不阻擋原流程）
+function shortagePurchaseToastAction(orderIds) {
+  return { label: "前往缺料採購", onClick: () => { hideToast(); void openShortagePurchase(orderIds); } };
+}
+
+function handleCompletedShortagePurchase() {
+  const orderIds = getCompletedCheckedOrderIds();
+  if (!orderIds.length) {
+    showToast("請先勾選要採購缺料的已發料訂單");
+    return;
+  }
+  void openShortagePurchase(orderIds);
 }
 
 async function handleCreateFolder() {

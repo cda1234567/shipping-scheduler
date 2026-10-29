@@ -306,6 +306,11 @@ async function refreshHistory() {
   }
 }
 
+// 供缺料採購在寫入後更新開採購單的歷史紀錄
+export function refreshErpPurchaseHistory() {
+  return refreshHistory();
+}
+
 export async function onErpPurchaseTabActivated() {
   await Promise.all([loadConfig(), refreshHistory()]);
 }

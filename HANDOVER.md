@@ -67,11 +67,21 @@
 
 ### 正航採購單寫入（開採購單頁籤）
 
-- 目標公司：`ERP_WRITE_TARGET`（預設 `CHIComp01` 測試；正式為 `CHIComp03`）。頁面徽章會顯示目前寫入哪一家。
-- 公司1：沿用 `ERP_SQL_TEST_USER / ERP_SQL_TEST_PASSWORD / ERP_SQL_TEST_SERVER`（`ERP_SQL_TEST_DB` 預設 CHIComp01）。
-- 公司3：另建 `D:/secrets/shipping-erp-comp03-write.env`，放 `ERP_SQL_WRITE_USER_CHICOMP03`、`ERP_SQL_WRITE_PASSWORD_CHICOMP03`（可選 `ERP_SQL_WRITE_SERVER_CHICOMP03`，格式 `host,port`）。
+- 目標公司：`ERP_WRITE_TARGET`（預設 `CHIComp02` 測試；正式為 `CHIComp03`）。頁面徽章會顯示目前寫入哪一家。
+- 測試公司 = 公司1、公司2（`TEST_TARGETS`）。兩家共用 `ERP_SQL_TEST_USER / ERP_SQL_TEST_PASSWORD / ERP_SQL_TEST_SERVER`；**資料庫一律是 `ERP_WRITE_TARGET`**，`ERP_SQL_TEST_DB` / `ERP_SQL_TEST_DB_ALT` 已不使用。測試帳號絕不會用在公司3（或任何非測試公司）。
+- 帳密查找順序：`ERP_SQL_WRITE_USER_/PASSWORD_/SERVER_<TARGET>`（例 `..._CHICOMP03`，server 格式 `host,port`）→ 僅測試公司才退回 `ERP_SQL_TEST_*`。公司3：另建 `D:/secrets/shipping-erp-comp03-write.env` 放公司3專用帳密。
 - **切換到公司3**：設 `ERP_WRITE_TARGET=CHIComp03` 後重建容器；先用預覽確認徽章為紅色「寫入：公司3（正式）」。寫入公司3時缺主檔不會自動複製（直接報錯）；寫入只新增、不改不刪，且本系統無法修改 / 刪除已開的單。
+- **補主檔（只限測試公司，從公司3複製）**：依序 comCustomer（供應商）→ comProductClass（各料號的 ClassID）→ comProduct → comWareHouse → comDepartment（範本單 DepartID）→ comPerson（採購員 SalesMan、製單人 MakerID）。類別 / 部門 / 人員來源也沒有就略過；供應商 / 料號 / 倉庫來源沒有則報錯。INSERT 欄位取自目標庫 `sys.columns`。
 - 本機紀錄在 SQLite `erp_purchase_orders`；帳密一律不進 repo。
+
+### 缺料採購（缺料採購頁籤）
+
+- 流程：寫入主檔 / 生成發料單後 → 「缺料採購」頁籤（或已發料頁籤的「缺料採購」按鈕、完成後 toast 的「前往缺料採購」）→ 選訂單（預設最近一次寫入主檔那批：發料時間距最新一筆 10 分鐘內）→ 產生缺料清單 → 勾選 → 預覽採購單 → 確認寫入正航。
+- 需求量來自 `dispatch.build_dispatch_groups`（與發料單同一套計算，item 多帶 `need_qty`、group 多帶 `order_id` / `ship_date`）。缺料 = max(0, 需求 − max(ST 現有, 0) − 在途量)；在途量用低庫存提醒的 `_query_on_order`，ERP 連不上時當 0 並在畫面出現警告。建議數量 = ceil(缺)。
+- 供應商：正航料號主檔 `MajorSupplier`（須存在於 comCustomer Flag=2）→ 最近一張採購單的供應商 → 未設定（需手動填，未填不能勾）。單價預設最近採購價。同供應商勾選的料合併成一張採購單，一次最多 20 張。
+- 預計進貨日以最早需要該料的訂單出貨日為準：打件 = 出貨日 −1 個月（取月底）後，取不晚於該日的最近一個 26 日；後段 = 出貨日 − 21 天。早於今天標「遲了」（仍可寫）。
+- 打件 / 後段自動判斷（`shortage_purchase.classify_part`）：料號前兩碼 EC / IC / UC / PB，或品名含 0201 0402 0603 0805 1206 SMD SMT SOT QFN QFP BGA SOP TSSOP PCB 電容 電阻 電感 → 打件；其餘（OC / PK / SP / AC / RC / CM / CF / SS / GH …）→ 後段。人工指定存在 SQLite `part_purchase_categories`，優先於自動判斷。
+- API（`/api/shortage-po`）：`GET /list?order_ids=1,2` 缺料清單、`GET /orders` 可選訂單 + `latest_batch_ids`、`POST /category` 存類別、`POST /preview`（`{groups}`，預估單號依序遞增）、`POST /create`（需 `confirm:true`，逐張寫入、單張失敗不中斷，活動日誌記成功 / 失敗張數）。POST 皆需編輯登入。
 
 ## 7. 跟 Andy 的合作方式
 

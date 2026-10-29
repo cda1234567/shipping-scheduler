@@ -85,9 +85,14 @@ class FakeCursor:
             return self._set([(c.max_bill,)])
         if s.startswith("SELECT 1 FROM ordBillSub"):
             return self._set([(1,)] if params[0] in c.sub_bills else [])
-        m = re.match(r"SELECT 1 FROM (comCustomer|comProduct|comWareHouse)", s)
+        m = re.match(r"SELECT 1 FROM (comCustomer|comProductClass|comProduct|comWareHouse|comDepartment|comPerson)", s)
         if m:
-            return self._set([(1,)] if params[0] in c.master_ids[m.group(1)] else [])
+            c.master_checks.append((m.group(1), params[0]))
+            return self._set([(1,)] if params[0] in c.master_ids.get(m.group(1), set()) else [])
+        m = re.match(r"SELECT \* FROM (comProductClass|comDepartment|comPerson)", s)
+        if m:
+            key_col = {"comProductClass": "ClassID", "comDepartment": "DepartID", "comPerson": "PersonID"}[m.group(1)]
+            return self._dicts({key_col: params[0], "Name": "n"} if params[0] in c.master_rows.get(m.group(1), set()) else None)
         if s.startswith("SELECT * FROM comCustomer"):
             return self._dicts(CUSTOMER if params[0] == "P0175" else None)
         if s.startswith("SELECT * FROM comProduct"):
@@ -132,7 +137,10 @@ class FakeConn:
         self.max_sql = ""
         self.sub_bills = set()
         self.columns = {}
-        self.master_ids = {"comCustomer": {"P0175"}, "comProduct": {"AC-40838B"}, "comWareHouse": {"001"}}
+        self.master_ids = {"comCustomer": {"P0175"}, "comProduct": {"AC-40838B"}, "comWareHouse": {"001"},
+                           "comProductClass": set(), "comDepartment": set(), "comPerson": {"017"}}
+        self.master_rows = {"comProductClass": {"C1"}, "comDepartment": {"D1"}, "comPerson": {"017"}}  # 來源有的
+        self.master_checks = []
         self.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容"}}
         self.main_template = main_tpl()
         self.sub_templates = {"AC-40838B": sub_tpl()}
@@ -156,7 +164,9 @@ def make_target(db_name="CHIComp01"):
     # 目標欄位順序刻意與來源列順序相反
     t.columns = {"ordBillMain": list(reversed(MAIN_COLS)), "ordBillSub": list(reversed(SUB_COLS)),
                  "comCustomer": list(CUSTOMER), "comProduct": ["ProdID", "ProdName"],
-                 "comWareHouse": ["WareHouseID", "WareHouseName"]}
+                 "comWareHouse": ["WareHouseID", "WareHouseName"],
+                 "comProductClass": ["ClassID", "Name"], "comDepartment": ["DepartID", "Name"],
+                 "comPerson": ["PersonID", "Name"]}
     return t
 
 
@@ -239,6 +249,7 @@ class PureTests(unittest.TestCase):
 
     def test_labels(self):
         self.assertEqual(ep.target_label("CHIComp01"), "公司1（測試）")
+        self.assertEqual(ep.target_label("CHIComp02"), "公司2（測試）")
         self.assertEqual(ep.target_label("CHIComp03"), "公司3（正式）")
         self.assertEqual(ep.target_label("CHIComp05"), "公司5")
 
@@ -271,10 +282,38 @@ class PureTests(unittest.TestCase):
 
 
 class CredentialTests(EnvCase):
-    def test_test_login_fallback(self):
-        creds = ep.write_credentials("CHIComp01")
-        self.assertEqual((creds["user"], creds["database"]), ("tester", "CHIComp01"))
+    def test_test_login_used_for_both_test_targets(self):
+        for target in ("CHIComp01", "CHIComp02"):
+            creds = ep.write_credentials(target)
+            self.assertEqual((creds["user"], creds["database"]), ("tester", target))
+        # ERP_SQL_TEST_DB / _ALT 完全不影響：資料庫永遠是 target
+        with patch.dict(os.environ, {"ERP_SQL_TEST_DB": "CHIComp01", "ERP_SQL_TEST_DB_ALT": "CHIComp09"}):
+            self.assertEqual(ep.write_credentials("CHIComp02")["database"], "CHIComp02")
+            self.assertIsNone(ep.write_credentials("CHIComp09"))
+        with patch.dict(os.environ, {"ERP_SQL_TEST_DB": "CHIComp03"}):
+            self.assertIsNone(ep.write_credentials("CHIComp03"))
+            self.assertIsNotNone(ep.write_credentials("CHIComp01"))
+
+    def test_test_login_never_used_for_production(self):
         self.assertIsNone(ep.write_credentials("CHIComp03"))
+        self.assertIsNone(ep.write_credentials("CHIComp05"))
+
+    def test_test_server_fallback(self):
+        with patch.dict(os.environ, {"ERP_SQL_TEST_SERVER": "10.1.1.1,1444"}):
+            c = ep.write_credentials("CHIComp02")
+        self.assertEqual((c["server"], c["port"]), ("10.1.1.1", 1444))
+
+    def test_per_target_creds_win_over_test_login(self):
+        with patch.dict(os.environ, {"ERP_SQL_WRITE_USER_CHICOMP02": "w2", "ERP_SQL_WRITE_PASSWORD_CHICOMP02": "pw2"}):
+            self.assertEqual(ep.write_credentials("CHIComp02")["user"], "w2")
+            self.assertEqual(ep.write_credentials("CHIComp01")["user"], "tester")
+
+    def test_default_target_is_comp02(self):
+        with patch.dict(os.environ):
+            os.environ.pop("ERP_WRITE_TARGET", None)
+            self.assertEqual(ep.get_target(), "CHIComp02")
+            cfg = ep.get_config()
+            self.assertEqual((cfg["target"], cfg["label"], cfg["is_test"]), ("CHIComp02", "公司2（測試）", True))
 
     def test_specific_write_creds_and_server(self):
         with patch.dict(os.environ, {"ERP_SQL_WRITE_USER_CHICOMP03": "w", "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "pw",
@@ -287,8 +326,8 @@ class CredentialTests(EnvCase):
         self.assertTrue(cfg["available"] and cfg["is_test"])
         self.assertNotIn("secret-pw", str(cfg))
         self.assertNotIn("tester", str(cfg))
-        self.assertEqual([t["db"] for t in cfg["targets"]], ["CHIComp01", "CHIComp03"])
-        self.assertEqual([t["available"] for t in cfg["targets"]], [True, False])
+        self.assertEqual([t["db"] for t in cfg["targets"]], ["CHIComp01", "CHIComp02", "CHIComp03"])
+        self.assertEqual([t["available"] for t in cfg["targets"]], [True, True, False])
         with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03"}):
             cfg = ep.get_config()
             self.assertFalse(cfg["available"])
@@ -428,16 +467,114 @@ class WriteFlowCase(EnvCase):
         with self.assertRaises(ep.PoSchemaError):
             ep.preview_po(REQ)
 
+    def test_master_specs_order_and_skips(self):
+        specs = ep._master_specs("P1", ["A", "B"], "001", ["C1", "", "C1"], "D1", ["017", "017", ""])
+        self.assertEqual([(s["table"], s["key"]) for s in specs], [
+            ("comCustomer", "P1"), ("comProductClass", "C1"), ("comProduct", "A"), ("comProduct", "B"),
+            ("comWareHouse", "001"), ("comDepartment", "D1"), ("comPerson", "017")])
+        self.assertEqual([s["required"] for s in specs], [True, False, True, True, True, False, False])
+        bare = ep._master_specs("P1", ["A"], "001")
+        self.assertEqual([s["table"] for s in bare], ["comCustomer", "comProduct", "comWareHouse"])
+
     def test_masters_copied_into_test_company_only(self):
-        self.tgt.master_ids = {"comCustomer": set(), "comProduct": set(), "comWareHouse": set()}
+        self.tgt.master_ids = {k: set() for k in ("comCustomer", "comProduct", "comWareHouse", "comProductClass", "comDepartment", "comPerson")}
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容", "ClassID": "C1"}}
+        self.src.main_template = main_tpl(DepartID="D1")
+        self.src.master_ids.update(comProductClass={"C1"}, comDepartment={"D1"}, comPerson={"017"})
+        self.tgt.columns["ordBillMain"] = list(reversed(MAIN_COLS + ["DepartID"]))
+        self.tgt.columns["comProduct"] = ["ProdID", "ProdName", "ClassID"]
         out = ep.preview_po(REQ)
-        self.assertEqual([(m["table"], m["key"]) for m in out["masters_to_copy"]],
-                         [("comCustomer", "P0175"), ("comProduct", "AC-40838B"), ("comWareHouse", "001")])
+        self.assertEqual([(m["table"], m["key"]) for m in out["masters_to_copy"]], [
+            ("comCustomer", "P0175"), ("comProductClass", "C1"), ("comProduct", "AC-40838B"),
+            ("comWareHouse", "001"), ("comDepartment", "D1"), ("comPerson", "017")])
         self.assertEqual(self.tgt.inserted, [])
         ep.create_po({**REQ, "confirm": True})
         tables = [i[0] for i in self.tgt.inserted]
-        self.assertEqual(tables, ["comCustomer", "comProduct", "comWareHouse", "ordBillMain", "ordBillSub"])
+        self.assertEqual(tables, ["comCustomer", "comProductClass", "comProduct", "comWareHouse",
+                                  "comDepartment", "comPerson", "ordBillMain", "ordBillSub"])
         self.assertEqual(self.tgt.commits, 1)
+
+    def test_optional_masters_missing_in_source_are_skipped(self):
+        self.tgt.master_ids = {k: set() for k in ("comCustomer", "comProduct", "comWareHouse", "comProductClass", "comDepartment", "comPerson")}
+        self.src.master_rows = {"comProductClass": set(), "comDepartment": set(), "comPerson": set()}
+        self.src.master_ids.update(comProductClass=set(), comDepartment=set(), comPerson=set())
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容", "ClassID": "C1"}}
+        self.src.main_template = main_tpl(DepartID="D1")
+        self.tgt.columns["ordBillMain"] = list(reversed(MAIN_COLS + ["DepartID"]))
+        self.tgt.columns["comProduct"] = ["ProdID", "ProdName", "ClassID"]
+        out = ep.preview_po(REQ)
+        self.assertEqual([m["table"] for m in out["masters_to_copy"]], ["comCustomer", "comProduct", "comWareHouse"])
+        ep.create_po({**REQ, "confirm": True})
+        self.assertEqual([i[0] for i in self.tgt.inserted],
+                         ["comCustomer", "comProduct", "comWareHouse", "ordBillMain", "ordBillSub"])
+
+    def test_required_master_missing_in_source_still_fails(self):
+        self.tgt.master_ids["comWareHouse"] = set()  # 來源 FakeCursor 的倉庫一律存在 → 改掉來源行為
+        orig = FakeCursor.execute
+
+        def execute(cur, sql, params=None):
+            if " ".join(sql.split()).startswith("SELECT * FROM comWareHouse"):
+                return cur._dicts(None)
+            return orig(cur, sql, params)
+
+        with patch.object(FakeCursor, "execute", execute):
+            with self.assertRaises(ep.PoValidationError) as cm:
+                ep.create_po({**REQ, "confirm": True})
+        self.assertIn("來源公司也找不到", str(cm.exception))
+        self.assertEqual((self.tgt.inserted, self.tgt.commits), ([], 0))
+
+    def test_copy_masters_refused_for_production_and_source(self):
+        with patch.dict(os.environ, {"ERP_SQL_WRITE_USER_CHICOMP03": "w", "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "pw"}):
+            self.assertFalse(ep._can_copy_masters("CHIComp03", "CHIComp03"))
+            self.assertFalse(ep._can_copy_masters("CHIComp03", "CHIComp01"))
+            self.assertTrue(ep._can_copy_masters("CHIComp02", "CHIComp03"))
+            self.assertFalse(ep._can_copy_masters("CHIComp02", "CHIComp02"))
+            with self.assertRaises(ep.PoValidationError):
+                ep._copy_masters(self.src.cursor(), self.tgt.cursor(),
+                                 [{"table": "comCustomer", "label": "供應商", "key": "P0175",
+                                   "where": "Flag = 2 AND ID = %s", "params": ("P0175",), "required": True}],
+                                 "CHIComp03")
+        self.assertEqual(self.tgt.inserted, [])
+
+    def test_comp02_target_writes_with_test_login(self):
+        self.tgt = make_target("CHIComp02")
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp02"}):
+            res = ep.create_po({**REQ, "confirm": True})
+        self.assertEqual((res["target"], res["target_label"], res["is_test"]), ("CHIComp02", "公司2（測試）", True))
+        self.assertEqual(self.connect_calls, ["CHIComp02"])
+
+    def test_preview_many_sequential_bill_numbers_and_per_item_errors(self):
+        self.tgt.max_bill = "PO-20261029004"
+        reqs = [REQ, {**REQ, "supplier_id": "NOPE"}, {**REQ, "remark": "第二張"}, {**REQ, "lines": []}]
+        out = ep.preview_many(reqs)
+        self.assertEqual([r["ok"] for r in out], [True, False, True, False])
+        self.assertEqual([r.get("bill_no") for r in out if r["ok"]], ["PO-20261029005", "PO-20261029006"])
+        self.assertTrue(all(r["bill_no_estimated"] for r in out if r["ok"]))
+        self.assertIn("NOPE", out[1]["error"])
+        self.assertEqual(out[0]["lines"][0]["part_number"], "AC-40838B")
+        self.assertEqual(out[0]["totals"]["total"], 105.0)
+        self.assertEqual(out[0]["missing_masters"], [])
+        # 只開一個寫入連線、唯讀（rollback、不 commit、不寫入）
+        self.assertEqual(self.connect_calls, ["CHIComp01"])
+        self.assertEqual((self.tgt.inserted, self.tgt.commits, self.tgt.rollbacks), ([], 0, 1))
+        self.assertTrue(self.tgt.closed)
+        self.assertNotIn("UPDLOCK", self.tgt.max_sql)
+
+    def test_preview_many_reports_missing_master_labels(self):
+        self.tgt.master_ids["comProduct"] = set()
+        out = ep.preview_many([REQ])
+        self.assertEqual(out[0]["missing_masters"], ["料號 AC-40838B"])
+
+    def test_preview_many_bill_overflow_is_per_item(self):
+        self.tgt.max_bill = "PO-20261029998"
+        out = ep.preview_many([REQ, REQ])
+        self.assertEqual([r["ok"] for r in out], [True, False])
+        self.assertEqual(out[0]["bill_no"], "PO-20261029999")
+
+    def test_preview_many_unavailable(self):
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03"}):
+            with self.assertRaises(ErpNotConfigured):
+                ep.preview_many([REQ])
 
     def test_never_copy_into_comp03(self):
         self.tgt = make_target("CHIComp03")

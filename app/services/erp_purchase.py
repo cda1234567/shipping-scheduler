@@ -2,7 +2,7 @@
 
 與 erp_stock.py（唯讀）不同，這裡會「寫入」ERP，所以規則很保守：
 - 只 INSERT 新單據 / 缺少的主檔，絕不 UPDATE / DELETE 既有資料。
-- 寫入目標公司由 ERP_WRITE_TARGET 指定（預設 CHIComp01 測試公司），帳密只放環境變數。
+- 寫入目標公司由 ERP_WRITE_TARGET 指定（預設 CHIComp02 測試公司），帳密只放環境變數。
 - INSERT 一律明列欄位，欄位清單取自「目標」資料庫的 sys.columns（兩家公司欄位順序不同）。
 - 整張單（含補主檔）在同一個 transaction 內，寫完讀回比對後才 commit，任何錯誤即 rollback。
 - 範本單（付款條件 / 地址等）取自來源公司（ERP_SQL_DATABASE，預設 CHIComp03）的最近一張採購單。
@@ -26,10 +26,13 @@ from .erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 from .local_time import local_now
 
 TARGET_RE = re.compile(r"^CHIComp\d\d$")
-KNOWN_TARGETS = ["CHIComp01", "CHIComp03"]
-PRODUCTION_TARGET = "CHIComp03"  # 正式公司：絕不自動複製主檔進去
+KNOWN_TARGETS = ["CHIComp01", "CHIComp02", "CHIComp03"]
+TEST_TARGETS = {"CHIComp01", "CHIComp02"}  # 測試公司：可共用 ERP_SQL_TEST_* 帳密、可從來源複製主檔
+PRODUCTION_TARGET = "CHIComp03"  # 正式公司：絕不自動複製主檔進去、絕不使用測試帳密
+DEFAULT_TARGET = "CHIComp02"
 TAX_RATE = Decimal("0.05")
 MAX_LINES = 50
+MAX_PREVIEW_GROUPS = 20
 DEFAULT_SALESMAN = "017"
 DEFAULT_MAKER = "Andy"
 DEFAULT_MAKER_ID = "017"
@@ -56,6 +59,8 @@ def _env(name: str, default: str = "") -> str:
 def target_label(target: str) -> str:
     if target == "CHIComp01":
         return "公司1（測試）"
+    if target == "CHIComp02":
+        return "公司2（測試）"
     if target == "CHIComp03":
         return "公司3（正式）"
     m = re.match(r"^CHIComp(\d\d)$", target or "")
@@ -63,9 +68,9 @@ def target_label(target: str) -> str:
 
 
 def get_target() -> str:
-    target = _env("ERP_WRITE_TARGET", "CHIComp01")
+    target = _env("ERP_WRITE_TARGET", DEFAULT_TARGET)
     if not TARGET_RE.match(target):
-        raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp01）")
+        raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp02）")
     return target
 
 
@@ -90,7 +95,8 @@ def write_credentials(target: str) -> Optional[Dict[str, Any]]:
     password = os.environ.get(f"ERP_SQL_WRITE_PASSWORD_{suffix}") or ""
     server_value = _env(f"ERP_SQL_WRITE_SERVER_{suffix}")
     if not (user and password):
-        if _env("ERP_SQL_TEST_DB", "CHIComp01").lower() == target.lower():
+        # 測試帳只給測試公司用；資料庫一律是 target，不看 ERP_SQL_TEST_DB
+        if target in TEST_TARGETS:
             user = _env("ERP_SQL_TEST_USER")
             password = os.environ.get("ERP_SQL_TEST_PASSWORD") or ""
             server_value = _env("ERP_SQL_TEST_SERVER")
@@ -140,7 +146,7 @@ def get_config() -> Dict[str, Any]:
         return result
     result["target"] = target
     result["label"] = target_label(target)
-    result["is_test"] = target != PRODUCTION_TARGET
+    result["is_test"] = target in TEST_TARGETS
     if write_credentials(target) is None:
         result["reason"] = UNAVAILABLE_REASON
     else:
@@ -565,24 +571,54 @@ def _load_source(src, req: Dict[str, Any]) -> Dict[str, Any]:
     return {"supplier": supplier, "products": products, "main_tpl": main_tpl, "sub_tpls": sub_tpls}
 
 
-def _master_specs(supplier_id: str, prod_ids: List[str], ware_id: str) -> List[Dict[str, Any]]:
-    specs = [{
-        "table": "comCustomer", "label": "供應商", "key": supplier_id,
-        "where": "Flag = 2 AND ID = %s", "params": (supplier_id,),
-    }]
+def _master_specs(
+    supplier_id: str, prod_ids: List[str], ware_id: str,
+    class_ids: Optional[List[str]] = None, depart_id: str = "", person_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """要確認存在於目標公司的主檔，順序即複製順序：類別在料號前、部門在人員前。
+
+    key 為空的項目直接略過；required=False 的（類別 / 部門 / 人員）來源也沒有時略過，不中止。
+    """
+    specs: List[Dict[str, Any]] = []
+
+    def add(table: str, label: str, key: str, where: str, required: bool) -> None:
+        key = _text(key)
+        if key:
+            specs.append({"table": table, "label": label, "key": key, "where": where,
+                          "params": (key,), "required": required})
+
+    add("comCustomer", "供應商", supplier_id, "Flag = 2 AND ID = %s", True)
+    for cid in dict.fromkeys(_text(c) for c in (class_ids or [])):
+        add("comProductClass", "料號類別", cid, "ClassID = %s", False)
     for pid in prod_ids:
-        specs.append({
-            "table": "comProduct", "label": "料號", "key": pid,
-            "where": "ProdID = %s", "params": (pid,),
-        })
-    specs.append({
-        "table": "comWareHouse", "label": "倉庫", "key": ware_id,
-        "where": "WareHouseID = %s", "params": (ware_id,),
-    })
+        add("comProduct", "料號", pid, "ProdID = %s", True)
+    add("comWareHouse", "倉庫", ware_id, "WareHouseID = %s", True)
+    add("comDepartment", "部門", depart_id, "DepartID = %s", False)
+    for pid in dict.fromkeys(_text(p) for p in (person_ids or [])):
+        add("comPerson", "人員", pid, "PersonID = %s", False)
     return specs
 
 
-def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool) -> Dict[str, Any]:
+def _can_copy_masters(target: str, source_db: str) -> bool:
+    """只有測試公司（且不是來源本身）才可從來源複製主檔；正式公司一律不行。"""
+    return target in TEST_TARGETS and target != PRODUCTION_TARGET and target != source_db
+
+
+def _offset_bill_no(bill_no: str, offset: int) -> str:
+    """單號尾端 3 碼流水號加 offset，保留補零；超過 999 視為當日用完。"""
+    if not offset:
+        return bill_no
+    head, tail = bill_no[:-3], bill_no[-3:]
+    try:
+        seq = int(tail) + offset
+    except ValueError:
+        raise PoSchemaError(f"採購單號格式異常：{bill_no}") from None
+    if seq > 999:
+        raise PoValidationError(f"{head} 當日採購單號已用完（最多 999 張）")
+    return f"{head}{seq:03d}"
+
+
+def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, bill_offset: int = 0) -> Dict[str, Any]:
     """讀來源範本 + 目標欄位 / 缺少的主檔 / 單號，組出整張單的 INSERT；不寫入。"""
     _check_db_name(wcur, target)
     ctx = _load_source(src, req)
@@ -594,18 +630,36 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool) -
     supplier_id = _text(_get(ctx["supplier"], "ID"))
     prod_ids = list(dict.fromkeys(_text(_get(r, "ProdID")) for r in ctx["products"].values()))
     ware_id = erp_stock.get_settings()["ware_id"]
+    class_ids = [_text(_get(p, "ClassID")) for p in ctx["products"].values()]
+    depart_id = _text(_get(ctx["main_tpl"], "DepartID"))
+    # 表頭實際寫入的採購員 / 製單人（build_main_row 會覆蓋範本值）
+    person_ids = [req["salesman"], _env("ERP_PO_MAKER_ID", DEFAULT_MAKER_ID)]
     missing = []
-    for spec in _master_specs(supplier_id, prod_ids, ware_id):
+    for spec in _master_specs(supplier_id, prod_ids, ware_id, class_ids, depart_id, person_ids):
         wcur.execute(f"SELECT 1 FROM {spec['table']} WHERE {spec['where']}", spec["params"])
         if wcur.fetchone() is None:
             missing.append(spec)
-    if missing:
-        can_copy = target != source_db and target != PRODUCTION_TARGET
-        if not can_copy:
-            names = "、".join(f"{m['label']} {m['key']}" for m in missing[:5])
+    can_copy = _can_copy_masters(target, source_db)
+    if missing and can_copy:
+        # 類別 / 部門 / 人員來源也沒有就略過（不是必要主檔）；必要主檔來源沒有則在 _copy_masters 報錯
+        scur = src.cursor()
+        kept = []
+        for spec in missing:
+            if not spec["required"]:
+                scur.execute(f"SELECT 1 FROM {spec['table']} WHERE {spec['where']}", spec["params"])
+                if scur.fetchone() is None:
+                    continue
+            kept.append(spec)
+        missing = kept
+    elif missing:
+        # 正式公司（或來源本身）絕不複製主檔：必要主檔缺就中止，非必要的直接忽略
+        required_missing = [m for m in missing if m["required"]]
+        if required_missing:
+            names = "、".join(f"{m['label']} {m['key']}" for m in required_missing[:5])
             raise PoValidationError(
                 f"{target_label(target)} 缺少主檔（{names}），不會自動複製到此公司，請先在正航建立"
             )
+        missing = []
 
     lines_in = []
     for line in req["lines"]:
@@ -617,7 +671,7 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool) -
         })
     lines, totals = compute_money(lines_in)
 
-    bill_no = next_bill_no(wcur, today, lock)
+    bill_no = _offset_bill_no(next_bill_no(wcur, today, lock), bill_offset)
     main_values = build_main_row(
         ctx["main_tpl"], bill_no=bill_no, today=today, remark=req["remark"],
         salesman=req["salesman"], totals=totals,
@@ -677,7 +731,7 @@ def _summary(plan: Dict[str, Any], target: str, req: Dict[str, Any]) -> Dict[str
     return {
         "target": target,
         "target_label": target_label(target),
-        "is_test": target != PRODUCTION_TARGET,
+        "is_test": target in TEST_TARGETS,
         "bill_no": plan["bill_no"],
         "supplier": {
             "id": plan["supplier_id"],
@@ -712,6 +766,57 @@ def preview_po(raw_req: Dict[str, Any]) -> Dict[str, Any]:
     return _summary(plan, target, req)
 
 
+def preview_many(raw_reqs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """多張採購單一次預覽：共用一個來源連線與一個（唯讀、最後 rollback）寫入連線。
+
+    預估單號依序遞增（第一張取下一個可用號，之後 +1）；每張的錯誤只回在該筆，不影響其他張。
+    """
+    if len(raw_reqs) > MAX_PREVIEW_GROUPS:
+        raise PoValidationError(f"一次最多預覽 {MAX_PREVIEW_GROUPS} 張採購單")
+    target, creds = _require_available()
+    today = date_to_int(local_now().date())
+    results: List[Dict[str, Any]] = []
+    with _source_session() as src:
+        wconn = _connect_write(creds)
+        try:
+            wcur = wconn.cursor()
+            offset = 0
+            for raw in raw_reqs:
+                supplier_id = _text((raw or {}).get("supplier_id"))
+                try:
+                    req = normalize_request(raw)
+                    plan = _plan(src, wcur, target, req, today, lock=False, bill_offset=offset)
+                except ErpError as exc:
+                    results.append({"ok": False, "supplier_id": supplier_id, "error": _safe_message(exc, creds)})
+                    continue
+                except Exception as exc:
+                    results.append({
+                        "ok": False, "supplier_id": supplier_id,
+                        "error": f"ERP 查詢失敗：{_safe_message(exc, creds)}",
+                    })
+                    continue
+                offset += 1
+                summary = _summary(plan, target, req)
+                results.append({
+                    "ok": True,
+                    "supplier_id": plan["supplier_id"],
+                    "bill_no": plan["bill_no"],
+                    "bill_no_estimated": True,
+                    "supplier": summary["supplier"],
+                    "remark": summary["remark"],
+                    "lines": summary["lines"],
+                    "totals": summary["totals"],
+                    "missing_masters": [f"{m['label']} {m['key']}" for m in plan["missing_masters"]],
+                    "masters_to_copy": summary["masters_to_copy"],
+                    "target": target,
+                    "target_label": summary["target_label"],
+                    "is_test": summary["is_test"],
+                })
+        finally:
+            _close_quietly(wconn, rollback=True)
+    return results
+
+
 def _close_quietly(conn, rollback: bool = False) -> None:
     if rollback:
         try:
@@ -724,11 +829,15 @@ def _close_quietly(conn, rollback: bool = False) -> None:
         pass
 
 
-def _copy_masters(src_cur, wcur, missing: List[Dict[str, Any]]) -> None:
+def _copy_masters(src_cur, wcur, missing: List[Dict[str, Any]], target: str = "") -> None:
+    if missing and not _can_copy_masters(target, erp_stock.get_settings()["database"]):
+        raise PoValidationError(f"{target_label(target)} 不會自動複製主檔，已中止")
     for spec in missing:
         src_cur.execute(f"SELECT * FROM {spec['table']} WHERE {spec['where']}", spec["params"])
         row = _one(src_cur)
         if row is None:
+            if not spec.get("required", True):
+                continue
             raise PoValidationError(f"來源公司也找不到{spec['label']} {spec['key']}，無法複製主檔")
         cols = table_columns(wcur, spec["table"])
         sql, params = build_insert(spec["table"], cols, row)
@@ -785,7 +894,7 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any]) -> Dict[str,
         try:
             wcur = wconn.cursor()
             plan = _plan(src, wcur, target, req, today, lock=True)
-            _copy_masters(src.cursor(), wcur, plan["missing_masters"])
+            _copy_masters(src.cursor(), wcur, plan["missing_masters"], target)
             wcur.execute(*plan["main_insert"])
             for insert in plan["sub_inserts"]:
                 wcur.execute(*insert)

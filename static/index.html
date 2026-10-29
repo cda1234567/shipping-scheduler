@@ -116,6 +116,7 @@
       <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
       <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
+      <button class="tab-btn" data-tab="shortage-po-tab">缺料採購</button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
@@ -202,6 +203,7 @@
           </label>
           <button class="btn btn-secondary btn-sm" id="btn-completed-download-drafts" disabled>下載副檔</button>
           <button class="btn btn-primary btn-sm" id="btn-completed-gen-dispatch" disabled>生成發料單</button>
+          <button class="btn btn-secondary btn-sm" id="btn-completed-shortage-po" disabled>缺料採購</button>
           <span id="completed-selected-count" style="font-size:12px;color:#6b7280"></span>
           <span class="spacer"></span>
           <input type="text" id="new-folder-name" placeholder="新資料夾名稱" style="width:120px;padding:3px 8px;border:1px solid #e5e5ea;border-radius:4px;font-size:12px">
@@ -397,6 +399,34 @@
             <tbody id="erp-po-history"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 缺料採購（依缺料清單在正航開採購單） ── -->
+    <div id="tab-shortage-po-tab" class="tab-content">
+      <div class="erp-po-shell shortage-po-shell">
+        <div id="shortage-po-badge" class="erp-po-badge">讀取設定中...</div>
+        <div class="shortage-po-orders">
+          <div class="shortage-po-orders-head">
+            <strong>選擇訂單</strong>
+            <span class="erp-po-hint">預設勾選最近一次寫入主檔的那批</span>
+            <span class="spacer"></span>
+            <button class="btn btn-primary btn-sm" id="btn-shortage-po-build" type="button">產生缺料清單</button>
+          </div>
+          <div id="shortage-po-orders" class="shortage-po-order-list"></div>
+        </div>
+        <div id="shortage-po-warnings"></div>
+        <div id="shortage-po-list" class="shortage-po-list" hidden>
+          <div class="erp-po-actions">
+            <label class="shortage-po-toggle"><input type="checkbox" id="shortage-po-show-all"> 顯示不缺的料</label>
+            <span id="shortage-po-summary" class="erp-po-hint"></span>
+            <span class="spacer"></span>
+            <button class="btn btn-primary" id="btn-shortage-po-preview" type="button">預覽採購單</button>
+          </div>
+          <div id="shortage-po-groups"></div>
+        </div>
+        <div id="shortage-po-preview" class="shortage-po-preview" hidden></div>
+        <div id="shortage-po-result" class="shortage-po-result" hidden></div>
       </div>
     </div>
 
@@ -973,6 +1003,7 @@ import { initEditAuth } from "/static/modules/edit_auth.js";
 import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
+import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -988,6 +1019,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
     if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
+    if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
@@ -2066,6 +2098,7 @@ async function init() {
   try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
+  try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
 
   setBootProgress(78, "正在建立排程畫面...");
   await nextFrame();

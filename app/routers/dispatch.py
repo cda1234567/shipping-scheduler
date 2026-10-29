@@ -483,12 +483,17 @@ def _build_dispatch_result_by_order(
     return result_by_order
 
 
-def _generate_dispatch_response(req: DispatchRequest, request: Request):
+def build_dispatch_groups(order_ids: list[int], decisions: dict[str, str] | None) -> list[dict]:
+    """依訂單算出發料單各訂單的明細群組（發料單與缺料採購共用）。
+
+    每個 item 另帶 need_qty（數值需求量；「缺」的項目取缺料量），每個 group 另帶
+    order_id 與原始出貨日 ship_date（YYYY-MM-DD）；generate_dispatch_form 會忽略多的 key。
+    """
     bom_map = db.get_all_bom_components_by_model()
     if not bom_map:
         raise HTTPException(400, "請先上傳 BOM 檔案")
 
-    requested_ids = list(dict.fromkeys(req.order_ids))
+    requested_ids = list(dict.fromkeys(order_ids))
     if not requested_ids:
         raise HTTPException(400, "請先勾選要生成發料單的訂單")
 
@@ -499,7 +504,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
 
     result_by_order = _build_dispatch_result_by_order(orders, bom_map)
     saved_supplements = db.get_order_supplements([int(order["id"]) for order in orders])
-    decision_overrides = _normalize_decision_overrides(req.decisions)
+    decision_overrides = _normalize_decision_overrides(decisions)
     active_drafts_by_order = _get_active_reviewed_drafts_by_order([int(order["id"]) for order in orders])
     committed_main_supplements = _load_committed_main_supplements(orders, bom_map)
     # 缺料重算可加回已發料訂單自己的扣帳，但發料單塗色必須比較生成
@@ -565,6 +570,9 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                     "qty": "缺",
                     "fill_color": None,
                     "is_shortage": True,
+                    "need_qty": float(
+                        final_shortage.get("shortage_amount") or final_shortage.get("suggested_qty") or 0
+                    ),
                 })
                 continue
 
@@ -580,6 +588,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                     "qty": round(effective_supplement_qty),
                     "fill_color": fill_color,
                     "is_shortage": False,
+                    "need_qty": float(effective_supplement_qty),
                 })
                 continue
 
@@ -598,6 +607,7 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
                 "qty": round(suggested_qty),
                 "fill_color": fill_color,
                 "is_shortage": False,
+                "need_qty": float(suggested_qty),
             })
 
         if not items:
@@ -605,6 +615,8 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
 
         ship_date = order.get("delivery_date") or order.get("ship_date") or ""
         groups.append({
+            "order_id": int(order["id"]),
+            "ship_date": str(ship_date or ""),
             "batch_code": order.get("code") or str(order.get("id", "")),
             "po_number": str(order.get("po_number", "")),
             "model": order.get("model", ""),
@@ -612,6 +624,11 @@ def _generate_dispatch_response(req: DispatchRequest, request: Request):
             "items": items,
         })
 
+    return groups
+
+
+def _generate_dispatch_response(req: DispatchRequest, request: Request):
+    groups = build_dispatch_groups(req.order_ids, req.decisions)
     if not groups:
         raise HTTPException(400, "勾選的訂單目前沒有可生成的發料內容")
 

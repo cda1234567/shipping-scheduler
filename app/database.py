@@ -390,6 +390,14 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
     error         TEXT NOT NULL DEFAULT ''
 );
 
+-- 缺料採購：料號「打件 / 後段」類別的人工指定（優先於自動判斷）
+CREATE TABLE IF NOT EXISTS part_purchase_categories (
+    part_number TEXT PRIMARY KEY,
+    category    TEXT NOT NULL CHECK (category IN ('smt', 'backend')),
+    updated_at  TEXT NOT NULL DEFAULT '',
+    actor       TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS sea_shipments (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     filename        TEXT NOT NULL DEFAULT '',
@@ -3889,6 +3897,55 @@ def list_erp_purchase_orders(limit: int = 50) -> list[dict]:
             "SELECT * FROM erp_purchase_orders ORDER BY id DESC LIMIT ?", (int(limit),)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def list_dispatched_orders_for_purchase(limit: int = 300) -> list[dict]:
+    """缺料採購可選的訂單：已發料 / 已完成，最新發料的在前；dispatched_at 取未退回的最近一次。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT o.id, o.code, o.model, o.po_number, o.status,
+                      COALESCE(NULLIF(o.delivery_date, ''), o.ship_date, '') AS ship_date,
+                      COALESCE((SELECT MAX(ds.dispatched_at) FROM dispatch_sessions ds
+                                WHERE ds.order_id = o.id AND ds.rolled_back_at = ''), '') AS dispatched_at
+               FROM orders o
+               WHERE o.status IN ('dispatched', 'completed')
+               ORDER BY dispatched_at DESC, o.id DESC
+               LIMIT ?""",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_part_purchase_categories(parts: list[str]) -> dict[str, str]:
+    """人工指定的採購類別 {料號大寫: 'smt'|'backend'}；只回有指定的料號。"""
+    keys = list(dict.fromkeys(str(p or "").strip().upper() for p in parts if str(p or "").strip()))
+    result: dict[str, str] = {}
+    with get_conn() as conn:
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT part_number, category FROM part_purchase_categories WHERE part_number IN ({marks})",
+                chunk,
+            ).fetchall()
+            result.update({str(r["part_number"]): str(r["category"]) for r in rows})
+    return result
+
+
+def set_part_purchase_category(part_number: str, category: str, actor: str = "") -> None:
+    part = str(part_number or "").strip().upper()
+    if not part:
+        raise ValueError("料號不可為空")
+    if category not in ("smt", "backend"):
+        raise ValueError("類別需為 smt 或 backend")
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO part_purchase_categories(part_number, category, updated_at, actor)
+               VALUES(?,?,?,?)
+               ON CONFLICT(part_number) DO UPDATE SET
+                   category=excluded.category, updated_at=excluded.updated_at, actor=excluded.actor""",
+            (part, category, _now(), actor),
+        )
 
 
 def get_activity_logs(limit: int = 100) -> list[dict]:

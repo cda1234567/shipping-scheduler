@@ -875,8 +875,8 @@ export function buildDownloadToastMessage(result, noun = "檔案") {
   return `${label}已下載`;
 }
 
-export function showDownloadToast(result, noun = "檔案") {
-  showToast(buildDownloadToastMessage(result, noun));
+export function showDownloadToast(result, noun = "檔案", options = {}) {
+  showToast(buildDownloadToastMessage(result, noun), options);
 }
 
 export async function desktopDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {

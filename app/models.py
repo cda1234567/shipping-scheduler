@@ -369,3 +369,18 @@ class ErpPoRequest(BaseModel):
 
 class ErpPoCreateRequest(ErpPoRequest):
     confirm: bool = False
+
+
+# ── 缺料採購 ──────────────────────────────────────────────────────────────────
+
+class ShortagePoCategoryRequest(BaseModel):
+    part_number: str
+    category: str  # smt | backend
+
+
+class ShortagePoRequest(BaseModel):
+    groups: list[ErpPoRequest]
+
+
+class ShortagePoCreateRequest(ShortagePoRequest):
+    confirm: bool = False

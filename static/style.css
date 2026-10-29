@@ -5275,3 +5275,33 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-po-history-title { margin: 6px 0 0; font-size: 14px; color: #111827; }
 .erp-po-row-error { color: #b91c1c; background: #fef2f2; }
 .erp-po-actions .spacer { flex: 1; }
+
+/* ── 缺料採購 ── */
+.shortage-po-orders { border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.shortage-po-orders-head { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.shortage-po-orders-head .spacer, .shortage-po-group-head .spacer { flex: 1; }
+.shortage-po-order-list { max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.shortage-po-order { display: flex; align-items: center; gap: 10px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
+.shortage-po-order:hover { background: #f1f5f9; }
+.shortage-po-list { display: flex; flex-direction: column; gap: 10px; }
+.shortage-po-list[hidden], .shortage-po-preview[hidden], .shortage-po-result[hidden] { display: none; }
+.shortage-po-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: #374151; }
+.shortage-po-group { display: flex; flex-direction: column; gap: 4px; }
+.shortage-po-group-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #eef2f7; border-radius: 8px; font-size: 13px; }
+.shortage-po-remark { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #374151; }
+.shortage-po-remark input { padding: 3px 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; width: 240px; }
+.shortage-po-table td { vertical-align: top; }
+.shortage-po-table select { padding: 3px 4px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; }
+.shortage-po-table input[data-act="supplier"] { min-width: 80px; }
+.shortage-po-table input[type="date"] { min-width: 130px; }
+.shortage-po-table input.is-late { color: #b91c1c; border-color: #dc2626; background: #fef2f2; }
+.shortage-po-late { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: #dc2626; color: #fff; font-size: 11px; }
+.shortage-po-short { color: #b91c1c; font-weight: 600; }
+.shortage-po-done { opacity: .55; }
+.shortage-po-preview { border: 2px solid #94a3b8; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: #f8fafc; }
+.shortage-po-card { border: 1px solid #cbd5e1; border-radius: 8px; padding: 8px 10px; background: #fff; display: flex; flex-direction: column; gap: 6px; }
+.shortage-po-card.is-error { border-color: #dc2626; background: #fef2f2; color: #b91c1c; }
+.shortage-po-result { padding: 10px 14px; border-radius: 8px; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
+.shortage-po-result.is-ok { background: #dcfce7; color: #166534; }
+.shortage-po-result.is-error { background: #fee2e2; color: #b91c1c; }
+.shortage-po-result .is-error { color: #b91c1c; }
