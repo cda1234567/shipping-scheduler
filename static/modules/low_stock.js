@@ -93,6 +93,8 @@ function renderSettings() {
     "low-stock-set-safety": "safety_factor",
     "low-stock-set-min-cover": "min_cover_days",
     "low-stock-set-default-lead": "default_lead_days",
+    "low-stock-set-actual-ratio": "actual_lead_ratio",
+    "low-stock-set-actual-gap": "actual_lead_min_gap_days",
   };
   const panel = document.getElementById("low-stock-settings-panel");
   if (panel && !panel.hidden) return; // 編輯中不覆蓋輸入
@@ -274,6 +276,8 @@ async function handleSaveSettings() {
       safety_factor: val("low-stock-set-safety"),
       min_cover_days: val("low-stock-set-min-cover"),
       default_lead_days: val("low-stock-set-default-lead"),
+      actual_lead_ratio: val("low-stock-set-actual-ratio"),
+      actual_lead_min_gap_days: val("low-stock-set-actual-gap"),
     });
     showToast("設定已儲存，自動門檻已重算", { tone: "success" });
     const panel = document.getElementById("low-stock-settings-panel");

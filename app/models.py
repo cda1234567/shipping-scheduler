@@ -346,3 +346,5 @@ class LowStockSettingsRequest(BaseModel):
     default_lead_days: Optional[float] = None
     lead_lookback_days: Optional[float] = None
     lead_sample_size: Optional[float] = None
+    actual_lead_ratio: Optional[float] = None
+    actual_lead_min_gap_days: Optional[float] = None

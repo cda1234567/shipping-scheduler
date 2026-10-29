@@ -33,6 +33,8 @@ DEFAULT_CONFIG: Dict[str, float] = {
     "default_lead_days": 7,
     "lead_lookback_days": 1095,
     "lead_sample_size": 5,
+    "actual_lead_ratio": 0.6,
+    "actual_lead_min_gap_days": 7,
 }
 # (最小, 最大, 是否整數)
 CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
@@ -43,6 +45,8 @@ CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
     "default_lead_days": (1, 365, False),
     "lead_lookback_days": (30, 3650, True),
     "lead_sample_size": (1, 50, True),
+    "actual_lead_ratio": (0, 1, False),
+    "actual_lead_min_gap_days": (0, 365, False),
 }
 CONFIG_LABELS = {
     "lookback_days": "用量統計天數",
@@ -52,12 +56,15 @@ CONFIG_LABELS = {
     "default_lead_days": "預設交期",
     "lead_lookback_days": "交期統計回溯天數",
     "lead_sample_size": "交期取樣筆數",
+    "actual_lead_ratio": "實際交期比例上限",
+    "actual_lead_min_gap_days": "實際交期最少縮短天數",
 }
 
 LEAD_LABELS = {
     "planned": "預定交期",
     "planned_delay": "預定+延遲",
     "actual": "實際交期",
+    "actual_long_planned": "實際交期（預定過長）",
     "default": "預設",
     "manual": "手動",
 }
@@ -100,8 +107,19 @@ def calc_lead_time(
     delay_days: Optional[float],
     actual_days: Optional[float],
     default_days: float,
+    actual_ratio: float = DEFAULT_CONFIG["actual_lead_ratio"],
+    actual_min_gap_days: float = DEFAULT_CONFIG["actual_lead_min_gap_days"],
 ) -> Tuple[float, str]:
-    """回傳 (交期天數, 來源 planned/actual/default)。延遲只加不減。"""
+    """回傳 (交期天數, 來源 planned/actual/default)。延遲只加不減。
+
+    預定與實際都有，且實際 <= 預定 × 比例上限、並比預定短至少 N 天（預定明顯過長）時，改採實際交期。
+    """
+    if (
+        planned_days is not None and actual_days is not None
+        and float(actual_days) <= float(planned_days) * float(actual_ratio) + 1e-9
+        and float(planned_days) - float(actual_days) >= float(actual_min_gap_days)
+    ):
+        return float(actual_days), "actual"
     if planned_days is not None:
         return float(planned_days) + max(0.0, float(delay_days or 0)), "planned"
     if actual_days is not None:
@@ -109,7 +127,9 @@ def calc_lead_time(
     return float(default_days), "default"
 
 
-def lead_label(source: str, delay_days: Optional[float] = None) -> str:
+def lead_label(source: str, delay_days: Optional[float] = None, planned_days: Optional[float] = None) -> str:
+    if source == "actual" and planned_days is not None:
+        return LEAD_LABELS["actual_long_planned"]
     if source == "planned":
         return LEAD_LABELS["planned_delay"] if (delay_days or 0) > 0 else LEAD_LABELS["planned"]
     return LEAD_LABELS.get(source, LEAD_LABELS["default"])
@@ -273,6 +293,7 @@ def derive_auto_fields(row: dict, cfg: Dict[str, float]) -> dict:
         days, source = calc_lead_time(
             row.get("planned_lead_days"), row.get("delay_days"),
             row.get("actual_lead_days"), cfg["default_lead_days"],
+            cfg["actual_lead_ratio"], cfg["actual_lead_min_gap_days"],
         )
         row["lead_time_days"] = days
         row["lead_time_source"] = source
@@ -733,7 +754,7 @@ def _view_row(rec: dict, qty: float) -> dict:
         "avg_monthly_usage": round(avg_daily * 30, 1) if avg_daily is not None else None,
         "lead_time_days": rec.get("lead_time_days"),
         "lead_time_source": lead_source,
-        "lead_time_label": lead_label(lead_source, rec.get("delay_days")),
+        "lead_time_label": lead_label(lead_source, rec.get("delay_days"), rec.get("planned_lead_days")),
         "planned_lead_days": rec.get("planned_lead_days"),
         "actual_lead_days": rec.get("actual_lead_days"),
         "delay_days": rec.get("delay_days"),

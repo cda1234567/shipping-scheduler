@@ -49,12 +49,33 @@ class PureFormulaTests(unittest.TestCase):
         self.assertEqual(ls.calc_lead_time(None, 5, 18, 7), (18.0, "actual"))
         self.assertEqual(ls.calc_lead_time(None, None, None, 7), (7.0, "default"))
 
+    def test_lead_actual_when_planned_too_long(self):
+        self.assertEqual(ls.calc_lead_time(42, 0, 9, 7), (9.0, "actual"))
+        self.assertEqual(ls.calc_lead_time(42, 0, 10, 7), (10.0, "actual"))
+        self.assertEqual(ls.calc_lead_time(89, 3, 39, 7), (39.0, "actual"))
+        self.assertEqual(ls.calc_lead_time(42, 5, 12, 7), (12.0, "actual"))
+
+    def test_lead_actual_boundaries(self):
+        self.assertEqual(ls.calc_lead_time(20, 0, 12, 7), (12.0, "actual"))  # 12<=12 且差 8
+        self.assertEqual(ls.calc_lead_time(10, 0, 5, 7), (10.0, "planned"))  # 差 5 < 7
+        self.assertEqual(ls.calc_lead_time(20, 2, 13, 7), (22.0, "planned"))  # 13 > 12
+        self.assertEqual(ls.calc_lead_time(30, 0, 23, 7, 1.0, 7), (23.0, "actual"))  # 差剛好 7
+
+    def test_lead_actual_custom_settings(self):
+        self.assertEqual(ls.calc_lead_time(42, 0, 20, 7), (20.0, "actual"))  # 預設值即成立
+        self.assertEqual(ls.calc_lead_time(42, 0, 30, 7), (42.0, "planned"))  # 30 > 25.2
+        self.assertEqual(ls.calc_lead_time(42, 0, 30, 7, 0.8, 7), (30.0, "actual"))  # 30 <= 33.6
+        self.assertEqual(ls.calc_lead_time(10, 0, 5, 7, 0.6, 5), (5.0, "actual"))
+        self.assertEqual(ls.calc_lead_time(42, 0, 9, 7, 0.1, 7), (42.0, "planned"))
+
     def test_lead_labels(self):
         self.assertEqual(ls.lead_label("planned", 0), "預定交期")
         self.assertEqual(ls.lead_label("planned", None), "預定交期")
         self.assertEqual(ls.lead_label("planned", -2), "預定交期")
         self.assertEqual(ls.lead_label("planned", 3), "預定+延遲")
         self.assertEqual(ls.lead_label("actual"), "實際交期")
+        self.assertEqual(ls.lead_label("actual", None, None), "實際交期")
+        self.assertEqual(ls.lead_label("actual", 0, 42), "實際交期（預定過長）")
         self.assertEqual(ls.lead_label("default"), "預設")
         self.assertEqual(ls.lead_label("manual"), "手動")
 
@@ -290,6 +311,44 @@ class EditRuleTests(DbCase):
                     {"min_cover_days": -1}, {"default_lead_days": 0}, {"lookback_days": "abc"}):
             with self.assertRaises(ls.LowStockError):
                 ls.save_config(bad)
+
+
+class ActualLeadConfigTests(DbCase):
+    def setUp(self):
+        super().setUp()
+        self.usage = {"A-1": (900.0, 5), "M-1": (900.0, 5)}  # 日均 10
+        stats = {"planned_lead_days": 42, "actual_lead_days": 30, "delay_days": 0, "delay_samples": 1}
+        self.info = {"A-1": dict(stats), "M-1": dict(stats)}
+        ls.run_suggestion()
+        ls.update_part("M-1", lead_time_days=30)
+
+    def test_defaults(self):
+        cfg = ls.get_config()
+        self.assertEqual((cfg["actual_lead_ratio"], cfg["actual_lead_min_gap_days"], cfg["min_cover_days"]), (0.6, 7, 7))
+
+    def test_validation(self):
+        for bad in ({"actual_lead_ratio": 1.1}, {"actual_lead_ratio": -0.1}, {"actual_lead_min_gap_days": 366},
+                    {"actual_lead_min_gap_days": -1}, {"actual_lead_ratio": "x"}):
+            with self.assertRaises(ls.LowStockError):
+                ls.save_config(bad)
+        self.assertEqual(ls.save_config({"actual_lead_ratio": 0.5})["actual_lead_ratio"], 0.5)
+
+    def test_save_config_recomputes_auto_but_not_manual(self):
+        r = self.row("A-1")
+        self.assertEqual((r["lead_time_days"], r["lead_time_source"]), (42, "planned"))
+        ls.save_config({"actual_lead_ratio": 0.8})  # 30 <= 33.6 且差 12
+        r = self.row("A-1")
+        self.assertEqual((r["lead_time_days"], r["lead_time_source"], r["threshold_qty"]), (30, "actual", 450))
+        m = self.row("M-1")
+        self.assertEqual((m["lead_time_days"], m["lead_time_source"]), (30, "manual"))
+        ls.save_config({"actual_lead_min_gap_days": 13})  # 差 12 < 13 → 回原公式
+        self.assertEqual(self.row("A-1")["lead_time_source"], "planned")
+
+    def test_min_cover_days_configurable(self):
+        ls.save_config({"actual_lead_ratio": 0.8})  # 交期 30 → 30*10*1.5 = 450
+        ls.save_config({"min_cover_days": 60})  # 10*60 = 600 > 450
+        self.assertEqual(ls.get_config()["min_cover_days"], 60)
+        self.assertEqual(self.row("A-1")["threshold_qty"], 600)
 
 
 class ApiTests(DbCase):
