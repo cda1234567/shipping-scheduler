@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .. import database as db
-from . import erp_stock
+from . import erp_stock, main_reader
 from .erp_stock import ErpError, ErpUnavailable
 from .local_time import local_now
 
@@ -146,6 +147,36 @@ def calc_status(enabled: bool, qty: float, threshold: Optional[float]) -> str:
 
 def norm_part(part: Any) -> str:
     return str(part or "").strip().upper()
+
+
+# ── 主檔料號範圍 ──────────────────────────────────────────────────────────
+
+_MAIN_PARTS_CACHE: Dict[str, Any] = {"key": None, "parts": None}
+MAIN_FILE_NOTE_FALLBACK = "讀不到主檔，暫時顯示全部料號"
+
+
+def main_file_parts() -> Optional[set]:
+    """目前主檔內的料號集合（strip/upper）；以 (路徑, mtime) 快取。無路徑/檔案不存在/讀取失敗 → None。"""
+    try:
+        path = db.get_setting("main_file_path", "")
+        if not path:
+            return None
+        key = (path, os.stat(path).st_mtime_ns)
+        if _MAIN_PARTS_CACHE["key"] == key:
+            return _MAIN_PARTS_CACHE["parts"]
+        parts = {norm_part(p) for p in main_reader.read_stock(path).keys()}
+        parts.discard("")
+        _MAIN_PARTS_CACHE.update(key=key, parts=parts)
+        return parts
+    except Exception as exc:
+        logger.info("讀不到主檔料號：%s", type(exc).__name__)
+        return None
+
+
+def main_file_status(parts: Optional[set]) -> dict:
+    """回應用欄位：是否已套用主檔過濾，以及未套用時的中文說明。"""
+    applied = parts is not None
+    return {"main_file_filter_applied": applied, "main_file_note": "" if applied else MAIN_FILE_NOTE_FALLBACK}
 
 
 # ── 設定 ──────────────────────────────────────────────────────────────────
@@ -479,14 +510,16 @@ def run_suggestion(actor: str = "system") -> dict:
     with db.get_conn() as conn:
         existing = {r["part_number"]: dict(r) for r in conn.execute("SELECT * FROM low_stock_watch").fetchall()}
     dismissed = {p for p, r in existing.items() if r["dismissed"]}
-    active = {p: r for p, r in existing.items() if not r["dismissed"]}
+    main_parts = main_file_parts()  # None = 讀不到主檔，不過濾
+    in_main = (lambda p: True) if main_parts is None else (lambda p: norm_part(p) in main_parts)
+    active = {p: r for p, r in existing.items() if not r["dismissed"] and in_main(p)}
 
     # ── 階段一：只讀 ERP（失敗就直接丟出，尚未寫入任何資料） ──
     with _erp_session() as erp:
         usage = _query_usage(erp, ware_id, start, today)
         qualifying = {
             p for p, (net, bills) in usage.items()
-            if bills >= cfg["min_bills"] and net > 0
+            if bills >= cfg["min_bills"] and net > 0 and in_main(p)
         }
         candidates = qualifying - dismissed
         targets = sorted(candidates | set(active))
@@ -499,6 +532,7 @@ def run_suggestion(actor: str = "system") -> dict:
         "candidates": len(qualifying), "delay_parts": 0, "added": 0, "updated": 0,
         "kept_manual_threshold": 0, "kept_manual_lead": 0,
         "planned_lead_parts": 0, "actual_lead_parts": 0, "default_lead_parts": 0, "total_rows": 0,
+        **main_file_status(main_parts),
     }
     with db.get_conn() as conn:
         for part in targets:
@@ -722,11 +756,15 @@ def _sort_key(view: dict) -> tuple:
     return (cover is None, cover if cover is not None else 0, -shortfall, view["part_number"])
 
 
-def list_rows() -> List[dict]:
-    """所有未移除的關注料號（含現有量與狀態），低庫存在前，其次依可撐天數。"""
+def list_rows(main_parts: Any = _UNSET) -> List[dict]:
+    """所有未移除的關注料號（含現有量與狀態），低庫存在前，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。"""
     db.ensure_low_stock_table()
+    if main_parts is _UNSET:
+        main_parts = main_file_parts()
     with db.get_conn() as conn:
         recs = [dict(r) for r in conn.execute("SELECT * FROM low_stock_watch WHERE dismissed=0").fetchall()]
+    if main_parts is not None:
+        recs = [r for r in recs if norm_part(r["part_number"]) in main_parts]
     stock = db.get_st_inventory_stock()
     views = [_view_row(r, float(stock.get(r["part_number"], 0.0))) for r in recs]
     order = {"low": 0, "ok": 1, "disabled": 2}
@@ -734,8 +772,8 @@ def list_rows() -> List[dict]:
     return views
 
 
-def list_alerts() -> List[dict]:
-    low = [v for v in list_rows() if v["status"] == "low"]
+def list_alerts(main_parts: Any = _UNSET) -> List[dict]:
+    low = [v for v in list_rows(main_parts) if v["status"] == "low"]
     low.sort(key=_sort_key)
     return low
 

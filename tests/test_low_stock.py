@@ -385,6 +385,79 @@ class ApiTests(DbCase):
             self.assertTrue(request_requires_edit_auth(make_request("POST", path)), path)
 
 
+class MainFileFilterTests(DbCase):
+    def setUp(self):
+        super().setUp()
+        ls._MAIN_PARTS_CACHE.update(key=None, parts=None)
+        app = FastAPI()
+        app.include_router(low_stock_router.router, prefix="/api")
+        self.client = TestClient(app)
+        self.usage = {"A-1": (900.0, 5), "B-1": (90.0, 4), "C-1": (900.0, 5)}
+        ls.run_suggestion()
+        self.set_stock("A-1", 10)    # 門檻 105 → low
+        self.set_stock("B-1", 1)     # 門檻 10.5 → low
+        self.set_stock("C-1", 5000)  # ok
+        ls.add_part("manual-9", threshold=100)  # 手動新增、不在主檔（現有量 0 → low）
+
+    def use_main(self, parts):
+        real = db.get_setting
+        def fake_setting(key, default=""):
+            return "/x/main.xlsx" if key == "main_file_path" else real(key, default)
+        stack = [
+            patch.object(ls.db, "get_setting", fake_setting),
+            patch("os.stat", return_value=type("S", (), {"st_mtime_ns": 1})()),
+            patch.object(ls.main_reader, "read_stock", lambda path: {p: 0 for p in parts}),
+        ]
+        for p in stack:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_filter_applied_hides_non_main_parts_but_keeps_rows(self):
+        self.use_main(["A-1", "C-1", "B-1"])
+        data = self.client.get("/api/low-stock/watchlist").json()
+        self.assertTrue(data["main_file_filter_applied"])
+        self.assertEqual(data["main_file_note"], "")
+        self.assertNotIn("MANUAL-9", [r["part_number"] for r in data["rows"]])
+        self.assertEqual(data["low_count"], 2)
+        alerts = self.client.get("/api/low-stock/alerts").json()
+        self.assertTrue(alerts["main_file_filter_applied"])
+        self.assertEqual(sorted(a["part_number"] for a in alerts["alerts"]), ["A-1", "B-1"])
+        self.assertIsNotNone(self.row("MANUAL-9"))
+
+    def test_excluded_parts_hidden_from_alerts(self):
+        self.use_main(["B-1", "C-1"])
+        alerts = self.client.get("/api/low-stock/alerts").json()
+        self.assertEqual([a["part_number"] for a in alerts["alerts"]], ["B-1"])
+        self.assertEqual(self.client.get("/api/low-stock/watchlist").json()["low_count"], 1)
+        self.assertIsNotNone(self.row("A-1"))
+
+    def test_suggest_only_picks_main_parts_and_keeps_rows(self):
+        self.use_main(["B-1"])
+        self.usage = {"A-1": (900.0, 5), "B-1": (90.0, 4), "D-1": (900.0, 5)}
+        res = self.client.post("/api/low-stock/suggest").json()
+        self.assertTrue(res["main_file_filter_applied"])
+        self.assertIsNone(self.row("D-1"))
+        self.assertIsNotNone(self.row("A-1"))
+        self.assertEqual(res["candidates"], 1)
+
+    def test_fallback_when_main_file_unavailable(self):
+        data = self.client.get("/api/low-stock/watchlist").json()
+        self.assertFalse(data["main_file_filter_applied"])
+        self.assertTrue(data["main_file_note"])
+        self.assertIn("MANUAL-9", [r["part_number"] for r in data["rows"]])
+        alerts = self.client.get("/api/low-stock/alerts").json()
+        self.assertFalse(alerts["main_file_filter_applied"])
+        self.assertIn("MANUAL-9", [a["part_number"] for a in alerts["alerts"]])
+        res = self.client.post("/api/low-stock/suggest").json()
+        self.assertFalse(res["main_file_filter_applied"])
+        self.assertTrue(res["main_file_note"])
+
+    def test_read_error_returns_none(self):
+        self.use_main([])
+        with patch.object(ls.main_reader, "read_stock", side_effect=OSError("boom")):
+            self.assertIsNone(ls.main_file_parts())
+
+
 class FrontendWiringTests(unittest.TestCase):
     def test_tab_module_and_notice_wired(self):
         root = Path(__file__).resolve().parents[1]
@@ -401,6 +474,8 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn('"st-inventory-synced"', module)
         self.assertIn("export async function initLowStock({ autoLoad = true } = {})", module)
         self.assertIn("/api/low-stock/alerts", module)
+        self.assertIn("main_file_filter_applied", module)
+        self.assertIn('id="low-stock-main-hint"', index)
         self.assertNotIn("fetch(", module.replace("apiFetch", ""))
 
 

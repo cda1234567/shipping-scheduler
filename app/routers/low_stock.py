@@ -31,8 +31,10 @@ def _http_error(exc: low_stock.LowStockError) -> HTTPException:
 @router.get("/alerts")
 async def get_low_stock_alerts():
     """低於門檻的常用料號。只讀本機資料庫與 ST 庫存快照，不連 ERP。"""
-    alerts = low_stock.list_alerts()
+    main_parts = low_stock.main_file_parts()
+    alerts = low_stock.list_alerts(main_parts)
     return {
+        **low_stock.main_file_status(main_parts),
         "generated_at": local_now().strftime("%Y-%m-%d %H:%M:%S"),
         "st_inventory_loaded_at": db.get_setting("st_inventory_loaded_at", ""),
         "st_inventory_source": db.get_setting("st_inventory_source", ""),
@@ -64,8 +66,10 @@ async def get_low_stock_alerts():
 
 @router.get("/watchlist")
 async def get_low_stock_watchlist():
-    rows = low_stock.list_rows()
+    main_parts = low_stock.main_file_parts()
+    rows = low_stock.list_rows(main_parts)
     return {
+        **low_stock.main_file_status(main_parts),
         "settings": low_stock.get_config(),
         "rows": rows,
         "low_count": sum(1 for r in rows if r["status"] == "low"),

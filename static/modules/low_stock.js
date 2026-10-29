@@ -31,6 +31,7 @@ export async function refreshLowStockAlerts() {
     return;
   }
   const count = Number(data?.count || 0);
+  setMainFileHint(data);
   const badge = document.getElementById("low-stock-badge");
   if (badge) {
     badge.textContent = String(count);
@@ -47,6 +48,15 @@ export async function refreshLowStockAlerts() {
   }
 }
 
+// 主檔讀不到、未套用料號過濾時，在狀態列下方顯示一行提示
+function setMainFileHint(data) {
+  const el = document.getElementById("low-stock-main-hint");
+  if (!el) return;
+  const show = data && data.main_file_filter_applied === false;
+  el.textContent = show ? (data.main_file_note || "") : "";
+  el.style.display = show ? "" : "none";
+}
+
 export async function onLowStockTabActivated() {
   await refreshLowStock();
 }
@@ -58,6 +68,7 @@ export async function refreshLowStock() {
     const data = await apiJson("/api/low-stock/watchlist");
     _rows = data.rows || [];
     _settings = data.settings || {};
+    setMainFileHint(data);
     renderSettings();
     renderTable();
     if (status) {
@@ -214,6 +225,7 @@ async function handleSuggest() {
   if (btn) { btn.disabled = true; btn.textContent = "建議計算中..."; }
   try {
     const s = await apiPost("/api/low-stock/suggest", {});
+    if (s.main_file_filter_applied === false && s.main_file_note) showToast(s.main_file_note, { duration: 6000 });
     showToast(
       `建議完成：候選 ${s.candidates} 個，新增 ${s.added}、更新 ${s.updated}；` +
       `保留手動門檻 ${s.kept_manual_threshold}、手動交期 ${s.kept_manual_lead}；清單共 ${s.total_rows} 筆`,

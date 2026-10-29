@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.29.3"
+APP_VERSION = "v2026.10.29.4"
 APP_RELEASED_AT = "2026-10-29"
-APP_HEADLINE = "新增常用料號低庫存提醒"
+APP_HEADLINE = "低庫存提醒只偵測主檔內料號"
 APP_CHANGELOG = [
+    {
+        "title": "低庫存提醒只偵測主檔內料號",
+        "items": [
+            "低庫存提醒的建議、清單、提醒卡片與徽章，只納入目前主檔內的料號；主檔以外的料號（含手動新增者）不再顯示或提醒，資料庫內的紀錄不會被刪除。",
+            "主檔讀不到時暫時顯示全部料號，並在頁面顯示提示；API 增加 main_file_filter_applied、main_file_note 欄位。",
+        ],
+    },
     {
         "title": "常用料號低庫存提醒",
         "items": [
