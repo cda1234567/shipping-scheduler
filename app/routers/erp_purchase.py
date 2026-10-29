@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
-from .. import database as db
 from ..models import ErpPoCreateRequest, ErpPoRequest
 from ..services import erp_purchase
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
@@ -66,4 +65,4 @@ async def po_create(req: ErpPoCreateRequest, request: Request):
 
 @router.get("/history")
 async def po_history(limit: int = 50):
-    return {"orders": db.list_erp_purchase_orders(max(1, min(int(limit), 200)))}
+    return {"orders": await run_in_threadpool(erp_purchase.list_history, max(1, min(int(limit), 200)))}

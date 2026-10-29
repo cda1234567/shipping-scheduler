@@ -280,6 +280,29 @@ async function handleCreate() {
 }
 
 // ── 歷史 ────────────────────────────────────────────────────────────────────
+/** 單行「為哪些訂單而買」的文字；空陣列 / 未提供代表舊單沒有紀錄。 */
+export function allocationText(allocs) {
+  if (!allocs || !allocs.length) return "—（舊單無紀錄）";
+  if (allocs.every(a => a.kind === "manual")) return "手動（未綁訂單）";
+  const parts = allocs.map(a => {
+    if (a.kind === "extra") return `備品 ×${fmtMoney(a.qty)}`;
+    if (a.kind === "manual") return `未綁訂單 ×${fmtMoney(a.qty)}`;
+    const po = a.customer_po ? `（PO ${a.customer_po}）` : "";
+    return `${[a.order_code, a.model].filter(Boolean).join(" ") || `訂單 ${a.order_id}`}${po} ×${fmtMoney(a.qty)}`;
+  });
+  return `用於：${parts.join("；")}`;
+}
+
+function historyLinesHtml(o, lines) {
+  if (o.status !== "ok") return "";
+  const byRow = new Map();
+  for (const a of o.allocations || []) {
+    if (!byRow.has(a.row_no)) byRow.set(a.row_no, []);
+    byRow.get(a.row_no).push(a);
+  }
+  return lines.map((l, i) => `<div class="erp-po-hint"><span class="mono">${esc(l.part_number)}</span> ${esc(allocationText(byRow.get(l.row_no ?? i + 1)))}</div>`).join("");
+}
+
 async function refreshHistory() {
   const body = document.getElementById("erp-po-history");
   if (!body) return;
@@ -297,7 +320,7 @@ async function refreshHistory() {
         <td class="mono">${esc(o.bill_no) || "—"}</td>
         <td>${esc(o.target_db)}</td>
         <td>${esc(o.supplier_id)} ${esc(o.supplier_name)}</td>
-        <td>${first}${more}</td>
+        <td>${first}${more}${historyLinesHtml(o, lines)}</td>
         <td class="num">${ok ? fmtMoney(o.total) : "—"}</td>
         <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td></tr>`;
     }).join("") : '<tr><td colspan="7" class="erp-po-hint">尚無紀錄</td></tr>';

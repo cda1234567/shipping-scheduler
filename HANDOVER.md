@@ -77,7 +77,8 @@
 ### 缺料採購（缺料採購頁籤）
 
 - 流程：寫入主檔 / 生成發料單後 → 「缺料採購」頁籤（或已發料頁籤的「缺料採購」按鈕、完成後 toast 的「前往缺料採購」）→ 選訂單（預設最近一次寫入主檔那批：發料時間距最新一筆 10 分鐘內）→ 產生缺料清單 → 勾選 → 預覽採購單 → 確認寫入正航。
-- 需求量來自 `dispatch.build_dispatch_groups`（與發料單同一套計算，item 多帶 `need_qty`、group 多帶 `order_id` / `ship_date`）。缺料 = max(0, 需求 − max(ST 現有, 0) − 在途量)；在途量用低庫存提醒的 `_query_on_order`，ERP 連不上時當 0 並在畫面出現警告。建議數量 = ceil(缺)。
+- 需求量來自 `dispatch.build_dispatch_groups`（與發料單同一套計算，item 多帶 `need_qty`、group 多帶 `order_id` / `ship_date`）。缺料 = `shortage_rules.summarize_requested_supply(需求, ST)['purchase_needed_qty']`（需求 − ST，與發料單同一套；v2026.10.29.9 起**不再扣在途**，使用者明說「不減在途」）；在途量仍用低庫存提醒的 `_query_on_order` 查出，僅供參考顯示，ERP 連不上時當 0 並在畫面出現警告。建議數量 = ceil(缺)。
+- 採購明細與訂單的對應（v2026.10.29.9，**只記錄 / 顯示，不參與任何缺料或扣在途計算**）：成功寫入 ERP 後，在寫 `erp_purchase_orders` 的同一步把每行存進 SQLite `erp_po_line_allocations`（kind = order / extra / manual；source = shortage_po / manual_po；`dispatch_session_id` = 當時該訂單最近一次未退回的發料批次）。`shortage_purchase.allocate_purchase_to_orders` 依出貨日（空日期最後）先用 max(ST,0) 抵需求，再填採購量，多買的記 extra；preview / create 由 router 的 `prepare_groups` 依前端送的 `order_ids` 以最終數量重算（忽略用戶端送的 allocations；料號不在這批訂單內或沒給 order_ids → manual）。開採購單可選帶 `allocations`（驗證 qty>0、合計 ≤ 行數量，不足補 manual）。歷史 API `/api/erp/po/history` 每張單附 `allocations`，舊單為空 → 前端顯示「—（舊單無紀錄）」。日後「只扣對應在途」開關可讀這張表，但本版沒有任何地方用它扣減。
 - 供應商：正航料號主檔 `MajorSupplier`（須存在於 comCustomer Flag=2）→ 最近一張採購單的供應商 → 未設定（需手動填，未填不能勾）。單價預設最近採購價。同供應商勾選的料合併成一張採購單，一次最多 20 張。
 - 預計進貨日以最早需要該料的訂單出貨日為準：打件 = 出貨日 −1 個月（取月底）後，取不晚於該日的最近一個 26 日；後段 = 出貨日 − 21 天。早於今天標「遲了」（仍可寫）。
 - 打件 / 後段自動判斷（`shortage_purchase.classify_part`）：料號前兩碼 EC / IC / UC / PB，或品名含 0201 0402 0603 0805 1206 SMD SMT SOT QFN QFP BGA SOP TSSOP PCB 電容 電阻 電感 → 打件；其餘（OC / PK / SP / AC / RC / CM / CF / SS / GH …）→ 後段。人工指定存在 SQLite `part_purchase_categories`，優先於自動判斷。

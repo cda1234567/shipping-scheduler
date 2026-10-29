@@ -1,6 +1,6 @@
 """缺料採購：寫入主檔 / 生成發料單之後，列出哪些料要買，勾選後依供應商各開一張正航採購單。
 
-流程：選訂單 → build_shortage_list（彙整需求、扣 ST 現有與在途、解析供應商 / 單價 / 預計進貨日）
+流程：選訂單 → build_shortage_list（彙整需求、扣 ST 現有（在途僅供參考、不扣除）、解析供應商 / 單價 / 預計進貨日）
 → 使用者勾選 → erp_purchase.preview_many 預覽 → create_many 逐張寫入（每張獨立 transaction）。
 
 預計進貨日（以「最早出貨日的訂單」為準）：
@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import database as db
 from . import erp_purchase, low_stock
+from .shortage_rules import summarize_requested_supply
 from .local_time import local_now
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,131 @@ def classify_part(part_number: str, description: str = "") -> str:
     if _SIZE_RE.search(desc) or _KEYWORD_RE.search(desc):
         return "smt"
     return "backend"
+
+
+# ── 採購量 → 訂單分配（僅記錄 / 顯示，不參與缺料計算）──────────────────────
+
+def _qty_clean(value: float) -> float:
+    return round(float(value), 6)
+
+
+def allocate_purchase_to_orders(
+    orders: List[Dict[str, Any]], st: float, purchase_qty: float
+) -> List[Dict[str, Any]]:
+    return _allocate(orders, st, purchase_qty)[0]
+
+
+def _allocate(
+    orders: List[Dict[str, Any]], st: float, purchase_qty: float
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """把一次採購量分配給各訂單（純函式）。
+
+    依出貨日由早到晚（空日期排最後、同日維持原順序）：先用 max(ST, 0) 依序抵各訂單需求，
+    再把採購量依序填入各訂單剩餘需求；買不夠時較晚的訂單分到較少或沒有（零量不列出），
+    買超過的部分記成一筆 kind='extra'（order_id=0）。同一張訂單的多筆需求會合併。
+    回傳 (分配結果, 扣除 ST 與本次採購後各訂單的剩餘需求)，供同料號多行接續分配。
+    """
+    merged: Dict[Any, Dict[str, Any]] = {}
+    for o in orders:
+        key = o.get("order_id")
+        need = float(o.get("qty") or 0)
+        if need <= 0:
+            continue
+        if key in merged:
+            merged[key]["need"] += need
+        else:
+            merged[key] = {"order": o, "need": need}
+    ordered = sorted(
+        merged.values(),
+        key=lambda m: parse_ship_date(m["order"].get("ship_date")) or date.max,
+    )
+    st_left = max(float(st or 0), 0.0)
+    for m in ordered:
+        used = min(st_left, m["need"])
+        st_left -= used
+        m["need"] -= used
+    left = max(float(purchase_qty or 0), 0.0)
+    out: List[Dict[str, Any]] = []
+    takes = []
+    for m in ordered:
+        take = min(left, m["need"])
+        takes.append((m, take if take > 1e-9 else 0.0))
+        if take <= 1e-9:
+            continue
+        left -= take
+        o = m["order"]
+        out.append({
+            "order_id": o.get("order_id") or 0,
+            "order_code": o.get("code") or "",
+            "model": o.get("model") or "",
+            "customer_po": str(o.get("po_number") or ""),
+            "ship_date": str(o.get("ship_date") or ""),
+            "dispatch_session_id": 0,
+            "qty": _qty_clean(take),
+            "kind": "order",
+        })
+    if left > 1e-9:
+        out.append({
+            "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
+            "dispatch_session_id": 0, "qty": _qty_clean(left), "kind": "extra",
+        })
+    remaining = [{**m["order"], "qty": m["need"] - min(left_take, m["need"])} for m, left_take in takes]
+    return out, [o for o in remaining if o["qty"] > 1e-9]
+
+
+def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
+    """依勾選的訂單重建每個料號的 ST 與各訂單需求（與缺料清單同一來源，不查 ERP）。"""
+    from ..routers import dispatch as dispatch_router  # 延遲載入避免循環相依
+
+    groups = dispatch_router.build_dispatch_groups(order_ids, {})
+    st_stock = {
+        str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
+    }
+    return {
+        key: {"st": st_stock.get(key, 0.0), "orders": entry["orders"]}
+        for key, entry in _aggregate(groups).items()
+    }
+
+
+def _manual_allocation(qty: float) -> List[Dict[str, Any]]:
+    return [{
+        "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
+        "dispatch_session_id": 0, "qty": _qty_clean(qty), "kind": "manual",
+    }]
+
+
+def prepare_groups(
+    groups: List[Dict[str, Any]], order_ids: Optional[List[int]] = None
+) -> List[Dict[str, Any]]:
+    """替每個勾選行依最終數量重算 allocations，並標記來源為 shortage_po。
+
+    沒有 order_ids、或料號不在這批訂單的需求內時，該行記成一筆 manual；
+    用戶端送來的 allocations 一律忽略（以伺服器重算為準）。
+    """
+    ids = list(dict.fromkeys(int(i) for i in (order_ids or []) if i))
+    context: Dict[str, Dict[str, Any]] = {}
+    if ids:
+        try:
+            context = _allocation_context(ids)
+        except Exception as exc:
+            logger.warning("缺料採購：重建訂單分配失敗，改記為手動：%s", type(exc).__name__)
+    # 同料號出現在多行（如拆給不同供應商）時依序接續分配：ST 只扣一次，後一行從前一行已覆蓋的需求之後開始
+    state: Dict[str, Dict[str, Any]] = {k: {"st": v["st"], "orders": v["orders"]} for k, v in context.items()}
+    out = []
+    for group in groups:
+        lines = []
+        for line in group.get("lines") or []:
+            part = str(line.get("part_number") or "").strip().upper()
+            qty = float(line.get("qty") or 0)
+            ctx = state.get(part)
+            if ctx:
+                allocations, remaining = _allocate(ctx["orders"], ctx["st"], qty)
+                ctx["st"], ctx["orders"] = 0.0, remaining
+            else:
+                allocations = _manual_allocation(qty)
+            lines.append({**line, "allocations": allocations})
+        out.append({**group, "lines": lines, "alloc_source": "shortage_po"})
+    return out
 
 
 # ── 勾選行 → 採購單請求 ──────────────────────────────────────────────────────
@@ -305,11 +431,13 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         category = overrides.get(key) or classify_part(key, entry["desc"] or description)
         st = st_stock.get(key, 0.0)
         open_qty, open_date = lookups["on_order"].get(key, (0.0, ""))
-        shortage = max(0.0, entry["need"] - max(st, 0.0) - float(open_qty or 0))
+        # 與發料單同一套規則：需求 − ST；在途僅供參考，不扣除
+        shortage = float(summarize_requested_supply(entry["need"], st)["purchase_needed_qty"])
 
         ship = parse_ship_date(entry["earliest"]["ship_date"])
         dates = {c: pre_in_date_for(c, ship).isoformat() if ship else "" for c in CATEGORY_LABELS}
         pre_in = dates[category]
+        suggested = int(math.ceil(shortage - 1e-9)) if shortage > 0 else 0
         parts_out.append({
             "part_number": key,
             "description": description,
@@ -324,7 +452,8 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "on_order_date": open_date,
             "shortage": shortage,
             "needs_purchase": shortage > 0,
-            "suggested_qty": int(math.ceil(shortage - 1e-9)) if shortage > 0 else 0,
+            "suggested_qty": suggested,
+            "allocations": allocate_purchase_to_orders(entry["orders"], st, suggested),
             "price": float(last.get("price") or 0),
             "last_bill_no": last.get("bill_no", ""),
             "last_bill_date": last.get("bill_date", ""),

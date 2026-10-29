@@ -712,5 +712,108 @@ class SuggestedQtyTests(unittest.TestCase):
             self.assertIsNone(ep._suggested_qty("Z-9"))
 
 
+class AllocationRecordTests(WriteFlowCase):
+    """開採購單：每行為哪些訂單而買的紀錄（僅記錄）。"""
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("INSERT INTO orders(id, code, model, po_number, status) VALUES(7, '10-1', 'T35U', '4500123', 'dispatched')")
+        self.conn.execute("INSERT INTO dispatch_sessions(id, order_id, rolled_back_at) VALUES(11, 7, '')")
+        self.conn.execute("INSERT INTO dispatch_sessions(id, order_id, rolled_back_at) VALUES(12, 7, '2026-10-01')")
+
+    def test_manual_default_without_allocations(self):
+        res = ep.create_po({**REQ, "confirm": True})
+        self.assertEqual([(a["kind"], a["qty"], a["order_id"]) for a in res["lines"][0]["allocations"]], [("manual", 10.0, 0)])
+        hist = db.list_erp_purchase_orders()
+        rows = db.get_po_line_allocations([hist[0]["id"]])
+        self.assertEqual([(r["kind"], r["source"], r["qty"], r["part_number"], r["row_no"], r["bill_no"], r["target_db"])
+                          for r in rows], [("manual", "manual_po", 10.0, "AC-40838B", 1, "PO-20261029001", "CHIComp01")])
+        self.assertIn("allocations", hist[0]["lines_json"])
+
+    def test_explicit_allocations_remainder_is_manual(self):
+        line = {**REQ["lines"][0], "allocations": [{"order_id": 7, "qty": 6, "kind": "order"}]}
+        res = ep.create_po({**REQ, "lines": [line], "confirm": True})
+        allocs = res["lines"][0]["allocations"]
+        self.assertEqual([(a["kind"], a["qty"]) for a in allocs], [("order", 6.0), ("manual", 4.0)])
+        # 訂單資料與有效發料批次（排除已退回的 12）由伺服器補上
+        self.assertEqual((allocs[0]["order_code"], allocs[0]["model"], allocs[0]["customer_po"], allocs[0]["dispatch_session_id"]),
+                         ("10-1", "T35U", "4500123", 11))
+
+    def test_allocation_validation(self):
+        for allocs in ([{"order_id": 7, "qty": 0}], [{"order_id": 7, "qty": -1}],
+                       [{"order_id": 7, "qty": 6}, {"order_id": 8, "qty": 5}], [{"order_id": 7, "qty": 1, "kind": "zzz"}]):
+            line = {**REQ["lines"][0], "allocations": allocs}
+            with self.assertRaises(ep.PoValidationError):
+                ep.normalize_request({**REQ, "lines": [line]})
+        self.assertEqual(db.list_erp_purchase_orders(), [])
+
+    def test_failed_write_saves_no_allocations(self):
+        self.tgt.fail_insert = "ordBillSub"
+        line = {**REQ["lines"][0], "allocations": [{"order_id": 7, "qty": 6}]}
+        with self.assertRaises(ep.ErpError):
+            ep.create_po({**REQ, "lines": [line], "confirm": True})
+        self.assertEqual(db.list_erp_purchase_orders()[0]["status"], "error")
+        self.assertEqual(db.get_po_line_allocations(), [])
+
+    def test_preview_includes_allocations_and_saves_nothing(self):
+        line = {**REQ["lines"][0], "allocations": [{"order_id": 7, "qty": 10}]}
+        out = ep.preview_many([{**REQ, "lines": [line]}])
+        self.assertEqual(out[0]["lines"][0]["allocations"][0]["order_code"], "10-1")
+        self.assertEqual(db.get_po_line_allocations(), [])
+
+    def test_history_includes_allocations_and_old_rows_empty(self):
+        old_id = db.add_erp_purchase_order({"bill_no": "OLD", "status": "ok", "lines_json": "[]"})
+        line = {**REQ["lines"][0], "allocations": [{"order_id": 7, "qty": 6}]}
+        ep.create_po({**REQ, "lines": [line], "confirm": True})
+        hist = {h["bill_no"]: h for h in ep.list_history()}
+        self.assertEqual(hist["OLD"]["id"], old_id)
+        self.assertEqual(hist["OLD"]["allocations"], [])
+        self.assertEqual([(a["row_no"], a["order_code"], a["qty"]) for a in hist["PO-20261029001"]["allocations"] if a["kind"] == "order"],
+                         [(1, "10-1", 6.0)])
+
+    def test_history_api(self):
+        from main import app
+        ep.create_po({**REQ, "confirm": True})
+        orders = TestClient(app).get("/api/erp/po/history").json()["orders"]
+        self.assertEqual(orders[0]["allocations"][0]["kind"], "manual")
+
+
+class DbAllocationTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(db._CREATE_SQL)
+
+        @contextmanager
+        def temp_conn():
+            yield self.conn
+            self.conn.commit()
+
+        p = patch.object(db, "get_conn", temp_conn)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_save_and_get(self):
+        n = db.save_po_line_allocations(5, "B1", "CHIComp01", [
+            {"row_no": 1, "part_number": " ab-1 ", "order_id": 3, "order_code": "10-1", "qty": 4, "kind": "order",
+             "source": "shortage_po", "dispatch_session_id": 9},
+            {"row_no": 1, "part_number": "AB-1", "qty": 1, "kind": "extra", "source": "shortage_po"},
+        ])
+        self.assertEqual(n, 2)
+        db.save_po_line_allocations(6, "B2", "CHIComp01", [{"row_no": 1, "part_number": "X", "qty": 2}])
+        rows = db.get_po_line_allocations([5])
+        self.assertEqual([(r["part_number"], r["order_id"], r["qty"], r["kind"], r["dispatch_session_id"]) for r in rows],
+                         [("AB-1", 3, 4.0, "order", 9), ("AB-1", 0, 1.0, "extra", 0)])
+        self.assertEqual(db.get_po_line_allocations(bill_no="B2")[0]["kind"], "manual")
+        self.assertEqual(db.get_po_line_allocations([]), [])
+        self.assertEqual(len(db.get_po_line_allocations()), 3)
+        self.assertEqual(db.save_po_line_allocations(1, "B", "T", []), 0)
+
+    def test_latest_active_session(self):
+        for sid, oid, rb in ((1, 7, ""), (2, 7, ""), (3, 7, "2026-01-01"), (4, 8, "2026-01-01")):
+            self.conn.execute("INSERT INTO dispatch_sessions(id, order_id, rolled_back_at) VALUES(?,?,?)", (sid, oid, rb))
+        self.assertEqual(db.get_latest_active_dispatch_session_ids([7, 8, 9]), {7: 2})
+
+
 if __name__ == "__main__":
     unittest.main()

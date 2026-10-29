@@ -488,6 +488,68 @@ def _to_decimal(value: Any, label: str) -> Decimal:
         raise PoValidationError(f"{label}不是有效數字") from None
 
 
+ALLOC_KINDS = ("order", "extra", "manual")
+ALLOC_SOURCES = ("shortage_po", "manual_po")
+_ALLOC_EPS = Decimal("0.000001")
+
+
+def _normalize_allocations(raw_allocs: Any, qty: Decimal, index: int) -> List[Dict[str, Any]]:
+    """驗證明細的訂單分配（每筆 qty>0、合計不得超過本行數量）；不足的部分補一筆 manual。"""
+    allocs: List[Dict[str, Any]] = []
+    total = Decimal(0)
+    for raw in raw_allocs or []:
+        a_qty = _to_decimal(raw.get("qty"), f"第 {index} 行分配數量")
+        if a_qty <= 0:
+            raise PoValidationError(f"第 {index} 行：分配數量必須大於 0")
+        kind = _text(raw.get("kind")) or ("order" if raw.get("order_id") else "manual")
+        if kind not in ALLOC_KINDS:
+            raise PoValidationError(f"第 {index} 行：分配類型不正確")
+        try:
+            order_id = int(raw.get("order_id") or 0)
+        except (TypeError, ValueError):
+            raise PoValidationError(f"第 {index} 行：分配訂單編號不正確") from None
+        total += a_qty
+        allocs.append({
+            "order_id": order_id,
+            "order_code": _text(raw.get("order_code")),
+            "model": _text(raw.get("model")),
+            "customer_po": _text(raw.get("customer_po")),
+            "ship_date": _text(raw.get("ship_date")),
+            "dispatch_session_id": 0,
+            "qty": float(a_qty),
+            "kind": kind,
+        })
+    if total > qty + _ALLOC_EPS:
+        raise PoValidationError(f"第 {index} 行：分配數量合計超過採購數量")
+    if qty - total > _ALLOC_EPS:
+        allocs.append({
+            "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
+            "dispatch_session_id": 0, "qty": float(qty - total), "kind": "manual",
+        })
+    return allocs
+
+
+def _resolve_allocation_orders(lines: List[Dict[str, Any]]) -> None:
+    """綁訂單的分配：補上訂單資料缺漏的欄位，並以本機資料查出目前有效的發料批次 id。"""
+    ids = [a["order_id"] for l in lines for a in l["allocations"] if a["order_id"] > 0]
+    if not ids:
+        return
+    from .. import database as db
+
+    sessions = db.get_latest_active_dispatch_session_ids(ids)
+    for line in lines:
+        for a in line["allocations"]:
+            if a["order_id"] <= 0:
+                continue
+            a["dispatch_session_id"] = sessions.get(a["order_id"], 0)
+            if not (a["order_code"] and a["model"]):
+                order = db.get_order(a["order_id"]) or {}
+                a["order_code"] = a["order_code"] or _text(order.get("code"))
+                a["model"] = a["model"] or _text(order.get("model"))
+                a["customer_po"] = a["customer_po"] or _text(order.get("po_number"))
+                a["ship_date"] = a["ship_date"] or _text(order.get("delivery_date") or order.get("ship_date"))
+
+
 def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
     supplier_id = _text(req.get("supplier_id"))
     if not supplier_id:
@@ -510,8 +572,13 @@ def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
             pre_in = datetime.strptime(_text(raw.get("pre_in_date")), "%Y-%m-%d").date()
         except ValueError:
             raise PoValidationError(f"第 {i} 行：預計進貨日格式需為 YYYY-MM-DD") from None
-        lines.append({"part_number": part, "qty": qty, "price": price, "pre_in_date": date_to_int(pre_in)})
+        lines.append({
+            "part_number": part, "qty": qty, "price": price, "pre_in_date": date_to_int(pre_in),
+            "allocations": _normalize_allocations(raw.get("allocations"), qty, i),
+        })
+    _resolve_allocation_orders(lines)
     return {
+        "alloc_source": _text(req.get("alloc_source")) if _text(req.get("alloc_source")) in ALLOC_SOURCES else "manual_po",
         "supplier_id": supplier_id,
         "remark": _text(req.get("remark")),
         "salesman": _text(req.get("salesman")) or _salesman_default(),
@@ -719,6 +786,7 @@ def _jsonable_lines(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "amount": float(line["amount"]),
             "tax_amt": float(line["tax_amt"]),
             "pre_in_date": f"{p // 10000:04d}-{p // 100 % 100:02d}-{p % 100:02d}",
+            "allocations": [dict(a) for a in line.get("allocations") or []],
         })
     return out
 
@@ -944,7 +1012,7 @@ def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") 
         db.log_activity("erp_po_failed", f"{target_label(target)} 供應商 {req['supplier_id']}：{message}")
         raise
     totals = result["totals"]
-    _safe_log(db, {
+    po_id = _safe_log(db, {
         **base_log,
         "bill_no": result["bill_no"],
         "supplier_name": result["supplier"]["name"],
@@ -955,6 +1023,7 @@ def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") 
         "total": totals["total"],
         "status": "ok",
     })
+    _safe_save_allocations(db, po_id, result, req["alloc_source"])
     db.log_activity(
         "erp_po_created",
         f"{target_label(target)} 採購單 {result['bill_no']}，供應商 {result['supplier']['id']}，"
@@ -963,11 +1032,36 @@ def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") 
     return {"ok": True, **result}
 
 
-def _safe_log(db, rec: Dict[str, Any]) -> None:
+def _safe_log(db, rec: Dict[str, Any]) -> Optional[int]:
     try:
-        db.add_erp_purchase_order(rec)
+        return db.add_erp_purchase_order(rec)
     except Exception:
-        pass  # 本機紀錄失敗不可蓋掉已完成的 ERP 結果
+        return None  # 本機紀錄失敗不可蓋掉已完成的 ERP 結果
+
+
+def _safe_save_allocations(db, po_id: Optional[int], result: Dict[str, Any], source: str) -> None:
+    """成功寫入 ERP 後，把每行「為哪些訂單而買」存入本機（僅記錄）；失敗不影響 ERP 結果。"""
+    if not po_id:
+        return
+    rows = [
+        {**a, "row_no": line["row_no"], "part_number": line["part_number"], "source": source}
+        for line in result["lines"] for a in line.get("allocations") or []
+    ]
+    try:
+        db.save_po_line_allocations(po_id, result["bill_no"], result["target"], rows)
+    except Exception:
+        pass
+
+
+def list_history(limit: int = 50) -> List[Dict[str, Any]]:
+    """採購單本機紀錄，成功的單附上 allocations（扁平清單，含 row_no / part_number）；舊單為空清單。"""
+    from .. import database as db
+
+    orders = db.list_erp_purchase_orders(limit)
+    by_po: Dict[int, List[Dict[str, Any]]] = {}
+    for a in db.get_po_line_allocations([o["id"] for o in orders]):
+        by_po.setdefault(int(a["erp_po_id"]), []).append(a)
+    return [{**o, "allocations": by_po.get(int(o["id"]), [])} for o in orders]
 
 
 # ── 查詢（來源公司，唯讀）────────────────────────────────────────────────────

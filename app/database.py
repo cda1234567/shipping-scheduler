@@ -390,6 +390,26 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
     error         TEXT NOT NULL DEFAULT ''
 );
 
+-- 網站開出的採購單每一行是為哪些訂單買的（僅記錄 / 顯示，不參與任何缺料扣減）
+CREATE TABLE IF NOT EXISTS erp_po_line_allocations (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    erp_po_id           INTEGER NOT NULL DEFAULT 0,
+    bill_no             TEXT NOT NULL DEFAULT '',
+    target_db           TEXT NOT NULL DEFAULT '',
+    row_no              INTEGER NOT NULL DEFAULT 0,
+    part_number         TEXT NOT NULL DEFAULT '',
+    order_id            INTEGER NOT NULL DEFAULT 0,
+    order_code          TEXT NOT NULL DEFAULT '',
+    model               TEXT NOT NULL DEFAULT '',
+    customer_po         TEXT NOT NULL DEFAULT '',
+    ship_date           TEXT NOT NULL DEFAULT '',
+    dispatch_session_id INTEGER NOT NULL DEFAULT 0,
+    qty                 REAL NOT NULL DEFAULT 0,
+    kind                TEXT NOT NULL DEFAULT 'manual',
+    source              TEXT NOT NULL DEFAULT 'manual_po',
+    created_at          TEXT NOT NULL DEFAULT ''
+);
+
 -- 缺料採購：料號「打件 / 後段」類別的人工指定（優先於自動判斷）
 CREATE TABLE IF NOT EXISTS part_purchase_categories (
     part_number TEXT PRIMARY KEY,
@@ -468,6 +488,9 @@ CREATE INDEX IF NOT EXISTS idx_bom_revisions_file ON bom_revisions(bom_file_id, 
 CREATE INDEX IF NOT EXISTS idx_bom_substitution_active ON bom_substitution_rules(status, model, old_part_number);
 CREATE INDEX IF NOT EXISTS idx_order_substitution_order ON order_substitution_allocations(order_id, rule_id);
 CREATE INDEX IF NOT EXISTS idx_dispatch_order ON dispatch_records(order_id);
+CREATE INDEX IF NOT EXISTS idx_erp_po_alloc_po ON erp_po_line_allocations(erp_po_id, row_no);
+CREATE INDEX IF NOT EXISTS idx_erp_po_alloc_bill ON erp_po_line_allocations(bill_no, target_db);
+CREATE INDEX IF NOT EXISTS idx_erp_po_alloc_order ON erp_po_line_allocations(order_id, part_number);
 CREATE INDEX IF NOT EXISTS idx_dispatch_records_part_at ON dispatch_records(UPPER(TRIM(part_number)), dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_order ON dispatch_sessions(order_id, rolled_back_at, id);
 CREATE INDEX IF NOT EXISTS idx_decisions_order ON decisions(order_id);
@@ -3897,6 +3920,70 @@ def list_erp_purchase_orders(limit: int = 50) -> list[dict]:
             "SELECT * FROM erp_purchase_orders ORDER BY id DESC LIMIT ?", (int(limit),)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_latest_active_dispatch_session_ids(order_ids: list[int]) -> dict[int, int]:
+    """每張訂單最近一次未退回的 dispatch_sessions.id；沒有的訂單不在結果內。"""
+    ids = list(dict.fromkeys(int(i) for i in order_ids if i))
+    result: dict[int, int] = {}
+    with get_conn() as conn:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT order_id, MAX(id) AS sid FROM dispatch_sessions "
+                f"WHERE rolled_back_at='' AND order_id IN ({marks}) GROUP BY order_id",
+                chunk,
+            ).fetchall()
+            result.update({int(r["order_id"]): int(r["sid"]) for r in rows})
+    return result
+
+
+def save_po_line_allocations(erp_po_id: int, bill_no: str, target_db: str, rows: list[dict]) -> int:
+    """寫入採購單明細的「為哪些訂單而買」紀錄；只做記錄，不參與缺料計算。回傳寫入筆數。"""
+    now = _now()
+    data = [
+        (
+            int(erp_po_id), str(bill_no or ""), str(target_db or ""), int(r.get("row_no") or 0),
+            str(r.get("part_number") or "").strip().upper(), int(r.get("order_id") or 0),
+            str(r.get("order_code") or ""), str(r.get("model") or ""), str(r.get("customer_po") or ""),
+            str(r.get("ship_date") or ""), int(r.get("dispatch_session_id") or 0),
+            float(r.get("qty") or 0), str(r.get("kind") or "manual"),
+            str(r.get("source") or "manual_po"), now,
+        )
+        for r in rows
+    ]
+    if not data:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT INTO erp_po_line_allocations(
+                   erp_po_id, bill_no, target_db, row_no, part_number, order_id, order_code, model,
+                   customer_po, ship_date, dispatch_session_id, qty, kind, source, created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            data,
+        )
+    return len(data)
+
+
+def get_po_line_allocations(erp_po_ids: list[int] | None = None, bill_no: str | None = None) -> list[dict]:
+    """依採購單本機 id 清單或單號查明細分配，依 erp_po_id、row_no、id 排序。"""
+    where, params = [], []
+    if erp_po_ids is not None:
+        ids = [int(i) for i in erp_po_ids]
+        if not ids:
+            return []
+        where.append(f"erp_po_id IN ({','.join('?' * len(ids))})")
+        params.extend(ids)
+    if bill_no is not None:
+        where.append("bill_no = ?")
+        params.append(str(bill_no))
+    sql = "SELECT * FROM erp_po_line_allocations"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY erp_po_id, row_no, id"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 def list_dispatched_orders_for_purchase(limit: int = 300) -> list[dict]:

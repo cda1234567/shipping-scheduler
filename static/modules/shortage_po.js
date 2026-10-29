@@ -1,6 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
-import { refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
+import { allocationText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
 
 const CATEGORY_LABELS = { smt: "打件", backend: "後段" };
 const SOURCE_LABELS = { master: "主檔", last_po: "最近採購", none: "未設定", manual: "手動" };
@@ -11,6 +11,7 @@ let _orders = [];
 let _checkedOrders = new Set();
 let _ordersLoaded = false;
 let _data = null; // /api/shortage-po/list 回應
+let _listOrderIds = []; // 產生目前缺料清單時勾選的訂單，預覽 / 寫入時送給伺服器重算訂單分配
 let _rows = [];
 let _remarks = {}; // supplierId → 使用者改過的備註
 let _showAll = false;
@@ -127,6 +128,7 @@ async function buildList() {
   el("shortage-po-result").hidden = true;
   try {
     _data = await apiJson(`/api/shortage-po/list?order_ids=${ids.join(",")}`);
+    _listOrderIds = ids;
     _config = _data.config || _config;
     renderBadge();
     _rows = (_data.parts || []).map(toRow);
@@ -243,7 +245,7 @@ function renderGroups() {
       </div>
       <div class="erp-po-table-wrap"><table class="erp-po-table shortage-po-table">
         <thead><tr><th></th><th>料號</th><th>品名</th><th>類別</th><th>供應商</th><th class="num">需求</th><th class="num">ST 現有</th>
-          <th class="num">在途</th><th class="num">缺</th><th>數量</th><th>單價</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
+          <th class="num" title="僅供參考，不從缺料量扣除（缺 = 需求 − ST）">在途（僅參考）</th><th class="num">缺</th><th>數量</th><th>單價</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
         <tbody>${list.map(rowHtml).join("")}</tbody>
       </table></div>
     </div>`;
@@ -429,7 +431,8 @@ function cardHtml(r) {
     <table class="erp-po-table"><thead><tr><th>料號</th><th>品名</th><th class="num">數量</th><th class="num">單價</th><th class="num">未稅金額</th><th>預計進貨日</th></tr></thead>
       <tbody>${r.lines.map(l => `<tr><td class="mono">${esc(l.part_number)}</td><td>${esc(l.product_name)}</td>
         <td class="num">${fmtQty(l.qty)}</td><td class="num">${fmtQty(l.price)}</td><td class="num">${fmtQty(l.amount)}</td>
-        <td>${esc(l.pre_in_date)}</td></tr>`).join("")}</tbody></table>
+        <td>${esc(l.pre_in_date)}</td></tr>
+        <tr class="shortage-po-alloc"><td colspan="6" class="erp-po-hint">${esc(allocationText(l.allocations))}</td></tr>`).join("")}</tbody></table>
     <div class="erp-po-totals">未稅 <strong>${fmtQty(r.totals.sum_amount)}</strong>　稅額 <strong>${fmtQty(r.totals.sum_tax)}</strong>　合計 <strong>${fmtQty(r.totals.total)}</strong></div>
   </div>`;
 }
@@ -458,7 +461,7 @@ async function handlePreview() {
   if (!groups.length) { showToast("請先勾選要採購的料", { tone: "error" }); return; }
   setBusy(true);
   try {
-    const data = await apiPost("/api/shortage-po/preview", { groups });
+    const data = await apiPost("/api/shortage-po/preview", { groups, order_ids: _listOrderIds });
     _previewResults = data.results || [];
     _previewSig = JSON.stringify(groups);
     renderPreview();
@@ -487,7 +490,7 @@ async function handleCreate() {
   setBusy(true);
   const out = el("shortage-po-result");
   try {
-    const data = await apiPost("/api/shortage-po/create", { groups, confirm: true });
+    const data = await apiPost("/api/shortage-po/create", { groups, order_ids: _listOrderIds, confirm: true });
     const results = data.results || [];
     out.innerHTML = resultHtml(results);
     out.className = `shortage-po-result ${results.every(r => r.ok) ? "is-ok" : "is-error"}`;

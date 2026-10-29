@@ -353,11 +353,22 @@ class LowStockSettingsRequest(BaseModel):
 
 # ── 正航 ERP 採購單 ───────────────────────────────────────────────────────────
 
+class ErpPoAllocation(BaseModel):
+    order_id: int = 0
+    order_code: str = ""
+    model: str = ""
+    customer_po: str = ""
+    ship_date: str = ""
+    qty: float
+    kind: str = ""  # order | extra | manual（空值依 order_id 判斷）
+
+
 class ErpPoLine(BaseModel):
     part_number: str
     qty: float
     price: float
     pre_in_date: str  # YYYY-MM-DD
+    allocations: Optional[list[ErpPoAllocation]] = None
 
 
 class ErpPoRequest(BaseModel):
@@ -380,6 +391,7 @@ class ShortagePoCategoryRequest(BaseModel):
 
 class ShortagePoRequest(BaseModel):
     groups: list[ErpPoRequest]
+    order_ids: list[int] = []  # 產生缺料清單時勾選的訂單，用來重算各料的訂單分配
 
 
 class ShortagePoCreateRequest(ShortagePoRequest):

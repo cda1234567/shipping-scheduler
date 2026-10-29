@@ -66,7 +66,10 @@ async def set_category(req: ShortagePoCategoryRequest):
 @router.post("/preview")
 async def shortage_preview(req: ShortagePoRequest):
     try:
-        results = await run_in_threadpool(erp_purchase.preview_many, [g.dict() for g in req.groups])
+        groups = await run_in_threadpool(
+            shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
+        )
+        results = await run_in_threadpool(erp_purchase.preview_many, groups)
     except ErpError as exc:
         raise _http_error(exc) from None
     return {"results": results}
@@ -78,9 +81,10 @@ async def shortage_create(req: ShortagePoCreateRequest, request: Request):
         raise HTTPException(400, "需確認後才會寫入正航（confirm=true）")
     ip = request.client.host if request.client else ""
     try:
-        results = await run_in_threadpool(
-            shortage_purchase.create_many, [g.dict() for g in req.groups], ACTOR, ip
+        groups = await run_in_threadpool(
+            shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
+        results = await run_in_threadpool(shortage_purchase.create_many, groups, ACTOR, ip)
     except ErpError as exc:
         raise _http_error(exc) from None
     return {"results": results}

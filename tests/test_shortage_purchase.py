@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import unittest
@@ -227,13 +228,32 @@ class ShortageListTests(Base):
         self.assertEqual((p["OC-1"]["need"], p["OC-1"]["shortage"]), (70, 70))
         self.assertTrue(p["OC-1"]["needs_purchase"])
         self.assertEqual((p["PK-1"]["shortage"], p["PK-1"]["needs_purchase"], p["PK-1"]["suggested_qty"]), (0, False, 0))
-        # 在途扣除
-        self.assertEqual((p["AC-1"]["on_order"], p["AC-1"]["shortage"], p["AC-1"]["needs_purchase"]), (5, 0, False))
+        # 在途只供參考，不扣除：AC-1 需求 5、ST 0、在途 5 → 仍缺 5
+        self.assertEqual((p["AC-1"]["on_order"], p["AC-1"]["shortage"], p["AC-1"]["needs_purchase"]), (5, 5, True))
         self.on_order = {"AC-1": (2.0, "")}
         self.groups[1]["items"][2]["need_qty"] = 5.4
         _, p = self.parts()
-        self.assertAlmostEqual(p["AC-1"]["shortage"], 3.4)
-        self.assertEqual(p["AC-1"]["suggested_qty"], 4)
+        self.assertAlmostEqual(p["AC-1"]["shortage"], 5.4)
+        self.assertEqual((p["AC-1"]["on_order"], p["AC-1"]["suggested_qty"]), (2, 6))
+
+    def test_on_order_not_deducted(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 100)])]
+        self.st = {"AC-1": 30}
+        self.on_order = {"AC-1": (50.0, "2026-11-01")}
+        _, p = self.parts()
+        self.assertEqual((p["AC-1"]["shortage"], p["AC-1"]["on_order"], p["AC-1"]["on_order_date"]), (70, 50, "2026-11-01"))
+
+    def test_shortage_matches_summarize_requested_supply(self):
+        from app.services.shortage_rules import summarize_requested_supply
+        for need, st, expect_buy in ((100, 30, True), (100, -20, True), (100, 100, False), (100, 250, False)):
+            self.groups = [group(1, "A", "2026-12-10", [item("AC-1", need)])]
+            self.st = {"AC-1": st}
+            self.on_order = {"AC-1": (999.0, "")}
+            _, p = self.parts()
+            want = summarize_requested_supply(need, st)["purchase_needed_qty"]
+            self.assertEqual(p["AC-1"]["shortage"], want)
+            self.assertEqual(p["AC-1"]["needs_purchase"], expect_buy)
+        self.assertEqual((p["AC-1"]["shortage"], p["AC-1"]["suggested_qty"]), (0, 0))
 
     def test_supplier_priority(self):
         _, p = self.parts()
@@ -307,6 +327,185 @@ class ShortageListTests(Base):
         res = sp.build_shortage_list([1])
         self.assertEqual(res["parts"], [])
         self.assertTrue(res["warnings"])
+
+
+def aorder(oid, code, ship, qty):
+    return {"order_id": oid, "code": code, "model": f"M{oid}", "po_number": f"PO{oid}", "ship_date": ship, "qty": qty}
+
+
+class AllocateTests(unittest.TestCase):
+    def pairs(self, out):
+        return [(a["order_id"], a["qty"], a["kind"]) for a in out]
+
+    def test_st_consumed_earliest_first_then_purchase(self):
+        orders = [aorder(1, "B", "2026-12-28", 100), aorder(2, "A", "2026-12-10", 40)]
+        out = sp.allocate_purchase_to_orders(orders, 60, 80)  # ST 先抵 A 40、B 20；剩 B 80
+        self.assertEqual(self.pairs(out), [(1, 80.0, "order")])
+        self.assertEqual((out[0]["order_code"], out[0]["customer_po"], out[0]["ship_date"]), ("B", "PO1", "2026-12-28"))
+
+    def test_partial_fills_earliest_orders_first(self):
+        orders = [aorder(1, "B", "2026-12-28", 100), aorder(2, "A", "2026-12-10", 40), aorder(3, "C", "2027-01-05", 10)]
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 0, 50)), [(2, 40.0, "order"), (1, 10.0, "order")])
+
+    def test_extra_when_overbuying(self):
+        orders = [aorder(1, "A", "2026-12-10", 40)]
+        out = sp.allocate_purchase_to_orders(orders, 10, 50)
+        self.assertEqual(self.pairs(out), [(1, 30.0, "order"), (0, 20.0, "extra")])
+
+    def test_empty_dates_last_and_stable(self):
+        orders = [aorder(1, "N1", "", 10), aorder(2, "D", "2026-12-10", 10), aorder(3, "N2", "", 10)]
+        self.assertEqual([a["order_id"] for a in sp.allocate_purchase_to_orders(orders, 0, 30)], [2, 1, 3])
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 0, 15)), [(2, 10.0, "order"), (1, 5.0, "order")])
+
+    def test_negative_st_counts_as_zero(self):
+        orders = [aorder(1, "A", "2026-12-10", 70)]
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, -30, 70)), [(1, 70.0, "order")])
+
+    def test_st_covers_everything_and_zero_purchase(self):
+        orders = [aorder(1, "A", "2026-12-10", 40)]
+        self.assertEqual(sp.allocate_purchase_to_orders(orders, 100, 0), [])
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 100, 5)), [(0, 5.0, "extra")])
+
+    def test_same_order_rows_merge(self):
+        orders = [aorder(1, "A", "2026-12-10", 10), aorder(1, "A", "2026-12-10", 15)]
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 0, 25)), [(1, 25.0, "order")])
+
+
+class AllocationFlowTests(ShortageListTests):
+    def test_list_has_default_allocations_and_nothing_is_subtracted(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 100)]), group(2, "B", "2026-12-28", [item("AC-1", 50)])]
+        self.st = {"AC-1": 30}
+        self.on_order = {"AC-1": (500.0, "2026-11-01")}
+        # 把這張 PO 記為替訂單 1 買的，也不會改變缺料
+        db.save_po_line_allocations(1, "B1", "CHIComp01", [
+            {"row_no": 1, "part_number": "AC-1", "order_id": 1, "qty": 500, "kind": "order", "source": "shortage_po"}])
+        _, p = self.parts()
+        self.assertEqual((p["AC-1"]["shortage"], p["AC-1"]["suggested_qty"]), (120, 120))
+        self.assertEqual([(a["order_id"], a["qty"], a["kind"]) for a in p["AC-1"]["allocations"]],
+                         [(1, 70.0, "order"), (2, 50.0, "order")])
+
+    def test_prepare_groups_recomputes_from_final_qty(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 100)]), group(2, "B", "2026-12-28", [item("AC-1", 50)])]
+        self.st = {"AC-1": 30}
+        raw = [{"supplier_id": "S2", "remark": "", "lines": [
+            {"part_number": "ac-1", "qty": 130, "price": 1, "pre_in_date": "2026-11-01",
+             "allocations": [{"order_id": 99, "qty": 1}]},
+            {"part_number": "ZZ-9", "qty": 7, "price": 1, "pre_in_date": "2026-11-01"}]}]
+        out = sp.prepare_groups(raw, [1, 2])
+        self.assertEqual(out[0]["alloc_source"], "shortage_po")
+        la, lz = out[0]["lines"]
+        self.assertEqual([(a["order_id"], a["qty"], a["kind"]) for a in la["allocations"]],
+                         [(1, 70.0, "order"), (2, 50.0, "order"), (0, 10.0, "extra")])  # 客戶端送的 99 被忽略
+        self.assertEqual([(a["kind"], a["qty"]) for a in lz["allocations"]], [("manual", 7.0)])
+        # 沒有 order_ids → 全部 manual
+        out = sp.prepare_groups(raw, None)
+        self.assertEqual([a["kind"] for a in out[0]["lines"][0]["allocations"]], ["manual"])
+
+    def test_prepare_groups_context_failure_degrades_to_manual(self):
+        raw = [{"supplier_id": "S2", "lines": [{"part_number": "AC-1", "qty": 3, "price": 1, "pre_in_date": "2026-11-01"}]}]
+        with patch.object(dispatch_router, "build_dispatch_groups", side_effect=RuntimeError("x")):
+            out = sp.prepare_groups(raw, [1])
+        self.assertEqual(out[0]["lines"][0]["allocations"][0]["kind"], "manual")
+
+    def test_router_passes_order_ids_to_preview_and_create(self):
+        from main import app
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        client = TestClient(app)
+        grp = {"supplier_id": "S2", "remark": "", "lines": [{"part_number": "EC-1", "qty": 80, "price": 1, "pre_in_date": "2026-11-01"}]}
+        seen = {}
+        with patch.object(ep, "preview_many", lambda reqs: seen.setdefault("p", reqs) and [{"ok": True}]):
+            client.post("/api/shortage-po/preview", json={"groups": [grp], "order_ids": [1, 2, 3]})
+        line = seen["p"][0]["lines"][0]
+        self.assertEqual([(a["order_id"], a["qty"]) for a in line["allocations"]], [(1, 80.0)])  # ST 60 先抵訂單 2 的 40 與訂單 1 的 20
+
+        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="": seen.setdefault("c", req) and
+                          {"ok": True, "bill_no": "X", "supplier": {}, "totals": {}, "lines": []}):
+            client.post("/api/shortage-po/create", json={"groups": [grp], "order_ids": [1, 2, 3], "confirm": True})
+        self.assertEqual(seen["c"]["alloc_source"], "shortage_po")
+
+
+class SequentialAllocationTests(AllocationFlowTests):
+    def test_same_part_split_across_lines_continues_and_consumes_st_once(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 100)]), group(2, "B", "2026-12-28", [item("AC-1", 50)])]
+        self.st = {"AC-1": 30}  # 淨需求 120：A 70、B 50
+        raw = [
+            {"supplier_id": "S2", "lines": [{"part_number": "AC-1", "qty": 40, "price": 1, "pre_in_date": "2026-11-01"}]},
+            {"supplier_id": "S3", "lines": [{"part_number": "ac-1", "qty": 90, "price": 1, "pre_in_date": "2026-11-01"}]},
+        ]
+        out = sp.prepare_groups(raw, [1, 2])
+        pairs = lambda g: [(a["order_id"], a["qty"], a["kind"]) for a in out[g]["lines"][0]["allocations"]]
+        self.assertEqual(pairs(0), [(1, 40.0, "order")])
+        self.assertEqual(pairs(1), [(1, 30.0, "order"), (2, 50.0, "order"), (0, 10.0, "extra")])
+        # 兩行合計 = 淨需求 120 + 超買 10，ST 沒有被重複扣
+        total = sum(a["qty"] for g in out for a in g["lines"][0]["allocations"])
+        self.assertEqual(total, 130.0)
+
+
+class SupplierResolutionTests(ShortageListTests):
+    def test_resolve_supplier_rules(self):
+        sups = {"S1": "供一", "S2": "供二"}
+        r = sp.resolve_supplier
+        self.assertEqual(r("S1", "S2", sups), ("S1", "master"))  # 主檔有效 > 最近採購
+        self.assertEqual(r("GONE", "S2", sups), ("S2", "last_po"))  # 主檔不是現有供應商 → 最近採購
+        self.assertEqual(r("", "S2", sups), ("S2", "last_po"))
+        self.assertEqual(r("", "", sups), ("", "none"))
+        self.assertEqual(r(None, None, sups), ("", "none"))
+        self.assertEqual(r("  S1 ", "S2", sups), ("S1", "master"))  # 去空白
+        self.assertEqual(r("", "  S2 ", sups), ("S2", "last_po"))
+        self.assertEqual(r("   ", "   ", sups), ("", "none"))
+
+    def test_build_shortage_list_supplier_per_part(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("EC-1", 1), item("OC-1", 1), item("PK-1", 1), item("NEW-1", 1)])]
+        self.erp["products"].append(("NEW-1", "新料", ""))
+        _, p = self.parts()
+        got = {k: (v["supplier_id"], v["supplier_source"]) for k, v in p.items()}
+        self.assertEqual(got["EC-1"], ("S1", "master"))      # 主檔 S1 有效
+        self.assertEqual(got["OC-1"], ("S2", "last_po"))     # 主檔 GONE 不存在 → 最近採購
+        self.assertEqual(got["PK-1"], ("S3", "last_po"))     # 主檔空 → 最近採購
+        self.assertEqual(got["NEW-1"], ("", "none"))         # 都沒有
+        self.assertEqual(p["EC-1"]["supplier_name"], "供一")
+
+    def test_master_wins_even_if_last_po_differs(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("EC-1", 1)])]
+        self.erp["last_po"].append(("EC-1", "S3", 2.0, "PO-20260901009", 20260901))
+        _, p = self.parts()
+        self.assertEqual((p["EC-1"]["supplier_id"], p["EC-1"]["supplier_source"]), ("S1", "master"))
+
+    def test_lookup_last_po_orders_by_date_then_billno_desc(self):
+        data = {"sql": [], "params": [], "last_po": [("OC-1", "S2", 3.5, "PO-1", 20260901)]}
+        res = sp._lookup_last_po(FakeErpConn(data), ["OC-1"])
+        sql = data["sql"][0]
+        self.assertIn("ORDER BY m.BillDate DESC, m.BillNO DESC", sql)
+        self.assertIn("PARTITION BY s.ProdID", sql)
+        self.assertIn("rn = 1", sql)
+        self.assertIn("s.Flag = 4", sql)
+        self.assertEqual(res["OC-1"]["supplier_id"], "S2")
+        self.assertEqual(res["OC-1"]["bill_date"], "2026-09-01")
+
+
+class QtySourceTests(ShortageListTests):
+    def test_suggested_qty_is_need_minus_st_and_ignores_on_order(self):
+        self.groups = [
+            group(1, "A", "2026-12-10", [item("AC-1", 33.5)]),
+            group(2, "B", "2026-12-28", [item("AC-1", 50)]),
+            group(3, "C", "2027-01-05", [item("AC-1", 20)]),
+        ]
+        self.st = {"AC-1": 10}
+        self.on_order = {}
+        _, p = self.parts()
+        expected = math.ceil(33.5 + 50 + 20 - 10)  # 94
+        self.assertEqual(p["AC-1"]["suggested_qty"], expected)
+        self.assertEqual(p["AC-1"]["on_order"], 0)
+        self.on_order = {"AC-1": (1000.0, "2026-11-01")}
+        _, p = self.parts()
+        self.assertEqual(p["AC-1"]["suggested_qty"], expected)  # 在途不影響
+        self.assertEqual(p["AC-1"]["on_order"], 1000.0)
+
+    def test_st_covers_need_means_no_purchase(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 20)])]
+        self.st = {"AC-1": 20}
+        _, p = self.parts()
+        self.assertEqual((p["AC-1"]["suggested_qty"], p["AC-1"]["needs_purchase"]), (0, False))
 
 
 class GroupLinesTests(unittest.TestCase):
