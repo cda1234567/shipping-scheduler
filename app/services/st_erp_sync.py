@@ -106,6 +106,11 @@ def sync_st_inventory_from_erp(actor: str = ERP_ACTOR) -> dict:
             actor=actor,
             activity_detail=f"從正航 ERP 同步 ST 庫存（{ware_id}），{len(stock)} 筆",
         )
+        try:  # 在途量刷新獨立處理，失敗不影響庫存同步結果
+            from . import low_stock
+            low_stock.refresh_on_order()
+        except Exception:
+            logger.warning("同步後刷新低庫存在途量失敗", exc_info=True)
         return {
             "ok": True,
             "source": ST_SOURCE_ERP,

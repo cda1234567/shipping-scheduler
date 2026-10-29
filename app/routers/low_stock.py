@@ -58,6 +58,9 @@ async def get_low_stock_alerts():
                 "last_purchase_date": a["last_purchase_date"],
                 "last_purchase_supplier": a["last_purchase_supplier"],
                 "note": a["note"],
+                "on_order_qty": a["on_order_qty"],
+                "next_expected_date": a["next_expected_date"],
+                "on_order_note": a["on_order_note"],
             }
             for a in alerts
         ],

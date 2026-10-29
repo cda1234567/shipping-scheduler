@@ -348,3 +348,4 @@ class LowStockSettingsRequest(BaseModel):
     lead_sample_size: Optional[float] = None
     actual_lead_ratio: Optional[float] = None
     actual_lead_min_gap_days: Optional[float] = None
+    on_order_max_overdue_days: Optional[float] = None

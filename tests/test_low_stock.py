@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from contextlib import contextmanager
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -121,7 +122,10 @@ class DbCase(unittest.TestCase):
             p.start()
         self.usage = {}
         self.info = {}
+        self.on_order = {}
         self.add_patchers = [
+            patch.object(ls, "_query_on_order", lambda conn, parts, *a, **k: {
+                p: v for p, v in self.on_order.items() if p in parts}),
             patch.object(ls, "_query_usage", lambda conn, ware, start, end, parts=None: {
                 k: v for k, v in self.usage.items() if parts is None or k in parts}),
             patch.object(ls, "_query_part_info", lambda conn, parts, ware, today, cfg: {
@@ -237,6 +241,149 @@ class RunSuggestionTests(DbCase):
         ls.run_suggestion(actor="admin_oneoff")
         log = self.conn.execute("SELECT detail FROM activity_logs").fetchone()
         self.assertIn("admin_oneoff", log["detail"])
+
+
+class OnOrderTests(DbCase):
+    def test_calc_status_on_order(self):
+        self.assertEqual(ls.calc_status(True, 10, 100, 90), "on_order")
+        self.assertEqual(ls.calc_status(True, 10, 100, 89), "low")
+        self.assertEqual(ls.calc_status(True, 10, 100), "low")
+        self.assertEqual(ls.calc_status(True, 100, 100, 50), "ok")
+        self.assertEqual(ls.calc_status(False, 10, 100, 500), "disabled")
+
+    def test_run_suggestion_writes_on_order(self):
+        self.usage = {"A-1": (900.0, 5)}
+        self.on_order = {"A-1": (500.0, "2026-11-05")}
+        summary = ls.run_suggestion()
+        self.assertTrue(summary["on_order_ok"])
+        r = self.row("A-1")
+        self.assertEqual((r["on_order_qty"], r["next_expected_date"], r["on_order_note"]), (500.0, "2026-11-05", ""))
+        self.assertTrue(r["on_order_synced_at"])
+
+    def test_on_order_failure_counts_zero_with_note(self):
+        self.usage = {"A-1": (900.0, 5)}
+        self.on_order = {"A-1": (500.0, "2026-11-05")}
+        ls.run_suggestion()
+        with patch.object(ls, "_query_on_order", side_effect=RuntimeError("boom")):
+            with self.assertLogs("low_stock", level="WARNING"):
+                summary = ls.run_suggestion()
+        self.assertFalse(summary["on_order_ok"])
+        r = self.row("A-1")
+        self.assertEqual(r["on_order_qty"], 0)
+        self.assertEqual(r["next_expected_date"], "")
+        self.assertIn("在途量查詢失敗", r["on_order_note"])
+        self.assertIsNotNone(r["threshold_qty"])  # 其他部分照常寫入
+        self.set_stock("A-1", 1)
+        self.assertEqual(ls.list_rows()[0]["status"], "low")
+
+    def test_list_rows_and_alerts(self):
+        self.usage = {"A-1": (900.0, 5), "B-1": (900.0, 5), "C-1": (900.0, 5)}
+        self.on_order = {"A-1": (1000.0, "2026-11-05"), "B-1": (5.0, "2026-11-09")}
+        ls.run_suggestion()  # 門檻皆 105
+        self.set_stock("A-1", 10)
+        self.set_stock("B-1", 10)
+        self.set_stock("C-1", 500)
+        rows = ls.list_rows()
+        self.assertEqual([(r["part_number"], r["status"]) for r in rows],
+                         [("B-1", "low"), ("A-1", "on_order"), ("C-1", "ok")])
+        self.assertEqual(rows[0]["on_order_qty"], 5.0)
+        self.assertEqual(rows[2]["on_order_qty"], 0)
+        self.assertEqual(rows[2]["next_expected_date"], "")
+        self.assertEqual([a["part_number"] for a in ls.list_alerts()], ["B-1"])
+
+    def test_migration_adds_columns_to_old_table(self):
+        self.conn.execute("DROP TABLE low_stock_watch")
+        self.conn.execute("CREATE TABLE low_stock_watch (part_number TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '')")
+        db.ensure_low_stock_table()
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(low_stock_watch)").fetchall()}
+        self.assertTrue({"on_order_qty", "next_expected_date", "on_order_synced_at", "on_order_note"} <= cols)
+
+    def test_config_rules(self):
+        self.assertEqual(ls.get_config()["on_order_max_overdue_days"], 90)
+        self.assertEqual(ls.validate_config({"on_order_max_overdue_days": 0}), {"on_order_max_overdue_days": 0})
+        for bad in (-1, 3651, 1.5):
+            with self.assertRaises(ls.LowStockError):
+                ls.validate_config({"on_order_max_overdue_days": bad})
+        self.assertEqual(ls.CONFIG_LABELS["on_order_max_overdue_days"], "在途逾期排除天數")
+
+    def test_refresh_on_order_updates_and_swallows_failure(self):
+        self.usage = {"A-1": (900.0, 5)}
+        ls.run_suggestion()
+        self.on_order = {"A-1": (7.0, "2026-11-01")}
+        self.assertEqual(ls.refresh_on_order(), 1)
+        self.assertEqual(self.row("A-1")["on_order_qty"], 7.0)
+        with patch.object(ls, "_query_on_order", side_effect=RuntimeError("x")):
+            self.assertEqual(ls.refresh_on_order(), 1)
+        self.assertEqual(self.row("A-1")["on_order_qty"], 0)
+        with patch.object(ls, "_erp_session", side_effect=erp_stock.ErpUnavailable("down")):
+            self.assertEqual(ls.refresh_on_order(), 1)
+        self.assertIn("在途量查詢失敗", self.row("A-1")["on_order_note"])
+
+    def test_st_sync_refreshes_on_order_independently(self):
+        from app.services import st_erp_sync
+        with patch.object(ls, "refresh_on_order", side_effect=RuntimeError("boom")) as refresh, \
+                patch.object(erp_stock, "get_st_stock", return_value={
+                    "rows": [{"part_number": "A-1", "quantity": 5, "name": "x"}], "ware_id": "001"}), \
+                patch.object(st_erp_sync, "apply_st_inventory_snapshot",
+                             return_value={"part_count": 1, "loaded_at": "t"}):
+            result = st_erp_sync.sync_st_inventory_from_erp()
+        refresh.assert_called_once()
+        self.assertTrue(result["ok"])
+
+
+class QueryOnOrderTests(unittest.TestCase):
+    class FakeCursor:
+        def __init__(self, rows):
+            self.rows, self.calls = rows, []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+
+        def fetchall(self):
+            return self.rows
+
+    class FakeConn:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def cursor(self):
+            return self._cursor
+
+    def query(self, rows, **kw):
+        cur = self.FakeCursor(rows)
+        out = ls._query_on_order(self.FakeConn(cur), ["a-1", "B-2"], date(2026, 10, 29), 90)
+        return out, cur
+
+    def test_sums_open_and_earliest_date(self):
+        rows = [
+            ("a-1", "PO1", 1, 100.0, 20261120),
+            ("A-1", "PO2", 1, 50.0, 20261105),
+            ("A-1", "PO3", 2, 0.0, 20261001),    # 已全數進貨
+            ("A-1", "PO4", 1, -5.0, 20261001),   # 超收
+            ("B-2", "PO5", 1, 30.0, 0),          # 無效交期 → 不計日期
+        ]
+        out, _ = self.query(rows)
+        self.assertEqual(out, {"A-1": (150.0, "2026-11-05"), "B-2": (30.0, "")})
+
+    def test_no_open_rows_means_absent(self):
+        out, _ = self.query([("A-1", "PO1", 1, 0, 20261105)])
+        self.assertEqual(out, {})
+
+    def test_sql_parameterized_with_cutoff(self):
+        _, cur = self.query([])
+        sql, params = cur.calls[0]
+        self.assertNotIn("A-1", sql)
+        self.assertIn("s.PreInDate >= %s", sql)
+        self.assertIn("h.BillStatus = 0", sql)
+        self.assertIn("h.EndacaseDate = 0", sql)
+        self.assertEqual(params[0], 20260731)  # 2026-10-29 減 90 天
+        self.assertEqual(params[1:], ("A-1", "B-2", "A-1", "B-2"))
+
+    def test_batches_large_part_lists(self):
+        cur = self.FakeCursor([])
+        parts = [f"P{i}" for i in range(ls.IN_CHUNK + 1)]
+        ls._query_on_order(self.FakeConn(cur), parts, date(2026, 10, 29), 90)
+        self.assertEqual(len(cur.calls), 2)
 
 
 class EditRuleTests(DbCase):
@@ -383,6 +530,28 @@ class ApiTests(DbCase):
                     "planned_lead_days", "actual_lead_days", "delay_days", "last_purchase_date",
                     "last_purchase_supplier", "note"):
             self.assertIn(key, alert)
+
+    def test_on_order_fields_and_status(self):
+        self.conn.execute(
+            "UPDATE low_stock_watch SET on_order_qty=?, next_expected_date=?, on_order_note=? WHERE part_number='A-1'",
+            (200.0, "2026-11-05", ""))
+        self.conn.commit()
+        data = self.client.get("/api/low-stock/alerts").json()
+        self.assertEqual(data["count"], 0)  # 10 + 200 >= 105 → 已下單
+        rows = {r["part_number"]: r for r in self.client.get("/api/low-stock/watchlist").json()["rows"]}
+        self.assertEqual(rows["A-1"]["status"], "on_order")
+        self.assertEqual(rows["A-1"]["on_order_qty"], 200.0)
+        self.assertEqual(rows["A-1"]["next_expected_date"], "2026-11-05")
+        self.assertEqual(rows["B-1"]["on_order_qty"], 0)
+        self.assertEqual(rows["B-1"]["next_expected_date"], "")
+        self.assertIn("on_order_note", rows["B-1"])
+        self.assertEqual(self.client.get("/api/low-stock/watchlist").json()["low_count"], 0)
+        # 在途不足仍是 low，alerts 帶欄位
+        self.conn.execute("UPDATE low_stock_watch SET on_order_qty=20 WHERE part_number='A-1'")
+        self.conn.commit()
+        alert = self.client.get("/api/low-stock/alerts").json()["alerts"][0]
+        self.assertEqual((alert["on_order_qty"], alert["next_expected_date"]), (20.0, "2026-11-05"))
+        self.assertIn("on_order_note", alert)
 
     def test_alerts_never_calls_erp(self):
         with patch.object(ls, "_erp_session", side_effect=AssertionError("no ERP")):
@@ -535,6 +704,10 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("/api/low-stock/alerts", module)
         self.assertIn("main_file_filter_applied", module)
         self.assertIn('id="low-stock-main-hint"', index)
+        self.assertIn('id="low-stock-hide-on-order"', index)
+        self.assertIn("隱藏已下單", index)
+        self.assertIn("已下單", module)
+        self.assertIn("localStorage", module)
         self.assertNotIn("fetch(", module.replace("apiFetch", ""))
 
 

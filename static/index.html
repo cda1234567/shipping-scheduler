@@ -362,6 +362,7 @@
           </div>
           <span class="spacer"></span>
           <label class="low-stock-filter"><input type="checkbox" id="low-stock-only-low"> 只看低庫存</label>
+          <label class="low-stock-filter" title="已下採購單、現有量加在途量已達門檻的料號"><input type="checkbox" id="low-stock-hide-on-order" checked> 隱藏已下單</label>
           <button class="btn btn-secondary btn-sm" id="btn-low-stock-settings-toggle">設定</button>
           <button class="btn btn-primary btn-sm" id="btn-low-stock-suggest" title="從正航 ERP 重新計算常用料號與建議門檻（不會覆蓋手動設定）">重新建議</button>
         </div>
@@ -373,6 +374,7 @@
           <label>預設交期（天） <input type="number" id="low-stock-set-default-lead" min="1" max="365" step="1"></label>
           <label>實際交期比例上限 <input type="number" id="low-stock-set-actual-ratio" min="0" max="1" step="0.05"></label>
           <label>實際交期最少縮短天數 <input type="number" id="low-stock-set-actual-gap" min="0" max="365" step="1"></label>
+          <label>在途逾期排除天數 <input type="number" id="low-stock-set-on-order-overdue" min="0" max="3650" step="1"></label>
           <button class="btn btn-primary btn-sm" id="btn-low-stock-save-settings">儲存設定</button>
           <span class="low-stock-hint">儲存後會用已存的統計重算自動門檻；統計天數與最少單據數於下次「重新建議」生效。</span>
         </div>
@@ -392,6 +394,7 @@
                 <th>料號</th>
                 <th>品名</th>
                 <th class="num">現有量</th>
+                <th>在途量 / 預計交期</th>
                 <th class="num">月均用量</th>
                 <th>交期(天)</th>
                 <th class="num">預定交期(天)</th>

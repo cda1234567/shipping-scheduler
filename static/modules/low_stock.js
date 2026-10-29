@@ -2,6 +2,7 @@ import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
 
 const REFRESH_MS = 5 * 60 * 1000;
+const HIDE_ON_ORDER_KEY = "low-stock-hide-on-order";
 
 let _rows = [];
 let _settings = {};
@@ -43,8 +44,11 @@ export async function refreshLowStockAlerts() {
   if (notice) notice.style.display = count > 0 ? "" : "none";
   if (btn) btn.textContent = `⚠ ${count} 個常用料號低於門檻`;
   if (meta) {
-    const worst = (data.alerts || []).slice(0, 3).map(a => a.part_number).join("、");
-    meta.textContent = worst ? `最急：${worst}` : "";
+    const alerts = data.alerts || [];
+    const worst = alerts.slice(0, 3).map(a => a.part_number).join("、");
+    const withOrder = alerts.filter(a => Number(a.on_order_qty) > 0).length;
+    const orderText = withOrder > 0 ? `；其中 ${withOrder} 個已有在途量` : "";
+    meta.textContent = worst ? `最急：${worst}${orderText}` : "";
   }
 }
 
@@ -95,6 +99,7 @@ function renderSettings() {
     "low-stock-set-default-lead": "default_lead_days",
     "low-stock-set-actual-ratio": "actual_lead_ratio",
     "low-stock-set-actual-gap": "actual_lead_min_gap_days",
+    "low-stock-set-on-order-overdue": "on_order_max_overdue_days",
   };
   const panel = document.getElementById("low-stock-settings-panel");
   if (panel && !panel.hidden) return; // 編輯中不覆蓋輸入
@@ -112,7 +117,18 @@ function delayHtml(days) {
   return "準時";
 }
 
+function onOrderHtml(r) {
+  const qty = Number(r.on_order_qty || 0);
+  if (qty > 0) {
+    const date = r.next_expected_date ? `，預計 ${esc(r.next_expected_date)}` : "";
+    return `<span class="low-stock-on-order-info">在途 ${fmtNum(qty)}${date}</span>`;
+  }
+  if (r.on_order_note) return `<span class="low-stock-hint" title="${esc(r.on_order_note)}">${esc(r.on_order_note)}</span>`;
+  return "—";
+}
+
 function statusHtml(status) {
+  if (status === "on_order") return '<span class="low-stock-status on_order">已下單</span>';
   if (status === "low") return '<span class="low-stock-status low">低於門檻</span>';
   if (status === "disabled") return '<span class="low-stock-status disabled">停用</span>';
   return '<span class="low-stock-status ok">正常</span>';
@@ -122,9 +138,10 @@ function renderTable() {
   const body = document.getElementById("low-stock-table-body");
   if (!body) return;
   const onlyLow = Boolean(document.getElementById("low-stock-only-low")?.checked);
-  const rows = _rows.filter(r => !onlyLow || r.status === "low");
+  const hideOnOrder = Boolean(document.getElementById("low-stock-hide-on-order")?.checked);
+  const rows = _rows.filter(r => (!onlyLow || r.status === "low") && !(hideOnOrder && r.status === "on_order"));
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="14" class="low-stock-empty">${onlyLow ? "目前沒有低於門檻的料號。" : "清單是空的，請按「重新建議」或手動新增料號。"}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="15" class="low-stock-empty">${onlyLow ? "目前沒有低於門檻的料號。" : "清單是空的，請按「重新建議」或手動新增料號。"}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map(r => {
@@ -134,6 +151,7 @@ function renderTable() {
       <td class="mono">${part}</td>
       <td>${esc(r.name)}</td>
       <td class="num">${fmtNum(r.qty)}</td>
+      <td>${onOrderHtml(r)}</td>
       <td class="num">${fmtNum(r.avg_monthly_usage)}</td>
       <td>${fmtNum(r.lead_time_days)} <span class="low-stock-tag src-${esc(r.lead_time_source)}">${esc(r.lead_time_label)}</span>
         <button class="low-stock-link" data-act="edit-lead" title="修改交期（留空=恢復自動）">編輯</button></td>
@@ -278,6 +296,7 @@ async function handleSaveSettings() {
       default_lead_days: val("low-stock-set-default-lead"),
       actual_lead_ratio: val("low-stock-set-actual-ratio"),
       actual_lead_min_gap_days: val("low-stock-set-actual-gap"),
+      on_order_max_overdue_days: val("low-stock-set-on-order-overdue"),
     });
     showToast("設定已儲存，自動門檻已重算", { tone: "success" });
     const panel = document.getElementById("low-stock-settings-panel");
@@ -300,6 +319,16 @@ export async function initLowStock({ autoLoad = true } = {}) {
       if (panel.hidden) renderSettings();
     });
     document.getElementById("low-stock-only-low")?.addEventListener("change", renderTable);
+    const hideOnOrder = document.getElementById("low-stock-hide-on-order");
+    if (hideOnOrder) {
+      let saved = null;
+      try { saved = localStorage.getItem(HIDE_ON_ORDER_KEY); } catch (_) { /* 無 localStorage 則維持預設勾選 */ }
+      if (saved !== null) hideOnOrder.checked = saved === "1";
+      hideOnOrder.addEventListener("change", () => {
+        try { localStorage.setItem(HIDE_ON_ORDER_KEY, hideOnOrder.checked ? "1" : "0"); } catch (_) { /* ignore */ }
+        renderTable();
+      });
+    }
     const body = document.getElementById("low-stock-table-body");
     body?.addEventListener("click", onTableClick);
     body?.addEventListener("change", onTableChange);

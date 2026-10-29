@@ -5216,6 +5216,9 @@ body.desktop-dark .frequent-zero-usage li span {
 .low-stock-table .mono { font-family: ui-monospace, Menlo, Consolas, monospace; white-space: nowrap; }
 .low-stock-row.low { background: #fef2f2; }
 .low-stock-row.disabled { color: #9ca3af; }
+.low-stock-row.on_order { background: #f3f4f6; color: #6b7280; }
+.low-stock-on-order-info { font-size: 12px; color: #1d4ed8; white-space: nowrap; }
+.low-stock-row.on_order .low-stock-on-order-info { color: #6b7280; }
 .low-stock-empty { text-align: center; color: #8e8e93; padding: 30px; }
 .low-stock-tag { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; background: #e5e7eb; color: #374151; }
 .low-stock-tag.src-manual { background: #dbeafe; color: #1d4ed8; }
@@ -5226,4 +5229,5 @@ body.desktop-dark .frequent-zero-usage li span {
 .low-stock-status.low { color: #dc2626; }
 .low-stock-status.ok { color: #16a34a; }
 .low-stock-status.disabled { color: #9ca3af; }
+.low-stock-status.on_order { color: #6b7280; background: #e5e7eb; padding: 0 6px; border-radius: 8px; }
 .low-stock-link { border: none; background: none; color: #2563eb; font-size: 11px; cursor: pointer; padding: 0 2px; }

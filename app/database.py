@@ -56,9 +56,21 @@ CREATE TABLE IF NOT EXISTS low_stock_watch (
     last_purchase_supplier TEXT NOT NULL DEFAULT '',
     suggested_at           TEXT NOT NULL DEFAULT '',
     updated_at             TEXT NOT NULL DEFAULT '',
-    updated_by             TEXT NOT NULL DEFAULT ''
+    updated_by             TEXT NOT NULL DEFAULT '',
+    on_order_qty           REAL,
+    next_expected_date     TEXT,
+    on_order_synced_at     TEXT,
+    on_order_note          TEXT
 );
 """
+
+# 舊 DB 補欄位用（欄位名, 型別）
+LOW_STOCK_MIGRATION_COLUMNS = (
+    ("on_order_qty", "REAL"),
+    ("next_expected_date", "TEXT"),
+    ("on_order_synced_at", "TEXT"),
+    ("on_order_note", "TEXT"),
+)
 
 _CREATE_SQL = LOW_STOCK_WATCH_SQL + """
 CREATE TABLE IF NOT EXISTS settings (
@@ -587,10 +599,18 @@ def _repair_managed_paths(conn: sqlite3.Connection) -> int:
     return repaired
 
 
+def _migrate_low_stock_columns(conn) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(low_stock_watch)").fetchall()}
+    for name, col_type in LOW_STOCK_MIGRATION_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE low_stock_watch ADD COLUMN {name} {col_type}")
+
+
 def ensure_low_stock_table() -> None:
     """低庫存關注清單表（冪等；供 init_db 以外的一次性腳本呼叫）。"""
     with get_conn() as conn:
         conn.executescript(LOW_STOCK_WATCH_SQL)
+        _migrate_low_stock_columns(conn)
 
 
 def init_db():
@@ -598,6 +618,7 @@ def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with get_conn() as conn:
         conn.executescript(_CREATE_SQL)
+        _migrate_low_stock_columns(conn)
         # migration: orders 加 folder 欄位
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
         if "is_manual" not in cols:

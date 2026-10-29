@@ -35,6 +35,7 @@ DEFAULT_CONFIG: Dict[str, float] = {
     "lead_sample_size": 5,
     "actual_lead_ratio": 0.6,
     "actual_lead_min_gap_days": 7,
+    "on_order_max_overdue_days": 90,
 }
 # (最小, 最大, 是否整數)
 CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
@@ -47,6 +48,7 @@ CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
     "lead_sample_size": (1, 50, True),
     "actual_lead_ratio": (0, 1, False),
     "actual_lead_min_gap_days": (0, 365, False),
+    "on_order_max_overdue_days": (0, 3650, True),
 }
 CONFIG_LABELS = {
     "lookback_days": "用量統計天數",
@@ -58,6 +60,7 @@ CONFIG_LABELS = {
     "lead_sample_size": "交期取樣筆數",
     "actual_lead_ratio": "實際交期比例上限",
     "actual_lead_min_gap_days": "實際交期最少縮短天數",
+    "on_order_max_overdue_days": "在途逾期排除天數",
 }
 
 LEAD_LABELS = {
@@ -68,6 +71,8 @@ LEAD_LABELS = {
     "default": "預設",
     "manual": "手動",
 }
+
+ON_ORDER_NOTE_FAILED = "在途量查詢失敗，暫以 0 計"
 
 _UNSET = object()
 
@@ -157,10 +162,13 @@ def calc_days_of_cover(qty: float, avg_daily_usage: Optional[float]) -> Optional
     return round(float(qty) / float(avg_daily_usage), 1)
 
 
-def calc_status(enabled: bool, qty: float, threshold: Optional[float]) -> str:
+def calc_status(enabled: bool, qty: float, threshold: Optional[float], on_order_qty: float = 0.0) -> str:
+    """low = 低於門檻；on_order = 低於門檻但現有量 + 在途量已達門檻（已下單，不算低庫存）。"""
     if not enabled:
         return "disabled"
     if threshold is not None and qty < threshold:
+        if qty + max(float(on_order_qty or 0), 0.0) >= threshold:
+            return "on_order"
         return "low"
     return "ok"
 
@@ -501,6 +509,106 @@ def _query_part_info(
     return info
 
 
+def _query_on_order(
+    conn, parts: List[str], today: Optional[date] = None, max_overdue_days: Optional[float] = None
+) -> Dict[str, Tuple[float, str]]:
+    """在途量（已下採購單未進貨）：{料號: (未結量合計, 最早預交日 YYYY-MM-DD 或 "")}。
+
+    只取表頭未結（BillStatus=0 且 EndacaseDate=0）、明細 QtyRemain>0 的列，
+    PreInDate 早於「今天 - 逾期排除天數」（含 0）的視為舊髒資料不計。
+    每列未結量 = 訂購量 - 已進貨量（comProdRec → QM → IM → 採購明細，不限倉）；> 0 才計入。
+    """
+    if today is None:
+        today = local_now().date()
+    if max_overdue_days is None:
+        max_overdue_days = get_config()["on_order_max_overdue_days"]
+    cutoff = _yyyymmdd(today - timedelta(days=int(max_overdue_days)))
+    result: Dict[str, Tuple[float, str]] = {}
+    earliest: Dict[str, int] = {}
+    cur = conn.cursor()
+    for batch in _chunks(sorted({norm_part(p) for p in parts if norm_part(p)})):
+        marks = _in_clause(len(batch))
+        cur.execute(
+            "SELECT c.ProdID, c.BillNO, c.RowNO, c.Quantity - COALESCE(rcv.recv_qty, 0), c.PreInDate FROM ("
+            "SELECT s.ProdID, s.BillNO, s.RowNO, s.Quantity, s.PreInDate FROM ordBillSub s "
+            "JOIN ordBillMain h ON h.Flag = 4 AND h.BillNO = s.BillNO "
+            "WHERE s.Flag = 4 AND h.BillStatus = 0 AND h.EndacaseDate = 0 "
+            f"AND s.QtyRemain > 0 AND s.PreInDate >= %s AND s.ProdID IN {marks}) c "
+            "LEFT JOIN ("
+            "SELECT m.FromNO AS BillNO, m.FromRow AS RowNO, SUM(r.Quantity) AS recv_qty "
+            "FROM comProdRec r "
+            "JOIN ordExamineSub x ON x.ExamineNO = r.FromNO AND x.RowNO = r.FromRow "
+            "JOIN ordExamineSub m ON m.ExamineNO = x.FromNO AND m.RowNO = x.FromRow "
+            f"WHERE r.Flag = 100 AND r.ProdID IN {marks} "
+            "GROUP BY m.FromNO, m.FromRow) rcv ON rcv.BillNO = c.BillNO AND rcv.RowNO = c.RowNO",
+            (cutoff, *batch, *batch),
+        )
+        for prod_id, _bill_no, _row_no, open_qty, pre_in in cur.fetchall():
+            part = norm_part(prod_id)
+            open_qty = float(open_qty or 0)
+            if not part or open_qty <= 0:
+                continue
+            qty, date_text = result.get(part, (0.0, ""))
+            result[part] = (qty + open_qty, date_text)
+            d = _to_date(pre_in)
+            if d and (part not in earliest or _yyyymmdd(d) < earliest[part]):
+                earliest[part] = _yyyymmdd(d)
+                result[part] = (result[part][0], d.isoformat())
+    return result
+
+
+def _fetch_on_order(erp, parts: List[str], today: date, cfg: Dict[str, float]) -> Optional[Dict[str, Tuple[float, str]]]:
+    """查在途量；任何失敗只記 warning 並回 None（呼叫端視為 0 並寫入備註）。"""
+    if not parts:
+        return {}
+    try:
+        return _query_on_order(erp, parts, today, cfg["on_order_max_overdue_days"])
+    except Exception as exc:
+        logger.warning("在途量查詢失敗：%s", type(exc).__name__)
+        return None
+
+
+def _write_on_order(conn, part: str, on_order: Optional[Dict[str, Tuple[float, str]]], now: str) -> None:
+    """on_order 為 None 代表查詢失敗：在途量歸 0 並留備註。"""
+    if on_order is None:
+        qty, date_text, note = 0.0, "", ON_ORDER_NOTE_FAILED
+    else:
+        qty, date_text = on_order.get(part, (0.0, ""))
+        note = ""
+    conn.execute(
+        "UPDATE low_stock_watch SET on_order_qty=?, next_expected_date=?, on_order_synced_at=?, on_order_note=? "
+        "WHERE part_number=?",
+        (qty, date_text, now, note, part),
+    )
+
+
+def refresh_on_order() -> int:
+    """只刷新關注清單的在途量（ST 庫存 ERP 同步後呼叫）。失敗一律吞掉並把在途量記為 0；回傳更新列數。"""
+    try:
+        db.ensure_low_stock_table()
+        cfg = get_config()
+        today = local_now().date()
+        with db.get_conn() as conn:
+            parts = [r["part_number"] for r in conn.execute(
+                "SELECT part_number FROM low_stock_watch WHERE dismissed=0").fetchall()]
+        if not parts:
+            return 0
+        try:
+            with _erp_session() as erp:
+                on_order = _fetch_on_order(erp, parts, today, cfg)
+        except Exception as exc:
+            logger.warning("在途量查詢失敗：%s", type(exc).__name__)
+            on_order = None
+        now = _now_text()
+        with db.get_conn() as conn:
+            for part in parts:
+                _write_on_order(conn, part, on_order, now)
+        return len(parts)
+    except Exception:
+        logger.warning("刷新在途量失敗", exc_info=True)
+        return 0
+
+
 # ── 建議 ──────────────────────────────────────────────────────────────────
 
 def _apply_stats(row: dict, usage: Tuple[float, int], info: dict, cfg: Dict[str, float], snapshot_name: str) -> None:
@@ -545,6 +653,7 @@ def run_suggestion(actor: str = "system") -> dict:
         candidates = qualifying - dismissed
         targets = sorted(candidates | set(active))
         info = _query_part_info(erp, targets, ware_id, today, cfg) if targets else {}
+        on_order = _fetch_on_order(erp, targets, today, cfg)  # 失敗 → None，不影響其他結果
 
     # ── 階段二：寫入 ──
     snapshot = db.get_st_inventory_snapshot()
@@ -553,6 +662,7 @@ def run_suggestion(actor: str = "system") -> dict:
         "candidates": len(qualifying), "delay_parts": 0, "added": 0, "updated": 0,
         "kept_manual_threshold": 0, "kept_manual_lead": 0,
         "planned_lead_parts": 0, "actual_lead_parts": 0, "default_lead_parts": 0, "total_rows": 0,
+        "on_order_ok": on_order is not None,
         **main_file_status(main_parts),
     }
     with db.get_conn() as conn:
@@ -568,6 +678,7 @@ def run_suggestion(actor: str = "system") -> dict:
             row["updated_at"] = now
             row["updated_by"] = actor
             _save_row(conn, part, row)
+            _write_on_order(conn, part, on_order, now)
 
             if is_new:
                 summary["added"] += 1
@@ -742,12 +853,16 @@ def _view_row(rec: dict, qty: float) -> dict:
     enabled = bool(rec.get("enabled"))
     threshold = rec.get("threshold_qty")
     lead_source = rec.get("lead_time_source") or "default"
+    on_order_qty = float(rec.get("on_order_qty") or 0)
     return {
         "part_number": rec["part_number"],
         "name": rec.get("name") or "",
         "qty": qty,
         "enabled": enabled,
-        "status": calc_status(enabled, qty, threshold),
+        "status": calc_status(enabled, qty, threshold, on_order_qty),
+        "on_order_qty": on_order_qty,
+        "next_expected_date": rec.get("next_expected_date") or "",
+        "on_order_note": rec.get("on_order_note") or "",
         "threshold": threshold,
         "threshold_source": rec.get("threshold_source") or "auto",
         "avg_daily_usage": avg_daily,
@@ -788,7 +903,7 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
         recs = [r for r in recs if norm_part(r["part_number"]) in main_parts]
     stock = db.get_st_inventory_stock()
     views = [_view_row(r, float(stock.get(r["part_number"], 0.0))) for r in recs]
-    order = {"low": 0, "ok": 1, "disabled": 2}
+    order = {"low": 0, "on_order": 1, "ok": 2, "disabled": 3}
     views.sort(key=lambda v: (order[v["status"]], *_sort_key(v)))
     return views
 
