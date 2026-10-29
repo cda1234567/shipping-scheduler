@@ -5,6 +5,7 @@ let _busy = false;
 let _onChanged = null;
 let _inMainRows = [];
 let _inMainInitialized = false;
+let _erpMeta = { fetchedAt: "", wareId: "", wareName: "" };
 let _expandedPartNumber = "";
 let _auditRowsByPart = {};
 let _auditLoadingPart = "";
@@ -52,50 +53,69 @@ export async function initStInventoryInMain({ autoLoad = false } = {}) {
     document.getElementById("st-inventory-search")?.addEventListener("input", () => {
       renderInMainRows();
     });
+    document.getElementById("st-inventory-only-main")?.addEventListener("change", () => {
+      renderInMainRows();
+    });
     document.getElementById("btn-st-inventory-tab-refresh")?.addEventListener("click", () => {
-      void refreshStInventoryInMain();
+      void refreshStInventoryInMain({ force: true });
     });
     _inMainInitialized = true;
   }
   if (autoLoad) await refreshStInventoryInMain();
 }
 
-export async function refreshStInventoryInMain({ silent = false } = {}) {
+// ST 庫存頁籤的料號 / 品名 / 庫存改讀正航 ERP（唯讀）；MOQ 與主檔交集由後端用主檔補上。
+// 缺料 / 發料計算仍用 Excel 快照，不受此處影響。
+export async function refreshStInventoryInMain({ silent = false, force = false } = {}) {
   const statusEl = document.getElementById("st-inventory-tab-status");
+  const errorEl = document.getElementById("st-inventory-erp-error");
+  const refreshBtn = document.getElementById("btn-st-inventory-tab-refresh");
   if (!silent && statusEl) {
     statusEl.className = "file-status";
-    statusEl.innerHTML = "<span>讀取 ST 庫存中...</span>";
+    statusEl.innerHTML = "<span>讀取 ERP ST 庫存中...</span>";
   }
+  if (refreshBtn) refreshBtn.disabled = true;
   try {
-    const rows = await apiJson("/api/st-inventory/in-main");
-    _inMainRows = Array.isArray(rows) ? rows : [];
+    const payload = await apiJson(`/api/erp/st-stock${force ? "?refresh=true" : ""}`);
+    _inMainRows = Array.isArray(payload?.rows) ? payload.rows : [];
+    _erpMeta = { fetchedAt: payload?.fetched_at || "", wareId: payload?.ware_id || "", wareName: payload?.ware_name || "" };
     _expandedPartNumber = "";
+    if (errorEl) errorEl.hidden = true;
     renderInMainRows();
   } catch (error) {
-    _inMainRows = [];
+    // 失敗時保留畫面上既有資料，只顯示錯誤，不動本機任何資料
+    if (errorEl) {
+      errorEl.textContent = `ERP 讀取失敗：${error.message}`;
+      errorEl.hidden = false;
+    }
     if (statusEl) {
       statusEl.className = "file-status warn";
-      statusEl.innerHTML = `<span>${esc(error.message)}</span>`;
+      statusEl.innerHTML = "<span>目前無法取得 ERP 即時庫存</span>";
     }
-    const body = document.getElementById("st-inventory-table-body");
-    if (body) body.innerHTML = "";
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 
 function renderInMainRows() {
   const statusEl = document.getElementById("st-inventory-tab-status");
   const body = document.getElementById("st-inventory-table-body");
+  const errorEl = document.getElementById("st-inventory-erp-error");
   const query = String(document.getElementById("st-inventory-search")?.value || "").trim().toUpperCase();
   if (!body) return;
 
+  const onlyMain = document.getElementById("st-inventory-only-main")?.checked !== false;
   const rows = _inMainRows
+    .filter(row => !onlyMain || row.in_main)
     .filter(row => !query || String(row.part_number || "").toUpperCase().includes(query))
     .sort((a, b) => String(a.part_number || "").localeCompare(String(b.part_number || ""), "en"));
 
-  if (statusEl) {
+  if (statusEl && !(errorEl && !errorEl.hidden)) {
     statusEl.className = "file-status ok";
+    const ware = _erpMeta.wareName ? `${_erpMeta.wareId} ${_erpMeta.wareName}` : _erpMeta.wareId;
     const suffix = query ? `，搜尋結果 ${rows.length} 筆` : "";
-    statusEl.innerHTML = `<span>主檔交集 ${_inMainRows.length} 筆${suffix}</span>`;
+    const scope = onlyMain ? `主檔交集 ${_inMainRows.filter(row => row.in_main).length}` : `全部 ${_inMainRows.length}`;
+    statusEl.innerHTML = `<span>來源：正航 ERP 倉庫 ${esc(ware)}｜更新時間 ${esc(formatDateTime(_erpMeta.fetchedAt))}｜${scope} 筆${suffix}</span>`;
   }
 
   if (!rows.length) {

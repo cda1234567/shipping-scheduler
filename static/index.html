@@ -103,7 +103,7 @@
 
     <div id="tabs">
       <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
-      <button class="tab-btn" data-tab="st-inventory" hidden>ST 庫存</button>
+      <button class="tab-btn" data-tab="st-inventory">ST 庫存</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="calc-workspace">算料工作區</button>
@@ -259,19 +259,21 @@
         <div class="st-inventory-header">
           <div>
             <h3 class="st-inventory-title">ST 庫存</h3>
-            <div class="st-inventory-subtitle">只列出同時存在於主檔與 ST 庫存的料號。</div>
+            <div class="st-inventory-subtitle">即時讀取正航 ERP 的 ST 倉庫存（唯讀，約 60 秒快取），MOQ 取自主檔。</div>
           </div>
           <span class="spacer"></span>
-          <input type="search" id="st-inventory-search" class="st-inventory-search" placeholder="搜尋料號">
-          <button class="btn btn-secondary btn-sm" id="btn-st-inventory-tab-refresh">重新整理</button>
+          <input type="search" id="st-inventory-search" class="st-inventory-search" placeholder="搜尋料號 / 品名">
+          <label class="st-inventory-only-main"><input type="checkbox" id="st-inventory-only-main" checked> 只顯示主檔料號</label>
+          <button class="btn btn-secondary btn-sm" id="btn-st-inventory-tab-refresh" title="強制重新讀取 ERP">重新整理</button>
         </div>
-        <div id="st-inventory-tab-status" class="file-status">切到這頁後會讀取主檔交集 ST 庫存。</div>
+        <div id="st-inventory-tab-status" class="file-status">切到這頁後會讀取 ERP ST 庫存。</div>
+        <div id="st-inventory-erp-error" class="st-inventory-erp-error" hidden></div>
         <div class="st-inventory-table-wrap">
           <table class="st-inventory-table">
             <thead>
               <tr>
                 <th>料號</th>
-                <th>描述</th>
+                <th>品名</th>
                 <th>ST 庫存</th>
                 <th>MOQ</th>
               </tr>

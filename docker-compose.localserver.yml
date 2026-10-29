@@ -7,6 +7,16 @@ services:
     restart: unless-stopped
     ports:
       - "${APP_PORT:-18765}:8765"
+    environment:
+      ERP_SQL_SERVER: ${ERP_SQL_SERVER:-10.0.0.1}
+      ERP_SQL_PORT: ${ERP_SQL_PORT:-1433}
+      ERP_SQL_DATABASE: ${ERP_SQL_DATABASE:-CHIComp03}
+      ERP_SQL_USER: ${ERP_SQL_USER:-}
+      ERP_SQL_PASSWORD: ${ERP_SQL_PASSWORD:-}
+      ERP_ST_WARE_ID: ${ERP_ST_WARE_ID:-001}
+      ERP_SQL_TIMEOUT: ${ERP_SQL_TIMEOUT:-5}
+      ERP_SQL_ENCRYPTION: ${ERP_SQL_ENCRYPTION:-off}
+      ERP_SQL_TDS_VERSION: ${ERP_SQL_TDS_VERSION:-7.3}
     volumes:
       - scheduler-data:/app/data
       - D:/Download/excel:/app/user_downloads

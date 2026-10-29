@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.22.4"
-APP_RELEASED_AT = "2026-10-22"
-APP_HEADLINE = "修正發料單：主檔同名舊批次的補料不再被算進新批次"
+APP_VERSION = "v2026.10.29.1"
+APP_RELEASED_AT = "2026-10-29"
+APP_HEADLINE = "ST 庫存頁籤改為即時讀取正航 ERP 庫存"
 APP_CHANGELOG = [
+    {
+        "title": "ST 庫存改讀正航 ERP",
+        "items": [
+            "「ST 庫存」頁籤恢復顯示，並直接唯讀查詢正航 ERP（CHIComp03）ST 倉（001）的料號、品名與庫存量，頁籤顯示不再依賴手動上傳的 Excel。",
+            "顯示資料來源與更新時間；ERP 連不上時顯示錯誤提示，不會更動或刪除本機任何資料。「重新整理」會強制重新查詢（平時約 60 秒快取）。",
+            "新增 /api/erp/health 可檢查 ERP 連線狀態；連線帳密只從環境變數 ERP_SQL_USER / ERP_SQL_PASSWORD 讀取。",
+            "缺料、發料與排程計算仍沿用原本的 Excel ST 庫存快照，行為不變。",
+        ],
+    },
     {
         "title": "發料單不再誤算同名舊批次補料",
         "items": [

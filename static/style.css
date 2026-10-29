@@ -746,6 +746,15 @@ body.edit-auth-readonly #bom-upload-area {
   color: #6b7280;
 }
 
+.st-inventory-only-main {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #374151;
+  white-space: nowrap;
+}
+
 .st-inventory-search {
   width: 220px;
   padding: 7px 10px;
@@ -878,6 +887,17 @@ body.edit-auth-readonly #bom-upload-area {
   border: 1px solid #e5e7eb;
   border-radius: 6px;
 }
+
+.st-inventory-erp-error {
+  padding: 8px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.st-inventory-erp-error[hidden] { display: none; }
 
 .st-inventory-empty {
   text-align: center;
