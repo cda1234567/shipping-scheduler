@@ -228,9 +228,10 @@ def po_sub(no, row_no, prod, qty, remain=None, price=24, **kw):
     return row
 
 
-def params(by_ware, digits, dot):
+def params(by_ware, digits, dot, describe="A"):
+    # ComDefDescribe 照 Comp13（'A'）；Comp13 沒有 CreateAccByFund
     return [{"UserID": "", "ParamName": n, "paramValue": str(v)}
-            for n, v in (("CostByWare", by_ware), ("ComCostDigs", digits), ("comCostDot", dot))]
+            for n, v in (("CostByWare", by_ware), ("ComCostDigs", digits), ("comCostDot", dot), ("ComDefDescribe", describe))]
 
 
 def make_erp(db_name="CHIComp13"):
@@ -846,3 +847,50 @@ class CostTests(ErpCase):
     def test_user_specific_params_ignored(self):
         self.erp.tables["comParams"] = params(1, 5, 0) + [{"UserID": "andy", "ParamName": "CostByWare", "paramValue": "0"}]
         self.assertTrue(er.preview_receive(self.req())["cost_params"]["cost_by_ware"])
+
+
+# ── 進貨單表頭照公司設定（v2026.10.30.10）──────────────────────────────────────
+
+class BillParamTests(ErpCase):
+    def stk(self, n):
+        return next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+
+    def test_load_bill_params_by_company(self):
+        cur = FakeCursor(self.erp)
+        self.assertEqual(er.load_bill_params(cur, "CHIComp13"),
+                         {"detail": "A", "bill_status": 1, "bill_status_source": "company", "create_acc_by_fund": ""})
+        self.erp.tables["comParams"] = params(0, 3, 1, describe="") + [
+            {"UserID": "", "ParamName": "CreateAccByFund", "paramValue": "1"}]
+        self.assertEqual(er.load_bill_params(cur, "CHIComp03"),
+                         {"detail": "", "bill_status": 0, "bill_status_source": "company", "create_acc_by_fund": "1"})
+        # 沒列在 RM_BILL_STATUS_AT_CREATION 的公司：依 CreateAccByFund
+        self.assertEqual(er.load_bill_params(cur, "CHIComp07")["bill_status"], 0)
+        self.erp.tables["comParams"] = params(0, 3, 1)
+        p = er.load_bill_params(cur, "CHIComp07")
+        self.assertEqual((p["bill_status"], p["bill_status_source"], p["detail"]), (1, "CreateAccByFund", "A"))
+        # 使用者層級的參數不算
+        self.erp.tables["comParams"] = [x for x in params(0, 3, 1) if x["ParamName"] != "ComDefDescribe"] + [
+            {"UserID": "andy", "ParamName": "ComDefDescribe", "paramValue": "Z"}]
+        self.assertEqual(er.load_bill_params(cur, "CHIComp13")["detail"], "")
+
+    def test_comp13_header_detail_a_status_1(self):
+        r = er.create_receive(self.req(), "t", "")
+        self.assertEqual((self.stk(r["rm_no"])["Detail"], self.stk(r["rm_no"])["BillStatus"]), ("A", 1))
+        self.assertEqual(r["bill_params"]["bill_status"], 1)
+
+    def test_comp03_style_header_and_po_close_unaffected(self):
+        self.erp.tables["comParams"] = params(1, 5, 0, describe="") + [
+            {"UserID": "", "ParamName": "CreateAccByFund", "paramValue": "1"}]
+        with patch.dict(er.RM_BILL_STATUS_AT_CREATION, {"CHIComp13": 0}):
+            r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 100},
+                                            {"po_no": "PO-1", "row_no": 2, "qty": 50}]), "t", "")
+        stk = self.stk(r["rm_no"])
+        self.assertEqual((stk["Detail"], stk["BillStatus"], stk["NotPayed"], stk["InCost"], stk["ShareType"]), ("", 0, 0, 0, 0))
+        main = next(x for x in self.rows("ordBillMain") if x["BillNO"] == "PO-1")
+        self.assertEqual((main["BillStatus"], main["EndacaseDate"]), (1, 20261030))  # 採購單結案照舊
+
+    def test_fax_from_po(self):
+        self.rows("ordBillMain")[0]["FaxNo"] = "06-2535027"
+        r = er.create_receive(self.req(), "t", "")
+        acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == r["rm_no"])
+        self.assertEqual(acc["FaxNo"], "06-2535027")

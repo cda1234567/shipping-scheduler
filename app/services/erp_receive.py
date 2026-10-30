@@ -9,6 +9,7 @@
 - 收料 / 驗收日 = 今天；進貨日 = 發票日（預設今天，可改）。
 - IM / QM / RM 共用同一個流水號（單號 = IM- / QM- / RM- + yyyymmdd + 3 碼）；流水號 = 當日有前綴與無前綴單號的最大號 + 1。
 - 成本 / 日期更新照正航參數（comParams：CostByWare、ComCostDigs、comCostDot），見 build_plan 的 _cost_plan。
+- 進貨單表頭 BillStatus / Detail 照公司設定（v2026.10.30.10），見 load_bill_params。
 - 不寫 comInvoice、stkBatchInvo*、accVoucher*，也不碰任何計數表（正航單號 = 當日 MAX+1）。
 錯誤訊息一律不含帳號密碼。
 """
@@ -49,6 +50,12 @@ _HINT = " WITH (UPDLOCK, HOLDLOCK)"
 # per Comp03 RM-20261102001 只借用「一張 RM 每列一筆 stkBillSub、StkMlAmount = 列未稅金額」；LocalPayment 依 Andy 的鏈取 0。
 # 若要改成與 Comp03 相同，把這個旗標改 True。
 STK_SUB_LOCAL_PAYMENT_EQUALS_AMOUNT = False
+# 進貨單 stkBillMain.BillStatus（建立當下）。Comp03 的 BillStatus = 「已轉傳票」：2021 起 192 張未轉傳票的 RM 有 183 張是 0，
+# 3811 張已轉傳票的全是 1（會計轉傳票時正航才改 1，NotPayed / InCost / ShareType / LocalPayment 也是那時回寫）；
+# Comp13 正航自己建單就是 1（Andy 手動 20261030001）。兩家 comParams 唯一說得通的開關是 CreateAccByFund
+# （Comp03 = '1'「由帳款產生傳票」，Comp13 沒有這個參數）：'1' → 建立時 0（等轉傳票），其他 → 1。
+# 只驗證過兩家公司，所以已驗證的公司在這裡明確釘住；其他公司才用 CreateAccByFund 推。
+RM_BILL_STATUS_AT_CREATION: Dict[str, int] = {"CHIComp03": 0, "CHIComp13": 1}
 
 
 class ReceiveValidationError(ep.PoValidationError):
@@ -368,9 +375,29 @@ def load_cost_params(wcur, target: str) -> Dict[str, Any]:
     return {"cost_by_ware": int(by_ware) == 1, "digits": int(digits), "dot": int(dot) == 1}
 
 
+def _param_text(wcur, name: str) -> Optional[str]:
+    row = _one_row(wcur, "SELECT paramValue FROM comParams WHERE UserID = %s AND ParamName = %s", ("", name))
+    return None if row is None else ep._text(ep._get(row, "paramValue"))
+
+
+def load_bill_params(wcur, target: str) -> Dict[str, Any]:
+    """進貨單表頭照公司設定：
+    - Detail（摘要）= comParams.ComDefDescribe（Comp03 ''、Comp13 'A'；參數不存在時 ''）。
+    - BillStatus = RM_BILL_STATUS_AT_CREATION[target]；沒列的公司依 CreateAccByFund（'1' → 0 未轉傳票，否則 1）。
+    """
+    detail = _param_text(wcur, "ComDefDescribe") or ""
+    by_fund = (_param_text(wcur, "CreateAccByFund") or "").strip()
+    if target in RM_BILL_STATUS_AT_CREATION:
+        status, source = RM_BILL_STATUS_AT_CREATION[target], "company"
+    else:
+        status, source = (0 if by_fund == "1" else 1), "CreateAccByFund"
+    return {"detail": detail, "bill_status": status, "bill_status_source": source, "create_acc_by_fund": by_fund}
+
+
 def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[str, Any]:
     hint = _HINT if lock else ""
     cost_params = load_cost_params(wcur, target)
+    bill_params = load_bill_params(wcur, target)
     pos: Dict[str, Dict[str, Any]] = {}
     for po_no in dict.fromkeys(l["po_no"] for l in req["lines"]):
         main = _one_row(wcur, f"SELECT * FROM ordBillMain{hint} WHERE Flag = 4 AND BillNO = %s", (po_no,))
@@ -424,7 +451,7 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         "vendor_name": ep._text(ep._get(cust, "ShortName")) or ep._text(ep._get(cust, "FullName")),
         "trade": trade, "ware": ware, "products": products, "ware_amounts": ware_amounts,
         "curr": currs.pop(), "hint": hint,
-        "cost_params": cost_params, "all_qty": all_qty,
+        "cost_params": cost_params, "all_qty": all_qty, "bill_params": bill_params,
     }
 
 
@@ -601,7 +628,8 @@ def build_plan(
     # 進貨（Flag 100）
     inserts.append(("stkBillMain", _row(
         "stkBillMain", Flag=100, BillNO=rm_no, SumAmtATax=total, SumNum=sum_qty, GatherStyle=g_style,
-        GatherDelay=g_delay, CheckStyle=c_style, CheckDelay=c_delay, Detail="A", BillStatus=1,
+        GatherDelay=g_delay, CheckStyle=c_style, CheckDelay=c_delay,
+        Detail=ctx["bill_params"]["detail"], BillStatus=ctx["bill_params"]["bill_status"],
         GatherOther=ep._text(ep._get(first, "GatherOther")), CheckOther=ep._text(ep._get(first, "CheckOther")))))
     for l in lines:
         inserts.append(("stkBillSub", _row(
@@ -618,7 +646,7 @@ def build_plan(
         AddrID=ep._text(ep._get(first, "AddressID")), ZipCode=ep._text(ep._get(first, "ZipCode")),
         CustAddress=ep._text(ep._get(first, "CustAddress")),
         ContactPerson=ep._text(ep._get(first, "LinkMan")), LinkManProf=ep._text(ep._get(first, "LinkManProf")),
-        ContactPhone=ep._text(ep._get(first, "LinkTelephone")),
+        ContactPhone=ep._text(ep._get(first, "LinkTelephone")), FaxNo=ep._text(ep._get(first, "FaxNo")),
         MakerID=maker_id, Maker=maker, InvoiceNo="")))
     for l in lines:
         inserts.append(("comProdRec", _row(
@@ -723,7 +751,7 @@ def build_plan(
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
-        "cost_params": cost_params,
+        "cost_params": cost_params, "bill_params": ctx["bill_params"],
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
         "change_logs": logs,
     }
@@ -845,7 +873,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
                                "price", "po_price", "tax_rate", "amount", "tax")} for l in plan["lines"]]),
         "totals": _jsonable(plan["totals"]),
-        "cost_params": plan["cost_params"], "warnings": plan["warnings"], "needs_confirm": plan["needs_confirm"], "closed_pos": plan["closed_pos"],
+        "cost_params": plan["cost_params"], "bill_params": plan["bill_params"], "warnings": plan["warnings"], "needs_confirm": plan["needs_confirm"], "closed_pos": plan["closed_pos"],
     }
     if include_rows:
         rows: Dict[str, List[Dict[str, Any]]] = {}
