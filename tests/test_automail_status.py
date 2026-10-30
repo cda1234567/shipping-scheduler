@@ -369,3 +369,40 @@ def test_requests_send_explicit_user_agent(monkeypatch):
     assert seen and seen[0].get_method() == "GET"
     ua = seen[0].get_header("User-agent")
     assert ua and "urllib" not in ua.lower()
+
+
+def _capture_request(monkeypatch):
+    import io
+    import json as _json
+    import urllib.request
+
+    seen = []
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.append(req)
+        return _Resp(_json.dumps([]).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    return seen
+
+
+def test_get_json_sends_api_key_header_when_configured(monkeypatch):
+    seen = _capture_request(monkeypatch)
+    monkeypatch.setenv("AUTOMAIL_API_KEY", "  test-key-123  ")
+    am._get_json("/api/replies")
+    assert seen[0].get_header("X-api-key") == "test-key-123"
+    assert "urllib" not in seen[0].get_header("User-agent").lower()
+
+
+def test_get_json_omits_api_key_header_when_unset(monkeypatch):
+    seen = _capture_request(monkeypatch)
+    monkeypatch.delenv("AUTOMAIL_API_KEY", raising=False)
+    am._get_json("/api/sendlog")
+    assert seen[0].get_header("X-api-key") is None

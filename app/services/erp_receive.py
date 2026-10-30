@@ -683,32 +683,9 @@ def allocate_bill_tax(lines: List[Dict[str, Any]]) -> Decimal:
     兩種算法不同的 151 張中 150 張表頭是整單四捨五入；尾差由第 1 行開始每行 ±1 吸收
     （例：PO-20261022003 28 行逐行合計 5,364 → 表頭 5,362，第 1、2 行各 -1；RM-20261012003 / RM-20261001005 /
     RM-20260921005 / RM-20260917001 / RM-20260914001 第 1 行 -1；RM-20260828001 第 1、2 行各 -1）。
-    稅率不同的行各自成組計算。
+    稅率不同的行各自成組計算。實作在 erp_purchase.allocate_bill_tax（採購單共用）。
     """
-    groups: Dict[Decimal, List[Dict[str, Any]]] = {}
-    for l in lines:
-        groups.setdefault(_dec(l["tax_rate"]), []).append(l)
-    total_tax = Decimal(0)
-    for rate, group in groups.items():
-        per_line = sum((l["tax"] for l in group), Decimal(0))
-        if rate == 0:
-            total_tax += per_line
-            continue
-        head = ep._round(sum((l["amount"] for l in group), Decimal(0)) * rate, 0)
-        diff = head - per_line
-        step = Decimal(1) if diff > 0 else Decimal(-1)
-        cand = [l for l in group if l["amount"] != 0]
-        i = 0
-        while diff != 0 and cand:
-            l = cand[i % len(cand)]
-            if step > 0 or l["tax"] > 0:
-                l["tax"] += step
-                diff -= step
-            elif all(c["tax"] <= 0 for c in cand):
-                break
-            i += 1
-        total_tax += head - diff
-    return total_tax
+    return ep.allocate_bill_tax(lines, tax_key="tax")
 
 
 def build_plan(

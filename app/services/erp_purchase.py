@@ -288,8 +288,45 @@ def _round(value: Decimal, places: int) -> Decimal:
     return value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
 
 
+def allocate_bill_tax(lines: List[Dict[str, Any]], tax_key: str = "tax", default_rate: Optional[Decimal] = None) -> Decimal:
+    """正航單據（TaxType 0 外加稅、CompTaxDigs=0）稅額規則；直接改寫 lines[i][tax_key]，回傳表頭稅額。
+
+    表頭稅額 = round(Σ未稅金額 × 稅率, 0)（整張單算一次、四捨五入）；明細稅額先逐行四捨五入，
+    尾差由第 1 行開始每行 ±1 吸收，讓明細加總 = 表頭。稅率不同的行各自成組計算。
+    進貨單（erp_receive）與採購單（compute_money）共用此函式。
+    lines 需有 "amount"、tax_key，稅率取 "tax_rate"（缺少時用 default_rate）。
+    """
+    groups: Dict[Decimal, List[Dict[str, Any]]] = {}
+    for l in lines:
+        raw_rate = l.get("tax_rate", default_rate)
+        rate = Decimal(str(raw_rate)) if raw_rate is not None else Decimal(0)
+        groups.setdefault(rate, []).append(l)
+    total_tax = Decimal(0)
+    for rate, group in groups.items():
+        per_line = sum((l[tax_key] for l in group), Decimal(0))
+        if rate == 0:
+            total_tax += per_line
+            continue
+        head = _round(sum((l["amount"] for l in group), Decimal(0)) * rate, 0)
+        diff = head - per_line
+        step = Decimal(1) if diff > 0 else Decimal(-1)
+        cand = [l for l in group if l["amount"] != 0]
+        i = 0
+        while diff != 0 and cand:
+            l = cand[i % len(cand)]
+            if step > 0 or l[tax_key] > 0:
+                l[tax_key] += step
+                diff -= step
+            elif all(c[tax_key] <= 0 for c in cand):
+                break
+            i += 1
+        total_tax += head - diff
+    return total_tax
+
+
 def compute_money(lines: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Decimal]]:
-    """每行 amount=round(qty*price,2)、tax=round(amount*5%,0)；表頭稅額由未稅合計重算（正航整數稅）。"""
+    """每行 amount=round(qty*price,2)、tax=round(amount*5%,0)；表頭稅額 = round(未稅合計 × 5%, 0)（正航整數稅），
+    明細稅額尾差由第 1 行起每行 ±1 吸收，讓明細加總 = 表頭（v2026.10.30.16，與一次收料進貨單同一規則）。"""
     out = []
     sum_qty = Decimal(0)
     sum_amount = Decimal(0)
@@ -301,7 +338,7 @@ def compute_money(lines: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Di
         out.append({**line, "qty": qty, "price": price, "amount": amount, "tax_amt": tax})
         sum_qty += qty
         sum_amount += amount
-    sum_tax = _round(sum_amount * TAX_RATE, 0)
+    sum_tax = allocate_bill_tax(out, tax_key="tax_amt", default_rate=TAX_RATE)
     totals = {
         "sum_qty": sum_qty,
         "sum_amount": sum_amount,

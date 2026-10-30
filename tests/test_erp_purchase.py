@@ -231,6 +231,55 @@ class PureTests(unittest.TestCase):
         lines, t = ep.compute_money([{"qty": Decimal("10"), "price": Decimal("10")}])
         self.assertEqual((lines[0]["amount"], lines[0]["tax_amt"], t["total"]), (100, 5, 105))
 
+    def test_money_line_taxes_sum_to_header_round_down(self):
+        # 逐行 1+1+1 = 3，整單 round(3 × 10.5 × 5%) = round(1.575) = 2 → 第 1 行 -1
+        lines, t = ep.compute_money([{"qty": Decimal("1"), "price": Decimal("10.5")} for _ in range(3)])
+        self.assertEqual(t["sum_tax"], Decimal("2"))
+        self.assertEqual([l["tax_amt"] for l in lines], [Decimal("0"), Decimal("1"), Decimal("1")])
+        self.assertEqual(sum(l["tax_amt"] for l in lines), t["sum_tax"])
+        self.assertEqual(t["total"], Decimal("33.50"))
+
+    def test_money_line_taxes_sum_to_header_round_up(self):
+        # 逐行 0.45→0 ×4 = 0，整單 round(36 × 5%) = round(1.8) = 2 → 第 1、2 行各 +1
+        lines, t = ep.compute_money([{"qty": Decimal("1"), "price": Decimal("9")} for _ in range(4)])
+        self.assertEqual(t["sum_tax"], Decimal("2"))
+        self.assertEqual([l["tax_amt"] for l in lines], [Decimal("1"), Decimal("1"), Decimal("0"), Decimal("0")])
+
+    def test_money_real_receipt_rm_20261028002(self):
+        # 正航 RM-20261028002：未稅 21,983、稅 1,099（明細 437 + 662）
+        lines, t = ep.compute_money([
+            {"qty": Decimal("2582"), "price": Decimal("3.39")},
+            {"qty": Decimal("3780"), "price": Decimal("3.5")},
+        ])
+        self.assertEqual(t["sum_amount"], Decimal("21982.98"))
+        self.assertEqual(t["sum_tax"], Decimal("1099"))
+        self.assertEqual([l["tax_amt"] for l in lines], [Decimal("437"), Decimal("662")])
+
+    def test_money_many_lines_always_balanced(self):
+        import random
+        rnd = random.Random(1030)
+        for _ in range(200):
+            src = [{"qty": Decimal(rnd.randint(1, 5000)), "price": Decimal(rnd.randint(1, 99999)) / 1000}
+                   for _ in range(rnd.randint(1, 30))]
+            lines, t = ep.compute_money(src)
+            self.assertEqual(t["sum_tax"], ep._round(t["sum_amount"] * ep.TAX_RATE, 0))
+            self.assertEqual(sum(l["tax_amt"] for l in lines), t["sum_tax"])
+            self.assertTrue(all(l["tax_amt"] >= 0 for l in lines))
+
+    def test_allocate_bill_tax_groups_by_rate(self):
+        ls = [
+            {"amount": Decimal("10.5"), "tax_amt": Decimal("1"), "tax_rate": Decimal("0.05")},
+            {"amount": Decimal("10.5"), "tax_amt": Decimal("1"), "tax_rate": Decimal("0.05")},
+            {"amount": Decimal("10.5"), "tax_amt": Decimal("1"), "tax_rate": Decimal("0.05")},
+            {"amount": Decimal("100"), "tax_amt": Decimal("0"), "tax_rate": Decimal("0")},
+        ]
+        self.assertEqual(ep.allocate_bill_tax(ls, tax_key="tax_amt"), Decimal("2"))
+        self.assertEqual([l["tax_amt"] for l in ls], [Decimal("0"), Decimal("1"), Decimal("1"), Decimal("0")])
+
+    def test_receive_reuses_shared_allocator(self):
+        from app.services import erp_receive as er
+        self.assertIn("ep.allocate_bill_tax", __import__("inspect").getsource(er.allocate_bill_tax))
+
     def test_payment_dates_same_day_keeps_template(self):
         tpl = {"BillDate": 20261029, "AccMonth": 202611, "PrepayDay": 20261130, "EncashDay": 20261129}
         self.assertEqual(ep.payment_dates(tpl, 20261029), {"AccMonth": 202611, "PrepayDay": 20261130, "EncashDay": 20261129})

@@ -5,6 +5,7 @@
 - AUTOMAIL_BASE_URL：預設 https://automail.cda.tw；空字串或 "off" = 停用此功能
 - AUTOMAIL_REFRESH_SECONDS：快取秒數，預設 180，最小 30
 - AUTOMAIL_TIMEOUT_SECONDS：單次請求逾時，預設 8
+- AUTOMAIL_API_KEY：automail 機器 API 金鑰，以 X-Api-Key 標頭送出（放 env_file，不可提交到 git；不寫入 log / 回應）
 """
 from __future__ import annotations
 
@@ -78,8 +79,16 @@ def local_text(value: Any) -> str:
     return dt.astimezone(_TAIPEI).strftime("%m/%d %H:%M") if dt else ""
 
 
+def _headers() -> Dict[str, str]:
+    headers = {"Accept": "application/json", "User-Agent": "shipping-scheduler-automail-status/1.0"}
+    key = (os.environ.get("AUTOMAIL_API_KEY") or "").strip()
+    if key:
+        headers["X-Api-Key"] = key
+    return headers
+
+
 def _get_json(path: str) -> Any:
-    request = urllib.request.Request(base_url() + path, method="GET", headers={"Accept": "application/json", "User-Agent": "shipping-scheduler-automail-status/1.0"})
+    request = urllib.request.Request(base_url() + path, method="GET", headers=_headers())
     with urllib.request.urlopen(request, timeout=timeout_seconds()) as response:  # noqa: S310 - 設定的 automail 位址
         return json.loads(response.read().decode("utf-8"))
 
