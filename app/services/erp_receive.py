@@ -7,7 +7,8 @@
 - 與 erp_purchase（只 INSERT）不同，這裡必須 UPDATE 採購單剩餘量、庫存與彙總表（正航本身也是這樣記帳）。
 - 整件事（收料、驗收、進貨、所有彙總與採購單回寫）在同一個 transaction，任何錯誤 rollback；寫完讀回比對才 commit。
 - 收料 / 驗收日 = 今天；進貨日 = 發票日（預設今天，可改）。
-- IM / QM / RM 共用同一個流水號（單號 = 前綴 + yyyymmdd + 3 碼）。
+- IM / QM / RM 共用同一個流水號（單號 = IM- / QM- / RM- + yyyymmdd + 3 碼）；流水號 = 當日有前綴與無前綴單號的最大號 + 1。
+- 成本 / 日期更新照正航參數（comParams：CostByWare、ComCostDigs、comCostDot），見 build_plan 的 _cost_plan。
 - 不寫 comInvoice、stkBatchInvo*、accVoucher*，也不碰任何計數表（正航單號 = 當日 MAX+1）。
 錯誤訊息一律不含帳號密碼。
 """
@@ -19,7 +20,7 @@ import json
 import logging
 import socket
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import erp_purchase as ep
@@ -34,12 +35,15 @@ MAX_LINES = 100
 DEFAULT_WAREHOUSE = "001"
 EXAMINE_TYPE = "A1"  # 驗收一律良好
 IDEMPOTENCY_SECONDS = 60
-# 各公司單號前綴（收料, 驗收, 進貨）。Comp13 原生單號無前綴；Comp03 為 IM-/QM-/RM-（已設定但寫入被拒絕）。
-# 其他測試公司沿用無前綴。
+# 各公司單號前綴（收料, 驗收, 進貨）。所有公司（含 Comp13 與其他測試公司）一律 IM- / QM- / RM-。
+# 流水號會同時考慮既有「有前綴」與「無前綴」（Andy 手動鏈原生單號）的單號，所以不會撞號。
+DEFAULT_PREFIXES: Tuple[str, str, str] = ("IM-", "QM-", "RM-")
 NUMBER_PREFIXES: Dict[str, Tuple[str, str, str]] = {
-    "CHIComp13": ("", "", ""),
-    "CHIComp03": ("IM-", "QM-", "RM-"),
+    "CHIComp13": DEFAULT_PREFIXES,
+    "CHIComp03": DEFAULT_PREFIXES,
 }
+# 正航成本參數（comParams，UserID = ''）：CostByWare 0 = 全公司成本 / 1 = 依倉庫；ComCostDigs 成本小數位；comCostDot 1 = 四捨五入到該位數 / 0 = 不捨入
+COST_PARAMS = ("CostByWare", "ComCostDigs", "comCostDot")
 _HINT = " WITH (UPDLOCK, HOLDLOCK)"
 # stkBillSub.LocalPayment：Andy 手動鏈（無發票）為 0；Comp03 RM-20261102001 為列未稅金額（疑為事後「進項發票」回寫）。
 # per Comp03 RM-20261102001 只借用「一張 RM 每列一筆 stkBillSub、StkMlAmount = 列未稅金額」；LocalPayment 依 Andy 的鏈取 0。
@@ -66,7 +70,7 @@ def warehouse() -> str:
 
 
 def number_prefixes(target: str) -> Tuple[str, str, str]:
-    return NUMBER_PREFIXES.get(target, ("", "", ""))
+    return NUMBER_PREFIXES.get(target, DEFAULT_PREFIXES)
 
 
 def ensure_writable_target(target: str) -> None:
@@ -220,18 +224,20 @@ def next_receive_serial(cur, prefixes: Tuple[str, str, str], dates: Iterable[int
     top = 0
     for d in sorted(set(int(x) for x in dates)):
         for table, col, cond, prefix in _serial_series(prefixes):
-            head = f"{prefix}{d}"
-            cur.execute(
-                f"SELECT MAX({col}) FROM {table}{hint} WHERE {cond} AND {col} LIKE %s AND LEN({col}) = %s",
-                (head + "%", len(head) + 3),
-            )
-            found = cur.fetchone()
-            last = ep._text(found[0]) if found else ""
-            if last:
-                try:
-                    top = max(top, int(last[len(head):]))
-                except ValueError:
-                    raise ep.PoSchemaError(f"既有單號格式異常：{last}") from None
+            # 有前綴與無前綴都要查（LEN 過濾讓兩者互不混淆）
+            for pre in dict.fromkeys((prefix, "")):
+                head = f"{pre}{d}"
+                cur.execute(
+                    f"SELECT MAX({col}) FROM {table}{hint} WHERE {cond} AND {col} LIKE %s AND LEN({col}) = %s",
+                    (head + "%", len(head) + 3),
+                )
+                found = cur.fetchone()
+                last = ep._text(found[0]) if found else ""
+                if last:
+                    try:
+                        top = max(top, int(last[len(head):]))
+                    except ValueError:
+                        raise ep.PoSchemaError(f"既有單號格式異常：{last}") from None
     serial = top + 1
     if serial > 999:
         raise ReceiveValidationError("當日收料 / 驗收 / 進貨單號已用完（最多 999 張）")
@@ -343,8 +349,28 @@ def _one_row(cur, sql: str, params: Tuple[Any, ...]) -> Optional[Dict[str, Any]]
     return ep._one(cur)
 
 
+def load_cost_params(wcur, target: str) -> Dict[str, Any]:
+    """讀 comParams（UserID = ''）的成本參數；任何一個缺或格式不對就拒絕，不猜。"""
+    found: Dict[str, Decimal] = {}
+    missing: List[str] = []
+    for name in COST_PARAMS:
+        row = _one_row(wcur, "SELECT paramValue FROM comParams WHERE UserID = %s AND ParamName = %s", ("", name))
+        text = ep._text(ep._get(row, "paramValue")) if row else ""
+        try:
+            found[name] = Decimal(text)
+        except InvalidOperation:
+            missing.append(name)
+    if missing:
+        raise ReceiveValidationError(f"找不到正航成本參數 {'、'.join(missing)}（{ep.target_label(target)} comParams），拒絕寫入")
+    by_ware, digits, dot = found["CostByWare"], found["ComCostDigs"], found["comCostDot"]
+    if by_ware not in (0, 1) or dot not in (0, 1) or digits != digits.to_integral_value() or not 0 <= digits <= 10:
+        raise ReceiveValidationError("正航成本參數值不正確（CostByWare / comCostDot 需為 0 或 1，ComCostDigs 需為 0～10）")
+    return {"cost_by_ware": int(by_ware) == 1, "digits": int(digits), "dot": int(dot) == 1}
+
+
 def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[str, Any]:
     hint = _HINT if lock else ""
+    cost_params = load_cost_params(wcur, target)
     pos: Dict[str, Dict[str, Any]] = {}
     for po_no in dict.fromkeys(l["po_no"] for l in req["lines"]):
         main = _one_row(wcur, f"SELECT * FROM ordBillMain{hint} WHERE Flag = 4 AND BillNO = %s", (po_no,))
@@ -381,6 +407,7 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
 
     products: Dict[str, Dict[str, Any]] = {}
     ware_amounts: Dict[str, Optional[Dict[str, Any]]] = {}
+    all_qty: Dict[str, Decimal] = {}
     for prod in dict.fromkeys(ep._text(ep._get(p["sub"], "ProdID")) for p in picked):
         row = _one_row(wcur, f"SELECT * FROM comProduct{hint} WHERE ProdID = %s", (prod,))
         if row is None:
@@ -388,11 +415,16 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         products[prod] = row
         ware_amounts[prod] = _one_row(
             wcur, f"SELECT * FROM comWareAmount{hint} WHERE ProdID = %s AND WareID = %s", (prod, ware))
+        if not cost_params["cost_by_ware"]:
+            # 全公司成本：要用所有倉庫的庫存合計
+            wcur.execute(f"SELECT Quantity FROM comWareAmount{hint} WHERE ProdID = %s", (prod,))
+            all_qty[prod] = sum((_dec(r[0]) for r in wcur.fetchall()), Decimal(0))
     return {
         "pos": pos, "picked": picked, "vendor_id": vendor_id,
         "vendor_name": ep._text(ep._get(cust, "ShortName")) or ep._text(ep._get(cust, "FullName")),
         "trade": trade, "ware": ware, "products": products, "ware_amounts": ware_amounts,
         "curr": currs.pop(), "hint": hint,
+        "cost_params": cost_params, "all_qty": all_qty,
     }
 
 
@@ -400,6 +432,7 @@ def _load_rollup_state(wcur, ctx: Dict[str, Any], ym: int) -> None:
     """彙總表現況（要加總的 key 才讀）：月庫存、月平均、應付帳款。"""
     hint = ctx["hint"]
     ware = ctx["ware"]
+    avg_ware = ware if ctx["cost_params"]["cost_by_ware"] else ""  # 全公司成本時月平均表 WareID 為空字串
     ctx["ym_qty"], ctx["ym_avg"] = {}, {}
     for prod in ctx["products"]:
         ctx["ym_qty"][prod] = _one_row(
@@ -407,7 +440,7 @@ def _load_rollup_state(wcur, ctx: Dict[str, Any], ym: int) -> None:
             (ym, prod, ware))
         ctx["ym_avg"][prod] = _one_row(
             wcur, f"SELECT * FROM stkYearMonthAvg{hint} WHERE YearMonth = %s AND ProdID = %s AND WareID = %s AND BatchID = %s",
-            (ym, prod, ware, ""))
+            (ym, prod, avg_ware, ""))
     ctx["accounts"] = _one_row(
         wcur, f"SELECT * FROM comCustAccounts{hint} WHERE Flag = 2 AND SysID = 2 AND ID = %s AND CurrID = %s",
         (ctx["vendor_id"], ctx["curr"]))
@@ -429,6 +462,53 @@ def _row(table: str, **values: Any) -> Dict[str, Any]:
 
 def _ole_date(now: datetime) -> float:
     return (now - datetime(1899, 12, 30)).total_seconds() / 86400
+
+
+def _round_cost(value: Decimal, params: Dict[str, Any]) -> float:
+    """comCostDot = 1 → 四捨五入（half-up）到 ComCostDigs 位；否則不捨入，直接存完整浮點數。"""
+    if params["dot"]:
+        value = value.quantize(Decimal(1).scaleb(-params["digits"]), rounding=ROUND_HALF_UP)
+    return float(value)
+
+
+def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warnings: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """每個料號進貨後的成本（依正航 CostByWare / ComCostDigs / comCostDot）。
+
+    CostByWare = 0（全公司，如 Comp03）：CAvgCost = r((舊 CTotalCost + 金額) / (所有倉庫舊庫存合計 + 數量))；
+      新庫存 <= 0 時 CAvgCost 不動並警告（行為未確認）。comWareAmount.Cost 不維護。
+    CostByWare = 1（依倉庫，如 Comp13）：comWareAmount.Cost = r(新倉庫 TotalCost / 新倉庫數量)；comProduct.CAvgCost 不動。
+    回傳 {prod: {"cost": comProdRec.CostAvg, "avg": 新 CAvgCost 或 None, "ware_cost": 倉庫 Cost 或 None}}
+    """
+    params = ctx["cost_params"]
+    out: Dict[str, Dict[str, Any]] = {}
+    for prod, agg in by_prod.items():
+        q, amt = agg["qty"], agg["amount"]
+        product = ctx["products"][prod]
+        if params["cost_by_ware"]:
+            wa = ctx["ware_amounts"].get(prod)
+            old_cost = float(_dec(ep._get(wa, "Cost"))) if wa is not None else 0.0
+            new_q = (_dec(ep._get(wa, "Quantity")) if wa is not None else Decimal(0)) + q
+            new_total = (_dec(ep._get(wa, "TotalCost")) if wa is not None else Decimal(0)) + amt
+            if new_q > 0:
+                cost = _round_cost(new_total / new_q, params)
+                ware_cost: Optional[float] = cost
+            else:
+                cost, ware_cost = old_cost, None
+                warnings.append({"code": "cost_nonpositive_qty", "needs_confirm": False,
+                                 "message": f"{prod} 進貨後倉庫庫存 {new_q:g} ≤ 0，倉庫成本維持不變（正航行為未確認）"})
+            out[prod] = {"cost": cost, "avg": None, "ware_cost": ware_cost}
+        else:
+            new_q = ctx["all_qty"].get(prod, Decimal(0)) + q
+            new_total = _dec(ep._get(product, "CTotalCost")) + amt
+            if new_q > 0:
+                avg: Optional[float] = _round_cost(new_total / new_q, params)
+                cost = avg
+            else:
+                avg, cost = None, float(_dec(ep._get(product, "CAvgCost")))
+                warnings.append({"code": "cost_nonpositive_qty", "needs_confirm": False,
+                                 "message": f"{prod} 進貨後全公司庫存 {new_q:g} ≤ 0，平均成本維持不變（正航行為未確認）"})
+            out[prod] = {"cost": cost, "avg": avg, "ware_cost": None}
+    return out
 
 
 def build_plan(
@@ -494,6 +574,14 @@ def build_plan(
     total = sum_amount + sum_tax
     totals = {"sum_qty": sum_qty, "sum_amount": sum_amount, "sum_tax": sum_tax, "total": total}
 
+    by_prod: Dict[str, Dict[str, Decimal]] = {}
+    for l in lines:
+        agg = by_prod.setdefault(l["prod_id"], {"qty": Decimal(0), "amount": Decimal(0)})
+        agg["qty"] += l["qty"]
+        agg["amount"] += l["amount"]
+    costs = _cost_plan(ctx, by_prod, warnings)
+    cost_params = ctx["cost_params"]
+
     inserts: List[Tuple[str, Dict[str, Any]]] = []
     # 收料 / 驗收（Flag 5 / 6）
     for flag, no in ((5, im_no), (6, qm_no)):
@@ -535,7 +623,7 @@ def build_plan(
     for l in lines:
         inserts.append(("comProdRec", _row(
             "comProdRec", Flag=100, BillNO=rm_no, RowNO=l["row_no"], SerNO=l["row_no"], BillDate=rm_date,
-            ProdID=l["prod_id"], ProdName=l["prod_name"], CostAvg=l["price"], Quantity=l["qty"],
+            ProdID=l["prod_id"], ProdName=l["prod_name"], CostAvg=costs[l["prod_id"]]["cost"], Quantity=l["qty"],
             MLPrice=l["price"], MLAmount=l["amount"], WareID=ware, QtyRemain=l["qty"], TranType=205,
             FromNO=qm_no, FromRow=l["row_no"], TaxRate=l["tax_rate"], TaxAmt=l["tax"], NeedUpdate=True,
             CostForAcc=l["amount"], HasCheck=True, Price=l["price"], DisCount=l["discount"], Amount=l["amount"],
@@ -565,28 +653,30 @@ def build_plan(
                             "where": {"Flag": 4, "BillNO": po_no}})
 
     ym = rm_date // 100
-    by_prod: Dict[str, Dict[str, Decimal]] = {}
-    for l in lines:
-        agg = by_prod.setdefault(l["prod_id"], {"qty": Decimal(0), "amount": Decimal(0)})
-        agg["qty"] += l["qty"]
-        agg["amount"] += l["amount"]
+    avg_ware = ware if cost_params["cost_by_ware"] else ""  # 全公司成本：月平均表 WareID 為空字串
+    # 進貨「不」更新 comProduct.LatestIndate / comWareAmount.LatestInDate（那是調撥 Flag400 的入庫日；Andy 的手動鏈也沒動它）
     for prod, agg in by_prod.items():
         q, amt = agg["qty"], agg["amount"]
         wa = ctx["ware_amounts"].get(prod)
+        c = costs[prod]
         if wa is None:
+            ware_cost = c["ware_cost"] if cost_params["cost_by_ware"] else 0
             updates.append({"op": "insert", "table": "comWareAmount", "values": _row(
-                "comWareAmount", ProdID=prod, WareID=ware, Cost=(amt / q) if q else 0, Quantity=q, TotalCost=amt,
+                "comWareAmount", ProdID=prod, WareID=ware, Cost=ware_cost or 0, Quantity=q, TotalCost=amt,
                 LatestPurchDate=rm_date, BCQty=q)})
         else:
-            new_q = _dec(ep._get(wa, "Quantity")) + q
-            new_total = _dec(ep._get(wa, "TotalCost")) + amt
-            cost = (new_total / new_q) if new_q != 0 else _dec(ep._get(wa, "Cost"))
+            ware_set = {"Quantity": _dec(ep._get(wa, "Quantity")) + q,
+                        "TotalCost": _dec(ep._get(wa, "TotalCost")) + amt,
+                        "BCQty": _dec(ep._get(wa, "BCQty")) + q, "LatestPurchDate": rm_date}
+            if cost_params["cost_by_ware"] and c["ware_cost"] is not None:
+                ware_set["Cost"] = c["ware_cost"]
             updates.append({"op": "update", "table": "comWareAmount", "where": {"ProdID": prod, "WareID": ware},
-                            "set": {"Quantity": new_q, "TotalCost": new_total, "Cost": cost,
-                                    "BCQty": _dec(ep._get(wa, "BCQty")) + q, "LatestPurchDate": rm_date}})
-        updates.append({"op": "update", "table": "comProduct", "where": {"ProdID": prod},
-                        "set": {"CTotalCost": _dec(ep._get(ctx["products"][prod], "CTotalCost")) + amt,
-                                "LatestPurchDate": rm_date}})
+                            "set": ware_set})
+        prod_set: Dict[str, Any] = {"CTotalCost": _dec(ep._get(ctx["products"][prod], "CTotalCost")) + amt,
+                                    "LatestPurchDate": rm_date}
+        if c["avg"] is not None:
+            prod_set["CAvgCost"] = c["avg"]
+        updates.append({"op": "update", "table": "comProduct", "where": {"ProdID": prod}, "set": prod_set})
         # 只更新進貨日當月；進貨日早於當月時之後月份的期末量不連動（正航月結時重算）
         yq = ctx["ym_qty"].get(prod)
         if yq is None:
@@ -599,10 +689,10 @@ def build_plan(
         ya = ctx["ym_avg"].get(prod)
         if ya is None:
             updates.append({"op": "insert", "table": "stkYearMonthAvg", "values": _row(
-                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=ware, BatchID="", AtLastQuan=q)})
+                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=avg_ware, BatchID="", AtLastQuan=q)})
         else:
             updates.append({"op": "update", "table": "stkYearMonthAvg",
-                            "where": {"YearMonth": ym, "ProdID": prod, "WareID": ware, "BatchID": ""},
+                            "where": {"YearMonth": ym, "ProdID": prod, "WareID": avg_ware, "BatchID": ""},
                             "set": {"AtLastQuan": _dec(ep._get(ya, "AtLastQuan")) + q}})
     updates.append({"op": "update", "table": "comCustTrade", "where": {"Flag": 2, "ID": vendor_id},
                     "set": {"LatelyTradeDate": rm_date}})
@@ -633,6 +723,7 @@ def build_plan(
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
+        "cost_params": cost_params,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
         "change_logs": logs,
     }
@@ -754,7 +845,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
                                "price", "po_price", "tax_rate", "amount", "tax")} for l in plan["lines"]]),
         "totals": _jsonable(plan["totals"]),
-        "warnings": plan["warnings"], "needs_confirm": plan["needs_confirm"], "closed_pos": plan["closed_pos"],
+        "cost_params": plan["cost_params"], "warnings": plan["warnings"], "needs_confirm": plan["needs_confirm"], "closed_pos": plan["closed_pos"],
     }
     if include_rows:
         rows: Dict[str, List[Dict[str, Any]]] = {}
