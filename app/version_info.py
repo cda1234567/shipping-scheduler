@@ -1,10 +1,44 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.30.4"
+APP_VERSION = "v2026.10.30.5"
 APP_RELEASED_AT = "2026-10-30"
-APP_HEADLINE = "採購數量符合 MOQ、修正開採購單表格被壓扁；低庫存用量統計改 365 天；排程表無年份出貨日自動推年；重複開採購單保護"
+APP_HEADLINE = "鈞洋後段加工連動（缺料採購自動帶出加工件）、所有預交日遇台灣假日提前、測試公司複製主檔補齊供應商 / 料號關聯表"
 APP_CHANGELOG = [
+    {
+        "title": "MOQ 改依「最近一次進貨量」估算",
+        "items": [
+            "缺料採購 / 開採購單 / 低庫存「開採購單」的預設採購量 = max(需求, 估算 MOQ)。估算 MOQ = 該料號最近一次進貨數量（正航來源公司 comProdRec：Flag=100、TranType=205、預設倉 001；取 BillDate 最大再取 BillNO 最大，同一張單多列加總；單據日期在未來也算）。沒有進貨紀錄時依序退回本站主檔 MOQ、正航 comProduct.MinPurch（>0），都沒有就是需求量。鈞洋後段加工行仍不看 MOQ（數量 = 鈞洋量 × 比例）。",
+            "API 新增回傳 moq_source（last_receipt / site_master / erp_minpurch / none，取代原本的中文來源字串）、last_receipt_qty、last_receipt_date、last_receipt_bill。提示文字：「需 X，上次進貨 Y（YYYY/MM/DD）」；改用其他來源時為「需 X，MOQ Y（主檔）」/「（正航最小採購量）」；手動行沒有需求時只顯示「上次進貨 Y（日期）」；完全沒有資料顯示「無 MOQ 資料」。",
+            "進貨查詢全程唯讀 SELECT、分段 IN 批次查詢（ROW_NUMBER 取每個料號最新一張）；結果在程序內快取 30 分鐘，正航連不上時自動退回其他來源（60 秒內不重試），缺料清單與開單照常運作。",
+        ],
+    },
+    {
+        "title": "鈞洋 後段加工連動（缺料採購 / 開採購單）",
+        "items": [
+            "新增對應表 postprocess_links（基礎件 → 加工件 + 比例）。預設已確認：OC-10988B→SP-10024B、10989B→10025B、10990B→10026B、10991B→10027B、10992B→10028B、10993B→10029B、OC-10978B→SP-10022B、OC-10986B→SP-10023B（重啟不會覆蓋使用者改過 / 停用的）。只有「已確認且啟用」才生效；自動建議一律是「待確認」，確認後才生效，駁回的不會再被建議。",
+            "缺料採購頁籤新增可收合的「後段加工對應」區塊：列出狀態 / 比例 / 啟用 / 依據，可新增、修改、刪除、確認、駁回，並有「自動建議」按鈕（BOM 內緊接在鈞洋件後的虛線行；正航採購單歷史：鈞洋與加工廠同日連號且數量相同，加工廠清單可用環境變數 POSTPROCESS_VENDORS 設定）。寫入需登入編輯；正航連不上時自動建議只用 BOM（OC- 前綴推測並註明）。",
+            "缺料採購：勾選有生效對應的鈞洋件，自動帶出「後段加工」行（數量 = 鈞洋量 × 比例無條件進位，不看加工件自己的庫存 / MOQ；供應商、單價依主檔 / 最近採購；可修改、可按「移除」）。取消勾選鈞洋件就移除連動行（使用者改過的行改為保留但取消勾選）。清單已有同料號（如補料產生）時合併成一行，數量取「補料量」與「連動量」較大者。加工件在不同供應商時顯示在加工廠那一組。",
+            "預交日：加工件 = 出貨日 − 21 天（不早於今天），鈞洋件 = 加工件 − 4 天（不早於今天），各自再套用假日規則。",
+            "後端保護：缺料採購與開採購單送出時，若有鈞洋件的加工件不在同一批，回 postprocess_warning 且不寫入，需帶 confirm_missing_postprocess=true 才繼續；預覽會附上警告。開採購單輸入鈞洋件時提示「加入後段加工」，加入後會另開一張加工廠的採購單（一併預覽 / 建立）。",
+        ],
+    },
+    {
+        "title": "所有預交日遇台灣假日提前",
+        "items": [
+            "內建行政院人事行政總處辦公日曆（115、116 年，app/resources/holidays/，來源 https://data.gov.tw/dataset/14718）。檔內 0 = 上班（含補班）、2 = 放假；沒有該年資料時以週末 + 固定國定假日（1/1、2/28、4/4、4/5、5/1、9/28、10/10、10/25、12/25）備援。資料目錄 holidays/tw_YYYY.csv 可覆蓋內建檔，不需重新 build；python -m app.tools.update_tw_holidays [--year 2028] 可自動下載。",
+            "規則：算出的預交日若不是上班日，往前移到最近的上班日；不早於今天（調整後早於今天就用今天，今天不是上班日則用今天之後第一個上班日）。套用在缺料採購、提前清單、開採購單預設日期、後段加工行；畫面在日期旁顯示「遇假日提前至 11/27」或「遇假日，改為 X/XX」，API 回傳 original / reason 等欄位。使用者自己選到非上班日只提示建議日期，不強制修改。",
+            "新增 GET /api/holidays/status（各年來源 official / override / fallback）、/shift、/default-due。",
+        ],
+    },
+    {
+        "title": "測試公司複製主檔補齊關聯表；開採購單 MOQ 提示修正",
+        "items": [
+            "從來源複製供應商到測試公司時，一併複製 comCustDesc、comCustTrade（最近交易 / 退貨日歸 0）、全部 comCustAddress、全部 comCustAccounts（鍵、幣別、匯率保留，金額欄位全部歸 0），以及缺少的 comCustClass / comArea；料號一併複製 comProdLLC、ComCommoditySet、ComProdctCheckProject。絕不複製 comWareAmount。供應商 / 料號已存在但關聯列缺（舊版只複製主表）時，下一張採購單會自動補齊；預覽會列出這些列。正式公司一律不複製。",
+            "新增補跑工具：python -m app.tools.erp_master_backfill --target CHIComp13 [--vendors ..] [--products ..] [--auto] --backup-dir DIR [--apply]。預設 dry-run；--apply 前先把目標目前的列匯出成 JSON + CSV，單一 transaction 只 INSERT 缺少的列，讀回確認後才 commit。",
+            "開採購單：手動行沒有缺料需求（或需求只是佔位的 1）時，數量下方只顯示「MOQ 2,000」，不再顯示「需 1，MOQ 2,000」。",
+        ],
+    },
     {
         "title": "分頁列順序調整，隱藏提醒 / 紀錄 / ST 庫存",
         "items": [

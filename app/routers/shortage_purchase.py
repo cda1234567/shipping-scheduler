@@ -7,7 +7,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from .. import database as db
 from ..models import ShortagePoCategoryRequest, ShortagePoCreateRequest, ShortagePoRequest
-from ..services import erp_purchase, shortage_purchase
+from ..services import erp_purchase, postprocess, shortage_purchase
 from ..services.erp_stock import ErpError
 from .erp_purchase import ACTOR, _http_error
 
@@ -70,9 +70,11 @@ async def shortage_preview(req: ShortagePoRequest):
             shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
         results = await run_in_threadpool(erp_purchase.preview_many, groups)
+        warning = await run_in_threadpool(postprocess.missing_postprocess_for_groups, groups)
     except ErpError as exc:
         raise _http_error(exc) from None
-    return {"results": results}
+    # 預覽不擋：只附上警告，寫入時 create 會要求 confirm_missing_postprocess=true
+    return {"results": results, "postprocess_warning": warning}
 
 
 @router.post("/create")
@@ -84,6 +86,10 @@ async def shortage_create(req: ShortagePoCreateRequest, request: Request):
         groups = await run_in_threadpool(
             shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
+        if req.confirm_missing_postprocess is not True:
+            missing = await run_in_threadpool(postprocess.missing_postprocess_for_groups, groups)
+            if missing:  # 沒有寫入任何東西；前端確認後帶 confirm_missing_postprocess=true 重送
+                return {"results": [], "postprocess_warning": missing}
         if req.allow_duplicate is not True:
             dups = await run_in_threadpool(shortage_purchase.find_group_duplicates, groups)
             if dups:  # 沒有寫入任何東西；前端確認後帶 allow_duplicate=true 重送

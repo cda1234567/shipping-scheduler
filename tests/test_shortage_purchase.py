@@ -129,7 +129,10 @@ class FakeErpCursor:
         s = " ".join(sql.split())
         self.d["sql"].append(s)
         self.d["params"].append(params)
-        if "MinPurch" in s:
+        if "comProdRec" in s:
+            self.d["receipt_params"] = params
+            self.rows = [r for r in self.d.get("receipts", []) if r[0] in params]
+        elif "MinPurch" in s:
             self.rows = [r for r in self.d.get("min_purch", []) if r[0] in params]
         elif "FROM comProduct" in s:
             self.rows = [r for r in self.d["products"] if r[0] in params]
@@ -341,29 +344,55 @@ class ShortageListTests(Base):
         _, p = self.parts()
         ec = p["EC-1"]
         self.assertEqual((ec["need_qty"], ec["moq"], ec["moq_source"], ec["moq_adjusted"], ec["suggested_qty"]),
-                         (80, 1000, "主檔", True, 1000))
+                         (80, 1000, "site_master", True, 1000))
         oc = p["OC-1"]
-        self.assertEqual((oc["need_qty"], oc["suggested_qty"], oc["moq_adjusted"], oc["moq_source"]), (70, 70, False, "主檔"))
+        self.assertEqual((oc["need_qty"], oc["suggested_qty"], oc["moq_adjusted"], oc["moq_source"]), (70, 70, False, "site_master"))
         # 不缺的料不湊 MOQ；沒有 MOQ 的維持原值
         self.site_moq["PK-1"] = 500.0
         _, p = self.parts()
         self.assertEqual((p["PK-1"]["suggested_qty"], p["PK-1"]["moq_adjusted"]), (0, False))
-        self.assertEqual((p["AC-1"]["suggested_qty"], p["AC-1"]["moq"], p["AC-1"]["moq_source"]), (5, 0, ""))
+        self.assertEqual((p["AC-1"]["suggested_qty"], p["AC-1"]["moq"], p["AC-1"]["moq_source"]), (5, 0, "none"))
         # 訂單分配以調整後的量為準：多買的記成備品
         extra = [a for a in ec["allocations"] if a["kind"] == "extra"]
         self.assertEqual(sum(a["qty"] for a in extra), 920)
+
+    def test_moq_estimated_from_latest_receipt(self):
+        # 最近一次進貨量優先於本站 MOQ / 正航 MinPurch；沒有進貨紀錄的料號走原本的退路
+        self.erp["receipts"] = [("EC-1", "RM-20260915002", 20260915, 6000.0)]
+        self.erp["min_purch"] = [("OC-1", 300.0)]
+        self.site_moq = {"EC-1": 1000.0}
+        _, p = self.parts()
+        ec = p["EC-1"]
+        self.assertEqual((ec["need_qty"], ec["moq"], ec["moq_source"], ec["suggested_qty"], ec["moq_adjusted"]),
+                         (80, 6000, "last_receipt", 6000, True))
+        self.assertEqual((ec["last_receipt_qty"], ec["last_receipt_date"], ec["last_receipt_bill"]), (6000.0, "2026-09-15", "RM-20260915002"))
+        self.assertEqual((p["OC-1"]["moq_source"], p["OC-1"]["suggested_qty"], p["OC-1"]["last_receipt_date"]), ("erp_minpurch", 300, ""))
+        self.assertTrue(all(q.startswith("SELECT") for q in self.erp["sql"]))
+
+    def test_moq_falls_back_when_receipt_query_fails(self):
+        self.site_moq = {"EC-1": 1000.0}
+        orig = FakeErpCursor.execute
+
+        def execute(cur, sql, params=None):
+            if "comProdRec" in sql:
+                raise RuntimeError("boom")
+            return orig(cur, sql, params)
+
+        with patch.object(FakeErpCursor, "execute", execute):
+            _, p = self.parts()
+        self.assertEqual((p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), ("site_master", 1000))
 
     def test_erp_min_purch_fallback_and_site_priority(self):
         self.erp["min_purch"] = [("EC-1", 2000.0), ("OC-1", 300.0), ("AC-1", 0.0)]
         self.site_moq = {"EC-1": 1000.0}
         _, p = self.parts()
-        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (1000, "主檔", 1000))
-        self.assertEqual((p["OC-1"]["moq"], p["OC-1"]["moq_source"], p["OC-1"]["suggested_qty"]), (300, "ERP 最低採購量", 300))
-        self.assertEqual((p["AC-1"]["moq"], p["AC-1"]["moq_source"], p["AC-1"]["suggested_qty"]), (0, "", 5))
+        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (1000, "site_master", 1000))
+        self.assertEqual((p["OC-1"]["moq"], p["OC-1"]["moq_source"], p["OC-1"]["suggested_qty"]), (300, "erp_minpurch", 300))
+        self.assertEqual((p["AC-1"]["moq"], p["AC-1"]["moq_source"], p["AC-1"]["suggested_qty"]), (0, "none", 5))
         # 站內 MOQ 為 0 視為沒有 → 退回 ERP
         self.site_moq = {"EC-1": 0.0}
         _, p = self.parts()
-        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (2000, "ERP 最低採購量", 2000))
+        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (2000, "erp_minpurch", 2000))
         # ERP 查詢只用 SELECT + NOLOCK，且站內已有 MOQ 的料號不再查
         self.site_moq = {"EC-1": 1000.0}
         self.erp["sql"].clear(); self.erp["params"].clear()
@@ -855,10 +884,10 @@ class MoqAdjustTests(unittest.TestCase):
         self.assertEqual(moq_service.adjust_qty(120, 0, multiple=None), 120)
 
     def test_moq_fields(self):
-        f = moq_service.moq_fields(80, {"moq": 1000, "moq_source": "主檔"})
-        self.assertEqual((f["need_qty"], f["suggested_qty"], f["moq_adjusted"], f["moq_source"]), (80, 1000, True, "主檔"))
+        f = moq_service.moq_fields(80, {"moq": 1000, "moq_source": "site_master"})
+        self.assertEqual((f["need_qty"], f["suggested_qty"], f["moq_adjusted"], f["moq_source"]), (80, 1000, True, "site_master"))
         f = moq_service.moq_fields(80, None)
-        self.assertEqual((f["suggested_qty"], f["moq"], f["moq_source"], f["moq_adjusted"]), (80, 0, "", False))
+        self.assertEqual((f["suggested_qty"], f["moq"], f["moq_source"], f["moq_adjusted"]), (80, 0, "none", False))
 
 
 class CustomerSuppliedListTests(Base):

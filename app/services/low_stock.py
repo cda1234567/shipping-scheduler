@@ -920,14 +920,20 @@ def suggested_po_gap(row: dict) -> int:
 
 
 def with_moq(views: List[dict]) -> List[dict]:
-    """替每列加上 moq / moq_source / suggested_po_qty（= max(缺口, MOQ)）。只用本站 MOQ，不連 ERP。"""
+    """替每列加上 moq / moq_source / last_receipt_* / suggested_po_qty（= max(缺口, 估算 MOQ)）。
+
+    MOQ 以最近一次進貨量估算（見 moq.lookup_moq，批次查詢 + 快取）；正航連不上時退回本站 MOQ。"""
     from . import moq as moq_service
 
-    site = moq_service.site_moq_map()
+    info = moq_service.lookup_moq([v["part_number"] for v in views])
     for v in views:
-        value = float(site.get(norm_part(v["part_number"]), 0) or 0)
+        i = info.get(norm_part(v["part_number"])) or {}
+        value = float(i.get("moq") or 0)
         v["moq"] = value
-        v["moq_source"] = moq_service.SOURCE_SITE if value > 0 else ""
+        v["moq_source"] = i.get("moq_source") or moq_service.SOURCE_NONE
+        v["last_receipt_qty"] = i.get("last_receipt_qty")
+        v["last_receipt_date"] = i.get("last_receipt_date") or ""
+        v["last_receipt_bill"] = i.get("last_receipt_bill") or ""
         v["suggested_po_qty"] = moq_service.adjust_qty(suggested_po_gap(v), value)
     return views
 

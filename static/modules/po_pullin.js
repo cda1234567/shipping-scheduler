@@ -108,6 +108,12 @@ function renderSupplier(s, idx) {
   </div>`;
 }
 
+// 需要到貨日的調整說明：後端給 date_shift_reason（遇假日提前 / 早於今天）；舊資料退回「改用今天」
+function dateHint(p) {
+  const text = p.date_shift_reason || (p.date_adjusted ? "改用今天" : "");
+  return text ? ` <span class="shortage-po-adjusted" title="原推算 ${esc(p.original_required_date || "")}">（${esc(text)}）</span>` : "";
+}
+
 function renderResult() {
   const box = el("pp-result");
   if (!_data) { box.hidden = true; return; }
@@ -118,14 +124,14 @@ function renderResult() {
   const unordered = d.unordered.map(p => `<tr>
     <td class="mono">${esc(p.part_number)}</td><td>${esc(p.description)}</td>
     <td class="num">${fmtQty(p.shortage)}</td><td class="num shortage-po-short">${fmtQty(p.unordered_qty)}</td>
-    <td>${esc(p.required_date)}${p.date_adjusted ? ` <span class="shortage-po-adjusted" title="原推算 ${esc(p.original_required_date)}">（改用今天）</span>` : ""}</td>
+    <td>${esc(p.required_date)}${dateHint(p)}</td>
   </tr>`).join("");
   const partRows = d.parts.map(p => `<tr>
     <td class="mono">${esc(p.part_number)}</td><td>${esc(p.category_label)}</td>
     <td class="num">${fmtQty(p.need)}</td>
     <td class="num">${fmtQty(p.st)}${(p.merged_from || []).length ? ` <span class="erp-po-hint">(含 ${p.merged_from.map(m => `${esc(m.part)} ${fmtQty(m.stock)}`).join("、")})</span>` : ""}</td>
     <td class="num">${fmtQty(p.shortage)}</td>
-    <td>${esc(p.required_date)}${p.date_adjusted ? ' <span class="shortage-po-adjusted">（改用今天）</span>' : ""}</td>
+    <td>${esc(p.required_date)}${dateHint(p)}</td>
     <td>${esc(ROW_STATUS_LABELS[p.status] || p.status)}</td>
   </tr>`).join("");
   box.innerHTML = `

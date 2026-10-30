@@ -8,6 +8,7 @@ project_root = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 datas = [
     (str(project_root / "static"), "static"),
     (str(project_root / "templates"), "templates"),
+    (str(project_root / "app" / "resources"), "app/resources"),
     (str(project_root / "config.yaml"), "."),
     (str(project_root / "desktop_client.json.example"), "."),
 ]

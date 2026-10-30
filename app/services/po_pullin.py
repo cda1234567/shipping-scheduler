@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .. import database as db
 from . import erp_purchase, low_stock, part_conversion, shortage_purchase as sp
+from . import tw_holidays
 from .local_time import local_now
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,15 @@ def make_line_key(supplier_id: str, bill_no: str, row_no: int, part: str) -> str
 
 
 def required_date(category: str, new_ship: date, today: date) -> Tuple[date, bool, date]:
-    """(需要到貨日, 是否因早於今天而改用今天, 原推算日)；規則與缺料採購相同。"""
+    """(需要到貨日, 是否因早於今天而改用今天, 原推算日)；規則與缺料採購相同（含假日提前）。"""
     raw = sp.pre_in_date_for(category, new_ship)
-    adjusted, was_adjusted = sp.clamp_pre_in_date(raw, today)
-    return adjusted, was_adjusted, raw
+    shifted = tw_holidays.shift_due_date(raw, today)
+    return shifted["date"], raw < today, raw
+
+
+def required_date_reason(category: str, new_ship: date, today: date) -> str:
+    """需要到貨日因假日 / 早於今天而被調整時的說明（沒調整回空字串）。"""
+    return tw_holidays.shift_due_date(sp.pre_in_date_for(category, new_ship), today)["reason"]
 
 
 def plan_part(shortage: float, required: date, po_lines: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -219,6 +225,7 @@ def build_pullin_list(order_ids: List[int], new_ship_date: Any) -> Dict[str, Any
             "ware_ids": tab_wares,
             "shortage": None if stock is None else max(0.0, entry["need"] - stock),
             "required_date": req.isoformat(), "date_adjusted": adjusted,
+            "date_shift_reason": required_date_reason(category, new_ship, today),
         })
     keys = [k for k in keys if k not in cs_keys]
 
@@ -234,7 +241,8 @@ def build_pullin_list(order_ids: List[int], new_ship_date: Any) -> Dict[str, Any
             "category_label": sp.CATEGORY_LABELS[category], "need": entry["need"], "st": st,
             "merged_from": merged_from, "shortage": shortage,
             "required_date": req.isoformat(), "original_required_date": raw.isoformat(),
-            "date_adjusted": adjusted, "po_lines": [], "unordered_qty": 0.0, "status": "no_shortage",
+            "date_adjusted": adjusted, "date_shift_reason": required_date_reason(category, new_ship, today),
+            "po_lines": [], "unordered_qty": 0.0, "status": "no_shortage",
         }
     short_parts = [k for k, v in parts_info.items() if v["shortage"] > 0]
 

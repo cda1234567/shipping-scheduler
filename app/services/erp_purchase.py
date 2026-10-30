@@ -709,6 +709,110 @@ def _master_specs(
     return specs
 
 
+# 供應商 / 料號的關聯表（只在測試公司從來源複製）：(表, 標籤, 要比對的額外鍵欄位, 轉換)
+# key_cols 為空 = 一個主檔只有一列，用「有沒有列」判斷；否則以鍵欄位逐列比對（多列表）。
+VENDOR_RELATED = (
+    ("comCustDesc", "供應商說明", (), None),
+    ("comCustTrade", "供應商交易條件", (), "trade_reset"),
+    ("comCustAddress", "供應商地址", ("AddrID",), None),
+    ("comCustAccounts", "供應商帳款", ("SysID", "CurrID"), "accounts_zero"),
+)
+PRODUCT_RELATED = (
+    ("comProdLLC", "料號 LLC", (), None),
+    ("ComCommoditySet", "料號商品設定", ("CommodityID", "Flag"), None),
+    ("ComProdctCheckProject", "料號檢驗項目", ("RowNo",), None),
+)
+# 絕不複製：庫存由進貨產生，不能從正式公司帶過來
+NEVER_COPY_TABLES = ("comWareAmount",)
+_ACCOUNT_KEYS = {"flag", "sysid", "id", "currid"}
+_TRADE_RESET_COLS = ("latelytradedate", "latelyreturndate")
+
+
+def _apply_transform(name: Optional[str], row: Dict[str, Any]) -> Dict[str, Any]:
+    """複製時對來源列的轉換：帳款金額歸 0（匯率與鍵保留）、交易條件的最近交易日歸 0。"""
+    if not name:
+        return row
+    out = dict(row)
+    for col, value in row.items():
+        low = str(col).lower()
+        if name == "accounts_zero":
+            if low in _ACCOUNT_KEYS or low.endswith("exchrate"):
+                continue
+            if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+                out[col] = 0
+        elif name == "trade_reset" and low in _TRADE_RESET_COLS:
+            out[col] = 0
+    return out
+
+
+def related_rows_specs(
+    scur, wcur, table: str, label: str, owner: str, where: str, params: Tuple[Any, ...],
+    key_cols: Tuple[str, ...] = (), transform: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """來源有、目標沒有的關聯列 → 每列一個 spec（供 _copy_masters 逐列複製）。"""
+    if table in NEVER_COPY_TABLES:
+        raise PoSchemaError(f"{table} 不可複製")
+    select = ", ".join(key_cols) if key_cols else "1"
+    scur.execute(f"SELECT {select} FROM {table} WHERE {where}", params)
+    src_keys = [tuple(r) if key_cols else () for r in scur.fetchall()]
+    if not src_keys:
+        return []
+    wcur.execute(f"SELECT {select} FROM {table} WHERE {where}", params)
+    have = {tuple(_text(v) for v in r) if key_cols else () for r in wcur.fetchall()}
+    specs = []
+    for key in dict.fromkeys(src_keys):  # 單列表可能有多列同鍵時只算一次
+        if tuple(_text(v) for v in key) in have:
+            continue
+        specs.append({
+            "table": table, "label": label,
+            "key": "/".join([owner] + [_text(v) for v in key]),
+            "where": where + "".join(f" AND {c} = %s" for c in key_cols),
+            "params": (*params, *key),
+            "required": False, "copy_required": False, "transform": transform,
+        })
+    return specs
+
+
+def related_vendor_specs(scur, wcur, vendor_id: str, vendor_row: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """供應商缺的關聯列：(要先於供應商的 類別 / 地區, 供應商之後的 說明 / 交易條件 / 地址 / 帳款)。
+
+    vendor_row 為來源 comCustomer 列（取 ClassID / AreaID）；不給就自己從來源讀。
+    """
+    if vendor_row is None:
+        scur.execute("SELECT * FROM comCustomer WHERE Flag = 2 AND ID = %s", (vendor_id,))
+        vendor_row = _one(scur) or {}
+    pre: List[Dict[str, Any]] = []
+    class_id = _text(_get(vendor_row, "ClassID"))
+    area_id = _text(_get(vendor_row, "AreaID"))
+    if class_id:
+        pre += related_rows_specs(scur, wcur, "comCustClass", "供應商類別", class_id, "Flag = 2 AND ClassID = %s", (class_id,))
+    if area_id:
+        pre += related_rows_specs(scur, wcur, "comArea", "地區", area_id, "AreaID = %s", (area_id,))
+    after: List[Dict[str, Any]] = []
+    for table, label, key_cols, transform in VENDOR_RELATED:
+        after += related_rows_specs(
+            scur, wcur, table, label, vendor_id, "Flag = 2 AND ID = %s", (vendor_id,), key_cols, transform
+        )
+    return pre, after
+
+
+def related_product_specs(scur, wcur, prod_id: str) -> List[Dict[str, Any]]:
+    specs: List[Dict[str, Any]] = []
+    for table, label, key_cols, transform in PRODUCT_RELATED:
+        specs += related_rows_specs(scur, wcur, table, label, prod_id, "ProdID = %s", (prod_id,), key_cols, transform)
+    return specs
+
+
+def order_master_specs(
+    missing: List[Dict[str, Any]], pre: List[Dict[str, Any]], vendor_after: List[Dict[str, Any]],
+    product_after: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """複製順序：供應商類別 / 地區 → 供應商 / 料號類別 / 料號 → 供應商與料號的關聯列 → 其餘（倉庫、部門、人員）。"""
+    core = [m for m in missing if m["table"] in ("comCustomer", "comProductClass", "comProduct")]
+    rest = [m for m in missing if m not in core]
+    return pre + core + vendor_after + product_after + rest
+
+
 def _can_copy_masters(target: str, source_db: str) -> bool:
     """只有測試公司（且不是來源本身）才可從來源複製主檔；正式公司一律不行。"""
     return is_test(target) and target != PRODUCTION_TARGET and target != source_db
@@ -750,7 +854,7 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
         if wcur.fetchone() is None:
             missing.append(spec)
     can_copy = _can_copy_masters(target, source_db)
-    if missing and can_copy:
+    if can_copy:
         # 類別 / 部門 / 人員來源也沒有就略過（不是必要主檔）；必要主檔來源沒有則在 _copy_masters 報錯
         scur = src.cursor()
         kept = []
@@ -776,6 +880,12 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
                     continue
             kept.append(spec)
         missing = kept
+        # 供應商 / 料號即使已存在目標，只要關聯列缺（舊版只複製了主表）也一併補齊
+        pre, vendor_after = related_vendor_specs(scur, wcur, supplier_id, ctx["supplier"])
+        product_after: List[Dict[str, Any]] = []
+        for pid in prod_ids:
+            product_after += related_product_specs(scur, wcur, pid)
+        missing = order_master_specs(missing, pre, vendor_after, product_after)
     elif missing:
         # 正式公司（或來源本身）絕不複製主檔：必要主檔缺就中止，非必要的直接忽略
         required_missing = [m for m in missing if m["required"]]
@@ -965,6 +1075,9 @@ def _copy_masters(src_cur, wcur, missing: List[Dict[str, Any]], target: str = ""
             if not spec.get("required", True) and not spec.get("copy_required"):
                 continue
             raise PoValidationError(f"來源公司也找不到{spec['label']} {spec['key']}，無法複製主檔")
+        if spec["table"] in NEVER_COPY_TABLES:
+            raise PoSchemaError(f"{spec['table']} 不可複製")
+        row = _apply_transform(spec.get("transform"), row)
         cols = table_columns(wcur, spec["table"])
         sql, params = build_insert(spec["table"], cols, row)
         wcur.execute(sql, params)
@@ -1189,7 +1302,8 @@ def part_defaults(part: str) -> Dict[str, Any]:
         "part_number": key, "found": False, "product_name": "",
         "supplier_id": "", "supplier_name": "", "last_price": None,
         "last_bill_no": "", "last_bill_date": "", "suggested_qty": None,
-        "need_qty": None, "moq": 0, "moq_source": "", "moq_adjusted": False,
+        "need_qty": None, "moq": 0, "moq_source": "none", "moq_adjusted": False,
+        "last_receipt_qty": None, "last_receipt_date": "", "last_receipt_bill": "",
     }
     if not key:
         return result

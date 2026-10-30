@@ -7,6 +7,10 @@
 - 打件料：出貨日往前 1 個月（月底則取該月底，如 3/31→2/28），再取「不晚於該日的最近一個 26 日」。
 - 後段料：出貨日 - 21 天。
 - 推算日早於今天（台北時區）時改用今天，並保留原推算日（original_pre_in_date / date_adjusted），不再標記過期。
+- 所有預計進貨日再套用台灣辦公日曆（tw_holidays.shift_due_date）：遇假日往前移到最近的上班日，不早於今天
+  （今天不是上班日則取今天之後第一個上班日）；原因放 due_shift_reason(s)。
+- 有生效「後段加工對應」（postprocess_links）的鈞洋件：加工件預交日 = 出貨日 - 21 天（clamp 今天），
+  鈞洋件預交日 = 加工件預交日 - 4 天（clamp 今天），各自再套用假日規則；清單每列附 postprocess（加工件資訊）。
 
 打件 / 後段的自動判斷（classify_part，人工指定優先，存於 part_purchase_categories）：
 - 打件（smt）：料號前兩碼為 EC / IC / UC / PB，或品名（不分大小寫）含
@@ -23,7 +27,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import database as db
-from . import erp_purchase, erp_stock, low_stock, moq as moq_service, part_conversion, po_duplicates
+from . import erp_purchase, erp_stock, low_stock, moq as moq_service, part_conversion, po_duplicates, postprocess, tw_holidays
 from .shortage_rules import summarize_requested_supply
 from .local_time import local_now
 
@@ -181,9 +185,12 @@ def _manual_allocation(qty: float) -> List[Dict[str, Any]]:
 
 
 def _clamp_date_text(value: Any, today: date) -> Any:
-    """伺服器端保險：預計進貨日早於今天一律改為今天（用戶端可能送來過期的舊推算日）；無法解析者原樣交給後續驗證。"""
+    """伺服器端保險：預計進貨日早於今天一律改為今天（今天不是上班日則取之後第一個上班日）；
+    用戶端可能送來過期的舊推算日。無法解析者原樣交給後續驗證；使用者自己填的未來日期不動。"""
     parsed = parse_ship_date(value)
-    return clamp_pre_in_date(parsed, today)[0].isoformat() if parsed else value
+    if not parsed:
+        return value
+    return tw_holidays.next_working_day(today).isoformat() if parsed < today else parsed.isoformat()
 
 
 def prepare_groups(
@@ -430,6 +437,35 @@ def _erp_lookups(parts: List[str], today: date) -> Dict[str, Any]:
 
 # ── 缺料清單 ─────────────────────────────────────────────────────────────────
 
+def _postprocess_entry(
+    link: Dict[str, Any], lookups: Dict[str, Any], pp_dates: Optional[Dict[str, Any]], listed: List[str]
+) -> Dict[str, Any]:
+    """鈞洋件的後段加工資訊：加工件的品名 / 供應商（主檔 > 最近採購）/ 單價 / 預交日。"""
+    part = link["process_part"]
+    product = lookups["products"].get(part, {})
+    last = lookups["last_po"].get(part, {})
+    supplier_id, source = resolve_supplier(
+        product.get("major_supplier", ""), last.get("supplier_id", ""), lookups["suppliers"]
+    )
+    due = pp_dates["process"] if pp_dates else None
+    return {
+        "link_id": link["id"],
+        "process_part": part,
+        "ratio": link["ratio"],
+        "description": product.get("name", ""),
+        "category": "backend",
+        "supplier_id": supplier_id,
+        "supplier_name": lookups["suppliers"].get(supplier_id, ""),
+        "supplier_source": source,
+        "price": float(last.get("price") or 0),
+        "last_bill_no": last.get("bill_no", ""),
+        "pre_in_date": due["date"].isoformat() if due else "",
+        "original_pre_in_date": pp_dates["process_raw"].isoformat() if pp_dates else "",
+        "due_shift_reason": due["reason"] if due else "",
+        "in_list": part in listed,
+    }
+
+
 def _order_summary(order: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": order.get("id"),
@@ -508,7 +544,9 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     st_stock = {
         str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
     }
-    lookups = _erp_lookups(keys, today)
+    links = db.active_postprocess_links(keys)
+    process_extra = sorted({l["process_part"] for ls in links.values() for l in ls} - set(keys))
+    lookups = _erp_lookups(sorted(set(keys) | set(process_extra)), today)
     overrides = db.get_part_purchase_categories(keys)
     moq_info = moq_service.lookup_moq([k for k in keys if not erp_purchase.customer_supplied_reason(k)])
 
@@ -536,10 +574,18 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
 
         ship = parse_ship_date(entry["earliest"]["ship_date"])
         raw_dates = {c: pre_in_date_for(c, ship) if ship else None for c in CATEGORY_LABELS}
-        clamped = {c: clamp_pre_in_date(d, today) if d else None for c, d in raw_dates.items()}
-        dates = {c: v[0].isoformat() if v else "" for c, v in clamped.items()}
+        link_list = links.get(key, [])
+        pp_dates = postprocess.linked_dates(ship, today) if link_list else None
+        if pp_dates:  # 鈞洋件：預交日 = 加工件預交日 - 4 天
+            raw_dates["backend"] = pp_dates["base_raw"]
+        shifted = {c: tw_holidays.shift_due_date(d, today) if d else None for c, d in raw_dates.items()}
+        dates = {c: v["date"].isoformat() if v else "" for c, v in shifted.items()}
         original_dates = {c: d.isoformat() if d else "" for c, d in raw_dates.items()}
-        adjusted = {c: bool(v and v[1]) for c, v in clamped.items()}
+        adjusted = {c: bool(d and d < today) for c, d in raw_dates.items()}
+        shift_reasons = {c: v["reason"] if v else "" for c, v in shifted.items()}
+        postprocess_out = [
+            _postprocess_entry(link, lookups, pp_dates, keys) for link in link_list
+        ]
         # 預設採購量 = max(缺料量, MOQ)；使用者可手動改，建立採購單時不再調整
         qty_fields = moq_service.moq_fields(shortage, moq_info.get(key))
         suggested = qty_fields["suggested_qty"]
@@ -570,6 +616,9 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "date_adjusted": adjusted[category],
             "original_pre_in_dates": original_dates,
             "dates_adjusted": adjusted,
+            "due_shift_reason": shift_reasons[category],
+            "due_shift_reasons": shift_reasons,
+            "postprocess": postprocess_out,
             "earliest_order": {k: entry["earliest"][k] for k in ("order_id", "code", "model", "po_number", "ship_date")},
             "orders": entry["orders"],
         })

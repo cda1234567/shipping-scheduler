@@ -30,7 +30,7 @@ def _http_error(exc: low_stock.LowStockError) -> HTTPException:
 
 @router.get("/alerts")
 async def get_low_stock_alerts():
-    """低於門檻的常用料號。只讀本機資料庫與 ST 庫存快照，不連 ERP。"""
+    """低於門檻的常用料號。讀本機資料庫與 ST 庫存快照；MOQ 以正航最近進貨量估算（唯讀、有快取，連不上就退回本站 MOQ）。"""
     main_parts = low_stock.main_file_parts()
     alerts = low_stock.list_alerts(main_parts)
     return {
@@ -63,6 +63,9 @@ async def get_low_stock_alerts():
                 "on_order_note": a["on_order_note"],
                 "moq": a["moq"],
                 "moq_source": a["moq_source"],
+                "last_receipt_qty": a.get("last_receipt_qty"),
+                "last_receipt_date": a.get("last_receipt_date", ""),
+                "last_receipt_bill": a.get("last_receipt_bill", ""),
                 "suggested_po_qty": a["suggested_po_qty"],
             }
             for a in alerts

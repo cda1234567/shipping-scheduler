@@ -584,6 +584,23 @@ CREATE TABLE IF NOT EXISTS po_pullin_items (
     updated_at     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_po_pullin_status ON po_pullin_items(status);
+-- 鈞洋 後段加工對應：基礎件（如 OC-10988B）買了之後要另外給加工廠印刷的加工件（如 SP-10024B）
+-- status: confirmed（已確認，enabled=1 時生效）/ pending（自動建議，待確認，不生效）/ rejected（已駁回，避免重複建議）
+CREATE TABLE IF NOT EXISTS postprocess_links (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    base_part    TEXT NOT NULL,
+    process_part TEXT NOT NULL,
+    ratio        REAL NOT NULL DEFAULT 1,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    status       TEXT NOT NULL DEFAULT 'confirmed',
+    source       TEXT NOT NULL DEFAULT 'manual',
+    evidence     TEXT NOT NULL DEFAULT '',
+    note         TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT '',
+    updated_at   TEXT NOT NULL DEFAULT '',
+    UNIQUE(base_part, process_part)
+);
+CREATE INDEX IF NOT EXISTS idx_postprocess_links_base ON postprocess_links(base_part);
 CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_inventory_count_sessions_status ON inventory_count_sessions(scope, status, id);
 """
@@ -780,6 +797,8 @@ def init_db():
         conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_absorbed ON defective_records(absorbed_by_alignment_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dispatch_sessions_period ON dispatch_sessions(main_period_id, rolled_back_at, id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_defective_batches_period ON defective_batches(main_period_id, id)")
+
+        seed_postprocess_links(conn)
 
         _repair_managed_paths(conn)
 
@@ -4075,6 +4094,171 @@ def set_part_purchase_category(part_number: str, category: str, actor: str = "")
                    category=excluded.category, updated_at=excluded.updated_at, actor=excluded.actor""",
             (part, category, _now(), actor),
         )
+
+
+# ── 鈞洋 後段加工對應 ─────────────────────────────────────────────────────────
+
+POSTPROCESS_STATUSES = ("confirmed", "pending", "rejected")
+POSTPROCESS_SOURCES = ("seed", "auto_bom", "auto_po", "manual")
+POSTPROCESS_SEED = (
+    ("OC-10988B", "SP-10024B"), ("OC-10989B", "SP-10025B"), ("OC-10990B", "SP-10026B"),
+    ("OC-10991B", "SP-10027B"), ("OC-10992B", "SP-10028B"), ("OC-10993B", "SP-10029B"),
+    ("OC-10978B", "SP-10022B"), ("OC-10986B", "SP-10023B"),
+)
+
+
+def seed_postprocess_links(conn) -> int:
+    """預設已確認的對應（冪等：已存在的組合不動，包含使用者改過 / 停用的）；回傳新增筆數。"""
+    added = 0
+    now = _now()
+    for base, process in POSTPROCESS_SEED:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO postprocess_links(base_part, process_part, ratio, enabled, status, source, "
+            "evidence, note, created_at, updated_at) VALUES(?,?,1,1,'confirmed','seed','預設對應（Andy 提供）','',?,?)",
+            (base, process, now, now),
+        )
+        added += cur.rowcount or 0
+    return added
+
+
+def _postprocess_row(row) -> dict:
+    d = dict(row)
+    d["enabled"] = bool(d.get("enabled"))
+    d["active"] = d["enabled"] and d.get("status") == "confirmed"
+    return d
+
+
+def list_postprocess_links(include_rejected: bool = True) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM postprocess_links "
+            + ("" if include_rejected else "WHERE status != 'rejected' ")
+            + "ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'confirmed' THEN 1 ELSE 2 END, base_part, process_part"
+        ).fetchall()
+    return [_postprocess_row(r) for r in rows]
+
+
+def get_postprocess_link(link_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM postprocess_links WHERE id=?", (int(link_id),)).fetchone()
+    return _postprocess_row(row) if row else None
+
+
+def active_postprocess_links(bases: list[str] | None = None) -> dict[str, list[dict]]:
+    """生效中（confirmed 且 enabled）的對應，依基礎件分組：{base: [{id, process_part, ratio}]}。"""
+    sql = "SELECT id, base_part, process_part, ratio FROM postprocess_links WHERE status='confirmed' AND enabled=1"
+    params: list = []
+    if bases is not None:
+        keys = list(dict.fromkeys(str(b or "").strip().upper() for b in bases if str(b or "").strip()))
+        if not keys:
+            return {}
+        sql += f" AND base_part IN ({','.join('?' * len(keys))})"
+        params = keys
+    with get_conn() as conn:
+        rows = conn.execute(sql + " ORDER BY id", params).fetchall()
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        out.setdefault(str(r["base_part"]), []).append(
+            {"id": r["id"], "process_part": str(r["process_part"]), "ratio": float(r["ratio"])}
+        )
+    return out
+
+
+def _postprocess_clean(base_part, process_part, ratio, status, source) -> tuple[str, str, float, str, str]:
+    base = str(base_part or "").strip().upper()
+    process = str(process_part or "").strip().upper()
+    if not base or not process:
+        raise ValueError("基礎件與加工件料號不可為空")
+    if base == process:
+        raise ValueError("基礎件與加工件不可相同")
+    try:
+        ratio_value = float(ratio)
+    except (TypeError, ValueError):
+        raise ValueError("比例需為數字") from None
+    if not (ratio_value > 0) or ratio_value > 1000:
+        raise ValueError("比例需大於 0 且不超過 1000")
+    if status not in POSTPROCESS_STATUSES:
+        raise ValueError("狀態不正確")
+    if source not in POSTPROCESS_SOURCES:
+        raise ValueError("來源不正確")
+    return base, process, ratio_value, status, source
+
+
+def add_postprocess_link(
+    base_part: str, process_part: str, ratio: float = 1, *, status: str = "confirmed", source: str = "manual",
+    evidence: str = "", note: str = "", enabled: bool = True,
+) -> int:
+    """新增一筆對應；同一組 (基礎件, 加工件) 已存在（任何狀態）就丟 ValueError。"""
+    base, process, ratio_value, status, source = _postprocess_clean(base_part, process_part, ratio, status, source)
+    now = _now()
+    with get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO postprocess_links(base_part, process_part, ratio, enabled, status, source, evidence, note, "
+                "created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (base, process, ratio_value, 1 if enabled else 0, status, source, evidence, note, now, now),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"{base} → {process} 已存在") from None
+        return int(cur.lastrowid)
+
+
+def update_postprocess_link(link_id: int, **fields) -> dict | None:
+    """可改 process_part / ratio / enabled / status / note；沒有這筆回 None。"""
+    current = get_postprocess_link(link_id)
+    if current is None:
+        return None
+    process = fields.get("process_part", current["process_part"])
+    ratio = fields.get("ratio", current["ratio"])
+    status = fields.get("status", current["status"])
+    _b, process, ratio_value, status, _s = _postprocess_clean(
+        current["base_part"], process, ratio, status, current["source"]
+    )
+    enabled = current["enabled"] if fields.get("enabled") is None else bool(fields["enabled"])
+    note = current["note"] if fields.get("note") is None else str(fields["note"])
+    with get_conn() as conn:
+        try:
+            conn.execute(
+                "UPDATE postprocess_links SET process_part=?, ratio=?, enabled=?, status=?, note=?, updated_at=? WHERE id=?",
+                (process, ratio_value, 1 if enabled else 0, status, note, _now(), int(link_id)),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"{current['base_part']} → {process} 已存在") from None
+    return get_postprocess_link(link_id)
+
+
+def delete_postprocess_link(link_id: int) -> bool:
+    with get_conn() as conn:
+        return conn.execute("DELETE FROM postprocess_links WHERE id=?", (int(link_id),)).rowcount > 0
+
+
+def postprocess_pair_exists(base_part: str, process_part: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT 1 FROM postprocess_links WHERE base_part=? AND process_part=?",
+            (str(base_part).strip().upper(), str(process_part).strip().upper()),
+        ).fetchone() is not None
+
+
+def list_bom_dash_followers() -> list[dict]:
+    """BOM 內「緊接在非虛線行之後的虛線行」：[{bom_file_id, base_part, process_part, model}]（供後段加工自動建議）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT c.bom_file_id, c.id, c.part_number, c.is_dash, f.group_model "
+            "FROM bom_components c JOIN bom_files f ON f.id = c.bom_file_id "
+            "ORDER BY c.bom_file_id, c.id"
+        ).fetchall()
+    out: list[dict] = []
+    prev = None
+    for r in rows:
+        if prev is not None and prev["bom_file_id"] == r["bom_file_id"] and not prev["is_dash"] and r["is_dash"]:
+            base = str(prev["part_number"] or "").strip().upper()
+            process = str(r["part_number"] or "").strip().upper()
+            if base and process and base != process:
+                out.append({"bom_file_id": r["bom_file_id"], "base_part": base, "process_part": process,
+                            "model": str(r["group_model"] or "")})
+        prev = r
+    return out
 
 
 # ── 轉換料 A→B ────────────────────────────────────────────────────────────────

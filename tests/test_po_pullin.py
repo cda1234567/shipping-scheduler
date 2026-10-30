@@ -17,7 +17,7 @@ from app.services import shortage_purchase as sp
 from app.services.edit_auth import request_requires_edit_auth
 
 TODAY = datetime(2026, 10, 29, 10, 0)
-NEW_SHIP = "2027-01-10"  # 打件 → 2026-11-26；後段 → 2026-12-20
+NEW_SHIP = "2027-01-10"  # 打件 → 2026-11-26；後段 → 12/20 是週日，遇假日提前到 2026-12-18
 
 
 def line(qty, po_date, bill="PO1", row=1, supplier="S1", part="EC-1"):
@@ -29,7 +29,7 @@ class PureTests(unittest.TestCase):
     def test_required_date_uses_shortage_purchase_rules(self):
         today = date(2026, 10, 29)
         self.assertEqual(pp.required_date("smt", date(2027, 1, 10), today)[:2], (date(2026, 11, 26), False))
-        self.assertEqual(pp.required_date("backend", date(2027, 1, 10), today)[:2], (date(2026, 12, 20), False))
+        self.assertEqual(pp.required_date("backend", date(2027, 1, 10), today)[:2], (date(2026, 12, 18), False))  # 12/20 週日 → 提前到週五
         # 早於今天 → 今天，保留原推算日
         d, adjusted, raw = pp.required_date("smt", date(2026, 12, 10), today)
         self.assertEqual((d, adjusted, raw), (today, True, date(2026, 10, 26)))
@@ -172,7 +172,7 @@ class BuildListTests(Base):
         parts = {p["part_number"]: p for p in r["parts"]}
         self.assertNotIn("ZZ-9", parts)  # 庫存夠
         self.assertEqual(parts["EC-1"]["required_date"], "2026-11-26")
-        self.assertEqual(parts["OC-1"]["required_date"], "2026-12-20")
+        self.assertEqual(parts["OC-1"]["required_date"], "2026-12-18")  # 12/20 為週日，遇假日提前
         self.assertEqual(parts["EC-1"]["status"], "pull_in")
         self.assertEqual(parts["OC-1"]["status"], "on_time")
         by_supplier = {s["supplier_id"]: s for s in r["suppliers"]}
@@ -209,10 +209,10 @@ class BuildListTests(Base):
         r = pp.build_pullin_list([1], NEW_SHIP)
         ec1 = next(p for p in r["parts"] if p["part_number"] == "EC-1")
         self.assertEqual(ec1["category"], "backend")
-        self.assertEqual(ec1["required_date"], "2026-12-20")
+        self.assertEqual(ec1["required_date"], "2026-12-18")  # 12/20 為週日，遇假日提前
         self.assertEqual(ec1["shortage"], 40)
         line1 = next(l for s in r["suppliers"] for l in s["lines"] if l["part_number"] == "EC-1")
-        self.assertEqual(line1["days_earlier"], 16)
+        self.assertEqual(line1["days_earlier"], 18)  # 需要到貨日提前到 12/18，所以比原本多 2 天
         self.assertEqual(line1["pull_qty"], 40)
 
     def test_converted_part_demand_and_stock(self):

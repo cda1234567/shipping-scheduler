@@ -74,9 +74,16 @@ class FakeCursor:
                 raise RuntimeError("insert boom secret-pw")
             names = re.search(r"\((.*?)\) VALUES", s).group(1).replace("[", "").replace("]", "").split(", ")
             c.inserted.append((table, dict(zip(names, params)), names))
+            if table in ("comCustClass", "comArea", "comCustDesc", "comCustTrade", "comCustAddress", "comCustAccounts",
+                         "comProdLLC", "ComCommoditySet", "ComProdctCheckProject"):
+                c.related.setdefault(table, []).append(dict(zip(names, params)))  # 讓讀回確認看得到剛插入的列
             return
         if s == "SELECT DB_NAME()":
             return self._set([(c.db_name,)])
+        m = re.match(r"SELECT (.+?) FROM (comCustClass|comArea|comCustDesc|comCustTrade|comCustAddress|comCustAccounts|"
+                     r"comProdLLC|ComCommoditySet|ComProdctCheckProject) WHERE (.*)$", s)
+        if m:
+            return self._related(m.group(1), m.group(2), m.group(3), params or ())
         if "sys.columns" in s:
             table = params[0].split(".")[1]
             return self._set([(n, 0, 0) for n in c.columns.get(table, [])])
@@ -94,6 +101,8 @@ class FakeCursor:
             key_col = {"comProductClass": "ClassID", "comDepartment": "DepartID", "comPerson": "PersonID"}[m.group(1)]
             return self._dicts({key_col: params[0], "Name": "n"} if params[0] in c.master_rows.get(m.group(1), set()) else None)
         if s.startswith("SELECT * FROM comCustomer"):
+            if c.vendor_row is not None and params[0] == "P0175":
+                return self._dicts(c.vendor_row)
             return self._dicts(CUSTOMER if params[0] == "P0175" else None)
         if s.startswith("SELECT * FROM comProduct"):
             p = c.products.get(params[0])
@@ -118,6 +127,18 @@ class FakeCursor:
             return self._set([tuple(r[k] for k in keys) for r in subs], keys)
         raise AssertionError(f"unexpected SQL: {s}")
 
+    def _related(self, select, table, where, params):
+        """關聯表（供應商 / 料號）的假查詢：c.related[table] = 列 dict 清單，依 WHERE 的 col = %s 與 Flag = 2 比對。"""
+        self.c.related_queries.append((table, select))
+        cols = re.findall(r"(\w+) = %s", where)
+        hits = [r for r in self.c.related.get(table, [])
+                if all(str(r.get(col)) == str(val) for col, val in zip(cols, params))
+                and (("Flag = 2" not in where) or r.get("Flag") in (2, None))]
+        if select == "*":
+            return self._set([tuple(r.values()) for r in hits[:1]] if hits else [], list(hits[0].keys()) if hits else ["x"])
+        names = [n.strip() for n in select.split(",")]
+        return self._set([(1,) if select == "1" else tuple(r.get(n) for n in names) for r in hits], names)
+
     def fetchone(self):
         return self.rows[0] if self.rows else None
 
@@ -141,6 +162,9 @@ class FakeConn:
                            "comProductClass": set(), "comDepartment": set(), "comPerson": {"017"}}
         self.master_rows = {"comProductClass": {"C1"}, "comDepartment": {"D1"}, "comPerson": {"017"}}  # 來源有的
         self.master_checks = []
+        self.related = {}
+        self.vendor_row = None
+        self.related_queries = []
         self.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容"}}
         self.main_template = main_tpl()
         self.sub_templates = {"AC-40838B": sub_tpl()}
@@ -1133,3 +1157,111 @@ class CustomerSuppliedGuardTests(WriteFlowCase):
         self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "類別003", "ClassID": "003"}}
         r = self.client.post("/api/erp/po/preview", json=REQ)
         self.assertEqual(r.status_code, 200, r.text)
+
+
+class RelatedMasterCopyTests(WriteFlowCase):
+    """供應商 / 料號關聯表（Desc/Trade/Address/Accounts/Class/Area、LLC/Commodity/CheckProject）的複製。"""
+
+    VENDOR = {"Flag": 2, "ID": "P0175", "ShortName": "供應商甲", "FullName": "供應商甲股份有限公司",
+              "ClassID": "001", "AreaID": "A01"}
+    ACCOUNT = {"Flag": 2, "SysID": 2, "ID": "P0175", "CurrID": "NTD", "StartExchRate": 1.5, "StartAdvExchRate": 1.0,
+               "StartCommExchRate": 1.0, "StartPayable": Decimal("1000"), "CurPayable": Decimal("250.5"),
+               "LocCurPayable": Decimal("250.5"), "NoChkAmt": Decimal("9"), "ShiftAmt": Decimal("3")}
+
+    def setUp(self):
+        super().setUp()
+        self.src.vendor_row = self.VENDOR
+        self.src.related = {
+            "comCustClass": [{"Flag": 2, "ClassID": "001", "Name": "c"}],
+            "comArea": [{"AreaID": "A01", "Name": "a"}],
+            "comCustDesc": [{"Flag": 2, "ID": "P0175", "DueTo": "月結"}],
+            "comCustTrade": [{"Flag": 2, "ID": "P0175", "DayOfClose": 30, "LatelyTradeDate": 20260901, "LatelyReturnDate": 20260801}],
+            "comCustAddress": [{"AddrID": "001", "Flag": 2, "ID": "P0175", "Addr": "台北"},
+                               {"AddrID": "002", "Flag": 2, "ID": "P0175", "Addr": "新竹"}],
+            "comCustAccounts": [self.ACCOUNT],
+            "comProdLLC": [{"ProdID": "AC-40838B", "LLC": 1}],
+            "ComCommoditySet": [{"ProdID": "AC-40838B", "CommodityID": "X", "Flag": 1, "UserUnitConver": 1}],
+            "ComProdctCheckProject": [{"ProdID": "AC-40838B", "RowNo": 1, "Item": "i"}, {"ProdID": "AC-40838B", "RowNo": 2, "Item": "j"}],
+        }
+        cols = {t: list(rows[0]) for t, rows in self.src.related.items()}
+        self.tgt.columns.update(cols)
+        self.tgt.columns["comCustomer"] = list(self.VENDOR)
+        self.tgt.master_ids["comCustomer"] = set()
+        self.tgt.master_ids["comProduct"] = set()
+
+    def table_rows(self, table):
+        return [i[1] for i in self.tgt.inserted if i[0] == table]
+
+    def test_preview_lists_extra_rows_and_copy_order(self):
+        out = ep.preview_po(REQ)
+        labels = [(m["table"], m["label"], m["key"]) for m in out["masters_to_copy"]]
+        self.assertEqual(labels[0][0], "comCustClass")
+        self.assertEqual(labels[1][0], "comArea")
+        self.assertIn(("comCustAccounts", "供應商帳款", "P0175/2/NTD"), labels)
+        self.assertIn(("comCustAddress", "供應商地址", "P0175/002"), labels)
+        self.assertIn(("comProdLLC", "料號 LLC", "AC-40838B"), labels)
+        tables = [l[0] for l in labels]
+        self.assertLess(tables.index("comCustomer"), tables.index("comCustDesc"))
+        self.assertLess(tables.index("comProduct"), tables.index("comProdLLC"))
+        self.assertEqual(self.tgt.inserted, [])
+
+    def test_create_copies_all_rows_zeroes_accounts_never_ware_amount(self):
+        ep.create_po({**REQ, "confirm": True})
+        self.assertEqual(len(self.table_rows("comCustAddress")), 2)
+        self.assertEqual(len(self.table_rows("ComProdctCheckProject")), 2)
+        acc = self.table_rows("comCustAccounts")[0]
+        self.assertEqual((acc["StartExchRate"], acc["StartAdvExchRate"], acc["CurrID"], acc["SysID"]), (1.5, 1.0, "NTD", 2))
+        for col in ("StartPayable", "CurPayable", "LocCurPayable", "NoChkAmt", "ShiftAmt"):
+            self.assertEqual(acc[col], 0, col)
+        trade = self.table_rows("comCustTrade")[0]
+        self.assertEqual((trade["LatelyTradeDate"], trade["LatelyReturnDate"], trade["DayOfClose"]), (0, 0, 30))
+        self.assertEqual(self.table_rows("comCustClass")[0]["ClassID"], "001")
+        self.assertFalse([i for i in self.tgt.inserted if i[0].lower() == "comwareamount"])
+        for sql, _ in self.src.log:
+            self.assertNotIn("comWareAmount".lower(), sql.lower())
+        self.assertEqual(self.tgt.commits, 1)
+
+    def test_existing_vendor_with_missing_related_rows_self_heals(self):
+        self.tgt.master_ids["comCustomer"] = {"P0175"}
+        self.tgt.master_ids["comProduct"] = {"AC-40838B"}
+        self.tgt.related = {"comCustAddress": [self.src.related["comCustAddress"][0]],
+                            "comCustClass": self.src.related["comCustClass"]}
+        out = ep.preview_po(REQ)
+        keys = {(m["table"], m["key"]) for m in out["masters_to_copy"]}
+        self.assertNotIn(("comCustomer", "P0175"), keys)
+        self.assertNotIn(("comCustAddress", "P0175/001"), keys)  # 已有的不重複
+        self.assertIn(("comCustAddress", "P0175/002"), keys)
+        self.assertIn(("comCustDesc", "P0175"), keys)
+        self.assertNotIn("comCustClass", {m["table"] for m in out["masters_to_copy"]})
+        ep.create_po({**REQ, "confirm": True})
+        self.assertNotIn("comCustomer", [i[0] for i in self.tgt.inserted])
+        self.assertEqual(len(self.table_rows("comCustAddress")), 1)
+
+    def test_nothing_missing_nothing_extra(self):
+        self.tgt.master_ids["comCustomer"] = {"P0175"}
+        self.tgt.master_ids["comProduct"] = {"AC-40838B"}
+        self.tgt.related = {t: list(rows) for t, rows in self.src.related.items()}
+        self.assertEqual(ep.preview_po(REQ)["masters_to_copy"], [])
+
+    def test_production_never_copies_related(self):
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03",
+                "ERP_SQL_WRITE_USER_CHICOMP03": "w", "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "pw"}):
+            self.tgt = make_target("CHIComp03")
+            self.tgt.master_ids["comCustomer"] = set()
+            with self.assertRaises(ep.PoValidationError):
+                ep.preview_po(REQ)  # 必要主檔缺 → 中止，不複製
+        self.assertEqual(self.tgt.inserted, [])
+        self.assertEqual(self.tgt.related_queries, [])
+
+    def test_transforms_and_guards(self):
+        row = ep._apply_transform("accounts_zero", {**self.ACCOUNT, "Memo": "x"})
+        self.assertEqual((row["Memo"], row["CurPayable"], row["StartExchRate"]), ("x", 0, 1.5))
+        self.assertEqual(ep._apply_transform(None, {"a": 1}), {"a": 1})
+        with self.assertRaises(ep.PoSchemaError):
+            ep.related_rows_specs(self.src.cursor(), self.tgt.cursor(), "comWareAmount", "x", "k", "ProdID = %s", ("A",))
+
+
+# 只跑本類別自己的測試（繼承來的測試假設沒有關聯列，已在 WriteFlowCase 跑過）
+for _name in dir(WriteFlowCase):
+    if _name.startswith("test_") and _name not in RelatedMasterCopyTests.__dict__:
+        setattr(RelatedMasterCopyTests, _name, None)

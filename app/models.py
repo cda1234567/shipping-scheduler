@@ -392,6 +392,7 @@ class ErpPoRequest(BaseModel):
 class ErpPoCreateRequest(ErpPoRequest):
     confirm: bool = False
     allow_duplicate: bool = False  # 明細本站已開過時，使用者確認後才帶 true
+    confirm_missing_postprocess: bool = False  # 鈞洋件有後段加工對應但加工件不在同一批時，使用者確認後才帶 true
 
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
@@ -409,6 +410,7 @@ class ShortagePoRequest(BaseModel):
 class ShortagePoCreateRequest(ShortagePoRequest):
     confirm: bool = False
     allow_duplicate: bool = False
+    confirm_missing_postprocess: bool = False
 
 
 # ── 轉換料 A→B ────────────────────────────────────────────────────────────────
@@ -454,3 +456,23 @@ class PullinStatusRequest(BaseModel):
     lines: list[PullinLine]
     status: str  # 未詢問 | 已詢問 | 可提前 | 不能提前
     note: Optional[str] = None
+
+
+# ── 鈞洋 後段加工對應 ─────────────────────────────────────────────────────────
+
+class PostprocessLinkCreate(BaseModel):
+    base_part: str
+    process_part: str
+    ratio: float = 1
+    note: str = ""
+
+
+class PostprocessLinkUpdate(BaseModel):
+    process_part: Optional[str] = None
+    ratio: Optional[float] = None
+    enabled: Optional[bool] = None
+    note: Optional[str] = None
+
+
+class PostprocessSuggestRequest(BaseModel):
+    use_erp: bool = True

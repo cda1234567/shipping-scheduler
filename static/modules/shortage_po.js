@@ -1,6 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
-import { allocationText, duplicateWarningText, moqHintText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
+import { allocationText, duplicateWarningText, moqHintText, postprocessWarningText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
 
 const CATEGORY_LABELS = { smt: "打件", backend: "後段" };
 const SOURCE_LABELS = { master: "主檔", last_po: "最近採購", none: "未設定", manual: "手動" };
@@ -20,6 +20,8 @@ let _initialized = false;
 let _pendingIds = null;
 let _previewSig = "";
 let _previewResults = null;
+let _previewWarning = []; // 預覽回傳的 postprocess_warning（鈞洋件缺加工件）
+let _dismissedLinks = new Set(); // 使用者移除過的自動加工行（料號），重新產生清單前不再自動加回
 
 function fmtQty(value) {
   const n = Number(value);
@@ -112,6 +114,7 @@ function toRow(p) {
     needQty: p.need_qty || 0,
     moq: p.moq || 0,
     moqSource: p.moq_source || "",
+    lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "" },
     moqAdjusted: Boolean(p.moq_adjusted),
     price: String(p.price ?? 0),
     date: p.pre_in_date || "",
@@ -122,6 +125,11 @@ function toRow(p) {
     earliest: p.earliest_order,
     orders: p.orders || [],
     alreadyOrdered: p.already_ordered || [],
+    dueReasons: p.due_shift_reasons || {},
+    postprocess: p.postprocess || [],
+    ownQty: p.suggested_qty > 0 ? String(p.suggested_qty) : "",
+    ownChecked: null, // 被後段加工連動勾選前的勾選狀態
+    linkedFrom: [], // 連動它的鈞洋件 [{part, ratio, qty}]
     // 每次載入 / 重新整理預設全勾：要買（缺 > 0）且有供應商的才可勾，其餘維持不勾並在列上註明原因；
     // 本站已開過採購單的例外，預設不勾（列上顯示「已開 PO-xxxx」）
     checked: Boolean(p.needs_purchase && (p.supplier_id || "").trim() && !(p.already_ordered || []).length),
@@ -143,6 +151,8 @@ async function buildList() {
     renderBadge();
     _rows = (_data.parts || []).map(toRow);
     _remarks = {};
+    _dismissedLinks = new Set();
+    syncLinked();
     renderWarnings();
     el("shortage-po-list").hidden = false;
     renderGroups();
@@ -194,12 +204,133 @@ function renderCustomerSupplied() {
     </tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="erp-po-hint">沒有缺的客供料</div>'}`;
 }
 
+// ── 鈞洋 後段加工連動 ────────────────────────────────────────────────────────
+// 勾選有「生效對應」的鈞洋件時，自動在清單加入加工件（數量 = 鈞洋量 × 比例，無條件進位，不看加工件自己的庫存 / MOQ）。
+// 清單已有同料號的行（例如補料產生）時合併成一行：數量取「補料量」與「連動量」較大者，並在備註列出兩者；
+// 使用者手動改過數量的行不再自動調整。
+
+/** 加工件數量 = 鈞洋件數量 × 比例，無條件進位成整數。 */
+export function linkedQty(qty, ratio) {
+  const v = Number(qty) * Number(ratio);
+  return Number.isFinite(v) && v > 0 ? Math.ceil(Math.round(v * 1e6) / 1e6) : 0;
+}
+
+function isEditedRow(r) {
+  return Boolean(r.qtyEdited || r.priceEdited || r.dateEdited || r.supplierEdited);
+}
+
+function linkedTotals() {
+  const totals = new Map(); // process_part → { total, from: [{part, ratio, qty}], pp, base }
+  for (const base of _rows) {
+    if (base.isLinked || base.doneBill || !base.checked || !base.postprocess.length) continue;
+    const qty = Number(base.qty);
+    if (!(qty > 0)) continue;
+    for (const pp of base.postprocess) {
+      if (_dismissedLinks.has(pp.process_part)) continue;
+      const q = linkedQty(qty, pp.ratio);
+      if (q <= 0) continue;
+      const entry = totals.get(pp.process_part) || { total: 0, from: [], pp, base };
+      entry.total += q;
+      entry.from.push({ part: base.part, ratio: pp.ratio, qty: q });
+      totals.set(pp.process_part, entry);
+    }
+  }
+  return totals;
+}
+
+function newLinkedRow(part, entry) {
+  const { pp, base } = entry;
+  return {
+    part, desc: pp.description || "", category: "backend", categorySource: "auto",
+    supplierId: pp.supplier_id || "", supplierName: pp.supplier_name || "", supplierSource: pp.supplier_source || "none",
+    need: 0, st: 0, mergedFrom: [], onOrder: 0, shortage: 0, needsPurchase: true,
+    qty: "", needQty: 0, moq: 0, moqSource: "", moqAdjusted: false,
+    price: String(pp.price ?? 0), date: pp.pre_in_date || "", dates: { backend: pp.pre_in_date || "" },
+    originalDates: { backend: pp.original_pre_in_date || "" }, datesAdjusted: {}, dueReasons: { backend: pp.due_shift_reason || "" },
+    dateEdited: false, earliest: base.earliest, orders: [], alreadyOrdered: [], postprocess: [],
+    ownQty: "", ownChecked: null, linkedFrom: [], checked: Boolean((pp.supplier_id || "").trim()), doneBill: "",
+    isLinked: true,
+  };
+}
+
+/** 依目前勾選 / 數量重算加工行；回傳是否新增或移除了行（需要整個重畫）。 */
+function syncLinked() {
+  const totals = linkedTotals();
+  let structural = false;
+  for (const [part, entry] of totals) {
+    let row = _rows.find(r => r.part === part);
+    if (!row) {
+      row = newLinkedRow(part, entry);
+      _rows.push(row);
+      structural = true;
+    } else if (!row.isLinked && row.ownChecked === null) {
+      row.ownChecked = row.checked; // 記住原本的勾選，連動消失時還原
+      if (row.supplierId.trim() && !row.doneBill) row.checked = true;
+    }
+    row.linkedFrom = entry.from;
+    row.linkedTotal = entry.total;
+    if (!row.qtyEdited && !row.doneBill) {
+      row.qty = String(row.isLinked ? entry.total : Math.max(Number(row.ownQty) || 0, entry.total));
+    }
+  }
+  for (const row of [..._rows]) {
+    if (totals.has(row.part) || !(row.linkedFrom.length || row.isLinked)) continue;
+    row.linkedFrom = [];
+    row.linkedTotal = 0;
+    if (row.isLinked) {
+      if (row.doneBill) continue;
+      if (isEditedRow(row)) { row.checked = false; row.orphan = true; continue; } // 使用者改過：保留但取消勾選
+      _rows.splice(_rows.indexOf(row), 1);
+      structural = true;
+    } else {
+      if (!row.qtyEdited) row.qty = row.ownQty;
+      if (row.ownChecked !== null) { row.checked = row.ownChecked; row.ownChecked = null; }
+    }
+  }
+  return structural;
+}
+
+function linkNote(r) {
+  if (r.linkedFrom?.length) {
+    const from = r.linkedFrom.map(f => `${f.part}（×${fmtQty(f.ratio)}，${fmtQty(f.qty)}）`).join("、");
+    const own = !r.isLinked && Number(r.ownQty) > 0 ? `；補料量 ${fmtQty(r.ownQty)}，取較大者` : "";
+    return `後段加工 ← ${from}${own}`;
+  }
+  if (r.orphan) return "後段加工連動已取消（此行曾手動修改，已取消勾選）";
+  return "";
+}
+
+function postprocessNote(r) {
+  if (!r.postprocess?.length) return "";
+  return r.postprocess.filter(pp => !_dismissedLinks.has(pp.process_part)).map(pp => {
+    const q = linkedQty(r.qty, pp.ratio);
+    const who = [pp.supplier_id, pp.supplier_name].filter(Boolean).join(" ") || "未設定供應商";
+    return `含後段加工 ${pp.process_part}（${who}）${q ? `×${fmtQty(q)}` : ""}`;
+  }).join("；");
+}
+
 function visibleRows() {
   return _rows.filter(r => r.needsPurchase || _showAll || r.doneBill);
 }
 
 function checkedRows() {
   return _rows.filter(r => r.checked && !r.doneBill);
+}
+
+/** 同一組內，連動的加工行緊接在它的鈞洋件下面（不同供應商就在加工廠那組的最後）。 */
+function orderLinked(list) {
+  const linked = list.filter(r => r.isLinked);
+  if (!linked.length) return list;
+  const out = [];
+  const used = new Set();
+  for (const r of list) {
+    if (r.isLinked) continue;
+    out.push(r);
+    for (const l of linked) {
+      if (!used.has(l) && l.linkedFrom[0]?.part === r.part) { out.push(l); used.add(l); }
+    }
+  }
+  return out.concat(linked.filter(l => !used.has(l)));
 }
 
 function groupBySupplier(rows) {
@@ -209,6 +340,7 @@ function groupBySupplier(rows) {
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(r);
   }
+  for (const [key, list] of map) map.set(key, orderLinked(list));
   return [...map.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
 }
 
@@ -234,21 +366,26 @@ function subtotal(rows) {
 
 // 推算日已過、改用今天時的提示（使用者手動改日期後不再顯示）
 function adjustedNote(r) {
-  if (r.dateEdited || !r.datesAdjusted[r.category]) return "";
+  if (r.dateEdited) return r.dateHint || "";
+  const reason = r.dueReasons?.[r.category] || "";
+  if (reason) return reason; // 遇假日提前至 11/27 / 遇假日，改為 X/XX / 早於今天，改為 X/XX
+  if (!r.datesAdjusted[r.category]) return "";
   const [, m, d] = String(r.originalDates[r.category] || "").split("-");
   return m && d ? `原推算 ${Number(m)}/${Number(d)} 已過，改今天` : "";
 }
 
 function rowHtml(r) {
   const note = adjustedNote(r);
+  const lnote = linkNote(r);
+  const pnote = postprocessNote(r);
   const tip = r.orders.map(o => `${o.code} ${o.model} 出貨 ${o.ship_date || "—"} 需 ${fmtQty(o.qty)}`).join("\n");
   const e = r.earliest || {};
   const disabled = !r.supplierId.trim() || r.doneBill;
   const reason = r.doneBill ? "" : (r.supplierId.trim() ? "" : "未設定供應商");
-  return `<tr data-part="${esc(r.part)}" class="${r.doneBill ? "shortage-po-done" : ""}">
+  return `<tr data-part="${esc(r.part)}" class="${r.doneBill ? "shortage-po-done" : ""}${r.isLinked ? " pp-linked-row" : ""}">
     <td><input type="checkbox" data-act="check" ${r.checked ? "checked" : ""} ${disabled ? "disabled" : ""}
       title="${reason ? "無法勾選：請先填供應商" : ""}">${reason ? `<div class="erp-po-hint shortage-po-adjusted">${esc(reason)}</div>` : ""}</td>
-    <td class="mono">${esc(r.part)}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)}</div>` : ""}${
+    <td class="mono">${esc(r.part)}${lnote ? `<div class="erp-po-hint pp-linked">${esc(lnote)}${r.isLinked && !r.doneBill ? ' <button class="btn btn-secondary btn-sm pp-unlink" data-act="unlink" type="button">移除</button>' : ""}</div>` : ""}${pnote ? `<div class="erp-po-hint pp-linked">${esc(pnote)}</div>` : ""}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)}</div>` : ""}${
       r.alreadyOrdered.length && !r.doneBill ? `<div class="erp-po-hint shortage-po-adjusted shortage-po-ordered">${r.alreadyOrdered.map(m =>
         `已開 ${esc(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}</td>
     <td>${esc(r.desc)}</td>
@@ -262,7 +399,7 @@ function rowHtml(r) {
     <td class="num">${fmtQty(r.onOrder)}</td>
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
     <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}>
-      ${r.needQty ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource))}</div>` : ""}</td>
+      ${r.needQty || r.moqSource ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource, r.lastReceipt))}</div>` : ""}</td>
     <td><input type="number" data-act="price" class="num" min="0" step="any" value="${esc(r.price)}" ${r.doneBill ? "disabled" : ""}></td>
     <td><input type="date" data-act="date" value="${esc(r.date)}" ${r.doneBill ? "disabled" : ""}>
       ${note ? `<div class="erp-po-hint shortage-po-adjusted">${esc(note)}</div>` : ""}</td>
@@ -345,6 +482,7 @@ async function setSupplier(row, text) {
   const id = text.trim();
   if (id === row.supplierId) return;
   row.supplierId = id;
+  row.supplierEdited = true;
   row.supplierSource = id ? "manual" : "none";
   row.supplierName = "";
   if (!id) row.checked = false;
@@ -375,11 +513,47 @@ function onGroupsInput(event) {
   }
   const row = rowOf(event.target);
   if (!row) return;
-  if (act === "qty") row.qty = event.target.value;
-  else if (act === "price") row.price = event.target.value;
+  if (act === "qty") { row.qty = event.target.value; row.qtyEdited = true; }
+  else if (act === "price") { row.price = event.target.value; row.priceEdited = true; }
   else return;
+  if (act === "qty" && !row.isLinked && row.postprocess.length) {
+    // 鈞洋件數量改變 → 即時更新連動的加工行
+    if (syncLinked()) { invalidatePreview(); renderGroups(); return; }
+    refreshLinkedInputs();
+  }
   invalidatePreview();
   updateSubtotals();
+}
+
+function refreshLinkedInputs() {
+  document.querySelectorAll("#shortage-po-groups tr[data-part]").forEach(tr => {
+    const row = _rows.find(r => r.part === tr.dataset.part);
+    const input = tr.querySelector('input[data-act="qty"]');
+    if (row && input && row.linkedFrom?.length && document.activeElement !== input) input.value = row.qty;
+  });
+}
+
+function onGroupsClick(event) {
+  const btn = event.target.closest('[data-act="unlink"]');
+  if (!btn) return;
+  const row = rowOf(btn);
+  if (!row) return;
+  _dismissedLinks.add(row.part);
+  row.qtyEdited = false;
+  row.priceEdited = row.dateEdited = row.supplierEdited = false; // 移除 = 不要這行，不論是否改過
+  syncLinked();
+  invalidatePreview();
+  renderGroups();
+}
+
+// 使用者自己改預計進貨日時，若選到非上班日，提示可提前的日期（不自動改）
+async function hintShift(row) {
+  try {
+    const r = await apiJson(`/api/holidays/shift?date=${encodeURIComponent(row.date)}`);
+    const [, m, d] = String(r.date).split("-");
+    row.dateHint = r.shifted && r.reason_code === "holiday" ? `所選日期非上班日，建議 ${Number(m)}/${Number(d)}` : "";
+    renderGroups();
+  } catch (_) { /* 提示失敗不影響 */ }
 }
 
 function onGroupsChange(event) {
@@ -387,6 +561,7 @@ function onGroupsChange(event) {
   if (act === "check-all") {
     const sid = event.target.closest(".shortage-po-group")?.dataset.supplier;
     visibleRows().filter(r => r.supplierId.trim() === sid && !r.doneBill).forEach(r => { r.checked = event.target.checked; });
+    syncLinked();
     invalidatePreview();
     renderGroups();
     return;
@@ -395,6 +570,8 @@ function onGroupsChange(event) {
   if (!row) return;
   if (act === "check") {
     row.checked = event.target.checked;
+    if (row.linkedFrom?.length) row.ownChecked = null; // 使用者自己決定勾選，不再還原
+    syncLinked();
     invalidatePreview();
     renderGroups();
   } else if (act === "category") {
@@ -405,6 +582,7 @@ function onGroupsChange(event) {
   } else if (act === "date") {
     row.date = event.target.value;
     row.dateEdited = true;
+    void hintShift(row);
     invalidatePreview();
     renderGroups();
   }
@@ -451,6 +629,7 @@ function buildGroups() {
 function resetPreview() {
   _previewSig = "";
   _previewResults = null;
+  _previewWarning = [];
   const box = el("shortage-po-preview");
   if (box) { box.hidden = true; box.innerHTML = ""; }
 }
@@ -499,6 +678,7 @@ function renderPreview() {
   box.innerHTML = `
     <div class="erp-po-badge ${isTest ? "is-test" : "is-prod"} erp-po-badge-small">寫入：${esc(label)}</div>
     <div class="erp-po-warn" data-role="stale" hidden>內容已修改，請重新預覽後才能寫入</div>
+    ${_previewWarning.length ? `<div class="erp-po-warn">${esc(postprocessWarningText(_previewWarning))}</div>` : ""}
     ${results.map(cardHtml).join("")}
     <div class="erp-po-actions"><span class="spacer"></span>
       <button class="btn btn-danger" id="btn-shortage-po-create" type="button">確認寫入正航</button></div>`;
@@ -517,6 +697,7 @@ async function handlePreview() {
   try {
     const data = await apiPost("/api/shortage-po/preview", { groups, order_ids: _listOrderIds });
     _previewResults = data.results || [];
+    _previewWarning = data.postprocess_warning || [];
     _previewSig = JSON.stringify(groups);
     renderPreview();
   } catch (error) {
@@ -552,8 +733,19 @@ async function handleCreate() {
   setBusy(true);
   const out = el("shortage-po-result");
   try {
-    const payload = { groups, order_ids: _listOrderIds, confirm: true, ...(confirmedDuplicate ? { allow_duplicate: true } : {}) };
+    let payload = { groups, order_ids: _listOrderIds, confirm: true, ...(confirmedDuplicate ? { allow_duplicate: true } : {}) };
     let data = await apiPost("/api/shortage-po/create", payload);
+    if (data.postprocess_warning?.length) {
+      // 後端沒有寫入任何東西；確認後才帶 confirm_missing_postprocess 重送
+      if (!window.confirm(`${postprocessWarningText(data.postprocess_warning)}\n\n仍要只開這些採購單嗎？`)) {
+        out.className = "shortage-po-result is-error";
+        out.textContent = "已取消：鈞洋件的後段加工件不在這批採購單中，未寫入。";
+        out.hidden = false;
+        return;
+      }
+      payload = { ...payload, confirm_missing_postprocess: true };
+      data = await apiPost("/api/shortage-po/create", payload);
+    }
     if (data.duplicate_warning) {
       // 後端沒有寫入任何東西；確認後才帶 allow_duplicate 重送
       if (!window.confirm(duplicateWarningText(data.duplicate_warning))) {
@@ -628,6 +820,7 @@ export async function initShortagePurchase() {
     renderGroups();
   });
   const groups = el("shortage-po-groups");
+  groups?.addEventListener("click", onGroupsClick);
   groups?.addEventListener("input", onGroupsInput);
   groups?.addEventListener("change", onGroupsChange);
   renderOrders();

@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from ..models import ErpPoCreateRequest, ErpPoRequest
-from ..services import erp_purchase
+from ..services import erp_purchase, postprocess
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
 router = APIRouter(prefix="/erp/po")
@@ -49,7 +49,10 @@ async def po_part_defaults(part: str = ""):
 @router.post("/preview")
 async def po_preview(req: ErpPoRequest):
     try:
-        return await run_in_threadpool(erp_purchase.preview_po, req.dict())
+        data = req.dict()
+        result = await run_in_threadpool(erp_purchase.preview_po, data)
+        result["postprocess_warning"] = await run_in_threadpool(postprocess.missing_postprocess, data["lines"])
+        return result
     except ErpError as exc:
         raise _http_error(exc) from None
 
@@ -58,6 +61,10 @@ async def po_preview(req: ErpPoRequest):
 async def po_create(req: ErpPoCreateRequest, request: Request):
     ip = request.client.host if request.client else ""
     try:
+        if req.confirm and req.confirm_missing_postprocess is not True:
+            missing = await run_in_threadpool(postprocess.missing_postprocess, req.dict()["lines"])
+            if missing:  # 沒有寫入任何東西；前端確認後帶 confirm_missing_postprocess=true 重送
+                return {"ok": False, "postprocess_warning": missing}
         return await run_in_threadpool(erp_purchase.create_po, req.dict(), ACTOR, ip)
     except erp_purchase.DuplicateWarning as exc:
         # 200 + duplicate_warning：沒有寫入任何東西，前端確認後帶 allow_duplicate=true 重送

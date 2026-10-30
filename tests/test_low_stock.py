@@ -350,9 +350,9 @@ class OnOrderTests(DbCase):
         with patch.object(moq_service, "site_moq_map", lambda: {"A-1": 500.0, "B-1": 50.0, "C-1": 0.0}):
             rows = {r["part_number"]: r for r in ls.list_rows()}
             alerts = {a["part_number"]: a for a in ls.list_alerts()}
-        self.assertEqual((rows["A-1"]["suggested_po_qty"], rows["A-1"]["moq"], rows["A-1"]["moq_source"]), (500, 500, "主檔"))
+        self.assertEqual((rows["A-1"]["suggested_po_qty"], rows["A-1"]["moq"], rows["A-1"]["moq_source"]), (500, 500, "site_master"))
         self.assertEqual(rows["B-1"]["suggested_po_qty"], 95)
-        self.assertEqual((rows["C-1"]["suggested_po_qty"], rows["C-1"]["moq"], rows["C-1"]["moq_source"]), (95, 0, ""))
+        self.assertEqual((rows["C-1"]["suggested_po_qty"], rows["C-1"]["moq"], rows["C-1"]["moq_source"]), (95, 0, "none"))
         self.assertEqual(alerts["A-1"]["suggested_po_qty"], 500)
 
     def test_suggested_po_gap_minimum_one(self):

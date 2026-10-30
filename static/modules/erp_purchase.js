@@ -9,6 +9,8 @@ let _lines = [];
 let _busy = false;
 let _initialized = false;
 let _searchTimer = null;
+let _defaultDue = null; // /api/holidays/default-due：{ date, reason }（今天 + LEAD_DAYS 再套用假日規則）
+let _companions = []; // 後段加工（另開一張採購單）的明細
 
 function pad(n) { return String(n).padStart(2, "0"); }
 
@@ -19,17 +21,80 @@ function defaultDate() {
 }
 
 function newLine(part = "") {
-  return { part, name: "", qty: "", price: "", date: defaultDate(), hint: null, qtyAuto: false };
+  return {
+    part, name: "", qty: "", price: "", date: _defaultDue?.date || defaultDate(), dateHint: _defaultDue?.reason || "",
+    hint: null, qtyAuto: false, pp: [],
+  };
 }
 
-/** 數量欄下方的取整提示：「需 1,234，MOQ 2,000」（MOQ 來自 ERP 時附註來源）；沒有需求量時回空字串。 */
-export function moqHintText(need, moq, source) {
+/** 日期旁的小提示：預設日期遇假日已提前、或使用者選到非上班日。 */
+function shiftHintText(r, userPicked) {
+  if (!r?.shifted) return "";
+  if (userPicked) {
+    if (r.reason_code !== "holiday") return "";
+    const [, m, d] = String(r.date).split("-");
+    return `所選日期非上班日，建議 ${Number(m)}/${Number(d)}`;
+  }
+  return r.reason;
+}
+
+async function loadDefaultDue() {
+  try {
+    const r = await apiJson(`/api/holidays/default-due?days=${LEAD_DAYS}`);
+    _defaultDue = { date: r.date, reason: shiftHintText(r, false) };
+    // 還沒動過的空白行也套用
+    for (const l of _lines) {
+      if (!l.part.trim() && l.qty === "" && l.price === "") { l.date = _defaultDue.date; l.dateHint = _defaultDue.reason; }
+    }
+    renderLines();
+  } catch (_) {
+    _defaultDue = null;
+  }
+}
+
+async function hintLineDate(line) {
+  try {
+    const r = await apiJson(`/api/holidays/shift?date=${encodeURIComponent(line.date)}`);
+    line.dateHint = shiftHintText(r, true);
+    renderLines();
+    renderCompanions();
+  } catch (_) { /* 提示失敗不影響 */ }
+}
+
+/** 加工件數量 = 基礎件數量 × 比例，無條件進位成整數。 */
+export function linkedQty(qty, ratio) {
+  const v = Number(qty) * Number(ratio);
+  return Number.isFinite(v) && v > 0 ? Math.ceil(Math.round(v * 1e6) / 1e6) : 0;
+}
+
+/** 'YYYY-MM-DD' → 'YYYY/MM/DD'。 */
+function slashDate(text) {
+  return /^\d{4}-\d{2}-\d{2}/.test(String(text || "")) ? String(text).slice(0, 10).replaceAll("-", "/") : "";
+}
+
+/** 數量欄下方的提示（MOQ 以「最近一次進貨量」估算）：
+ *  「需 1,234，上次進貨 6,000（2026/09/15）」；改用其他來源時註明：「需 X，MOQ Y（主檔）」/「（正航最小採購量）」；
+ *  手動行沒有缺料需求（需求缺漏或 ≤ 1 的佔位值）就不顯示「需」；完全沒有資料顯示「無 MOQ 資料」。
+ *  source 為空字串 = 沒有查過 MOQ，不顯示 MOQ 部分。receipt = { qty, date }。 */
+export function moqHintText(need, moq, source, receipt = null) {
   const n = Number(need);
-  if (!Number.isFinite(n) || n <= 0) return "";
+  const hasNeed = Number.isFinite(n) && n > 1;
   const m = Number(moq);
-  if (!Number.isFinite(m) || m <= 0) return `需 ${fmtMoney(n)}`;
-  const from = source && source !== "主檔" ? `（${source}）` : "";
-  return `需 ${fmtMoney(n)}，MOQ ${fmtMoney(m)}${from}`;
+  const hasMoq = Number.isFinite(m) && m > 0;
+  let part = "";
+  if (hasMoq && source === "last_receipt") {
+    const d = slashDate(receipt?.date);
+    part = `上次進貨 ${fmtMoney(m)}${d ? `（${d}）` : ""}`;
+  } else if (hasMoq && source === "erp_minpurch") {
+    part = `MOQ ${fmtMoney(m)}（正航最小採購量）`;
+  } else if (hasMoq && source === "site_master") {
+    part = `MOQ ${fmtMoney(m)}（主檔）`;
+  } else if (hasMoq) {
+    part = `MOQ ${fmtMoney(m)}`;
+  } else if (source === "none") {
+    part = "無 MOQ 資料";
+  }
+  return [hasNeed ? `需 ${fmtMoney(n)}` : "", part].filter(Boolean).join("，");
 }
 
 function fmtMoney(value) {
@@ -120,14 +185,20 @@ function renderLines() {
   if (!body) return;
   body.innerHTML = _lines.map((l, i) => `<tr data-idx="${i}">
     <td>${i + 1}</td>
-    <td><input type="text" data-field="part" value="${esc(l.part)}" class="mono" autocomplete="off"></td>
+    <td><input type="text" data-field="part" value="${esc(l.part)}" class="mono" autocomplete="off">${
+      (l.pp || []).filter(pp => !_companions.some(c => c.part === pp.process_part)).map(pp =>
+        `<div class="erp-po-hint pp-linked">有後段加工 ${esc(pp.process_part)}　<button class="btn btn-secondary btn-sm" data-act="add-pp" data-pp="${esc(pp.process_part)}" type="button">加入後段加工（×${esc(pp.ratio)}）</button></div>`).join("")}</td>
     <td class="erp-po-name">${esc(l.name) || '<span class="erp-po-hint">—</span>'}</td>
     <td><input type="number" data-field="qty" value="${esc(l.qty)}" min="0" step="any" class="num">${
-      l.hint ? `<div class="erp-po-hint erp-po-moq-hint">${esc(moqHintText(l.hint.need, l.hint.moq, l.hint.moq_source))}</div>` : ""}</td>
+      l.hint ? `<div class="erp-po-hint erp-po-moq-hint">${esc(moqHintText(l.hint.need, l.hint.moq, l.hint.moq_source, l.hint.receipt))}</div>` : ""}</td>
     <td><input type="number" data-field="price" value="${esc(l.price)}" min="0" step="any" class="num"></td>
-    <td><input type="date" data-field="date" value="${esc(l.date)}"></td>
+    <td><input type="date" data-field="date" value="${esc(l.date)}">${l.dateHint ? `<div class="erp-po-hint shortage-po-adjusted">${esc(l.dateHint)}</div>` : ""}</td>
     <td><button class="btn btn-danger btn-sm" data-act="remove" type="button">移除</button></td>
   </tr>`).join("");
+}
+
+function receiptOf(d) {
+  return { qty: d.last_receipt_qty, date: d.last_receipt_date };
 }
 
 async function fillDefaults(idx) {
@@ -143,14 +214,24 @@ async function fillDefaults(idx) {
     if ((line.qty === "" || line.qty === null) && d.suggested_qty !== null && d.suggested_qty !== undefined) {
       line.qty = String(Math.max(1, d.suggested_qty));
       line.qtyAuto = true;
-      if (d.need_qty) line.hint = { need: d.need_qty, moq: d.moq, moq_source: d.moq_source };
+      if (d.need_qty) line.hint = { need: d.need_qty, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
     } else if (line.qtyAuto && Number(d.moq) > 0) {
       // 從低庫存帶入的數量尚未被改過：補上 ERP 最低採購量（本站 MOQ 已在帶入時處理）
       const need = Number(line.hint?.need || line.qty);
       line.qty = String(Math.max(Number(line.qty) || 0, Math.ceil(Number(d.moq))));
-      line.hint = { need, moq: d.moq, moq_source: d.moq_source };
+      line.hint = { need, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
     }
+    // 其餘情況（手動行沒有缺料需求）：只顯示 MOQ 估算來源，不顯示「需」
+    if (!d.found) line.hint = null;
+    else if (!line.hint) line.hint = { need: null, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
+    else line.hint = { ...line.hint, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
     if (idx === 0 && !_supplier && d.supplier_id) _supplier = { id: d.supplier_id, name: d.supplier_name };
+    line.pp = [];
+    try {
+      const key = (d.part_number || part).toUpperCase();
+      const chk = await apiJson(`/api/postprocess/check?parts=${encodeURIComponent(key)}`);
+      if (_lines[idx] === line) line.pp = (chk.links || {})[key] || [];
+    } catch (_) { /* 後段加工提示失敗不影響開單 */ }
     renderSupplier();
     renderLines();
   } catch (error) {
@@ -168,12 +249,97 @@ function onLinesInput(event) {
 }
 
 function onLinesChange(event) {
-  if (event.target.dataset?.field !== "part") return;
+  const field = event.target.dataset?.field;
   const tr = event.target.closest("tr[data-idx]");
-  if (tr) void fillDefaults(Number(tr.dataset.idx));
+  if (!tr) return;
+  if (field === "date") { void hintLineDate(_lines[Number(tr.dataset.idx)]); return; }
+  if (field === "part") void fillDefaults(Number(tr.dataset.idx));
+}
+
+/** 使用者確認 → 加入後段加工明細（另開一張採購單，供應商 / 單價取自加工件的正航資料）。 */
+async function addCompanion(line, processPart) {
+  const pp = (line.pp || []).find(x => x.process_part === processPart);
+  const qty = linkedQty(line.qty, pp?.ratio);
+  if (!pp || !qty) { showToast("請先填鈞洋件數量", { tone: "error" }); return; }
+  if (_companions.some(c => c.part === processPart)) return;
+  try {
+    const d = await apiJson(`/api/erp/po/part-defaults?part=${encodeURIComponent(processPart)}`);
+    // 加工件預交日 = 鈞洋件預交日 + 4 天（鈞洋件比加工件早 4 天到），再套用假日規則
+    const base = new Date(`${line.date || _defaultDue?.date}T00:00:00`);
+    base.setDate(base.getDate() + 4);
+    const raw = `${base.getFullYear()}-${pad(base.getMonth() + 1)}-${pad(base.getDate())}`;
+    const shifted = await apiJson(`/api/holidays/shift?date=${raw}`);
+    _companions.push({
+      part: d.part_number || processPart, name: d.found ? d.product_name : "（正航查無此料號）", qty: String(qty),
+      price: d.last_price === null || d.last_price === undefined ? "" : String(d.last_price),
+      date: shifted.date, dateHint: shiftHintText(shifted, false),
+      supplierId: d.supplier_id || "", supplierName: d.supplier_name || "", from: line.part, ratio: pp.ratio,
+    });
+    renderLines();
+    renderCompanions();
+  } catch (error) {
+    showToast(`讀取加工件資料失敗：${error.message}`, { tone: "error" });
+  }
+}
+
+function renderCompanions() {
+  const box = document.getElementById("erp-po-companions");
+  if (!box) return;
+  if (!_companions.length) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  box.innerHTML = `<h4 class="erp-po-history-title">後段加工（另開一張採購單，依供應商分開）</h4>
+    <div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
+      <th>料號</th><th>品名</th><th>供應商</th><th>數量</th><th>單價（未稅）</th><th>預計進貨日</th><th></th></tr></thead><tbody>
+    ${_companions.map((c, i) => `<tr data-cidx="${i}">
+      <td class="mono">${esc(c.part)}<div class="erp-po-hint pp-linked">← ${esc(c.from)} ×${esc(c.ratio)}</div></td>
+      <td>${esc(c.name)}</td>
+      <td><input type="text" class="mono" data-cfield="supplierId" value="${esc(c.supplierId)}" autocomplete="off"><div class="erp-po-hint">${esc(c.supplierName)}</div></td>
+      <td><input type="number" class="num" data-cfield="qty" value="${esc(c.qty)}" min="0" step="any"></td>
+      <td><input type="number" class="num" data-cfield="price" value="${esc(c.price)}" min="0" step="any"></td>
+      <td><input type="date" data-cfield="date" value="${esc(c.date)}">${c.dateHint ? `<div class="erp-po-hint shortage-po-adjusted">${esc(c.dateHint)}</div>` : ""}</td>
+      <td><button class="btn btn-danger btn-sm" data-act="remove-companion" type="button">移除</button></td></tr>`).join("")}
+    </tbody></table></div>`;
+}
+
+function onCompanionsInput(event) {
+  const field = event.target.dataset?.cfield;
+  const tr = event.target.closest("tr[data-cidx]");
+  if (!field || !tr) return;
+  const c = _companions[Number(tr.dataset.cidx)];
+  c[field] = event.target.value;
+  if (field === "supplierId") c.supplierName = "";
+}
+
+function onCompanionsChange(event) {
+  const field = event.target.dataset?.cfield;
+  const tr = event.target.closest("tr[data-cidx]");
+  if (!tr) return;
+  const c = _companions[Number(tr.dataset.cidx)];
+  if (field === "date") void (async () => {
+    try {
+      const r = await apiJson(`/api/holidays/shift?date=${encodeURIComponent(c.date)}`);
+      c.dateHint = shiftHintText(r, true);
+      renderCompanions();
+    } catch (_) { /* 提示失敗不影響 */ }
+  })();
+}
+
+function onCompanionsClick(event) {
+  const btn = event.target.closest('[data-act="remove-companion"]');
+  const tr = event.target.closest("tr[data-cidx]");
+  if (!btn || !tr) return;
+  _companions.splice(Number(tr.dataset.cidx), 1);
+  renderCompanions();
+  renderLines();
 }
 
 function onLinesClick(event) {
+  const add = event.target.closest('[data-act="add-pp"]');
+  if (add) {
+    const addTr = add.closest("tr[data-idx]");
+    if (addTr && requireEdit()) void addCompanion(_lines[Number(addTr.dataset.idx)], add.dataset.pp);
+    return;
+  }
   const btn = event.target.closest('[data-act="remove"]');
   const tr = event.target.closest("tr[data-idx]");
   if (!btn || !tr) return;
@@ -182,17 +348,24 @@ function onLinesClick(event) {
   renderLines();
 }
 
-// 供低庫存提醒呼叫：帶入料號與建議數量（已含 MOQ）；meta = { need, moq, moq_source } 用來顯示取整提示
+// 供低庫存提醒呼叫：帶入料號與建議數量（已含 MOQ）；meta = { need, moq, moq_source, receipt } 用來顯示取整提示
 export function prefillPurchaseOrder(part, qty, meta = null) {
   const empty = _lines.length === 1 && !_lines[0].part.trim();
   if (empty) _lines = [];
   const line = newLine(String(part || "").toUpperCase());
   line.qty = qty ? String(qty) : "";
   line.qtyAuto = Boolean(qty);
-  if (meta && meta.need) line.hint = { need: meta.need, moq: meta.moq, moq_source: meta.moq_source };
+  if (meta && meta.need) line.hint = { need: meta.need, moq: meta.moq, moq_source: meta.moq_source, receipt: meta.receipt };
   _lines.push(line);
   renderLines();
   void fillDefaults(_lines.length - 1);
+  if (!_defaultDue) {
+    // 預設預交日尚未載入（假日規則）：載入後補套到這一行
+    const rawDate = line.date;
+    void loadDefaultDue().then(() => {
+      if (_defaultDue && line.date === rawDate) { line.date = _defaultDue.date; line.dateHint = _defaultDue.reason; renderLines(); }
+    });
+  }
 }
 
 // ── 預覽 / 寫入 ─────────────────────────────────────────────────────────────
@@ -213,6 +386,25 @@ function buildBody() {
   };
 }
 
+/** 後段加工明細 → 依供應商分組的採購單請求（每個供應商一張）。 */
+function buildCompanionBodies() {
+  const groups = new Map();
+  for (const c of _companions) {
+    const sid = c.supplierId.trim();
+    if (!sid) throw new Error(`後段加工 ${c.part}：請填供應商`);
+    const qty = Number(c.qty);
+    const price = c.price === "" ? NaN : Number(c.price);
+    if (!(qty > 0) || !Number.isFinite(price) || price < 0) throw new Error(`後段加工 ${c.part}：請填數量與單價`);
+    if (!groups.has(sid)) groups.set(sid, []);
+    groups.get(sid).push({ part_number: c.part, qty, price, pre_in_date: c.date });
+  }
+  const salesman = document.getElementById("erp-po-salesman")?.value.trim() || null;
+  const remark = document.getElementById("erp-po-remark")?.value.trim() || "";
+  return [...groups.entries()].map(([supplier_id, lines]) => ({
+    supplier_id, remark: remark ? `${remark}（後段加工）` : "後段加工", salesman, lines,
+  }));
+}
+
 function setBusy(busy) {
   _busy = busy;
   const previewBtn = document.getElementById("btn-erp-po-preview");
@@ -225,14 +417,12 @@ function hideResult() {
   if (el) { el.hidden = true; el.innerHTML = ""; }
 }
 
-function renderPreview(p) {
-  const el = document.getElementById("erp-po-preview");
-  if (!el) return;
+function previewCard(p, withBadge) {
   const masters = p.masters_to_copy?.length
     ? `<div class="erp-po-warn">將先從來源公司複製以下主檔到 ${esc(p.target_label)}：${p.masters_to_copy.map(m => `${esc(m.label)} ${esc(m.key)}`).join("、")}</div>`
     : "";
-  el.innerHTML = `
-    <div class="erp-po-badge ${p.is_test ? "is-test" : "is-prod"} erp-po-badge-small">寫入：${esc(p.target_label)}</div>
+  return `
+    ${withBadge ? `<div class="erp-po-badge ${p.is_test ? "is-test" : "is-prod"} erp-po-badge-small">寫入：${esc(p.target_label)}</div>` : ""}
     <div class="erp-po-preview-head">預計單號 <strong class="mono">${esc(p.bill_no)}</strong>（實際單號以寫入結果為準）　供應商 ${esc(p.supplier.id)} ${esc(p.supplier.name)}　採購員 ${esc(p.salesman)}</div>
     <div class="erp-po-hint">付款條件 / 地址取自範本單 ${esc(p.template_bill_no)}${p.remark ? `　備註：${esc(p.remark)}` : ""}</div>
     ${masters}
@@ -242,9 +432,26 @@ function renderPreview(p) {
         <td class="num">${fmtMoney(l.qty)}</td><td class="num">${fmtMoney(l.price)}</td><td class="num">${fmtMoney(l.amount)}</td>
         <td class="num">${fmtMoney(l.tax_amt)}</td><td>${esc(l.pre_in_date)}</td></tr>`).join("")}</tbody>
     </table>
-    <div class="erp-po-totals">未稅 <strong>${fmtMoney(p.totals.sum_amount)}</strong>　稅額 <strong>${fmtMoney(p.totals.sum_tax)}</strong>　合計 <strong>${fmtMoney(p.totals.total)}</strong></div>
+    <div class="erp-po-totals">未稅 <strong>${fmtMoney(p.totals.sum_amount)}</strong>　稅額 <strong>${fmtMoney(p.totals.sum_tax)}</strong>　合計 <strong>${fmtMoney(p.totals.total)}</strong></div>`;
+}
+
+/** 後端 postprocess_warning（鈞洋件有後段加工對應但加工件不在同一批）轉成提示文字。 */
+export function postprocessWarningText(items) {
+  const lines = (items || []).map(i => `・${i.base_part} 需搭配後段加工 ${i.process_part}（建議數量 ${fmtMoney(i.suggested_qty)}，比例 ×${fmtMoney(i.ratio)}）`);
+  return `以下鈞洋件有後段加工對應，但加工件不在這批採購單中：\n${lines.join("\n")}`;
+}
+
+function renderPreview(p, companions = []) {
+  const el = document.getElementById("erp-po-preview");
+  if (!el) return;
+  const covered = new Set(_companions.map(c => c.part));
+  const missing = (p.postprocess_warning || []).filter(w => !covered.has(w.process_part));
+  el.innerHTML = `
+    ${previewCard(p, true)}
+    ${missing.length ? `<div class="erp-po-warn">${esc(postprocessWarningText(missing))}</div>` : ""}
+    ${companions.map(c => `<hr>${previewCard(c, false)}`).join("")}
     <div class="erp-po-actions"><span class="spacer"></span>
-      <button class="btn btn-danger" id="btn-erp-po-create" type="button">確認寫入正航</button></div>`;
+      <button class="btn btn-danger" id="btn-erp-po-create" type="button">確認寫入正航${companions.length ? `（共 ${1 + companions.length} 張）` : ""}</button></div>`;
   el.hidden = false;
   el.dataset.target = p.target_label;
   document.getElementById("btn-erp-po-create")?.addEventListener("click", handleCreate);
@@ -261,7 +468,10 @@ async function handlePreview() {
   }
   setBusy(true);
   try {
-    renderPreview(await apiPost("/api/erp/po/preview", body));
+    const main = await apiPost("/api/erp/po/preview", body);
+    const companions = [];
+    for (const c of buildCompanionBodies()) companions.push(await apiPost("/api/erp/po/preview", c));
+    renderPreview(main, companions);
   } catch (error) {
     const el = document.getElementById("erp-po-preview");
     if (el) { el.hidden = true; el.innerHTML = ""; }
@@ -271,42 +481,63 @@ async function handlePreview() {
   }
 }
 
+class CancelledError extends Error {}
+
+/** 建立一張採購單；後端回 postprocess_warning / duplicate_warning 時先確認再重送。使用者取消丟 CancelledError。 */
+async function createOne(body, coveredParts) {
+  let payload = { ...body, confirm: true };
+  let r = await apiPost("/api/erp/po/create", payload);
+  if (r.postprocess_warning?.length) {
+    const uncovered = r.postprocess_warning.filter(w => !coveredParts.has(w.process_part));
+    if (uncovered.length && !window.confirm(`${postprocessWarningText(uncovered)}\n\n仍要只開這張採購單嗎？`)) {
+      throw new CancelledError("已取消：鈞洋件的後段加工件不在這批採購單中，未寫入。");
+    }
+    payload = { ...payload, confirm_missing_postprocess: true };
+    r = await apiPost("/api/erp/po/create", payload);
+  }
+  if (r.duplicate_warning) {
+    // 後端沒有寫入任何東西；使用者確認後才帶 allow_duplicate 重送
+    if (!window.confirm(duplicateWarningText(r.duplicate_warning))) {
+      throw new CancelledError("已取消：明細在本站已開過採購單，未寫入。");
+    }
+    r = await apiPost("/api/erp/po/create", { ...payload, allow_duplicate: true });
+  }
+  return r;
+}
+
 async function handleCreate() {
   if (_busy || !requireEdit()) return;
   const label = document.getElementById("erp-po-preview")?.dataset.target || _config?.label || "";
-  if (!window.confirm(`確定要在「${label}」建立這張採購單嗎？\n寫入後無法從本系統修改或刪除。`)) return;
   let body;
-  try { body = buildBody(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
+  let companionBodies;
+  try { body = buildBody(); companionBodies = buildCompanionBodies(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
+  const count = 1 + companionBodies.length;
+  if (!window.confirm(`確定要在「${label}」建立${count > 1 ? ` ${count} 張` : "這張"}採購單嗎？\n寫入後無法從本系統修改或刪除。`)) return;
   setBusy(true);
   const result = document.getElementById("erp-po-result");
+  const done = [];
   try {
-    let r = await apiPost("/api/erp/po/create", { ...body, confirm: true });
-    if (r.duplicate_warning) {
-      // 後端沒有寫入任何東西；使用者確認後才帶 allow_duplicate 重送
-      if (!window.confirm(duplicateWarningText(r.duplicate_warning))) {
-        if (result) {
-          result.className = "erp-po-result is-error";
-          result.textContent = "已取消：明細在本站已開過採購單，未寫入。";
-          result.hidden = false;
-        }
-        return;
-      }
-      r = await apiPost("/api/erp/po/create", { ...body, confirm: true, allow_duplicate: true });
-    }
+    const covered = new Set(_companions.map(c => c.part));
+    done.push(await createOne(body, covered));
+    for (const c of companionBodies) done.push(await createOne(c, new Set()));
     if (result) {
       result.className = "erp-po-result is-ok";
-      result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong>，含稅合計 ${fmtMoney(r.totals.total)}`;
+      result.innerHTML = done.map(r =>
+        `<div>✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong>（${esc(r.supplier.id)}），含稅合計 ${fmtMoney(r.totals.total)}</div>`).join("");
       result.hidden = false;
     }
     const preview = document.getElementById("erp-po-preview");
     if (preview) { preview.hidden = true; preview.innerHTML = ""; }
     _lines = [newLine()];
+    _companions = [];
     renderLines();
-    showToast(`已建立採購單 ${r.bill_no}`, { tone: "success" });
+    renderCompanions();
+    showToast(`已建立採購單 ${done.map(r => r.bill_no).join("、")}`, { tone: "success" });
   } catch (error) {
     if (result) {
       result.className = "erp-po-result is-error";
-      result.textContent = `❌ 寫入失敗：${error.message}`;
+      const written = done.length ? `（已寫入 ${done.map(r => r.bill_no).join("、")}，其餘未寫入）` : "";
+      result.textContent = error instanceof CancelledError ? `${error.message}${written}` : `❌ 寫入失敗：${error.message}${written}`;
       result.hidden = false;
     }
   } finally {
@@ -380,7 +611,7 @@ export function refreshErpPurchaseHistory() {
 }
 
 export async function onErpPurchaseTabActivated() {
-  await Promise.all([loadConfig(), refreshHistory()]);
+  await Promise.all([loadConfig(), refreshHistory(), loadDefaultDue()]);
 }
 
 export async function initErpPurchase() {
@@ -393,6 +624,10 @@ export async function initErpPurchase() {
   body?.addEventListener("input", onLinesInput);
   body?.addEventListener("change", onLinesChange);
   body?.addEventListener("click", onLinesClick);
+  const comp = document.getElementById("erp-po-companions");
+  comp?.addEventListener("input", onCompanionsInput);
+  comp?.addEventListener("change", onCompanionsChange);
+  comp?.addEventListener("click", onCompanionsClick);
   document.getElementById("btn-erp-po-add-line")?.addEventListener("click", () => {
     if (_lines.length >= 50) { showToast("最多 50 行", { tone: "error" }); return; }
     _lines.push(newLine());
@@ -407,5 +642,5 @@ export async function initErpPurchase() {
     const li = event.target.closest("li[data-id]");
     if (li) selectSupplier(li.dataset.id, li.dataset.name);
   });
-  await loadConfig();
+  await Promise.all([loadConfig(), loadDefaultDue()]);
 }

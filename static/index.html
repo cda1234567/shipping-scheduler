@@ -385,6 +385,7 @@
             <tbody id="erp-po-lines"></tbody>
           </table>
         </div>
+        <div id="erp-po-companions" class="erp-po-companions" hidden></div>
         <div class="erp-po-actions">
           <button class="btn btn-secondary btn-sm" id="btn-erp-po-add-line" type="button">＋ 新增一行</button>
           <span class="spacer"></span>
@@ -455,6 +456,23 @@
           </div>
           <div id="shortage-po-orders" class="shortage-po-order-list"></div>
         </div>
+        <details id="pp-links-panel" class="pp-links-panel">
+          <summary>後段加工對應（鈞洋件 → 加工件）<span id="pp-links-summary" class="erp-po-hint"></span></summary>
+          <div class="pp-links-body">
+            <div class="erp-po-hint">已確認且啟用的對應，勾選鈞洋件時會在清單自動帶出加工行（數量 = 鈞洋量 × 比例）。自動建議的候選為「待確認」，確認後才生效；修改需登入編輯。</div>
+            <div class="pp-links-toolbar">
+              <button class="btn btn-secondary btn-sm" id="btn-pp-suggest" type="button" title="從 BOM 虛線行與正航採購單歷史找候選（正航連不上時只用 BOM）">自動建議</button>
+              <label class="shortage-po-toggle"><input type="checkbox" id="pp-show-rejected"> 顯示已駁回</label>
+              <span class="spacer"></span>
+              <input type="text" id="pp-add-base" class="mono" placeholder="基礎件 OC-10988B" autocomplete="off">
+              <span>→</span>
+              <input type="text" id="pp-add-process" class="mono" placeholder="加工件 SP-10024B" autocomplete="off">
+              <input type="number" id="pp-add-ratio" class="num" value="1" min="0" step="any" title="比例">
+              <button class="btn btn-primary btn-sm" id="btn-pp-add" type="button">新增</button>
+            </div>
+            <div id="pp-links-table" class="erp-po-table-wrap"></div>
+          </div>
+        </details>
         <div id="shortage-po-warnings"></div>
         <div id="shortage-po-list" class="shortage-po-list" hidden>
           <div class="erp-po-actions">
@@ -1046,6 +1064,7 @@ import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.j
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
+import { initPostprocessLinks } from "/static/modules/postprocess_links.js";
 import { initPartConversion, onPartConversionTabActivated } from "/static/modules/part_conversion.js";
 import { initPoPullin, onPoPullinTabActivated } from "/static/modules/po_pullin.js";
 
@@ -2145,6 +2164,7 @@ async function init() {
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
   try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
+  try { initPostprocessLinks(); } catch (e) { console.warn("initPostprocessLinks failed:", e); }
   try { await initPartConversion(); } catch (e) { console.warn("initPartConversion failed:", e); }
   try { await initPoPullin(); } catch (e) { console.warn("initPoPullin failed:", e); }
 

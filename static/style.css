@@ -5326,3 +5326,18 @@ body.desktop-dark .frequent-zero-usage li span {
 .pp-result[hidden] { display: none; }
 .pp-draft { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; font-family: inherit; background: #fafafa; resize: vertical; }
 .shortage-po-group[hidden] { display: none; }
+
+/* 後段加工對應 / 連動行 */
+.pp-links-panel { border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 6px 12px; }
+.pp-links-panel > summary { cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+.pp-links-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 0; }
+.pp-links-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pp-links-toolbar input[type="text"] { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; width: 160px; }
+.pp-links-toolbar input.num { padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; width: 70px; text-align: right; }
+.pp-links-toolbar .spacer { flex: 1; }
+.pp-row-pending { background: #fffbeb; }
+.pp-evidence { max-width: 360px; white-space: normal; }
+.pp-actions { white-space: nowrap; display: flex; gap: 4px; }
+.pp-linked { color: #1d4ed8; }
+.pp-linked-row { background: #f0f7ff; }
+.pp-unlink { padding: 0 6px; font-size: 11px; }

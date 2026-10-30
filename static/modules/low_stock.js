@@ -216,7 +216,10 @@ async function onTableClick(event) {
     const moq = Number(row.moq) > 0 ? Number(row.moq) : 0;
     const qty = row.suggested_po_qty ?? Math.max(gap, Math.ceil(moq));
     document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
-    prefillPurchaseOrder(part, qty, { need: gap, moq, moq_source: row.moq_source || "" });
+    prefillPurchaseOrder(part, qty, {
+      need: gap, moq, moq_source: row.moq_source || "",
+      receipt: { qty: row.last_receipt_qty, date: row.last_receipt_date },
+    });
     return;
   }
   if (act === "edit-threshold") {
