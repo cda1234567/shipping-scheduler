@@ -6,7 +6,7 @@
 預計進貨日（以「最早出貨日的訂單」為準）：
 - 打件料：出貨日往前 1 個月（月底則取該月底，如 3/31→2/28），再取「不晚於該日的最近一個 26 日」。
 - 後段料：出貨日 - 21 天。
-- 早於今天的標記為 is_late（仍照算，讓使用者決定）。
+- 推算日早於今天（台北時區）時改用今天，並保留原推算日（original_pre_in_date / date_adjusted），不再標記過期。
 
 打件 / 後段的自動判斷（classify_part，人工指定優先，存於 part_purchase_categories）：
 - 打件（smt）：料號前兩碼為 EC / IC / UC / PB，或品名（不分大小寫）含
@@ -63,8 +63,9 @@ def pre_in_date_for(category: str, ship: date) -> date:
     return smt_pre_in_date(ship) if category == "smt" else backend_pre_in_date(ship)
 
 
-def is_late(pre_in: date, today: date) -> bool:
-    return pre_in < today
+def clamp_pre_in_date(pre_in: date, today: date) -> Tuple[date, bool]:
+    """推算日早於今天就改用今天；回傳 (採用日期, 是否被調整)。等於今天或更晚則不變。"""
+    return (today, True) if pre_in < today else (pre_in, False)
 
 
 def parse_ship_date(value: Any) -> Optional[date]:
@@ -178,14 +179,21 @@ def _manual_allocation(qty: float) -> List[Dict[str, Any]]:
     }]
 
 
+def _clamp_date_text(value: Any, today: date) -> Any:
+    """伺服器端保險：預計進貨日早於今天一律改為今天（用戶端可能送來過期的舊推算日）；無法解析者原樣交給後續驗證。"""
+    parsed = parse_ship_date(value)
+    return clamp_pre_in_date(parsed, today)[0].isoformat() if parsed else value
+
+
 def prepare_groups(
     groups: List[Dict[str, Any]], order_ids: Optional[List[int]] = None
 ) -> List[Dict[str, Any]]:
     """替每個勾選行依最終數量重算 allocations，並標記來源為 shortage_po。
 
     沒有 order_ids、或料號不在這批訂單的需求內時，該行記成一筆 manual；
-    用戶端送來的 allocations 一律忽略（以伺服器重算為準）。
+    用戶端送來的 allocations 一律忽略（以伺服器重算為準）；早於今天的預計進貨日一律改為今天。
     """
+    today = local_now().date()
     ids = list(dict.fromkeys(int(i) for i in (order_ids or []) if i))
     context: Dict[str, Dict[str, Any]] = {}
     if ids:
@@ -207,7 +215,11 @@ def prepare_groups(
                 ctx["st"], ctx["orders"] = 0.0, remaining
             else:
                 allocations = _manual_allocation(qty)
-            lines.append({**line, "allocations": allocations})
+            lines.append({
+                **line,
+                "pre_in_date": _clamp_date_text(line.get("pre_in_date"), today),
+                "allocations": allocations,
+            })
         out.append({**group, "lines": lines, "alloc_source": "shortage_po"})
     return out
 
@@ -435,8 +447,11 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         shortage = float(summarize_requested_supply(entry["need"], st)["purchase_needed_qty"])
 
         ship = parse_ship_date(entry["earliest"]["ship_date"])
-        dates = {c: pre_in_date_for(c, ship).isoformat() if ship else "" for c in CATEGORY_LABELS}
-        pre_in = dates[category]
+        raw_dates = {c: pre_in_date_for(c, ship) if ship else None for c in CATEGORY_LABELS}
+        clamped = {c: clamp_pre_in_date(d, today) if d else None for c, d in raw_dates.items()}
+        dates = {c: v[0].isoformat() if v else "" for c, v in clamped.items()}
+        original_dates = {c: d.isoformat() if d else "" for c, d in raw_dates.items()}
+        adjusted = {c: bool(v and v[1]) for c, v in clamped.items()}
         suggested = int(math.ceil(shortage - 1e-9)) if shortage > 0 else 0
         parts_out.append({
             "part_number": key,
@@ -458,8 +473,11 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "last_bill_no": last.get("bill_no", ""),
             "last_bill_date": last.get("bill_date", ""),
             "pre_in_dates": dates,
-            "pre_in_date": pre_in,
-            "is_late": bool(ship and is_late(date.fromisoformat(pre_in), today)),
+            "pre_in_date": dates[category],
+            "original_pre_in_date": original_dates[category],
+            "date_adjusted": adjusted[category],
+            "original_pre_in_dates": original_dates,
+            "dates_adjusted": adjusted,
             "earliest_order": {k: entry["earliest"][k] for k in ("order_id", "code", "model", "po_number", "ship_date")},
             "orders": entry["orders"],
         })

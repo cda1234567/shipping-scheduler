@@ -51,11 +51,11 @@ class DateRuleTests(unittest.TestCase):
         self.assertEqual(sp.backend_pre_in_date(date(2026, 3, 10)), date(2026, 2, 17))
         self.assertEqual(sp.backend_pre_in_date(date(2024, 3, 10)), date(2024, 2, 18))  # 閏年
 
-    def test_is_late(self):
+    def test_clamp_pre_in_date(self):
         today = date(2026, 10, 29)
-        self.assertTrue(sp.is_late(date(2026, 10, 28), today))
-        self.assertFalse(sp.is_late(today, today))
-        self.assertFalse(sp.is_late(date(2026, 11, 1), today))
+        self.assertEqual(sp.clamp_pre_in_date(date(2026, 10, 26), today), (today, True))
+        self.assertEqual(sp.clamp_pre_in_date(today, today), (today, False))
+        self.assertEqual(sp.clamp_pre_in_date(date(2026, 11, 1), today), (date(2026, 11, 1), False))
 
     def test_parse_ship_date(self):
         self.assertEqual(sp.parse_ship_date("2026-12-10"), date(2026, 12, 10))
@@ -276,24 +276,33 @@ class ShortageListTests(Base):
         self.assertEqual((p["OC-1"]["price"], p["OC-1"]["last_bill_no"], p["OC-1"]["last_bill_date"]),
                          (3.5, "PO-20260901001", "2026-09-01"))
 
-    def test_dates_category_and_late(self):
+    def test_dates_category_and_clamp(self):
         res, p = self.parts()
-        # EC-1：料號前綴 → 打件；最早出貨 2026-12-10 → 2026-10-26（已早於今天 10-29 → 遲了）
+        # EC-1：料號前綴 → 打件；最早出貨 2026-12-10 → 推算 2026-10-26 早於今天 10-29 → 改今天並保留原推算日
         self.assertEqual((p["EC-1"]["category"], p["EC-1"]["category_source"]), ("smt", "auto"))
-        self.assertEqual((p["EC-1"]["pre_in_date"], p["EC-1"]["is_late"]), ("2026-10-26", True))
+        self.assertEqual((p["EC-1"]["pre_in_date"], p["EC-1"]["original_pre_in_date"], p["EC-1"]["date_adjusted"]),
+                         ("2026-10-29", "2026-10-26", True))
+        self.assertNotIn("is_late", p["EC-1"])
         # OC-1：後段，最早 2026-12-10 − 21 天 = 2026-11-19
-        self.assertEqual((p["OC-1"]["category"], p["OC-1"]["pre_in_date"], p["OC-1"]["is_late"]), ("backend", "2026-11-19", False))
-        self.assertEqual(p["OC-1"]["pre_in_dates"], {"smt": "2026-10-26", "backend": "2026-11-19"})
+        self.assertEqual((p["OC-1"]["category"], p["OC-1"]["pre_in_date"], p["OC-1"]["date_adjusted"]), ("backend", "2026-11-19", False))
+        self.assertEqual(p["OC-1"]["pre_in_dates"], {"smt": "2026-10-29", "backend": "2026-11-19"})
+        self.assertEqual(p["OC-1"]["original_pre_in_dates"], {"smt": "2026-10-26", "backend": "2026-11-19"})
+        self.assertEqual(p["OC-1"]["dates_adjusted"], {"smt": True, "backend": False})
+        # 等於今天不調整：後段出貨日 = 今天 + 21 天
+        self.groups = [group(3, "6-3", "2026-11-19", [item("OC-1", 6)])]
+        _, p = self.parts()
+        self.assertEqual((p["OC-1"]["pre_in_date"], p["OC-1"]["original_pre_in_date"], p["OC-1"]["date_adjusted"]),
+                         ("2026-10-29", "2026-10-29", False))
         # 沒有出貨日 → 日期空白、不標遲了
         self.groups = [group(3, "6-3", "", [item("PK-1", 6)])]
         _, p = self.parts()
-        self.assertEqual((p["PK-1"]["pre_in_date"], p["PK-1"]["is_late"]), ("", False))
+        self.assertEqual((p["PK-1"]["pre_in_date"], p["PK-1"]["original_pre_in_date"], p["PK-1"]["date_adjusted"]), ("", "", False))
 
     def test_manual_override_beats_heuristic(self):
         db.set_part_purchase_category("OC-1", "smt", "web")
         _, p = self.parts()
         self.assertEqual((p["OC-1"]["category"], p["OC-1"]["category_source"]), ("smt", "manual"))
-        self.assertEqual(p["OC-1"]["pre_in_date"], "2026-10-26")
+        self.assertEqual((p["OC-1"]["pre_in_date"], p["OC-1"]["original_pre_in_date"]), ("2026-10-29", "2026-10-26"))
 
     def test_sorted_by_supplier_then_part_and_metadata(self):
         res, _ = self.parts()
@@ -406,6 +415,27 @@ class AllocationFlowTests(ShortageListTests):
         with patch.object(dispatch_router, "build_dispatch_groups", side_effect=RuntimeError("x")):
             out = sp.prepare_groups(raw, [1])
         self.assertEqual(out[0]["lines"][0]["allocations"][0]["kind"], "manual")
+
+    def test_prepare_groups_clamps_past_dates_to_today(self):
+        def line(d):
+            return {"part_number": "AC-1", "qty": 3, "price": 1, "pre_in_date": d}
+        raw = [{"supplier_id": "S2", "lines": [line("2026-10-26"), line("2026-10-29"), line("2026-11-19"), line("bad")]}]
+        dates = [l["pre_in_date"] for l in sp.prepare_groups(raw, None)[0]["lines"]]
+        self.assertEqual(dates, ["2026-10-29", "2026-10-29", "2026-11-19", "bad"])
+
+    def test_preview_and_create_payload_use_clamped_date(self):
+        from main import app
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        client = TestClient(app)
+        grp = {"supplier_id": "S2", "remark": "", "lines": [{"part_number": "EC-1", "qty": 80, "price": 1, "pre_in_date": "2026-10-26"}]}
+        seen = {}
+        with patch.object(ep, "preview_many", lambda reqs: seen.setdefault("p", reqs) and [{"ok": True}]):
+            client.post("/api/shortage-po/preview", json={"groups": [grp], "order_ids": [1, 2, 3]})
+        self.assertEqual(seen["p"][0]["lines"][0]["pre_in_date"], "2026-10-29")
+        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="": seen.setdefault("c", req) and
+                          {"ok": True, "bill_no": "X", "supplier": {}, "totals": {}, "lines": []}):
+            client.post("/api/shortage-po/create", json={"groups": [grp], "confirm": True})
+        self.assertEqual(seen["c"]["lines"][0]["pre_in_date"], "2026-10-29")
 
     def test_router_passes_order_ids_to_preview_and_create(self):
         from main import app

@@ -5294,8 +5294,7 @@ body.desktop-dark .frequent-zero-usage li span {
 .shortage-po-table select { padding: 3px 4px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; }
 .shortage-po-table input[data-act="supplier"] { min-width: 80px; }
 .shortage-po-table input[type="date"] { min-width: 130px; }
-.shortage-po-table input.is-late { color: #b91c1c; border-color: #dc2626; background: #fef2f2; }
-.shortage-po-late { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: #dc2626; color: #fff; font-size: 11px; }
+.shortage-po-adjusted { color: #b45309; }
 .shortage-po-short { color: #b91c1c; font-weight: 600; }
 .shortage-po-done { opacity: .55; }
 .shortage-po-preview { border: 2px solid #94a3b8; border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: #f8fafc; }

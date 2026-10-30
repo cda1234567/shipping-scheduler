@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.29.9"
-APP_RELEASED_AT = "2026-10-29"
-APP_HEADLINE = "缺料採購：採購量改回「需求 − ST」，在途量只顯示；採購單記錄為哪些訂單而買"
+APP_VERSION = "v2026.10.30.1"
+APP_RELEASED_AT = "2026-10-30"
+APP_HEADLINE = "缺料採購：預計進貨日若推算已過期，自動改為今天，不再標示遲了"
 APP_CHANGELOG = [
+    {
+        "title": "缺料採購：過期的預計進貨日改為今天",
+        "items": [
+            "打件（出貨日 -1 個月再取不晚於該日的 26 日）與後段（出貨日 - 21 天）的推算規則不變；若推算日早於今天（台北時區），預計進貨日改用今天，不再標紅或顯示「遲了」。",
+            "API 保留原推算日：original_pre_in_date / date_adjusted（以及各類別的 original_pre_in_dates / dates_adjusted）；畫面在日期欄下方顯示「原推算 10/26 已過，改今天」。",
+            "預覽與寫入正航時，伺服器端也會把早於今天的預計進貨日改為今天，避免用戶端送來舊的過期日期。",
+        ],
+    },
     {
         "title": "缺料採購不扣在途",
         "items": [

@@ -111,6 +111,8 @@ function toRow(p) {
     price: String(p.price ?? 0),
     date: p.pre_in_date || "",
     dates: p.pre_in_dates || {},
+    originalDates: p.original_pre_in_dates || {},
+    datesAdjusted: p.dates_adjusted || {},
     dateEdited: false,
     earliest: p.earliest_order,
     orders: p.orders || [],
@@ -187,12 +189,15 @@ function subtotal(rows) {
   }, 0);
 }
 
-function isLate(dateText) {
-  return Boolean(dateText && _data?.today && dateText < _data.today);
+// 推算日已過、改用今天時的提示（使用者手動改日期後不再顯示）
+function adjustedNote(r) {
+  if (r.dateEdited || !r.datesAdjusted[r.category]) return "";
+  const [, m, d] = String(r.originalDates[r.category] || "").split("-");
+  return m && d ? `原推算 ${Number(m)}/${Number(d)} 已過，改今天` : "";
 }
 
 function rowHtml(r) {
-  const late = isLate(r.date);
+  const note = adjustedNote(r);
   const tip = r.orders.map(o => `${o.code} ${o.model} 出貨 ${o.ship_date || "—"} 需 ${fmtQty(o.qty)}`).join("\n");
   const e = r.earliest || {};
   const disabled = !r.supplierId.trim() || r.doneBill;
@@ -212,8 +217,8 @@ function rowHtml(r) {
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
     <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}></td>
     <td><input type="number" data-act="price" class="num" min="0" step="any" value="${esc(r.price)}" ${r.doneBill ? "disabled" : ""}></td>
-    <td><input type="date" data-act="date" value="${esc(r.date)}" class="${late ? "is-late" : ""}" ${r.doneBill ? "disabled" : ""}>
-      ${late ? '<span class="shortage-po-late">遲了</span>' : ""}</td>
+    <td><input type="date" data-act="date" value="${esc(r.date)}" ${r.doneBill ? "disabled" : ""}>
+      ${note ? `<div class="erp-po-hint shortage-po-adjusted">${esc(note)}</div>` : ""}</td>
     <td title="${esc(tip)}">${esc(e.code)} ${esc(e.model)}<div class="erp-po-hint">出貨 ${esc(e.ship_date) || "—"}${r.orders.length > 1 ? `（共 ${r.orders.length} 張）` : ""}</div></td>
   </tr>`;
 }
