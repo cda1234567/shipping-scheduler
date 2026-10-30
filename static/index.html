@@ -117,6 +117,8 @@
       <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
       <button class="tab-btn" data-tab="shortage-po-tab">缺料採購</button>
+      <button class="tab-btn" data-tab="part-conversion-tab">轉換料</button>
+      <button class="tab-btn" data-tab="po-pullin-tab">提前清單 <span id="po-pullin-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
@@ -403,6 +405,44 @@
     </div>
 
     <!-- ── Tab: 缺料採購（依缺料清單在正航開採購單） ── -->
+    <!-- ── Tab: 轉換料 A→B（只改本網站 BOM，不碰正航） ── -->
+    <div id="tab-part-conversion-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div class="erp-po-hint">把本網站所有 BOM 裡的料號 A 換成 B；轉換後 A 停用（不再出現在缺料採購），B 的需求含 A、庫存 = B + A。可在下方還原。不會修改正航，也不會修改主檔。</div>
+        <div class="erp-po-actions">
+          <label>料號 A（舊） <input id="pc-part-a" type="text" placeholder="例如 EC-1001" autocomplete="off"></label>
+          <span>→</span>
+          <label>料號 B（新） <input id="pc-part-b" type="text" placeholder="例如 EC-2002" autocomplete="off"></label>
+          <button class="btn btn-secondary" id="btn-pc-preview" type="button">預覽影響範圍</button>
+          <button class="btn btn-primary" id="btn-pc-confirm" type="button" disabled>確認轉換</button>
+        </div>
+        <div id="pc-preview" class="erp-po-preview" hidden></div>
+        <h4 class="erp-po-history-title">轉換紀錄</h4>
+        <div id="pc-history"></div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 客人改交期 → 廠商提前清單（草稿僅供複製，不寄信） ── -->
+    <div id="tab-po-pullin-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div class="shortage-po-orders">
+          <div class="shortage-po-orders-head">
+            <strong>選擇訂單</strong>
+            <span class="erp-po-hint">可複選；資料來自排程與已發料訂單</span>
+          </div>
+          <div id="pp-orders" class="shortage-po-order-list"></div>
+        </div>
+        <div class="erp-po-actions">
+          <label>新出貨日 <input id="pp-new-date" type="date"></label>
+          <label class="shortage-po-toggle"><input type="checkbox" id="pp-update-ship"> 同時更新訂單出貨日</label>
+          <button class="btn btn-secondary" id="btn-pp-preview" type="button">計算提前清單</button>
+          <button class="btn btn-primary" id="btn-pp-confirm" type="button" disabled>保存清單</button>
+          <span class="erp-po-hint">保存後才會產生提醒徽章；未勾選「同時更新訂單出貨日」不會改動訂單。</span>
+        </div>
+        <div id="pp-result" class="pp-result" hidden></div>
+      </div>
+    </div>
+
     <div id="tab-shortage-po-tab" class="tab-content">
       <div class="erp-po-shell shortage-po-shell">
         <div id="shortage-po-badge" class="erp-po-badge">讀取設定中...</div>
@@ -424,6 +464,7 @@
             <button class="btn btn-primary" id="btn-shortage-po-preview" type="button">預覽採購單</button>
           </div>
           <div id="shortage-po-groups"></div>
+          <div id="shortage-po-cs" class="shortage-po-group" hidden></div>
         </div>
         <div id="shortage-po-preview" class="shortage-po-preview" hidden></div>
         <div id="shortage-po-result" class="shortage-po-result" hidden></div>
@@ -1004,6 +1045,8 @@ import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.j
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
+import { initPartConversion, onPartConversionTabActivated } from "/static/modules/part_conversion.js";
+import { initPoPullin, onPoPullinTabActivated } from "/static/modules/po_pullin.js";
 
 // ── Tab switching ────────────────────────────────────────────────────────
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -1020,6 +1063,8 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
     if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
     if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
+    if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
+    if (btn.dataset.tab === "po-pullin-tab") void onPoPullinTabActivated();
     if (btn.dataset.tab === "alerts-tab") refreshAlerts();
     if (btn.dataset.tab === "logs-tab") refreshLogs();
     if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
@@ -2099,6 +2144,8 @@ async function init() {
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
   try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
+  try { await initPartConversion(); } catch (e) { console.warn("initPartConversion failed:", e); }
+  try { await initPoPullin(); } catch (e) { console.warn("initPoPullin failed:", e); }
 
   setBootProgress(78, "正在建立排程畫面...");
   await nextFrame();

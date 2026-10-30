@@ -24,7 +24,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import database as db
-from . import erp_purchase, low_stock
+from . import erp_purchase, erp_stock, low_stock, part_conversion
 from .shortage_rules import summarize_requested_supply
 from .local_time import local_now
 
@@ -166,9 +166,11 @@ def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
     st_stock = {
         str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
     }
+    mapping = part_conversion.active_map()
+    sources = part_conversion.sources_by_target(mapping)
     return {
-        key: {"st": st_stock.get(key, 0.0), "orders": entry["orders"]}
-        for key, entry in _aggregate(groups).items()
+        key: {"st": part_conversion.effective_stock(key, st_stock, sources)[0], "orders": entry["orders"]}
+        for key, entry in _aggregate(groups, mapping).items()
     }
 
 
@@ -283,14 +285,50 @@ def _lookup_products(conn, parts: List[str]) -> Dict[str, Dict[str, str]]:
     cur = conn.cursor()
     for batch in _chunks(parts):
         cur.execute(
-            "SELECT ProdID, ProdName, MajorSupplier FROM comProduct WITH (NOLOCK) "
+            "SELECT ProdID, ProdName, MajorSupplier, ClassID FROM comProduct WITH (NOLOCK) "
             f"WHERE ProdID IN {_marks(len(batch))}",
             tuple(batch),
         )
-        for prod_id, name, major in cur.fetchall():
+        for row in cur.fetchall():
+            prod_id, name, major = row[0], row[1], row[2]
+            class_id = row[3] if len(row) > 3 else ""
             key = erp_purchase._text(prod_id).upper()
             if key:
-                result[key] = {"name": erp_purchase._text(name), "major_supplier": erp_purchase._text(major)}
+                result[key] = {
+                    "name": erp_purchase._text(name),
+                    "major_supplier": erp_purchase._text(major),
+                    "class_id": erp_purchase._text(class_id),
+                }
+    return result
+
+
+# ── 客供料（-TAB 結尾或正航類別 003）：向客戶要料，不採購 ────────────────────────
+
+DEFAULT_TAB_WARE_IDS = "002"  # TABLEAU；不含 015
+
+
+def tab_ware_ids() -> List[str]:
+    """客供料可用庫存的正航倉庫（env ERP_TAB_WARE_IDS，逗號分隔，預設 002）。"""
+    raw = erp_stock._env("ERP_TAB_WARE_IDS", DEFAULT_TAB_WARE_IDS)
+    ids = [w.strip() for w in raw.split(",") if w.strip()]
+    return list(dict.fromkeys(ids)) or [DEFAULT_TAB_WARE_IDS]
+
+
+def _query_tab_stock(conn, parts: List[str], ware_ids: List[str]) -> Dict[str, float]:
+    """客供料在指定倉庫的庫存合計（只有 SELECT；comWareAmount，與 ST 庫存同一張表，不是 ST 001）。"""
+    result: Dict[str, float] = {}
+    cur = conn.cursor()
+    for batch in _chunks(parts):
+        cur.execute(
+            "SELECT w.ProdID, SUM(w.Quantity) FROM comWareAmount AS w WITH (NOLOCK) "
+            f"WHERE w.WareID IN {_marks(len(ware_ids))} AND w.ProdID IN {_marks(len(batch))} "
+            "GROUP BY w.ProdID",
+            (*ware_ids, *batch),
+        )
+        for prod_id, qty in cur.fetchall():
+            key = erp_purchase._text(prod_id).upper()
+            if key:
+                result[key] = result.get(key, 0.0) + float(qty or 0)
     return result
 
 
@@ -349,29 +387,50 @@ def resolve_supplier(
 
 
 def _erp_lookups(parts: List[str], today: date) -> Dict[str, Any]:
-    """所有 ERP 唯讀查詢；ERP 連不上時回空結果並附 warnings，缺料清單照常產生。"""
-    out: Dict[str, Any] = {"products": {}, "last_po": {}, "suppliers": {}, "on_order": {}, "warnings": []}
+    """所有 ERP 唯讀查詢；ERP 連不上時回空結果並附 warnings，缺料清單照常產生。
+
+    客供料（-TAB 結尾或 ClassID 003）不查供應商 / 最近採購 / 單價 / 在途，改查客供倉庫庫存。
+    ERP 不可用時只能靠 -TAB 結尾判斷客供料（products 為空）。
+    """
+    out: Dict[str, Any] = {
+        "products": {}, "last_po": {}, "suppliers": {}, "on_order": {}, "warnings": [],
+        "tab_stock": {}, "tab_stock_error": "", "tab_ware_ids": tab_ware_ids(),
+    }
     if not parts:
         return out
+    purchasable = [p for p in parts if not erp_purchase.customer_supplied_reason(p)]
     try:
         with erp_purchase._source_session() as conn:
             out["products"] = _lookup_products(conn, parts)
-            out["last_po"] = _lookup_last_po(conn, parts)
-            ids = {p["major_supplier"] for p in out["products"].values() if p["major_supplier"]}
+            purchasable = [
+                p for p in parts
+                if not erp_purchase.customer_supplied_reason(p, out["products"].get(p, {}).get("class_id", ""))
+            ]
+            out["last_po"] = _lookup_last_po(conn, purchasable)
+            ids = {p["major_supplier"] for k, p in out["products"].items() if p["major_supplier"] and k in purchasable}
             ids |= {p["supplier_id"] for p in out["last_po"].values() if p["supplier_id"]}
             out["suppliers"] = _lookup_suppliers(conn, sorted(ids))
     except Exception as exc:
         logger.warning("缺料採購：ERP 供應商 / 單價查詢失敗：%s", type(exc).__name__)
         out["warnings"].append(
-            f"正航查詢失敗，供應商與單價需手動填寫（{erp_purchase._safe_message(exc)}）"
+            f"正航查詢失敗，供應商與單價需手動填寫；客供料僅依料號 -TAB 結尾判斷（{erp_purchase._safe_message(exc)}）"
         )
     try:
         max_overdue = low_stock.get_config()["on_order_max_overdue_days"]
         with low_stock._erp_session() as conn:
-            out["on_order"] = low_stock._query_on_order(conn, parts, today, max_overdue)
+            out["on_order"] = low_stock._query_on_order(conn, purchasable, today, max_overdue)
     except Exception as exc:
         logger.warning("缺料採購：在途量查詢失敗：%s", type(exc).__name__)
         out["warnings"].append(f"在途量查詢失敗，已當作 0（{erp_purchase._safe_message(exc)}）")
+    cs_parts = [p for p in parts if p not in purchasable]
+    if cs_parts:
+        try:
+            with low_stock._erp_session() as conn:
+                out["tab_stock"] = _query_tab_stock(conn, cs_parts, out["tab_ware_ids"])
+        except Exception as exc:
+            logger.warning("缺料採購：客供料庫存查詢失敗：%s", type(exc).__name__)
+            out["tab_stock_error"] = f"客供料倉庫（{'、'.join(out['tab_ware_ids'])}）庫存查詢失敗（{erp_purchase._safe_message(exc)}）"
+            out["warnings"].append(out["tab_stock_error"])
     return out
 
 
@@ -388,12 +447,17 @@ def _order_summary(order: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _aggregate(groups: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """依正規化料號彙整需求；earliest 取最早出貨日（空日期排最後，同日取批次順序在前者）。"""
+def _aggregate(
+    groups: List[Dict[str, Any]], conversions: Optional[Dict[str, str]] = None
+) -> Dict[str, Dict[str, Any]]:
+    """依正規化料號彙整需求；earliest 取最早出貨日（空日期排最後，同日取批次順序在前者）。
+
+    conversions 為生效中的轉換料 {A: B}：A 的需求併入 B（A 不再單獨出現）。
+    """
     parts: Dict[str, Dict[str, Any]] = {}
     for group in groups:
         for item in group.get("items") or []:
-            key = str(item.get("part") or "").strip().upper()
+            key = part_conversion.resolve(str(item.get("part") or ""), conversions or {})
             qty = float(item.get("need_qty") or 0)
             if not key or qty <= 0:
                 continue
@@ -416,12 +480,35 @@ def _aggregate(groups: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     return parts
 
 
+def _customer_supplied_item(
+    key: str, entry: Dict[str, Any], product: Dict[str, Any], reason: str, lookups: Dict[str, Any]
+) -> Dict[str, Any]:
+    """客供料明細：庫存 = 客供倉庫（預設 002）合計，不是 ST；查不到庫存時 stock / shortage 為 None。"""
+    known = not lookups["tab_stock_error"]
+    stock = float(lookups["tab_stock"].get(key, 0.0)) if known else None
+    return {
+        "part_number": key,
+        "description": product.get("name") or entry["desc"],
+        "reason": reason,
+        "need": entry["need"],
+        "tab_stock": stock,
+        "stock_known": known,
+        "stock_error": lookups["tab_stock_error"],
+        "ware_ids": lookups["tab_ware_ids"],
+        "shortage": max(0.0, entry["need"] - stock) if known else None,
+        "earliest_order": {k: entry["earliest"][k] for k in ("order_id", "code", "model", "po_number", "ship_date")},
+        "orders": entry["orders"],
+    }
+
+
 def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     from ..routers import dispatch as dispatch_router  # 延遲載入避免循環相依
 
     today = local_now().date()
     groups = dispatch_router.build_dispatch_groups(order_ids, {})
-    aggregated = _aggregate(groups)
+    conversions = part_conversion.active_map()
+    sources = part_conversion.sources_by_target(conversions)
+    aggregated = _aggregate(groups, conversions)
     keys = sorted(aggregated)
 
     st_stock = {
@@ -431,9 +518,14 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     overrides = db.get_part_purchase_categories(keys)
 
     parts_out: List[Dict[str, Any]] = []
+    customer_supplied: List[Dict[str, Any]] = []
     for key in keys:
         entry = aggregated[key]
         product = lookups["products"].get(key, {})
+        reason = erp_purchase.customer_supplied_reason(key, product.get("class_id", ""))
+        if reason:
+            customer_supplied.append(_customer_supplied_item(key, entry, product, reason, lookups))
+            continue
         last = lookups["last_po"].get(key, {})
         supplier_id, source = resolve_supplier(
             product.get("major_supplier", ""), last.get("supplier_id", ""), lookups["suppliers"]
@@ -441,7 +533,8 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         description = product.get("name") or entry["desc"]
         category_source = "manual" if key in overrides else "auto"
         category = overrides.get(key) or classify_part(key, entry["desc"] or description)
-        st = st_stock.get(key, 0.0)
+        # 轉換料：B 的有效庫存 = B + 併入的 A（A 可為負），與 A→B 之後 A 的需求一併計算
+        st, st_own, merged_from = part_conversion.effective_stock(key, st_stock, sources)
         open_qty, open_date = lookups["on_order"].get(key, (0.0, ""))
         # 與發料單同一套規則：需求 − ST；在途僅供參考，不扣除
         shortage = float(summarize_requested_supply(entry["need"], st)["purchase_needed_qty"])
@@ -463,6 +556,8 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "supplier_source": source,
             "need": entry["need"],
             "st": st,
+            "st_own": st_own,
+            "merged_from": merged_from,
             "on_order": float(open_qty or 0),
             "on_order_date": open_date,
             "shortage": shortage,
@@ -485,13 +580,15 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
 
     orders = [o for o in (db.get_order(int(i)) for i in dict.fromkeys(order_ids)) if o]
     warnings = list(lookups["warnings"])
-    if not parts_out:
+    if not parts_out and not customer_supplied:
         warnings.append("選取的訂單沒有補料 / 缺料內容")
     return {
         "config": erp_purchase.get_config(),
         "today": today.isoformat(),
         "orders": [_order_summary(o) for o in orders],
         "parts": parts_out,
+        "customer_supplied": customer_supplied,
+        "customer_supplied_ware_ids": lookups["tab_ware_ids"],
         "warnings": warnings,
     }
 

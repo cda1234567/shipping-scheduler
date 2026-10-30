@@ -671,3 +671,180 @@ class RouterTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TabFakeCursor(FakeErpCursor):
+    """在 FakeErpCursor 之上支援 comWareAmount 查詢（依參數的倉庫 / 料號過濾並加總）。"""
+
+    def execute(self, sql, params=None):
+        s = " ".join(sql.split())
+        if "FROM comWareAmount" in s:
+            self.d["sql"].append(s)
+            self.d["params"].append(params)
+            marks = s.split("WareID IN (")[1].split(")")[0].count("%s")
+            wares, parts = set(params[:marks]), set(params[marks:])
+            totals = {}
+            for ware, prod, qty in self.d["wares"]:
+                if ware in wares and prod in parts:
+                    totals[prod] = totals.get(prod, 0) + qty
+            self.rows = list(totals.items())
+            return
+        super().execute(sql, params)
+
+
+class CustomerSuppliedListTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.erp = {
+            "sql": [], "params": [],
+            "products": [("EC-1", "電容", "S1", "001"), ("CS-1", "客供電阻", "S9", "003"),
+                         ("CS-2-TAB", "客供板", "S9", "001"), ("NOSUP", "無供應商", "", "001")],
+            "last_po": [("EC-1", "S1", 2.0, "PO-1", 20260901), ("CS-1", "S9", 1.0, "PO-2", 20260901),
+                        ("CS-2-TAB", "S9", 1.0, "PO-3", 20260901)],
+            "suppliers": [("S1", "供一", ""), ("S9", "供九", "")],
+            "wares": [("002", "CS-1", 30.0), ("002", "CS-2-TAB", 5.0), ("015", "CS-1", 1000.0),
+                      ("001", "CS-1", 777.0), ("003", "CS-1", 4.0)],
+        }
+        self.groups = [group(1, "1-1", "2026-12-10", [
+            item("EC-1", 100), item("cs-1", 50), item("CS-2-TAB", 8), item("NOSUP", 3)])]
+        self.st = {"EC-1": 0, "CS-1": 9999, "CS-2-TAB": 9999, "NOSUP": 0}
+        self.tab_down = False
+        conn = type("C", (), {"cursor": lambda s_: TabFakeCursor(self.erp)})()
+
+        @contextmanager
+        def source_session():
+            yield conn
+
+        @contextmanager
+        def erp_session():
+            if self.tab_down:
+                raise RuntimeError("down")
+            yield conn
+
+        self.on_order_parts = []
+
+        def on_order(c, parts, today, md):
+            self.on_order_parts.extend(parts)
+            return {}
+
+        patches = [
+            patch.object(dispatch_router, "build_dispatch_groups", lambda ids, dec: self.groups),
+            patch.object(db, "get_st_inventory_stock", lambda: self.st),
+            patch.object(ep, "_source_session", source_session),
+            patch.object(low_stock, "_erp_session", erp_session),
+            patch.object(low_stock, "_query_on_order", on_order),
+            patch.object(low_stock, "get_config", lambda: {"on_order_max_overdue_days": 90}),
+            patch.object(ep, "get_config", lambda: {"label": "x", "available": True, "is_test": True}),
+            patch.object(sp, "local_now", lambda: TODAY),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def build(self):
+        res = sp.build_shortage_list([1])
+        return res, {p["part_number"]: p for p in res["parts"]}, {c["part_number"]: c for c in res["customer_supplied"]}
+
+    def test_classification(self):
+        self.assertEqual(ep.customer_supplied_reason("X-TAB"), "suffix")
+        self.assertEqual(ep.customer_supplied_reason("X", "003"), "class003")
+        self.assertEqual(ep.customer_supplied_reason("X", "001"), "")
+
+    def test_excluded_from_purchasable_and_listed_separately(self):
+        res, parts, cs = self.build()
+        self.assertEqual(set(parts), {"EC-1", "NOSUP"})
+        self.assertEqual(set(cs), {"CS-1", "CS-2-TAB"})
+        self.assertEqual(cs["CS-1"]["reason"], "class003")
+        self.assertEqual(cs["CS-2-TAB"]["reason"], "suffix")
+        self.assertEqual(cs["CS-1"]["description"], "客供電阻")
+        self.assertEqual(cs["CS-1"]["earliest_order"]["code"], "1-1")
+        self.assertEqual(cs["CS-1"]["orders"][0]["qty"], 50)
+
+    def test_no_supplier_or_price_lookup_for_customer_supplied(self):
+        self.build()
+        looked_up = " ".join(str(p) for p in self.erp["params"])
+        last_po_params = [p for s, p in zip(self.erp["sql"], self.erp["params"]) if "ROW_NUMBER" in s]
+        self.assertTrue(last_po_params)
+        for params in last_po_params:
+            self.assertNotIn("CS-1", params)
+            self.assertNotIn("CS-2-TAB", params)
+        supplier_params = [p for s, p in zip(self.erp["sql"], self.erp["params"]) if "FROM comCustomer" in s]
+        for params in supplier_params:
+            self.assertNotIn("S9", params)
+        self.assertNotIn("CS-1", self.on_order_parts)
+        self.assertNotIn("CS-2-TAB", self.on_order_parts)
+        self.assertIn("EC-1", self.on_order_parts)
+        self.assertTrue(looked_up)
+
+    def test_stock_is_002_only_not_015_not_st(self):
+        _, _, cs = self.build()
+        self.assertEqual(cs["CS-1"]["tab_stock"], 30)  # 015=1000、001=777、003=4、ST=9999 都不算
+        self.assertEqual(cs["CS-1"]["need"], 50)
+        self.assertEqual(cs["CS-1"]["shortage"], 20)
+        self.assertEqual(cs["CS-1"]["ware_ids"], ["002"])
+        self.assertEqual(cs["CS-2-TAB"]["tab_stock"], 5)
+        self.assertEqual(cs["CS-2-TAB"]["shortage"], 3)
+        wares_sql = [(s, p) for s, p in zip(self.erp["sql"], self.erp["params"]) if "comWareAmount" in s]
+        self.assertEqual(len(wares_sql), 1)
+        self.assertTrue(wares_sql[0][0].upper().lstrip().startswith("SELECT"))
+        self.assertEqual(wares_sql[0][1][0], "002")
+
+    def test_shortage_never_negative(self):
+        self.groups = [group(1, "1-1", "2026-12-10", [item("CS-1", 10)])]
+        _, _, cs = self.build()
+        self.assertEqual(cs["CS-1"]["shortage"], 0)
+
+    def test_env_override_multiple_wares(self):
+        with patch.dict(os.environ, {"ERP_TAB_WARE_IDS": "002, 003 ,"}):
+            _, _, cs = self.build()
+        self.assertEqual(cs["CS-1"]["ware_ids"], ["002", "003"])
+        self.assertEqual(cs["CS-1"]["tab_stock"], 34)  # 30 + 4，015 仍不算
+        self.assertEqual(cs["CS-1"]["shortage"], 16)
+
+    def test_env_blank_falls_back_to_default(self):
+        with patch.dict(os.environ, {"ERP_TAB_WARE_IDS": " , "}):
+            self.assertEqual(sp.tab_ware_ids(), ["002"])
+
+    def test_tab_stock_failure_shows_unknown(self):
+        self.tab_down = True
+        res, parts, cs = self.build()
+        self.assertIsNone(cs["CS-1"]["tab_stock"])
+        self.assertIsNone(cs["CS-1"]["shortage"])
+        self.assertFalse(cs["CS-1"]["stock_known"])
+        self.assertIn("庫存查詢失敗", cs["CS-1"]["stock_error"])
+        self.assertTrue(any("客供料倉庫" in w for w in res["warnings"]))
+        self.assertIn("EC-1", parts)  # 其餘照常
+
+    def test_erp_down_falls_back_to_suffix_rule_only(self):
+        @contextmanager
+        def broken():
+            raise RuntimeError("down")
+            yield
+
+        with patch.object(ep, "_source_session", broken), patch.object(low_stock, "_erp_session", broken):
+            res, parts, cs = self.build()
+        self.assertEqual(set(cs), {"CS-2-TAB"})  # 類別 003 無法判斷，只剩 -TAB
+        self.assertIn("CS-1", parts)
+        self.assertIsNone(cs["CS-2-TAB"]["tab_stock"])
+        self.assertTrue(res["warnings"])
+
+    def test_part_without_supplier_unchanged(self):
+        _, parts, _ = self.build()
+        self.assertEqual(parts["NOSUP"]["supplier_id"], "")
+        self.assertEqual(parts["NOSUP"]["supplier_source"], "none")
+        self.assertEqual(parts["EC-1"]["supplier_id"], "S1")
+
+    def test_classified_after_conversion(self):
+        # A 轉成 B：以轉換後的料號判斷（B 是 -TAB → 客供料；A 的需求併入）
+        db.apply_part_conversion("OLD-1", "CS-2-TAB", [], {}, [], "t")
+        self.groups = [group(1, "1-1", "2026-12-10", [item("OLD-1", 4), item("CS-2-TAB", 8)])]
+        _, parts, cs = self.build()
+        self.assertNotIn("OLD-1", parts)
+        self.assertEqual(cs["CS-2-TAB"]["need"], 12)
+        self.assertEqual(cs["CS-2-TAB"]["shortage"], 7)
+
+    def test_only_customer_supplied_does_not_warn_empty(self):
+        self.groups = [group(1, "1-1", "2026-12-10", [item("CS-1", 10)])]
+        res, parts, cs = self.build()
+        self.assertEqual(parts, {})
+        self.assertFalse(any("沒有補料" in w for w in res["warnings"]))

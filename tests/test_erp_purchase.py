@@ -817,3 +817,88 @@ class DbAllocationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CustomerSuppliedGuardTests(WriteFlowCase):
+    """客供料（-TAB 結尾或 ClassID 003）不可開採購單：預覽與建立都在寫入前擋下。"""
+
+    def setUp(self):
+        super().setUp()
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        from main import app
+        self.client = TestClient(app)
+
+    def req_for(self, part):
+        return {**REQ, "lines": [{**REQ["lines"][0], "part_number": part}]}
+
+    def test_reason_function(self):
+        self.assertEqual(ep.customer_supplied_reason("abc-tab"), "suffix")
+        self.assertEqual(ep.customer_supplied_reason("ABC-TAB "), "suffix")
+        self.assertEqual(ep.customer_supplied_reason("ABC", "003"), "class003")
+        self.assertEqual(ep.customer_supplied_reason("ABC", " 003 "), "class003")
+        self.assertEqual(ep.customer_supplied_reason("ABC-TABX", "001"), "")
+        self.assertEqual(ep.customer_supplied_reason("TAB-1", ""), "")
+
+    def test_suffix_rejected_everywhere(self):
+        for part in ("XX-1-TAB", "xx-1-tab"):
+            with self.assertRaises(ep.PoValidationError) as ctx:
+                ep.preview_po(self.req_for(part))
+            self.assertIn("客供料", str(ctx.exception))
+            with self.assertRaises(ep.PoValidationError):
+                ep.create_po({**self.req_for(part), "confirm": True})
+            r = ep.preview_many([self.req_for(part)])
+            self.assertFalse(r[0]["ok"])
+            self.assertIn("客供料", r[0]["error"])
+        self.assertEqual(self.inserts("ordBillMain"), [])
+        self.assertEqual(self.tgt.commits, 0)
+
+    def test_class_003_rejected_everywhere(self):
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "客供", "ClassID": "003"}}
+        with self.assertRaises(ep.PoValidationError) as ctx:
+            ep.preview_po(REQ)
+        self.assertIn("003", str(ctx.exception))
+        self.assertIn("客供料", str(ctx.exception))
+        with self.assertRaises(ep.PoValidationError):
+            ep.create_po({**REQ, "confirm": True})
+        r = ep.preview_many([REQ])
+        self.assertFalse(r[0]["ok"])
+        self.assertIn("客供料", r[0]["error"])
+        self.assertEqual(self.inserts("ordBillMain"), [])
+        self.assertEqual(self.inserts("ordBillSub"), [])
+        self.assertEqual(self.tgt.commits, 0)
+
+    def test_normal_part_still_works(self):
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容", "ClassID": "001"}}
+        self.assertEqual(ep.preview_po(REQ)["bill_no"], "PO-20261029001")
+
+    def test_api_endpoints_return_400(self):
+        for path, body in (
+            ("/api/erp/po/preview", self.req_for("A-TAB")),
+            ("/api/erp/po/create", {**self.req_for("A-TAB"), "confirm": True}),
+            ("/api/shortage-po/preview", {"groups": [self.req_for("A-TAB")], "order_ids": []}),
+            ("/api/shortage-po/create", {"groups": [self.req_for("A-TAB")], "order_ids": [], "confirm": True}),
+        ):
+            r = self.client.post(path, json=body)
+            if path.startswith("/api/shortage-po/"):
+                # 缺料採購逐張回報：整體 200，單張 ok=False 且帶清楚錯誤
+                self.assertEqual(r.status_code, 200, (path, r.text))
+                res = r.json()["results"][0]
+                self.assertFalse(res["ok"], path)
+                self.assertIn("客供料", res["error"])
+            else:
+                self.assertEqual(r.status_code, 400, (path, r.text))
+                self.assertIn("客供料", r.json()["detail"])
+        self.assertEqual(self.tgt.commits, 0)
+
+    def test_api_class_003_returns_400(self):
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "客供", "ClassID": "003"}}
+        for path, body in (
+            ("/api/erp/po/preview", REQ),
+            ("/api/erp/po/create", {**REQ, "confirm": True}),
+        ):
+            r = self.client.post(path, json=body)
+            self.assertEqual(r.status_code, 400, (path, r.text))
+            self.assertIn("客供料", r.json()["detail"])
+        r = self.client.post("/api/shortage-po/create", json={"groups": [REQ], "order_ids": [], "confirm": True})
+        self.assertFalse(r.json()["results"][0]["ok"])
+        self.assertEqual(self.tgt.commits, 0)

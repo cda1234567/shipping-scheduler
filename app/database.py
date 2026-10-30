@@ -542,6 +542,48 @@ CREATE TABLE IF NOT EXISTS defective_deleted_history (
     reversal_id TEXT NOT NULL DEFAULT '',
     main_period_id INTEGER NOT NULL DEFAULT 0
 );
+-- 轉換料 A→B：每次轉換的紀錄與還原用快照（只改本網站 BOM，不碰正航）
+CREATE TABLE IF NOT EXISTS part_conversions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    part_a        TEXT NOT NULL DEFAULT '',
+    part_b        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'active',
+    affected_json TEXT NOT NULL DEFAULT '[]',
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    actor         TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT '',
+    restored_at   TEXT NOT NULL DEFAULT '',
+    restored_by   TEXT NOT NULL DEFAULT ''
+);
+-- 目前生效中的轉換（A 已停用，需求與庫存併入 B）
+CREATE TABLE IF NOT EXISTS part_conversion_active (
+    part_a        TEXT PRIMARY KEY,
+    part_b        TEXT NOT NULL DEFAULT '',
+    conversion_id INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT ''
+);
+
+-- 客人改交期 → 廠商提前清單：每一行（採購單項次 / 未下單料號）的詢問狀態
+CREATE TABLE IF NOT EXISTS po_pullin_items (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    line_key       TEXT NOT NULL UNIQUE,
+    supplier_id    TEXT NOT NULL DEFAULT '',
+    supplier_name  TEXT NOT NULL DEFAULT '',
+    bill_no        TEXT NOT NULL DEFAULT '',
+    row_no         INTEGER NOT NULL DEFAULT 0,
+    part_number    TEXT NOT NULL DEFAULT '',
+    qty            REAL NOT NULL DEFAULT 0,
+    po_date        TEXT NOT NULL DEFAULT '',
+    requested_date TEXT NOT NULL DEFAULT '',
+    days_earlier   INTEGER NOT NULL DEFAULT 0,
+    order_ids_json TEXT NOT NULL DEFAULT '[]',
+    status         TEXT NOT NULL DEFAULT '未詢問',
+    note           TEXT NOT NULL DEFAULT '',
+    actor          TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL DEFAULT '',
+    updated_at     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_po_pullin_status ON po_pullin_items(status);
 CREATE INDEX IF NOT EXISTS idx_dispatch_records_at ON dispatch_records(dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_inventory_count_sessions_status ON inventory_count_sessions(scope, status, id);
 """
@@ -4033,6 +4075,196 @@ def set_part_purchase_category(part_number: str, category: str, actor: str = "")
                    category=excluded.category, updated_at=excluded.updated_at, actor=excluded.actor""",
             (part, category, _now(), actor),
         )
+
+
+# ── 轉換料 A→B ────────────────────────────────────────────────────────────────
+
+def get_active_part_conversions() -> dict[str, str]:
+    """生效中的轉換 {A: B}（料號皆為大寫）。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part_a, part_b FROM part_conversion_active").fetchall()
+    return {str(r["part_a"]).upper(): str(r["part_b"]).upper() for r in rows}
+
+
+def get_part_conversion(conversion_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM part_conversions WHERE id=?", (int(conversion_id),)).fetchone()
+    return _decode_part_conversion(row) if row else None
+
+
+def list_part_conversions(limit: int = 50, *, with_snapshot: bool = False) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM part_conversions ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+    items = [_decode_part_conversion(r) for r in rows]
+    if not with_snapshot:
+        for item in items:
+            item.pop("snapshot", None)
+    return items
+
+
+def _decode_part_conversion(row) -> dict:
+    data = dict(row)
+    data["affected"] = _json_loads(data.pop("affected_json", ""), [])
+    data["snapshot"] = _json_loads(data.pop("snapshot_json", ""), {})
+    return data
+
+
+def _replace_components(conn, bom_id: str, components: list[dict]) -> None:
+    conn.execute("DELETE FROM bom_components WHERE bom_file_id=?", (bom_id,))
+    for c in components:
+        conn.execute(
+            "INSERT INTO bom_components(bom_file_id, part_number, description, qty_per_board, "
+            "scrap_factor, needed_qty, prev_qty_cs, is_dash, is_customer_supplied) VALUES(?,?,?,?,?,?,?,?,?)",
+            (bom_id, c["part_number"], c.get("description", ""),
+             c.get("qty_per_board", 0), c.get("scrap_factor", 0), c.get("needed_qty", 0),
+             c.get("prev_qty_cs", 0), int(bool(c.get("is_dash", False))),
+             int(bool(c.get("is_customer_supplied", False)))),
+        )
+
+
+def apply_part_conversion(
+    part_a: str, part_b: str, bom_states: list[dict], snapshot: dict, affected: list[dict], actor: str = ""
+) -> int:
+    """單一 transaction：寫入還原快照 + 轉換紀錄 + 生效標記，並以新元件取代各 BOM 的元件。
+
+    bom_states 每項 {bom_id, components}（轉換後的完整元件清單）。任何一步失敗整筆回復。
+    """
+    a, b = str(part_a or "").strip().upper(), str(part_b or "").strip().upper()
+    now = _now()
+    with get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO part_conversions(part_a, part_b, status, affected_json, snapshot_json, actor, created_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (a, b, "active", _json_dumps(affected), _json_dumps(snapshot), actor, now),
+        )
+        conversion_id = int(cur.lastrowid)
+        for state in bom_states:
+            _replace_components(conn, str(state["bom_id"]), state["components"])
+        conn.execute(
+            "INSERT INTO part_conversion_active(part_a, part_b, conversion_id, created_at) VALUES(?,?,?,?)",
+            (a, b, conversion_id, now),
+        )
+        conn.execute(
+            "INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
+            ("part_convert", f"轉換料 {a} → {b}，影響 {len(affected)} 份 BOM（#{conversion_id}，{actor}）", now),
+        )
+    return conversion_id
+
+
+def restore_part_conversion(conversion_id: int, bom_components: dict[str, list[dict]], actor: str = "") -> None:
+    """單一 transaction：還原各 BOM 元件、移除生效標記（A 重新啟用）、標記紀錄為已還原。"""
+    now = _now()
+    with get_conn() as conn:
+        row = conn.execute("SELECT part_a, part_b, status FROM part_conversions WHERE id=?",
+                           (int(conversion_id),)).fetchone()
+        if not row or row["status"] != "active":
+            raise ValueError("此轉換已還原或不存在")
+        for bom_id, components in bom_components.items():
+            _replace_components(conn, str(bom_id), components)
+        conn.execute("DELETE FROM part_conversion_active WHERE conversion_id=?", (int(conversion_id),))
+        conn.execute(
+            "UPDATE part_conversions SET status='restored', restored_at=?, restored_by=? WHERE id=?",
+            (now, actor, int(conversion_id)),
+        )
+        conn.execute(
+            "INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
+            ("part_convert_restore",
+             f"還原轉換料 {row['part_a']} → {row['part_b']}（#{conversion_id}，{actor}）", now),
+        )
+
+
+# ── 客人改交期 → 廠商提前清單 ─────────────────────────────────────────────────
+
+PULLIN_STATUSES = ("未詢問", "已詢問", "可提前", "不能提前")
+PULLIN_UNRESOLVED = ("未詢問", "已詢問")
+
+
+def _pullin_params(line: dict) -> tuple:
+    return (
+        str(line.get("supplier_id") or ""), str(line.get("supplier_name") or ""),
+        str(line.get("bill_no") or ""), int(line.get("row_no") or 0),
+        str(line.get("part_number") or "").strip().upper(), float(line.get("qty") or 0),
+        str(line.get("po_date") or ""), str(line.get("requested_date") or ""),
+        int(line.get("days_earlier") or 0), _json_dumps(list(line.get("order_ids") or [])),
+    )
+
+
+def upsert_pullin_items(lines: list[dict], status: str | None = None, actor: str = "", note: str | None = None) -> int:
+    """寫入 / 更新提前清單的行。status=None 時新行為「未詢問」、既有行保留原狀態；
+    指定 status 時一律設為該狀態。以 line_key 為鍵，重跑清單不會洗掉狀態。"""
+    if status is not None and status not in PULLIN_STATUSES:
+        raise ValueError(f"狀態需為 {' / '.join(PULLIN_STATUSES)}")
+    now = _now()
+    count = 0
+    with get_conn() as conn:
+        for line in lines:
+            key = str(line.get("line_key") or "").strip()
+            if not key:
+                continue
+            params = _pullin_params(line)
+            exists = conn.execute("SELECT id FROM po_pullin_items WHERE line_key=?", (key,)).fetchone()
+            if exists:
+                conn.execute(
+                    "UPDATE po_pullin_items SET supplier_id=?, supplier_name=?, bill_no=?, row_no=?, "
+                    "part_number=?, qty=?, po_date=?, requested_date=?, days_earlier=?, "
+                    "order_ids_json=COALESCE(?, order_ids_json), updated_at=? WHERE line_key=?",
+                    (*params[:-1], params[-1] if line.get("order_ids") else None, now, key),
+                )
+                if status is not None:
+                    conn.execute("UPDATE po_pullin_items SET status=?, actor=? WHERE line_key=?",
+                                 (status, actor, key))
+                if note is not None:
+                    conn.execute("UPDATE po_pullin_items SET note=? WHERE line_key=?", (note, key))
+            else:
+                conn.execute(
+                    "INSERT INTO po_pullin_items(line_key, supplier_id, supplier_name, bill_no, row_no, "
+                    "part_number, qty, po_date, requested_date, days_earlier, order_ids_json, status, note, "
+                    "actor, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (key, *params, status or "未詢問", note or "", actor, now, now),
+                )
+            count += 1
+    return count
+
+
+def get_pullin_statuses(line_keys: list[str]) -> dict[str, dict]:
+    keys = list(dict.fromkeys(str(k) for k in line_keys if k))
+    result: dict[str, dict] = {}
+    with get_conn() as conn:
+        for i in range(0, len(keys), 500):
+            chunk = keys[i:i + 500]
+            rows = conn.execute(
+                f"SELECT line_key, status, note, updated_at FROM po_pullin_items "
+                f"WHERE line_key IN ({','.join('?' * len(chunk))})", chunk,
+            ).fetchall()
+            result.update({r["line_key"]: dict(r) for r in rows})
+    return result
+
+
+def count_unresolved_pullin_items() -> int:
+    with get_conn() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM po_pullin_items WHERE status IN ({','.join('?' * len(PULLIN_UNRESOLVED))})",
+            PULLIN_UNRESOLVED,
+        ).fetchone()
+    return int(row["n"])
+
+
+def list_pullin_items(unresolved_only: bool = False) -> list[dict]:
+    sql = "SELECT * FROM po_pullin_items"
+    params: tuple = ()
+    if unresolved_only:
+        sql += f" WHERE status IN ({','.join('?' * len(PULLIN_UNRESOLVED))})"
+        params = PULLIN_UNRESOLVED
+    with get_conn() as conn:
+        rows = conn.execute(sql + " ORDER BY supplier_id, bill_no, row_no, id", params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["order_ids"] = _json_loads(d.pop("order_ids_json", ""), [])
+        out.append(d)
+    return out
 
 
 def get_activity_logs(limit: int = 100) -> list[dict]:

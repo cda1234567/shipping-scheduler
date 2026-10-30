@@ -46,6 +46,25 @@ class PoValidationError(ErpError):
     """輸入資料或 ERP 資料不符規則（HTTP 400）。"""
 
 
+# 客供料：料號 -TAB 結尾，或正航 comProduct.ClassID = '003'（物料(客供品)）。客供料向客戶要料，不可開採購單。
+CUSTOMER_SUPPLIED_SUFFIX = "-TAB"
+CUSTOMER_SUPPLIED_CLASS_ID = "003"
+
+
+def customer_supplied_reason(part_number: Any, class_id: Any = "") -> str:
+    """客供料判斷：回傳 'suffix' / 'class003' / ''（不是客供料）。"""
+    if str(part_number or "").strip().upper().endswith(CUSTOMER_SUPPLIED_SUFFIX):
+        return "suffix"
+    if str(class_id or "").strip() == CUSTOMER_SUPPLIED_CLASS_ID:
+        return "class003"
+    return ""
+
+
+def _customer_supplied_error(part: str, reason: str) -> PoValidationError:
+    rule = "料號以 -TAB 結尾" if reason == "suffix" else "正航料號類別為 003（物料(客供品)）"
+    return PoValidationError(f"料號 {part} 為客供料（{rule}），不可開採購單，請向客戶要料")
+
+
 class PoSchemaError(ErpError):
     """目標資料庫欄位與要寫入的資料對不上（HTTP 500）。"""
 
@@ -562,6 +581,8 @@ def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
         part = _text(raw.get("part_number")).upper()
         if not part:
             raise PoValidationError(f"第 {i} 行：請輸入料號")
+        if customer_supplied_reason(part) == "suffix":
+            raise _customer_supplied_error(part, "suffix")
         qty = _to_decimal(raw.get("qty"), f"第 {i} 行數量")
         if qty <= 0:
             raise PoValidationError(f"第 {i} 行：數量必須大於 0")
@@ -689,6 +710,9 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
     """讀來源範本 + 目標欄位 / 缺少的主檔 / 單號，組出整張單的 INSERT；不寫入。"""
     _check_db_name(wcur, target)
     ctx = _load_source(src, req)
+    for prod in ctx["products"].values():
+        if customer_supplied_reason(_get(prod, "ProdID"), _get(prod, "ClassID")) == "class003":
+            raise _customer_supplied_error(_text(_get(prod, "ProdID")), "class003")
     source_db = erp_stock.get_settings()["database"]
 
     main_cols = table_columns(wcur, "ordBillMain")

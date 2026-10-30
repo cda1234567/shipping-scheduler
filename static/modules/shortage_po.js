@@ -104,6 +104,7 @@ function toRow(p) {
     supplierSource: p.supplier_source,
     need: p.need,
     st: p.st,
+    mergedFrom: p.merged_from || [],
     onOrder: p.on_order,
     shortage: p.shortage,
     needsPurchase: p.needs_purchase,
@@ -138,6 +139,7 @@ async function buildList() {
     renderWarnings();
     el("shortage-po-list").hidden = false;
     renderGroups();
+    renderCustomerSupplied();
   } catch (error) {
     showToast(`產生缺料清單失敗：${error.message}`, { tone: "error", sticky: true });
   } finally {
@@ -149,6 +151,37 @@ function renderWarnings() {
   const box = el("shortage-po-warnings");
   const warnings = _data?.warnings || [];
   box.innerHTML = warnings.map(w => `<div class="erp-po-warn">${esc(w)}</div>`).join("");
+}
+
+// ── 客供料（向客戶要料）：唯讀，不可勾選、不開採購單 ──────────────────────────
+function renderCustomerSupplied() {
+  const box = el("shortage-po-cs");
+  if (!box) return;
+  const items = _data?.customer_supplied || [];
+  if (!items.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const wares = (_data.customer_supplied_ware_ids || []).join("、");
+  const rows = items.map(c => {
+    const e = c.earliest_order || {};
+    const tip = (c.orders || []).map(o => `${o.code} ${o.model}　出貨 ${o.ship_date || "—"}　需求 ${fmtQty(o.qty)}`).join("\n");
+    const stock = c.stock_known ? fmtQty(c.tab_stock) : `<span class="shortage-po-adjusted" title="${esc(c.stock_error)}">未知</span>`;
+    const short = c.stock_known ? fmtQty(c.shortage) : "—";
+    return `<tr>
+      <td class="mono">${esc(c.part_number)}</td>
+      <td>${esc(c.description)}</td>
+      <td class="num">${fmtQty(c.need)}</td>
+      <td class="num">${stock}</td>
+      <td class="num ${c.stock_known && c.shortage > 0 ? "shortage-po-short" : ""}">${short}</td>
+      <td title="${esc(tip)}">${esc(e.code)} ${esc(e.model)}<div class="erp-po-hint">出貨 ${esc(e.ship_date) || "—"}${(c.orders || []).length > 1 ? `（共 ${c.orders.length} 張）` : ""}</div></td>
+    </tr>`;
+  }).join("");
+  const errors = [...new Set(items.filter(c => !c.stock_known).map(c => c.stock_error))];
+  box.hidden = false;
+  box.innerHTML = `<div class="shortage-po-group-head"><strong>客供料（向客戶要料）</strong>
+      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾或正航類別 003。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）</span></div>
+    ${errors.map(e => `<div class="erp-po-warn">${esc(e)}，庫存暫顯示為未知</div>`).join("")}
+    <div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
+      <th>料號</th><th>品名</th><th class="num">需求</th><th class="num">${esc(wares)} 庫存</th><th class="num">缺（向客戶要）</th><th>最早訂單</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function visibleRows() {
@@ -212,7 +245,7 @@ function rowHtml(r) {
     <td><input type="text" data-act="supplier" class="mono" value="${esc(r.supplierId)}" autocomplete="off" ${r.doneBill ? "disabled" : ""}>
       <div class="erp-po-hint">${esc(r.supplierName)} ${esc(SOURCE_LABELS[r.supplierSource] || "")}</div></td>
     <td class="num">${fmtQty(r.need)}</td>
-    <td class="num">${fmtQty(r.st)}</td>
+    <td class="num">${fmtQty(r.st)}${r.mergedFrom.length ? `<div class="erp-po-hint" title="轉換料：B 有效庫存 = B + A">含 ${r.mergedFrom.map(m => `${esc(m.part)} ${fmtQty(m.stock)}`).join("、")}</div>` : ""}</td>
     <td class="num">${fmtQty(r.onOrder)}</td>
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
     <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}></td>

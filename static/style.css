@@ -5304,3 +5304,12 @@ body.desktop-dark .frequent-zero-usage li span {
 .shortage-po-result.is-ok { background: #dcfce7; color: #166534; }
 .shortage-po-result.is-error { background: #fee2e2; color: #b91c1c; }
 .shortage-po-result .is-error { color: #b91c1c; }
+
+/* ── 轉換料 / 提前清單 ── */
+.pc-flag-merge { color: #b45309; font-weight: 600; }
+#tab-part-conversion-tab .erp-po-actions label, #tab-po-pullin-tab .erp-po-actions label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; }
+#tab-part-conversion-tab .erp-po-actions input[type="text"], #tab-po-pullin-tab .erp-po-actions input[type="date"] { padding: 4px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.pp-result { display: flex; flex-direction: column; gap: 10px; }
+.pp-result[hidden] { display: none; }
+.pp-draft { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; font-family: inherit; background: #fafafa; resize: vertical; }
+.shortage-po-group[hidden] { display: none; }

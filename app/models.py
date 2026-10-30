@@ -396,3 +396,44 @@ class ShortagePoRequest(BaseModel):
 
 class ShortagePoCreateRequest(ShortagePoRequest):
     confirm: bool = False
+
+
+# ── 轉換料 A→B ────────────────────────────────────────────────────────────────
+
+class PartConversionRequest(BaseModel):
+    part_a: str
+    part_b: str
+    dry_run: bool = False
+
+
+class PartConversionRestoreRequest(BaseModel):
+    force: bool = False  # 轉換後 BOM 又被改過時，強制還原（會覆蓋那些修改）
+
+
+# ── 客人改交期 → 廠商提前清單 ─────────────────────────────────────────────────
+
+class PullinConfirmRequest(BaseModel):
+    order_ids: list[int]
+    new_ship_date: str
+    update_order_ship_date: bool = False  # 預設不動訂單出貨日
+    dry_run: bool = False
+
+
+class PullinLine(BaseModel):
+    line_key: str = ""
+    supplier_id: str = ""
+    supplier_name: str = ""
+    bill_no: str = ""
+    row_no: int = 0
+    part_number: str = ""
+    qty: float = 0
+    po_date: str = ""
+    requested_date: str = ""
+    days_earlier: int = 0
+    order_ids: list[int] = []
+
+
+class PullinStatusRequest(BaseModel):
+    lines: list[PullinLine]
+    status: str  # 未詢問 | 已詢問 | 可提前 | 不能提前
+    note: Optional[str] = None
