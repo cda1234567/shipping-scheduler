@@ -56,13 +56,38 @@ class TermsTests(unittest.TestCase):
 
 class AmountTests(unittest.TestCase):
     def test_rounding_half_up_to_integer(self):
-        self.assertEqual(er.calc_line_amounts(100, 24, 1, "0.05"), (Decimal(2400), Decimal(120)))
-        self.assertEqual(er.calc_line_amounts(3, "0.5", 1, "0.05"), (Decimal(2), Decimal(0)))  # 1.5 → 2, 0.1 → 0
-        self.assertEqual(er.calc_line_amounts(9000, "0.46", 1, "0.05"), (Decimal(4140), Decimal(207)))
-        self.assertEqual(er.calc_line_amounts(10, "1.05", 1, "0.05"), (Decimal(11), Decimal(1)))  # 10.5 → 11, 0.55 → 1
+        self.assertEqual(er.calc_line_amounts(100, 24, "0.05"), (Decimal(2400), Decimal(120)))
+        self.assertEqual(er.calc_line_amounts(3, "0.5", "0.05"), (Decimal(2), Decimal(0)))  # 1.5 → 2, 0.1 → 0
+        self.assertEqual(er.calc_line_amounts(9000, "0.46", "0.05"), (Decimal(4140), Decimal(207)))
+        self.assertEqual(er.calc_line_amounts(10, "1.05", "0.05"), (Decimal(11), Decimal(1)))  # 10.5 → 11, 0.55 → 1
 
-    def test_zero_discount_treated_as_one(self):
-        self.assertEqual(er.calc_line_amounts(10, 5, 0, 0)[0], Decimal(50))
+    def test_amount_ignores_discount(self):
+        # 公司3 RM-20261021003 AC-40834B：2000 × 42、DisCount 1.05 → 金額 84000（折扣不乘入）
+        self.assertEqual(er.calc_line_amounts(2000, 42, "0.05")[0], Decimal(84000))
+        # Andy 的 RM-20261030002 7025-828：3 × 1500 = 4500、稅 225
+        self.assertEqual(er.calc_line_amounts(3, 1500, "0.05"), (Decimal(4500), Decimal(225)))
+
+
+class DiscountTests(unittest.TestCase):
+    def test_same_price_keeps_po_discount(self):
+        self.assertEqual(er.calc_discount(1200, 1200, 1), Decimal(1))
+        self.assertEqual(er.calc_discount("3.39", "3.39", "1.0"), Decimal(1))
+        self.assertEqual(er.calc_discount(42, 42, "1.05"), Decimal("1.05"))  # RM-20261021003
+
+    def test_zero_or_missing_po_discount_is_one(self):
+        self.assertEqual(er.calc_discount(5, 5, 0), Decimal(1))
+        self.assertEqual(er.calc_discount(5, 5, None), Decimal(1))
+        self.assertEqual(er.calc_discount(6, 5, 0), Decimal("1.2"))
+
+    def test_changed_price_is_price_over_po_price(self):
+        self.assertEqual(er.calc_discount(1500, 1200, 1), Decimal("1.25"))  # Andy 的 RM-20261030002 7025-828
+        self.assertEqual(er.calc_discount("39.5", "37.5", "0.7811"), Decimal("0.8228"))  # RM-20260929001 EC-60042A
+        self.assertEqual(er.calc_discount("25.5", 24, 1), Decimal("1.0625"))
+        self.assertEqual(er.calc_discount(1, 3, 1), Decimal("0.3333"))  # 4 位小數四捨五入
+        self.assertEqual(er.calc_discount(2, 3, 1), Decimal("0.6667"))
+
+    def test_zero_po_price_keeps_po_discount(self):
+        self.assertEqual(er.calc_discount(10, 0, 1), Decimal(1))
 
     def test_rm_date_validation(self):
         self.assertEqual(er.parse_rm_date(None, 20261030), 20261030)
@@ -479,6 +504,28 @@ class CreateTests(ErpCase):
         r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10, "price": 25.5}]), "t", "")
         self.assertEqual(r["totals"]["sum_amount"], 255.0)
         self.assertTrue(any(w["code"] == "price_diff" for w in r["warnings"]))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == r["rm_no"])
+        self.assertEqual((rec["Price"], rec["DisCount"], rec["Amount"]), (Decimal("25.5"), Decimal("1.0625"), Decimal(255)))
+        sub = next(x for x in self.rows("stkBillSub") if x["BillNO"] == r["rm_no"])
+        self.assertEqual((sub["Price"], sub["Discount"]), (0, 0))  # 正航進貨明細 stkBillSub 不放單價 / 折扣
+
+    def test_andy_price_change_discount_and_cost(self):
+        # 照 Andy 的 RM-20261030002：採購單 1200 → 實際 1500（3 個）→ DisCount 1.25、金額 4500、稅 225
+        self.erp.tables["ordBillSub"].append(po_sub("PO-1", 3, "AC-3", 3, price=1200))
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 3, "qty": 3, "price": 1500}]), "t", "")
+        self.assertEqual((r["totals"]["sum_amount"], r["totals"]["sum_tax"]), (4500.0, 225.0))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == r["rm_no"])
+        self.assertEqual((rec["Price"], rec["SPrice"], rec["MLPrice"], rec["DisCount"], rec["Amount"], rec["CostForAcc"]),
+                         (Decimal(1500), Decimal(1500), Decimal(1500), Decimal("1.25"), Decimal(4500), Decimal(4500)))
+        for x in self.rows("ordExamineSub"):
+            if x["ExamineNO"] in (r["im_no"], r["qm_no"]):
+                self.assertNotIn("Discount", x)
+
+    def test_po_discount_not_multiplied_into_amount(self):
+        self.erp.tables["ordBillSub"].append(po_sub("PO-1", 3, "AC-3", 2000, price=42, Discount=Decimal("1.05")))
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 3, "qty": 2000}]), "t", "")
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == r["rm_no"])
+        self.assertEqual((rec["DisCount"], rec["Amount"], rec["TaxAmt"]), (Decimal("1.05"), Decimal(84000), Decimal(4200)))
 
     def test_no_forbidden_tables_touched(self):
         er.create_receive(self.req(), "t", "")

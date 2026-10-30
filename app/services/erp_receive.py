@@ -249,14 +249,33 @@ def _dec(value: Any) -> Decimal:
         return Decimal(0)
 
 
-def calc_line_amounts(qty: Any, price: Any, discount: Any, tax_rate: Any) -> Tuple[Decimal, Decimal]:
-    """列未稅金額 = round(數量 × 單價 × 折扣, 0)；稅額 = round(金額 × 稅率, 0)（四捨五入到整數，研究資料中金額皆為整數）。"""
-    disc = _dec(discount)
-    if disc <= 0:
-        disc = Decimal(1)
-    amount = ep._round(_dec(qty) * _dec(price) * disc, 0)
+def calc_line_amounts(qty: Any, price: Any, tax_rate: Any) -> Tuple[Decimal, Decimal]:
+    """列未稅金額 = round(數量 × 單價, 0)；稅額 = round(金額 × 稅率, 0)（四捨五入到整數）。
+
+    v2026.10.30.12：折扣（DisCount）不乘入金額 —— 正航的 DisCount 是「單價 ÷ 標準進價」的比率，只是紀錄；
+    公司3 實際進貨單（例如 RM-20261021003 AC-40834B 2000 × 42、DisCount 1.05 → 金額 84000）金額都是數量 × 單價。
+    """
+    amount = ep._round(_dec(qty) * _dec(price), 0)
     tax = ep._round(amount * _dec(tax_rate), 0)
     return amount, tax
+
+
+DISCOUNT_DIGITS = 4  # 正航 DisCount 都是 4 位小數（1.25、0.8228、1.9231…）
+
+
+def calc_discount(price: Any, po_price: Any, po_discount: Any) -> Decimal:
+    """comProdRec.DisCount：單價與採購單相同 → 沿用採購單 Discount（≤ 0 視為 1）；
+    不同 → round(採購單 Discount × 單價 ÷ 採購單單價, 4)（= 單價 ÷ 標準進價）。
+    例：Andy 的 RM-20261030002 7025-828 採購單 1200 / Discount 1 → 單價 1500 → 1.25；
+    RM-20260929001 EC-60042A 採購單 37.5 / 0.7811 → 39.5 → 0.8228。採購單單價為 0 時無法換算，沿用採購單 Discount。
+    """
+    base = _dec(po_discount)
+    if base <= 0:
+        base = Decimal(1)
+    p, pp = _dec(price), _dec(po_price)
+    if p == pp or pp <= 0:
+        return base
+    return (base * p / pp).quantize(Decimal(1).scaleb(-DISCOUNT_DIGITS), rounding=ROUND_HALF_UP)
 
 
 def _serial_series(prefixes: Tuple[str, str, str]) -> List[Tuple[str, str, str, str]]:
@@ -622,14 +641,14 @@ def build_plan(
         remain = _dec(ep._get(sub, "QtyRemain"))
         po_price = _dec(ep._get(sub, "Price"))
         price = p["price"] if p["price"] is not None else po_price
-        discount = _dec(ep._get(sub, "Discount", 1))
+        discount = calc_discount(price, po_price, ep._get(sub, "Discount", 1))
         tax_rate = _dec(ep._get(sub, "TaxRate", 0))
-        amount, tax = calc_line_amounts(qty, price, discount, tax_rate)
+        amount, tax = calc_line_amounts(qty, price, tax_rate)
         line = {
             "row_no": i, "po_no": p["po_no"], "po_row": p["row_no"],
             "prod_id": ep._text(ep._get(sub, "ProdID")), "prod_name": ep._text(ep._get(sub, "ProdName")),
             "unit": ep._text(ep._get(sub, "Unit")), "qty": qty, "qty_remain": remain, "price": price,
-            "po_price": po_price, "discount": discount if discount > 0 else Decimal(1), "tax_rate": tax_rate,
+            "po_price": po_price, "discount": discount, "tax_rate": tax_rate,
             "amount": amount, "tax": tax,
         }
         lines.append(line)
