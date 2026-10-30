@@ -395,6 +395,23 @@ class ErpPoCreateRequest(ErpPoRequest):
     confirm_missing_postprocess: bool = False  # 鈞洋件有後段加工對應但加工件不在同一批時，使用者確認後才帶 true
 
 
+# ── 一次收料（收料→驗收→進貨）──────────────────────────────────────────────────
+
+class ErpReceiveLine(BaseModel):
+    po_no: str
+    row_no: int
+    qty: float
+    price: Optional[float] = None  # 空 = 沿用採購單單價
+
+
+class ErpReceiveRequest(BaseModel):
+    target: Optional[str] = None  # 空 = 設定的寫入公司（僅限測試公司）
+    rm_date: Optional[int] = None  # 進貨（發票）日 yyyymmdd，空 = 今天
+    lines: list[ErpReceiveLine]
+    confirm: bool = False  # 超收時使用者確認後才帶 true
+    client_token: str = ""  # 前端每次開啟預覽產生，防重複送出
+
+
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
 
 class ShortagePoCategoryRequest(BaseModel):

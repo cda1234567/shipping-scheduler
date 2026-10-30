@@ -691,18 +691,19 @@ body.edit-auth-readonly #bom-upload-area {
 .tab-btn[data-tab="completed"] { order: 3; }
 .tab-btn[data-tab="low-stock-tab"] { order: 4; }
 .tab-btn[data-tab="erp-po-tab"] { order: 5; }
-.tab-btn[data-tab="shortage-po-tab"] { order: 6; }
-.tab-btn[data-tab="bom"] { order: 7; }
-.tab-btn[data-tab="st-packages-tab"] { order: 8; }
-.tab-btn[data-tab="part-conversion-tab"] { order: 9; }
-.tab-btn[data-tab="po-pullin-tab"] { order: 10; }
-.tab-btn[data-tab="backups-tab"] { order: 11; }
-.tab-btn[data-tab="analytics-tab"] { order: 12; }
-.tab-btn[data-tab="defectives-tab"] { order: 13; }
-.tab-btn[data-tab="sea-freight-tab"] { order: 14; }
-.tab-btn[data-tab="st-inventory"] { order: 15; }
-.tab-btn[data-tab="alerts-tab"] { order: 16; }
-.tab-btn[data-tab="logs-tab"] { order: 17; }
+.tab-btn[data-tab="erp-receive-tab"] { order: 6; }
+.tab-btn[data-tab="shortage-po-tab"] { order: 7; }
+.tab-btn[data-tab="bom"] { order: 8; }
+.tab-btn[data-tab="st-packages-tab"] { order: 9; }
+.tab-btn[data-tab="part-conversion-tab"] { order: 10; }
+.tab-btn[data-tab="po-pullin-tab"] { order: 11; }
+.tab-btn[data-tab="backups-tab"] { order: 12; }
+.tab-btn[data-tab="analytics-tab"] { order: 13; }
+.tab-btn[data-tab="defectives-tab"] { order: 14; }
+.tab-btn[data-tab="sea-freight-tab"] { order: 15; }
+.tab-btn[data-tab="st-inventory"] { order: 16; }
+.tab-btn[data-tab="alerts-tab"] { order: 17; }
+.tab-btn[data-tab="logs-tab"] { order: 18; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -5341,3 +5342,21 @@ body.desktop-dark .frequent-zero-usage li span {
 .pp-linked { color: #1d4ed8; }
 .pp-linked-row { background: #f0f7ff; }
 .pp-unlink { padding: 0 6px; font-size: 11px; }
+
+/* ── 一次收料 / 通用明細挑選器 ── */
+.olp { display: flex; flex-direction: column; gap: 6px; }
+.olp-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.olp-search { flex: 1; max-width: 360px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.olp-lock { background: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 6px; font-weight: 600; }
+.olp-lock[hidden] { display: none; }
+.olp-count { color: #6b7280; }
+.olp-wrap { max-height: 50vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+.olp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.olp-table th, .olp-table td { padding: 5px 8px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: middle; }
+.olp-table th { position: sticky; top: 0; background: #f8fafc; white-space: nowrap; z-index: 1; }
+.olp-table .num { text-align: right; }
+.olp-table input.num { width: 90px; padding: 3px 5px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+.olp-table .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.olp-picked { background: #eff6ff; }
+.olp-blocked { opacity: .4; }
+.olp-empty { color: #6b7280; text-align: center; }

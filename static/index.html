@@ -113,6 +113,7 @@
       <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
+      <button class="tab-btn" data-tab="erp-receive-tab">一次收料</button>
       <button class="tab-btn" data-tab="shortage-po-tab">缺料採購</button>
       <button class="tab-btn" data-tab="bom">BOM 管理</button>
       <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
@@ -400,6 +401,34 @@
               <tr><th>時間</th><th>單號</th><th>公司</th><th>供應商</th><th>明細</th><th class="num">含稅合計</th><th>狀態</th></tr>
             </thead>
             <tbody id="erp-po-history"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 一次收料（收料 → 驗收 → 進貨，只限正航測試庫） ── -->
+    <div id="tab-erp-receive-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div id="erp-receive-badge" class="erp-po-badge">讀取設定中...</div>
+        <div class="erp-po-form">
+          <div class="erp-po-field">
+            <label for="erp-receive-date">進貨（發票）日期</label>
+            <input type="date" id="erp-receive-date">
+            <div class="erp-po-hint">收料 / 驗收日固定為今天</div>
+          </div>
+        </div>
+        <div id="erp-receive-picker"></div>
+        <div class="erp-po-actions">
+          <span class="spacer"></span>
+          <button class="btn btn-primary" id="btn-erp-receive-preview" type="button">預覽</button>
+        </div>
+        <div id="erp-receive-preview" class="erp-po-preview" hidden></div>
+        <div id="erp-receive-result" class="erp-po-result" hidden></div>
+        <h4 class="erp-po-history-title">收料紀錄（本機）</h4>
+        <div class="erp-po-table-wrap">
+          <table class="erp-po-table">
+            <thead><tr><th>時間</th><th>收料 / 驗收 / 進貨</th><th>公司</th><th>廠商</th><th class="num">含稅合計</th><th>狀態</th></tr></thead>
+            <tbody id="erp-receive-history"></tbody>
           </table>
         </div>
       </div>
@@ -1063,6 +1092,7 @@ import { initEditAuth } from "/static/modules/edit_auth.js";
 import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
+import { initErpReceive, onErpReceiveTabActivated } from "/static/modules/erp_receive.js";
 import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
 import { initPostprocessLinks } from "/static/modules/postprocess_links.js";
 import { initPartConversion, onPartConversionTabActivated } from "/static/modules/part_conversion.js";
@@ -1082,6 +1112,7 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
     if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
     if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
+    if (btn.dataset.tab === "erp-receive-tab") void onErpReceiveTabActivated();
     if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
     if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
     if (btn.dataset.tab === "po-pullin-tab") void onPoPullinTabActivated();
@@ -2163,6 +2194,7 @@ async function init() {
   try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
+  try { await initErpReceive(); } catch (e) { console.warn("initErpReceive failed:", e); }
   try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
   try { initPostprocessLinks(); } catch (e) { console.warn("initPostprocessLinks failed:", e); }
   try { await initPartConversion(); } catch (e) { console.warn("initPartConversion failed:", e); }

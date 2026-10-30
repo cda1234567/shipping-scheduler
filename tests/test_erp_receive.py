@@ -1,0 +1,662 @@
+from __future__ import annotations
+
+import copy
+import os
+import re
+import sqlite3
+import unittest
+from contextlib import contextmanager
+from datetime import date, datetime
+from decimal import Decimal
+from pathlib import Path
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
+
+import app.database as db
+from app.services import erp_purchase as ep
+from app.services import erp_receive as er
+from app.services import erp_receive_schema as schema
+from app.services import erp_stock
+
+NOW = datetime(2026, 10, 30, 10, 0)
+ENV = {"ERP_SQL_TEST_USER": "tester", "ERP_SQL_TEST_PASSWORD": "secret-pw", "ERP_WRITE_TARGET": "CHIComp13"}
+FORBIDDEN = ("comInvoice", "stkBatchInvo", "accVoucher")
+
+
+# ── 純函式 ───────────────────────────────────────────────────────────────────
+
+class TermsTests(unittest.TestCase):
+    def check(self, d, doc, g, gd, c, cd, acc, prepay, encash=None):
+        t = er.calc_terms(d, doc, g, gd, c, cd)
+        self.assertEqual(t["AccMonth"], acc)
+        self.assertEqual(t["PrepayDay"], prepay)
+        if encash is not None:
+            self.assertEqual(t["EncashDay"], encash)
+
+    def test_vectors(self):
+        self.check(20261027, 25, 1, 60, 0, 0, 202611, 20270129, 20261027)
+        self.check(20261001, 25, 1, 30, 0, 0, 202610, 20261130)
+        self.check(20261029, 31, 1, 30, 1, 30, 202610, 20261130, 20261130)
+        self.check(20261021, 25, 1, 60, 1, 60, 202610, 20261230, 20261230)
+        self.check(20261102, 25, 1, 60, 3, 0, 202611, 20270129, 20261102)
+        self.check(20261016, 25, 2, 30, 2, 30, 202610, 20261124, 20261224)
+        self.check(20260921, 25, 2, 30, 2, 30, 202609, 20261025, 20261124)
+        self.check(20250725, 25, 2, 90, 0, 0, 202507, 20251023)
+        self.check(20261030, 31, 2, 6, 2, 3, 202610, 20261106, 20261109)  # Andy 的鏈
+
+    def test_doc_zero_is_month_end_and_december_rollover(self):
+        self.check(20261215, 0, 2, 0, 0, 0, 202612, 20261231)
+        self.check(20261226, 25, 1, 0, 0, 0, 202701, 20270131)
+
+    def test_unknown_styles_fall_back_to_date(self):
+        t = er.calc_terms(20261030, 31, 9, 5, 9, 5)
+        self.assertEqual((t["PrepayDay"], t["EncashDay"]), (20261030, 20261030))
+
+
+class AmountTests(unittest.TestCase):
+    def test_rounding_half_up_to_integer(self):
+        self.assertEqual(er.calc_line_amounts(100, 24, 1, "0.05"), (Decimal(2400), Decimal(120)))
+        self.assertEqual(er.calc_line_amounts(3, "0.5", 1, "0.05"), (Decimal(2), Decimal(0)))  # 1.5 → 2, 0.1 → 0
+        self.assertEqual(er.calc_line_amounts(9000, "0.46", 1, "0.05"), (Decimal(4140), Decimal(207)))
+        self.assertEqual(er.calc_line_amounts(10, "1.05", 1, "0.05"), (Decimal(11), Decimal(1)))  # 10.5 → 11, 0.55 → 1
+
+    def test_zero_discount_treated_as_one(self):
+        self.assertEqual(er.calc_line_amounts(10, 5, 0, 0)[0], Decimal(50))
+
+    def test_rm_date_validation(self):
+        self.assertEqual(er.parse_rm_date(None, 20261030), 20261030)
+        self.assertEqual(er.parse_rm_date("2026-11-02", 20261030), 20261102)
+        for bad in (20261340, 20260230, "abc", 2026102):
+            with self.assertRaises(er.ReceiveValidationError):
+                er.parse_rm_date(bad, 20261030)
+
+
+# ── 假 ERP ───────────────────────────────────────────────────────────────────
+
+def _lc(row):
+    return {k.lower(): v for k, v in row.items()}
+
+
+class FakeErp:
+    def __init__(self, db_name="CHIComp13"):
+        self.db_name = db_name
+        self.tables = {}
+        self.executed = []  # (sql, params)
+        self.committed = False
+        self.rolled_back = False
+        self.fail_on = None  # 子字串：包含它的 SQL 丟例外
+        self._snapshot = None
+
+    def table(self, name):
+        return self.tables.setdefault(name, [])
+
+    def connect(self):
+        self._snapshot = copy.deepcopy(self.tables)
+        return FakeConn(self)
+
+    def inserted(self, table):
+        return [i for i in self.executed if i[0].startswith(f"INSERT INTO dbo.{table} ")]
+
+    def sql_text(self):
+        return "\n".join(s for s, _ in self.executed)
+
+
+class FakeConn:
+    def __init__(self, erp):
+        self.erp = erp
+
+    def cursor(self):
+        return FakeCursor(self.erp)
+
+    def commit(self):
+        self.erp.committed = True
+
+    def rollback(self):
+        self.erp.rolled_back = True
+        self.erp.tables = copy.deepcopy(self.erp._snapshot)
+
+    def close(self):
+        pass
+
+
+COND = re.compile(r"(?:LEN\((\w+)\)|\[?(\w+)\]?) (=|LIKE) (%s|\d+)")
+
+
+class FakeCursor:
+    def __init__(self, erp):
+        self.erp = erp
+        self.rows = []
+        self.description = None
+        self.rowcount = 0
+
+    def _match(self, rows, where, params):
+        params = list(params)
+        for part in where.split(" AND "):
+            m = COND.fullmatch(part.strip())
+            assert m, f"fake 看不懂條件：{part}"
+            len_col, col, op, rhs = m.groups()
+            val = params.pop(0) if rhs == "%s" else int(rhs)
+            if len_col:
+                rows = [r for r in rows if len(str(_lc(r).get(len_col.lower(), ""))) == val]
+            elif op == "LIKE":
+                rows = [r for r in rows if str(_lc(r).get(col.lower(), "")).startswith(val.rstrip("%"))]
+            else:
+                rows = [r for r in rows if str(_lc(r).get(col.lower())) == str(val)]
+        return rows
+
+    def execute(self, sql, params=None):
+        sql = " ".join(sql.split())
+        params = tuple(params or ())
+        e = self.erp
+        e.executed.append((sql, params))
+        if e.fail_on and e.fail_on in sql:
+            raise RuntimeError("boom secret-pw")
+        if sql == "SELECT DB_NAME()":
+            self.rows, self.description = [(e.db_name,)], [("",)]
+        elif "FROM sys.columns" in sql:
+            table = params[0].split(".", 1)[1]
+            self.rows = [(c, 0, 0) for c in schema.DEFAULTS[table]]
+            self.description = [("name",), ("is_identity",), ("is_computed",)]
+        elif sql.startswith("INSERT INTO"):
+            m = re.match(r"INSERT INTO dbo\.(\w+) \((.*?)\) VALUES", sql)
+            cols = [c.strip("[]") for c in m.group(2).split(", ")]
+            e.table(m.group(1)).append(dict(zip(cols, params)))
+            self.rowcount = 1
+        elif sql.startswith("UPDATE"):
+            m = re.match(r"UPDATE dbo\.(\w+) SET (.*?) WHERE (.*)", sql)
+            set_cols = re.findall(r"\[(\w+)\] = %s", m.group(2))
+            hit = self._match(e.table(m.group(1)), m.group(3), params[len(set_cols):])
+            for r in hit:
+                low = {k.lower(): k for k in r}
+                for c, v in zip(set_cols, params):
+                    r[low.get(c.lower(), c)] = v
+            self.rowcount = len(hit)
+        elif "FROM ordBillSub s JOIN ordBillMain m" in sql:
+            self.description = [(n,) for n in "BillNO RowNO BillDate CustomerID ShortName FullName ProdID ProdName "
+                                "Quantity QtyRemain Price TaxRate Unit CurrID Discount".split()]
+            self.rows = []
+            for s in e.table("ordBillSub"):
+                m = next(x for x in e.table("ordBillMain") if x["BillNO"] == s["BillNO"])
+                c = next((x for x in e.table("comCustomer") if x["ID"] == m["CustomerID"]), {})
+                if m["BillStatus"] == 0 and s["QtyRemain"] > 0:
+                    self.rows.append((s["BillNO"], s["RowNO"], m["BillDate"], m["CustomerID"], c.get("ShortName", ""),
+                                      c.get("FullName", ""), s["ProdID"], s["ProdName"], s["Quantity"], s["QtyRemain"],
+                                      s["Price"], s["TaxRate"], s["Unit"], m["CurrID"], s["Discount"]))
+        else:
+            m = re.match(r"SELECT (.+?) FROM (?:dbo\.)?(\w+)(?: WITH \(UPDLOCK, HOLDLOCK\))?"
+                         r"(?: WHERE (.+?))?(?: ORDER BY .+)?$", sql)
+            assert m, f"fake 看不懂：{sql}"
+            cols, table, where = m.groups()
+            rows = self._match(e.table(table), where, params) if where else list(e.table(table))
+            if cols.startswith("MAX("):
+                col = cols[4:-1]
+                vals = [str(_lc(r)[col.lower()]) for r in rows]
+                self.rows, self.description = [(max(vals) if vals else None,)], [("",)]
+            elif cols == "*":
+                self.description = [(k,) for k in (rows[0] if rows else schema.DEFAULTS.get(table, {}))]
+                self.rows = [tuple(r.values()) for r in rows]
+            elif cols == "1":
+                self.rows, self.description = [(1,)] * len(rows), [("",)]
+            else:
+                names = [c.split(".")[-1].strip() for c in cols.split(",")]
+                self.description = [(n,) for n in names]
+                self.rows = [tuple(_lc(r).get(n.lower()) for n in names) for r in rows]
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def po_main(no, vendor="CS007", status=0, **kw):
+    row = {"Flag": 4, "BillNO": no, "BillDate": 20261029, "CustomerID": vendor, "AddressID": "001", "ZipCode": "105",
+           "CustAddress": "台北市", "SalesMan": "R022", "DepartID": "D010", "CurrID": "NTD", "ExchRate": 1,
+           "BillStatus": status, "PriceOfTax": True, "GatherStyle": 2, "GatherDelay": 6, "CheckStyle": 2,
+           "CheckDelay": 3, "GatherOther": "", "CheckOther": "", "LinkMan": "", "LinkTelephone": "",
+           "LinkManProf": "", "EndacaseDate": 0}
+    row.update(kw)
+    return row
+
+
+def po_sub(no, row_no, prod, qty, remain=None, price=24, **kw):
+    row = {"Flag": 4, "BillNO": no, "RowNO": row_no, "ProdID": prod, "ProdName": f"{prod} 名", "Quantity": Decimal(qty),
+           "QtyRemain": Decimal(qty if remain is None else remain), "Price": Decimal(price), "TaxRate": Decimal("0.05"),
+           "Discount": 1, "Unit": ""}
+    row.update(kw)
+    return row
+
+
+def make_erp(db_name="CHIComp13"):
+    erp = FakeErp(db_name)
+    erp.tables = {
+        "ordBillMain": [po_main("PO-1"), po_main("PO-2"), po_main("PO-X", vendor="P0087"), po_main("PO-CLOSED", status=1)],
+        "ordBillSub": [
+            po_sub("PO-1", 1, "AC-1", 100), po_sub("PO-1", 2, "AC-2", 50),
+            po_sub("PO-2", 1, "AC-1", 10, price=24), po_sub("PO-X", 1, "AC-3", 5),
+            po_sub("PO-CLOSED", 1, "AC-1", 5),
+        ],
+        "comCustomer": [{"Flag": 2, "ID": "CS007", "ShortName": "甲", "FullName": "甲公司"}],
+        "comCustTrade": [{"Flag": 2, "ID": "CS007", "DayOfClose": 31, "InvoiceStyle": 1, "LatelyTradeDate": 0},
+                         {"Flag": 2, "ID": "P0087", "DayOfClose": 25, "InvoiceStyle": 1, "LatelyTradeDate": 0}],
+        "comWareHouse": [{"WareHouseID": "001"}],
+        "comProduct": [{"ProdID": p, "CTotalCost": Decimal(5447), "LatestPurchDate": 0} for p in ("AC-1", "AC-2", "AC-3")],
+        "comWareAmount": [{"ProdID": "AC-2", "WareID": "001", "Quantity": Decimal(10), "TotalCost": Decimal(100),
+                           "Cost": Decimal(10), "BCQty": Decimal(10), "LatestPurchDate": 0}],
+        "StkYearMonthQty": [{"YearMonth": 202610, "ProdID": "AC-2", "WareID": "001", "Quantity": Decimal(10)}],
+        "stkYearMonthAvg": [], "comCustAccounts": [{"Flag": 2, "SysID": 2, "ID": "CS007", "CurrID": "NTD",
+                                                    "CurReceivable": Decimal(2520), "LocCurReceivable": Decimal(2520)}],
+        # Andy 當天已有 20261030001
+        "ordExamineMain": [{"Flag": 5, "ExamineNO": "20261030001"}, {"Flag": 6, "ExamineNO": "20261030001"}],
+        "stkBillMain": [{"Flag": 100, "BillNO": "20261030001"}],
+        "comBillAccounts": [{"Flag": 100, "SysID": 2, "FundBillNo": "20261030001"}],
+    }
+    return erp
+
+
+class ErpCase(unittest.TestCase):
+    def setUp(self):
+        clean = {k: v for k, v in os.environ.items() if not k.startswith(("ERP_SQL_WRITE", "ERP_SQL_TEST", "ERP_WRITE", "ERP_PO", "ERP_RECEIVE"))}
+        clean.update(ENV)
+        p = patch.dict(os.environ, clean, clear=True)
+        p.start()
+        self.addCleanup(p.stop)
+        self.erp = make_erp()
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(db._CREATE_SQL)
+
+        @contextmanager
+        def temp_conn():
+            try:
+                yield self.conn
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
+        for p in (
+            patch.object(db, "get_conn", temp_conn),
+            patch.object(ep, "_connect_write", lambda creds: self.erp.connect()),
+            patch.object(er, "local_now", lambda: NOW),
+            patch.object(erp_stock, "get_settings", lambda: {
+                "server": "s", "port": 1433, "database": "CHIComp03", "ware_id": "001",
+                "timeout": 5.0, "encryption": "off", "tds_version": "7.3"}),
+        ):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def req(self, lines=None, **kw):
+        return {"lines": lines or [{"po_no": "PO-1", "row_no": 1, "qty": 100}], **kw}
+
+    def rows(self, table):
+        return self.erp.tables[table]
+
+
+class PlanTests(ErpCase):
+    def test_preview_numbers_dates_and_rows_without_writes(self):
+        r = er.preview_receive(self.req())
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("20261030002", "20261030002", "20261030002"))
+        self.assertEqual(r["terms"], {"AccMonth": 202610, "PrepayDay": 20261106, "EncashDay": 20261109})
+        self.assertEqual(r["totals"], {"sum_qty": 100.0, "sum_amount": 2400.0, "sum_tax": 120.0, "total": 2520.0})
+        self.assertTrue(r["numbers_estimated"])
+        self.assertEqual(set(r["rows"]), {"ordExamineMain", "ordExamineSub", "stkBillMain", "stkBillSub",
+                                          "comBillAccounts", "comProdRec", "StkYearMonthQty", "stkYearMonthAvg",
+                                          "comWareAmount", "comChangeLog"})
+        self.assertEqual(r["rows"]["stkBillSub"][0]["StkMlAmount"], 2400.0)
+        self.assertFalse(self.erp.inserted("ordExamineMain") or self.erp.committed)
+        self.assertNotIn("UPDLOCK", self.erp.sql_text())
+
+    def test_serial_shared_and_prefixes(self):
+        cur = FakeCursor(self.erp)
+        self.assertEqual(er.next_receive_serial(cur, ("", "", ""), [20261030], False), 2)
+        # 某一系列領先時三張單都用較大的號
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261030005"})
+        self.assertEqual(er.next_receive_serial(cur, ("", "", ""), [20261030], False), 6)
+        self.rows("comBillAccounts").append({"Flag": 100, "SysID": 2, "FundBillNo": "20261030009"})
+        self.assertEqual(er.next_receive_serial(cur, ("", "", ""), [20261030], False), 10)
+        # 前綴系列互不影響
+        self.assertEqual(er.next_receive_serial(cur, ("IM-", "QM-", "RM-"), [20261030], False), 1)
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030003"})
+        self.assertEqual(er.next_receive_serial(cur, ("IM-", "QM-", "RM-"), [20261030], False), 4)
+        self.assertEqual(er.make_numbers(("IM-", "QM-", "RM-"), 20261030, 20261102, 4),
+                         {"im_no": "IM-20261030004", "qm_no": "QM-20261030004", "rm_no": "RM-20261102004"})
+
+    def test_serial_two_dates_takes_max_of_both(self):
+        cur = FakeCursor(self.erp)
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261102007"})
+        self.assertEqual(er.next_receive_serial(cur, ("", "", ""), [20261030, 20261102], False), 8)
+        self.assertEqual(er.next_receive_serial(cur, ("", "", ""), [20261030], False), 2)
+
+    def test_serial_exhausted(self):
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261030999"})
+        with self.assertRaises(er.ReceiveValidationError):
+            er.next_receive_serial(FakeCursor(self.erp), ("", "", ""), [20261030], False)
+
+    def test_lock_hint_only_when_locking(self):
+        er.create_receive(self.req(), "t", "1.2.3.4")
+        text = self.erp.sql_text()
+        for t in ("ordBillMain", "ordBillSub", "comWareAmount", "stkBillMain", "comCustTrade"):
+            self.assertRegex(text, rf"FROM {t} WITH \(UPDLOCK, HOLDLOCK\)")
+
+    def test_rm_date_differs_uses_both_dates(self):
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261102004"})
+        r = er.preview_receive(self.req(rm_date=20261102))
+        self.assertEqual((r["im_no"], r["rm_no"]), ("20261030005", "20261102005"))
+        self.assertTrue(any(w["code"] == "rm_date_not_today" for w in r["warnings"]))
+        self.assertEqual(r["terms"]["AccMonth"], 202611)
+
+
+class CreateTests(ErpCase):
+    def test_single_po_chain_matches_andy(self):
+        r = er.create_receive(self.req(), "tester", "10.0.0.1")
+        self.assertTrue(r["ok"] and self.erp.committed)
+        n = "20261030002"
+        im = [x for x in self.rows("ordExamineMain") if x["ExamineNO"] == n]
+        self.assertEqual(sorted(x["Flag"] for x in im), [5, 6])
+        for x in im:
+            self.assertEqual((x["CustomerID"], x["Examiner"], x["DepartID"], x["HasCheck"], x["ExamineDate"]),
+                             ("CS007", "R022", "D010", True, 20261030))
+            self.assertEqual((x["Maker"], x["MakerID"]), ("Andy", "017"))
+        subs = {x["Flag"]: x for x in self.rows("ordExamineSub") if x["ExamineNO"] == n}
+        self.assertEqual((subs[5]["TranType"], subs[5]["srcFrom"], subs[5]["FromNO"], subs[5]["FromRow"]), (304, 304, "PO-1", 1))
+        self.assertEqual((subs[6]["TranType"], subs[6]["srcFrom"], subs[6]["FromNO"], subs[6]["FromRow"]), (306, 304, n, 1))
+        for s in subs.values():
+            self.assertEqual((s["ExmineType"], s["QtyRemain"], s["Quantity"], s["IsOdd"]), ("A1", 0, Decimal(100), True))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["SumNum"], stk["GatherStyle"], stk["GatherDelay"], stk["CheckStyle"],
+                          stk["CheckDelay"], stk["Detail"], stk["BillStatus"], stk["Maker"]),
+                         (Decimal(2520), Decimal(100), 2, 6, 2, 3, "A", 1, ""))
+        sub = next(x for x in self.rows("stkBillSub") if x["BillNO"] == n)
+        self.assertEqual((sub["StkMlAmount"], sub["LocalPayment"], sub["Amount"], sub["Price"]), (Decimal(2400), 0, 0, 0))
+        acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == n)
+        self.assertEqual((acc["Total"], acc["Tax"], acc["LocalTotal"], acc["AccMonth"], acc["PrepayDay"], acc["EncashDay"],
+                          acc["DeptID"], acc["InvoStyle"], acc["Salesman"], acc["CashPayStyle"], acc["VisaPayStyle"],
+                          acc["CostFlag"], acc["InvoiceNo"], acc["AddrID"], acc["ZipCode"], acc["BillDate"]),
+                         (Decimal(2400), Decimal(120), Decimal(2400), 202610, 20261106, 20261109, "D010", 1, "R022",
+                          "001", "002", 100, "", "001", "105", 20261030))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == n)
+        self.assertEqual((rec["TranType"], rec["FromNO"], rec["FromRow"], rec["WareID"], rec["Amount"], rec["MLAmount"],
+                          rec["CostForAcc"], rec["TaxAmt"], rec["MLTaxAmt"], rec["QtyRemain"], rec["UnitRelation"],
+                          rec["DisCount"], rec["CostAvg"]),
+                         (205, n, 1, "001", Decimal(2400), Decimal(2400), Decimal(2400), Decimal(120), Decimal(120),
+                          Decimal(100), 1, 1, Decimal(24)))
+
+    def test_rollups(self):
+        er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 100}, {"po_no": "PO-1", "row_no": 2, "qty": 20}]), "t", "")
+        po1 = {x["RowNO"]: x for x in self.rows("ordBillSub") if x["BillNO"] == "PO-1"}
+        self.assertEqual((po1[1]["QtyRemain"], po1[2]["QtyRemain"]), (0, Decimal(30)))
+        main = next(x for x in self.rows("ordBillMain") if x["BillNO"] == "PO-1")
+        self.assertEqual(main["BillStatus"], 0)  # 第 2 列未收完，不結案
+        ware = {(x["ProdID"], x["WareID"]): x for x in self.rows("comWareAmount")}
+        self.assertEqual((ware[("AC-1", "001")]["Quantity"], ware[("AC-1", "001")]["TotalCost"], ware[("AC-1", "001")]["Cost"],
+                          ware[("AC-1", "001")]["BCQty"], ware[("AC-1", "001")]["LatestPurchDate"]),
+                         (Decimal(100), Decimal(2400), Decimal(24), Decimal(100), 20261030))
+        w2 = ware[("AC-2", "001")]  # 既有 10 / 100 + 20 × 24
+        self.assertEqual((w2["Quantity"], w2["TotalCost"], w2["BCQty"]), (Decimal(30), Decimal(580), Decimal(30)))
+        self.assertEqual(w2["Cost"], Decimal(580) / Decimal(30))
+        prod = {x["ProdID"]: x for x in self.rows("comProduct")}
+        self.assertEqual((prod["AC-1"]["CTotalCost"], prod["AC-1"]["LatestPurchDate"]), (Decimal(7847), 20261030))
+        ym = {x["ProdID"]: x["Quantity"] for x in self.rows("StkYearMonthQty")}
+        self.assertEqual((ym["AC-1"], ym["AC-2"]), (Decimal(100), Decimal(30)))
+        avg = self.rows("stkYearMonthAvg")
+        self.assertEqual({(x["ProdID"], x["WareID"], x["BatchID"], x["AtLastQuan"]) for x in avg},
+                         {("AC-1", "001", "", Decimal(100)), ("AC-2", "001", "", Decimal(20))})
+        trade = next(x for x in self.rows("comCustTrade") if x["ID"] == "CS007")
+        self.assertEqual(trade["LatelyTradeDate"], 20261030)
+        acct = self.rows("comCustAccounts")[0]
+        self.assertEqual((acct["CurReceivable"], acct["LocCurReceivable"]), (Decimal(2520 + 2520 + 504), Decimal(5544)))
+
+    def test_missing_accounts_row_inserted(self):
+        self.erp.tables["comCustAccounts"] = []
+        er.create_receive(self.req(), "t", "")
+        acct = self.rows("comCustAccounts")[0]
+        self.assertEqual((acct["ID"], acct["CurrID"], acct["CurReceivable"], acct["StartExchRate"]), ("CS007", "NTD", Decimal(2520), 1))
+
+    def test_po_closes_when_all_lines_zero_and_changelog(self):
+        er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 100}, {"po_no": "PO-1", "row_no": 2, "qty": 50}]), "t", "9.9.9.9")
+        main = next(x for x in self.rows("ordBillMain") if x["BillNO"] == "PO-1")
+        self.assertEqual((main["BillStatus"], main["EndacaseDate"]), (1, 20261030))
+        logs = self.rows("comChangeLog")
+        self.assertEqual([(x["ProgID"], x["PKValue"], x["Action"]) for x in logs],
+                         [("ChiOrder.OrdGet", "20261030002", 1), ("ChiOrder.OrdExamIn", "20261030002", 1),
+                          ("ChiStock.Buy", "20261030002", 1), ("CHIOrder.Purchase", "PO-1", 9)])
+        self.assertEqual(logs[3]["ActionName"], "進貨憑單20261030002過賬單況為已結案")
+        self.assertEqual((logs[0]["UserName"], logs[0]["IPAddr"], logs[0]["WinLang"]), ("017", "9.9.9.9", 1))
+
+    def test_batch_multi_po_rows_and_links(self):
+        r = er.create_receive(self.req([
+            {"po_no": "PO-2", "row_no": 1, "qty": 4}, {"po_no": "PO-1", "row_no": 2, "qty": 5}, {"po_no": "PO-1", "row_no": 1, "qty": 6}]), "t", "")
+        n = r["rm_no"]
+        for flag in (5, 6):
+            subs = sorted((x for x in self.rows("ordExamineSub") if x["Flag"] == flag and x["ExamineNO"] == n), key=lambda x: x["RowNO"])
+            self.assertEqual([x["RowNO"] for x in subs], [1, 2, 3])
+            expect = [("PO-2", 1), ("PO-1", 2), ("PO-1", 1)] if flag == 5 else [(n, 1), (n, 2), (n, 3)]
+            self.assertEqual([(x["FromNO"], x["FromRow"]) for x in subs], expect)
+        self.assertEqual(len([x for x in self.rows("ordExamineMain") if x["ExamineNO"] == n]), 2)
+        self.assertEqual(len(self.rows("stkBillSub")), 3)
+        recs = sorted((x for x in self.rows("comProdRec") if x["BillNO"] == n), key=lambda x: x["RowNO"])
+        self.assertEqual([(x["ProdID"], x["FromRow"]) for x in recs], [("AC-1", 1), ("AC-2", 2), ("AC-1", 3)])
+        ware = next(x for x in self.rows("comWareAmount") if x["ProdID"] == "AC-1")
+        self.assertEqual(ware["Quantity"], Decimal(10))  # 兩列同料號合併成一次更新
+
+    def test_rm_date_in_rows(self):
+        r = er.create_receive(self.req(rm_date=20261102), "t", "")
+        self.assertEqual((r["im_no"], r["rm_no"]), ("20261030002", "20261102002"))
+        acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == "20261102002")
+        self.assertEqual((acc["BillDate"], acc["AccMonth"], acc["PrepayDay"]), (20261102, 202611, 20261206))
+        sub = next(x for x in self.rows("ordExamineSub") if x["ExamineNO"] == "20261030002")
+        self.assertEqual(sub["ExamineDate"], 20261030)
+        self.assertEqual(next(x for x in self.rows("StkYearMonthQty") if x["ProdID"] == "AC-1")["YearMonth"], 202611)
+        main = next(x for x in self.rows("ordBillMain") if x["BillNO"] == "PO-1")
+        self.assertEqual(main["EndacaseDate"], 0)  # PO-1 第 2 列還沒收
+
+    def test_price_override(self):
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10, "price": 25.5}]), "t", "")
+        self.assertEqual(r["totals"]["sum_amount"], 255.0)
+        self.assertTrue(any(w["code"] == "price_diff" for w in r["warnings"]))
+
+    def test_no_forbidden_tables_touched(self):
+        er.create_receive(self.req(), "t", "")
+        text = self.erp.sql_text()
+        for name in FORBIDDEN:
+            self.assertNotIn(name, text)
+        touched = {m.group(1) for m in re.finditer(r"(?:INSERT INTO|UPDATE) dbo\.(\w+)", text)}
+        self.assertTrue(touched <= {"ordExamineMain", "ordExamineSub", "stkBillMain", "stkBillSub", "comBillAccounts",
+                                    "comProdRec", "ordBillSub", "ordBillMain", "comWareAmount", "comProduct",
+                                    "StkYearMonthQty", "stkYearMonthAvg", "comCustTrade", "comCustAccounts", "comChangeLog"}, touched)
+
+    def test_history_logged(self):
+        r = er.create_receive(self.req(client_token="tok1"), "tester", "1.1.1.1")
+        h = er.list_history()
+        self.assertEqual((h[0]["rm_no"], h[0]["status"], h[0]["vendor_id"], h[0]["total"]), (r["rm_no"], "ok", "CS007", 2520.0))
+
+
+class RuleTests(ErpCase):
+    def test_over_receive_needs_confirm(self):
+        with self.assertRaises(er.OverReceiveWarning) as cm:
+            er.create_receive(self.req([{"po_no": "PO-2", "row_no": 1, "qty": 15}]), "t", "")
+        self.assertEqual(cm.exception.items[0]["over"], 5.0)
+        self.assertFalse(self.erp.inserted("ordExamineMain") or self.erp.committed)
+        self.assertEqual(er.list_history(), [])  # 警告不是錯誤，不記失敗
+        pv = er.preview_receive(self.req([{"po_no": "PO-2", "row_no": 1, "qty": 15}]))
+        self.assertTrue(pv["needs_confirm"])
+        r = er.create_receive(self.req([{"po_no": "PO-2", "row_no": 1, "qty": 15}], confirm=True), "t", "")
+        self.assertTrue(r["ok"])
+        sub = next(x for x in self.rows("ordBillSub") if x["BillNO"] == "PO-2")
+        self.assertEqual(sub["QtyRemain"], 0)  # 不會變負
+        self.assertEqual(next(x for x in self.rows("ordBillMain") if x["BillNO"] == "PO-2")["BillStatus"], 1)
+
+    def test_vendor_lock(self):
+        with self.assertRaisesRegex(er.ReceiveValidationError, "同一家廠商"):
+            er.preview_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1}, {"po_no": "PO-X", "row_no": 1, "qty": 1}]))
+        self.assertFalse(self.erp.inserted("ordExamineMain"))
+
+    def test_currency_mismatch(self):
+        self.rows("ordBillMain")[1]["CurrID"] = "USD"
+        with self.assertRaisesRegex(er.ReceiveValidationError, "幣別"):
+            er.preview_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1}, {"po_no": "PO-2", "row_no": 1, "qty": 1}]))
+
+    def test_bad_inputs(self):
+        for lines, msg in (
+            ([{"po_no": "PO-NONE", "row_no": 1, "qty": 1}], "找不到採購單"),
+            ([{"po_no": "PO-1", "row_no": 9, "qty": 1}], "沒有第 9 列"),
+            ([{"po_no": "PO-CLOSED", "row_no": 1, "qty": 1}], "已結案"),
+            ([{"po_no": "PO-1", "row_no": 1, "qty": 0}], "大於 0"),
+            ([{"po_no": "PO-1", "row_no": 1, "qty": 1}, {"po_no": "PO-1", "row_no": 1, "qty": 2}], "重複"),
+            ([], "1～"),
+        ):
+            with self.assertRaisesRegex(er.ReceiveValidationError, msg):
+                er.preview_receive({"lines": lines})
+
+    def test_missing_trade_or_warehouse(self):
+        self.erp.tables["comCustTrade"] = []
+        with self.assertRaisesRegex(er.ReceiveValidationError, "comCustTrade"):
+            er.preview_receive(self.req())
+        self.erp.tables["comCustTrade"] = [{"Flag": 2, "ID": "CS007", "DayOfClose": 31, "InvoiceStyle": 1}]
+        self.erp.tables["comWareHouse"] = []
+        with self.assertRaisesRegex(er.ReceiveValidationError, "倉庫"):
+            er.preview_receive(self.req())
+
+    def test_warehouse_env(self):
+        self.erp.tables["comWareHouse"].append({"WareHouseID": "05"})
+        with patch.dict(os.environ, {"ERP_RECEIVE_WAREHOUSE": "05"}):
+            er.create_receive(self.req(), "t", "")
+        self.assertEqual(self.rows("comProdRec")[0]["WareID"], "05")
+
+    def test_guard_refuses_production_and_non_test(self):
+        for target in ("CHIComp03", "CHIComp07", "CHIComp99"):
+            with self.assertRaises(er.ReceiveValidationError):
+                er.preview_receive(self.req(target=target))
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(self.req(target=target), "t", "")
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03"}):
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(self.req(), "t", "")
+            self.assertFalse(er.get_config()["available"])
+        with patch.dict(os.environ, {"ERP_TEST_TARGETS": "CHIComp03,CHIComp13"}):
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(self.req(target="CHIComp03"), "t", "")
+        self.assertEqual(self.erp.executed, [])
+
+    def test_db_name_mismatch_aborts(self):
+        self.erp.db_name = "CHIComp03"
+        with self.assertRaisesRegex(ep.PoValidationError, "不符"):
+            er.create_receive(self.req(), "t", "")
+        self.assertFalse(self.erp.inserted("ordExamineMain"))
+
+    def test_rollback_on_midway_failure_hides_secrets(self):
+        self.erp.fail_on = "UPDATE dbo.comProduct"
+        before = copy.deepcopy(self.erp.tables)
+        with self.assertRaises(ep.ErpUnavailable) as cm:
+            er.create_receive(self.req(), "t", "")
+        self.assertNotIn("secret-pw", str(cm.exception))
+        self.assertTrue(self.erp.rolled_back and not self.erp.committed)
+        self.assertEqual(self.erp.tables, before)
+        h = er.list_history()
+        self.assertEqual((h[0]["status"], h[0]["rm_no"]), ("error", ""))
+        self.assertNotIn("secret-pw", h[0]["error"])
+
+    def test_schema_mismatch_aborts_without_commit(self):
+        orig = ep.table_columns
+
+        def cols(cur, table):
+            c = orig(cur, table)
+            return c + [{"name": "NewCol", "identity": False, "computed": False}] if table == "stkBillSub" else c
+
+        with patch.object(ep, "table_columns", cols):
+            with self.assertRaises(ep.ErpError):
+                er.create_receive(self.req(), "t", "")
+        self.assertFalse(self.erp.committed)
+        self.assertTrue(self.erp.rolled_back)
+
+    def test_verify_mismatch_rolls_back(self):
+        with patch.object(er, "_verify", side_effect=ep.PoSchemaError("讀回不符")):
+            with self.assertRaises(ep.PoSchemaError):
+                er.create_receive(self.req(), "t", "")
+        self.assertTrue(self.erp.rolled_back and not self.erp.committed)
+
+    def test_duplicate_submit_protection(self):
+        er.create_receive(self.req(client_token="abc"), "t", "")
+        with self.assertRaises(ep.DuplicateSubmitError):
+            er.create_receive(self.req(client_token="abc"), "t", "")
+        with self.assertRaises(ep.DuplicateSubmitError):  # 無 token 但內容相同、60 秒內
+            er.create_receive(self.req(), "t", "")
+
+    def test_schema_overrides_use_real_columns(self):
+        with self.assertRaises(ep.PoSchemaError):
+            er._row("stkBillSub", NoSuchColumn=1)
+
+    def test_open_lines_filters(self):
+        r = er.list_open_lines()
+        self.assertEqual([(l["po_no"], l["row_no"]) for l in r["lines"]], [("PO-1", 1), ("PO-1", 2), ("PO-2", 1), ("PO-X", 1)])
+        self.assertEqual(r["lines"][0]["vendor_name"], "甲")
+        self.assertIn("m.BillStatus = 0", self.erp.executed[-1][0])
+        er.list_open_lines(vendor="CS007", q="a_b")
+        sql, params = self.erp.executed[-1]
+        self.assertIn("m.CustomerID = %s", sql)
+        self.assertIn("%a[_]b%", params)
+
+
+class ApiTests(ErpCase):
+    def setUp(self):
+        super().setUp()
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        from main import app
+        self.client = TestClient(app)
+
+    def test_endpoints(self):
+        cfg = self.client.get("/api/erp-receive/config").json()
+        self.assertTrue(cfg["available"] and cfg["is_test"] and cfg["warehouse"] == "001")
+        self.assertNotIn("secret-pw", str(cfg))
+        self.assertEqual(len(self.client.get("/api/erp-receive/open-lines").json()["lines"]), 4)
+        body = {"lines": [{"po_no": "PO-1", "row_no": 1, "qty": 100}]}
+        pv = self.client.post("/api/erp-receive/preview", json=body)
+        self.assertEqual(pv.status_code, 200, pv.text)
+        ok = self.client.post("/api/erp-receive/create", json={**body, "client_token": "t1"})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(ok.json()["rm_no"], "20261030002")
+        self.assertEqual(self.client.get("/api/erp-receive/history").json()["receipts"][0]["rm_no"], "20261030002")
+        dup = self.client.post("/api/erp-receive/create", json={**body, "client_token": "t1"})
+        self.assertEqual(dup.status_code, 409)
+
+    def test_over_receive_and_errors(self):
+        body = {"lines": [{"po_no": "PO-2", "row_no": 1, "qty": 99}]}
+        r = self.client.post("/api/erp-receive/create", json=body)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual((r.json()["ok"], r.json()["over_receive_warning"][0]["over"]), (False, 89.0))
+        self.assertEqual(self.client.post("/api/erp-receive/create", json={**body, "confirm": True}).status_code, 200)
+        self.assertEqual(self.client.post("/api/erp-receive/preview", json={"lines": []}).status_code, 400)
+        self.assertEqual(self.client.post("/api/erp-receive/preview", json={"target": "CHIComp03", "lines": body["lines"]}).status_code, 400)
+        self.erp.fail_on = "UPDATE dbo.comProduct"
+        fail = self.client.post("/api/erp-receive/create", json={"lines": [{"po_no": "PO-1", "row_no": 1, "qty": 1}]})
+        self.assertEqual(fail.status_code, 503)
+        self.assertNotIn("secret-pw", fail.text)
+
+    def test_edit_auth_protects_post_not_get(self):
+        from starlette.requests import Request
+        from app.services.edit_auth import request_requires_edit_auth
+
+        def req(method, path):
+            return Request({"type": "http", "method": method, "path": path, "headers": [], "query_string": b""})
+        self.assertTrue(request_requires_edit_auth(req("POST", "/api/erp-receive/preview")))
+        self.assertTrue(request_requires_edit_auth(req("POST", "/api/erp-receive/create")))
+        self.assertFalse(request_requires_edit_auth(req("GET", "/api/erp-receive/open-lines")))
+
+
+class StaticTests(unittest.TestCase):
+    root = Path(__file__).resolve().parent.parent / "static"
+
+    def test_picker_and_tab_present(self):
+        picker = (self.root / "modules" / "open_line_picker.js").read_text(encoding="utf-8")
+        self.assertIn("export function createOpenLinePicker", picker)
+        self.assertNotIn("erp-receive", picker)
+        recv = (self.root / "modules" / "erp_receive.js").read_text(encoding="utf-8")
+        self.assertIn("/api/erp-receive/create", recv)
+        self.assertIn("open_line_picker.js", recv)
+        html = (self.root / "index.html").read_text(encoding="utf-8")
+        self.assertIn('data-tab="erp-receive-tab"', html)
+        self.assertIn('id="tab-erp-receive-tab"', html)
+        self.assertIn("erp_receive.js", html)
+        self.assertIn("一次收料", html)

@@ -390,6 +390,30 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
     error         TEXT NOT NULL DEFAULT ''
 );
 
+-- 一次收料（收料 / 驗收 / 進貨）本機紀錄（成功與失敗嘗試都記）
+CREATE TABLE IF NOT EXISTS erp_receipts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_db     TEXT NOT NULL DEFAULT '',
+    im_no         TEXT NOT NULL DEFAULT '',
+    qm_no         TEXT NOT NULL DEFAULT '',
+    rm_no         TEXT NOT NULL DEFAULT '',
+    rm_date       INTEGER NOT NULL DEFAULT 0,
+    vendor_id     TEXT NOT NULL DEFAULT '',
+    vendor_name   TEXT NOT NULL DEFAULT '',
+    lines_json    TEXT NOT NULL DEFAULT '[]',
+    sum_qty       REAL NOT NULL DEFAULT 0,
+    sum_amount    REAL NOT NULL DEFAULT 0,
+    sum_tax       REAL NOT NULL DEFAULT 0,
+    total         REAL NOT NULL DEFAULT 0,
+    actor         TEXT NOT NULL DEFAULT '',
+    client_ip     TEXT NOT NULL DEFAULT '',
+    client_token  TEXT NOT NULL DEFAULT '',
+    fingerprint   TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'ok',
+    error         TEXT NOT NULL DEFAULT ''
+);
+
 -- 網站開出的採購單每一行是為哪些訂單買的（僅記錄 / 顯示，不參與任何缺料扣減）
 CREATE TABLE IF NOT EXISTS erp_po_line_allocations (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3981,6 +4005,55 @@ def list_erp_purchase_orders(limit: int = 50) -> list[dict]:
             "SELECT * FROM erp_purchase_orders ORDER BY id DESC LIMIT ?", (int(limit),)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def add_erp_receipt(rec: dict) -> int:
+    """寫入一筆一次收料本機紀錄（status=ok 或 error）。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO erp_receipts(
+                   target_db, im_no, qm_no, rm_no, rm_date, vendor_id, vendor_name, lines_json,
+                   sum_qty, sum_amount, sum_tax, total, actor, client_ip, client_token, fingerprint,
+                   created_at, status, error)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                rec.get("target_db", ""), rec.get("im_no", ""), rec.get("qm_no", ""), rec.get("rm_no", ""),
+                int(rec.get("rm_date") or 0), rec.get("vendor_id", ""), rec.get("vendor_name", ""),
+                rec.get("lines_json", "[]"), float(rec.get("sum_qty") or 0), float(rec.get("sum_amount") or 0),
+                float(rec.get("sum_tax") or 0), float(rec.get("total") or 0), rec.get("actor", ""),
+                rec.get("client_ip", ""), rec.get("client_token", ""), rec.get("fingerprint", ""), _now(),
+                rec.get("status", "ok"), rec.get("error", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_erp_receipts(limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM erp_receipts ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_erp_receipt_by_token(token: str) -> dict | None:
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM erp_receipts WHERE client_token=? AND status='ok' ORDER BY id DESC LIMIT 1", (token,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def find_recent_erp_receipt(fingerprint: str, since_iso: str) -> dict | None:
+    """created_at >= since_iso 且內容指紋相同的成功紀錄。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM erp_receipts WHERE fingerprint=? AND status='ok' AND created_at>=? ORDER BY id DESC LIMIT 1",
+            (fingerprint, since_iso),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def get_latest_active_dispatch_session_ids(order_ids: list[int]) -> dict[int, int]:
