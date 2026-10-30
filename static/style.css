@@ -5360,3 +5360,10 @@ body.desktop-dark .frequent-zero-usage li span {
 .olp-picked { background: #eff6ff; }
 .olp-blocked { opacity: .4; }
 .olp-empty { color: #6b7280; text-align: center; }
+
+/* 一次收料：發票日期（進貨日）放在預覽按鈕旁 */
+.erp-receive-actions { flex-wrap: wrap; }
+.erp-receive-date-field { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+.erp-receive-date-field input[type="date"] { padding: 5px 8px; border: 2px solid #f59e0b; border-radius: 6px; font-size: 14px; font-weight: 600; }
+.erp-receive-date-field input[type="date"]:invalid { border-color: #dc2626; }
+.erp-receive-preview-date { font-weight: 700; }

@@ -8,6 +8,7 @@ let _initialized = false;
 let _busy = false;
 let _preview = null;
 let _token = "";
+let _rePreviewPending = false;
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
 const el = id => document.getElementById(id);
@@ -41,6 +42,7 @@ function buildBody(confirm = false) {
     if (!Number.isFinite(s.price) || s.price < 0) throw new Error(`${s.line.po_no} #${s.line.row_no} 的單價不正確`);
   }
   const date = el("erp-receive-date").value;
+  if (!date) throw new Error("請先填發票日期（進貨日）");
   return {
     target: _config?.target || null,
     rm_date: date ? Number(date.replaceAll("-", "")) : null,
@@ -62,7 +64,7 @@ function renderPreview(r) {
   const warn = (r.warnings || []).map(w => `<div class="erp-po-warn">${esc(w.message)}</div>`).join("");
   p.innerHTML = `
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>　廠商 ${esc(r.vendor.id)} ${esc(r.vendor.name)}</div>
-    <div class="erp-po-hint">收料 / 驗收日 ${ymd(r.today)}　進貨日 ${ymd(r.rm_date)}　帳款月份 ${esc(r.terms.AccMonth)}　預計付款日 ${ymd(r.terms.PrepayDay)}　兌現日 ${ymd(r.terms.EncashDay)}</div>
+    <div class="erp-po-hint">收料 / 驗收日 ${ymd(r.today)}　<span class="erp-receive-preview-date">發票日期（進貨日）${ymd(r.rm_date)}</span>　帳款月份 ${esc(r.terms.AccMonth)}　預計付款日 ${ymd(r.terms.PrepayDay)}　兌現日 ${ymd(r.terms.EncashDay)}</div>
     ${warn}
     <div class="erp-po-table-wrap"><table class="erp-po-table">
       <thead><tr><th>#</th><th>採購單</th><th>料號</th><th class="num">數量</th><th class="num">單價</th><th class="num">未稅金額</th><th class="num">稅額</th></tr></thead>
@@ -72,6 +74,19 @@ function renderPreview(r) {
     <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-receive-create" type="button">確認收料</button></div>`;
   p.hidden = false;
   el("btn-erp-receive-create").addEventListener("click", handleCreate);
+}
+
+function currentRmDate() {
+  const date = el("erp-receive-date")?.value || "";
+  return date ? Number(date.replaceAll("-", "")) : null;
+}
+
+// 發票日期（= 進貨日）一改就重新預覽，讓帳款月份 / 付款日 / 兌現日跟著更新
+async function handleDateChange() {
+  if (!currentRmDate()) { hidePreview(); return; }
+  if (!_preview && !el("erp-receive-preview")?.innerHTML) return;  // 還沒預覽過就不自動跑
+  if (_busy) { _rePreviewPending = true; return; }
+  await handlePreview();
 }
 
 async function handlePreview() {
@@ -89,6 +104,7 @@ async function handlePreview() {
     showToast(`預覽失敗：${error.message}`, { tone: "error", sticky: true });
   } finally {
     _busy = false;
+    if (_rePreviewPending) { _rePreviewPending = false; void handlePreview(); }
   }
 }
 
@@ -105,7 +121,13 @@ async function handleCreate() {
   if (_busy || !requireEdit()) return;
   let body;
   try { body = buildBody(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
-  if (!window.confirm(`確定要在「${_config?.label || ""}」建立收料 / 驗收 / 進貨嗎？\n寫入後無法從本系統修改或刪除。`)) return;
+  if (!_preview || Number(_preview.rm_date) !== Number(body.rm_date)) {
+    // 預覽與畫面上的發票日期不一致：先重新預覽，讓使用者看過新的帳款月份再確認
+    showToast("發票日期已變更，已重新預覽，請確認後再按「確認收料」");
+    await handlePreview();
+    return;
+  }
+  if (!window.confirm(`確定要在「${_config?.label || ""}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n寫入後無法從本系統修改或刪除。`)) return;
   _busy = true;
   const btn = el("btn-erp-receive-create");
   if (btn) btn.disabled = true;
@@ -186,6 +208,6 @@ export async function initErpReceive() {
     onChange: () => hidePreview(),
   });
   el("btn-erp-receive-preview").addEventListener("click", handlePreview);
-  el("erp-receive-date").addEventListener("change", hidePreview);
+  el("erp-receive-date").addEventListener("change", () => { void handleDateChange(); });
   await loadConfig();
 }

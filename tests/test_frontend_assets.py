@@ -1523,3 +1523,38 @@ assert.equal(elements['btn-part-history'].disabled, false);
         self.assertIn('grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.4fr);', style_css)
         self.assertIn('body.desktop-dark .st-reconcile-mapping-panel {', style_css)
         self.assertIn('@media (max-width: 900px)', style_css)
+
+
+class ErpReceiveInvoiceDateTests(unittest.TestCase):
+    """一次收料：發票日期（= 進貨日）只有一個欄位，放在預覽按鈕旁，改日期會重新預覽。"""
+
+    def setUp(self):
+        root = Path(__file__).resolve().parents[1] / "static"
+        self.html = (root / "index.html").read_text(encoding="utf-8")
+        self.js = (root / "modules" / "erp_receive.js").read_text(encoding="utf-8")
+        start = self.html.index('id="tab-erp-receive-tab"')
+        self.tab = self.html[start:self.html.index("<!-- ── Tab:", start)] if "<!-- ── Tab:" in self.html[start:] else self.html[start:]
+
+    def test_single_invoice_date_field_next_to_preview_button(self):
+        self.assertEqual(self.html.count('id="erp-receive-date"'), 1)
+        self.assertNotIn("進貨（發票）日期", self.html)
+        actions = re.search(r'<div class="erp-po-actions erp-receive-actions">(.*?)</div>', self.tab, re.S)
+        self.assertIsNotNone(actions)
+        block = actions.group(1)
+        self.assertIn("發票日期（進貨日）", block)
+        self.assertIn('<input type="date" id="erp-receive-date"', block)
+        self.assertIn('id="btn-erp-receive-preview"', block)
+
+    def test_date_change_re_previews_and_create_checks_stale_preview(self):
+        self.assertIn('addEventListener("change", () => { void handleDateChange(); })', self.js)
+        self.assertNotIn('el("erp-receive-date").addEventListener("change", hidePreview)', self.js)
+        self.assertIn("Number(_preview.rm_date) !== Number(body.rm_date)", self.js)
+        self.assertIn("發票日期（進貨日）${ymd(r.rm_date)}", self.js)
+
+    def test_js_syntax(self):
+        path = Path(__file__).resolve().parents[1] / "static" / "modules" / "erp_receive.js"
+        try:
+            out = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True)
+        except FileNotFoundError:
+            self.skipTest("node not installed")
+        self.assertEqual(out.returncode, 0, out.stderr)

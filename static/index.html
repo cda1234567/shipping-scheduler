@@ -410,16 +410,13 @@
     <div id="tab-erp-receive-tab" class="tab-content">
       <div class="erp-po-shell">
         <div id="erp-receive-badge" class="erp-po-badge">讀取設定中...</div>
-        <div class="erp-po-form">
-          <div class="erp-po-field">
-            <label for="erp-receive-date">進貨（發票）日期</label>
-            <input type="date" id="erp-receive-date">
-            <div class="erp-po-hint">收料 / 驗收日固定為今天</div>
-          </div>
-        </div>
         <div id="erp-receive-picker"></div>
-        <div class="erp-po-actions">
+        <div class="erp-po-actions erp-receive-actions">
           <span class="spacer"></span>
+          <label class="erp-receive-date-field" for="erp-receive-date">發票日期（進貨日）
+            <input type="date" id="erp-receive-date" required>
+          </label>
+          <span class="erp-po-hint">收料 / 驗收日固定為今天；改日期會自動重新預覽</span>
           <button class="btn btn-primary" id="btn-erp-receive-preview" type="button">預覽</button>
         </div>
         <div id="erp-receive-preview" class="erp-po-preview" hidden></div>

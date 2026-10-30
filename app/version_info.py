@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.30.7"
+APP_VERSION = "v2026.10.30.8"
 APP_RELEASED_AT = "2026-10-30"
 APP_HEADLINE = "一次收料（勾選同廠商多張採購單明細，一鍵產生收料 / 驗收 / 進貨）、鈞洋後段加工連動（缺料採購自動帶出加工件）、所有預交日遇台灣假日提前、測試公司複製主檔補齊供應商 / 料號關聯表"
 APP_CHANGELOG = [
@@ -10,6 +10,7 @@ APP_CHANGELOG = [
         "items": [
             "一次收料：勾選同廠商多張採購單明細，一鍵產生收料/驗收/進貨（正航測試庫）。新分頁「一次收料」：勾第一筆後鎖定該廠商（其他廠商變灰，可按「解除」），可改本次數量與單價，進貨（發票）日預設今天可改；預覽顯示單號、帳款月份、預計付款日 / 兌現日、每列金額與稅額、警告，確認後寫入。",
             "規則：收料 / 驗收日 = 今天，驗收一律 A1（良好）；收料 / 驗收 / 進貨共用同一個流水號（一律 IM- / QM- / RM- 前綴，例如 IM-20261030003），在寫入交易內鎖定計算；全部在單一交易，寫完讀回比對才 commit，任何錯誤整張 rollback。超收會警告並需確認（採購單剩餘量最少扣到 0）；全部列收完的採購單自動結案。只允許 ERP_TEST_TARGETS 內的測試公司，正式公司 CHIComp03 一律拒絕；不寫發票、傳票。倉庫預設 001（環境變數 ERP_RECEIVE_WAREHOUSE）。",
+            "v2026.10.30.8：一次收料的「發票日期（進貨日）」移到預覽按鈕旁（唯一一個日期欄位，預設今天）；改日期會自動重新預覽，帳款月份 / 預計付款日 / 兌現日跟著更新；確認收料前若預覽的日期與畫面不同會先重新預覽。",
             "v2026.10.30.7：單號一律加 IM- / QM- / RM- 前綴（流水號同時參考有前綴與無前綴的既有單號）；成本與日期更新照正航參數 comParams（CostByWare / ComCostDigs / comCostDot）：全公司成本時以所有倉庫庫存重算 comProduct.CAvgCost、依倉庫時重算 comWareAmount.Cost；進貨不更新 LatestIndate / LatestInDate；缺參數一律拒絕寫入。",
             "新增 /api/erp-receive（config、open-lines、preview、create、history）與通用挑選器 static/modules/open_line_picker.js；本機紀錄表 erp_receipts。",
         ],
