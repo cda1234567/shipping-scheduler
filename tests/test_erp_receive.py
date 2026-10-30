@@ -399,43 +399,158 @@ class PlanTests(ErpCase):
         self.assertFalse(self.erp.inserted("ordExamineMain") or self.erp.committed)
         self.assertNotIn("UPDLOCK", self.erp.sql_text())
 
-    def test_serial_shared_and_prefixes(self):
-        cur = FakeCursor(self.erp)
+    def serials(self, today=20261030, rm_date=20261030):
+        return er.next_receive_serials(FakeCursor(self.erp), ("IM-", "QM-", "RM-"), today, rm_date, False)
+
+    def test_serial_per_type_and_prefixes(self):
         pre = ("IM-", "QM-", "RM-")
-        # 無前綴的既有單號（Andy 手動鏈）也算進去：001 → 002
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 2)
-        # Comp13 當天有無前綴 001、002 → 下一號 003
+        # 無前綴的既有單號（Andy 手動鏈）也算進去：各類 001 → 002
+        self.assertEqual(self.serials(), {"im": 2, "qm": 2, "rm": 2})
+        # 只影響自己那一類
         self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261030002"})
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 3)
-        # 有前綴與無前綴混合：取最大
+        self.assertEqual(self.serials(), {"im": 2, "qm": 2, "rm": 3})
         self.rows("ordExamineMain").append({"Flag": 6, "ExamineNO": "QM-20261030005"})
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 6)
+        self.assertEqual(self.serials(), {"im": 2, "qm": 6, "rm": 3})
+        # 應付帳款 comBillAccounts 也算進 RM
         self.rows("comBillAccounts").append({"Flag": 100, "SysID": 2, "FundBillNo": "20261030009"})
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 10)
+        self.assertEqual(self.serials(), {"im": 2, "qm": 6, "rm": 10})
         self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030011"})
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 12)
+        self.assertEqual(self.serials(), {"im": 2, "qm": 6, "rm": 12})
+        # 其他 Flag / SysID 不算
+        self.rows("ordExamineMain").append({"Flag": 7, "ExamineNO": "IM-20261030050"})
+        self.rows("comBillAccounts").append({"Flag": 100, "SysID": 1, "FundBillNo": "RM-20261030060"})
+        self.assertEqual(self.serials(), {"im": 2, "qm": 6, "rm": 12})
+        self.assertEqual(er.make_numbers(pre, 20261030, 20261102, {"im": 4, "qm": 5, "rm": 9}),
+                         {"im_no": "IM-20261030004", "qm_no": "QM-20261030005", "rm_no": "RM-20261102009"})
         self.assertEqual(er.make_numbers(pre, 20261030, 20261102, 4),
                          {"im_no": "IM-20261030004", "qm_no": "QM-20261030004", "rm_no": "RM-20261102004"})
         self.assertEqual(er.number_prefixes("CHIComp13"), pre)
         self.assertEqual(er.number_prefixes("CHIComp99"), pre)
 
-    def test_serial_two_dates_takes_max_of_both(self):
-        cur = FakeCursor(self.erp)
+    def test_serial_today_case_rm_gaps_ignored(self):
+        # 今天（公司3）：IM / QM 001–005；RM 001、003、004、005（002 已刪除）→ 三張都是 006
+        for n in range(1, 6):
+            self.rows("ordExamineMain").extend([{"Flag": 5, "ExamineNO": f"IM-20261030{n:03d}"},
+                                                {"Flag": 6, "ExamineNO": f"QM-20261030{n:03d}"}])
+        for n in (1, 3, 4, 5):
+            self.rows("stkBillMain").append({"Flag": 100, "BillNO": f"RM-20261030{n:03d}"})
+            self.rows("comBillAccounts").append({"Flag": 100, "SysID": 2, "FundBillNo": f"RM-20261030{n:03d}"})
+        self.assertEqual(self.serials(), {"im": 6, "qm": 6, "rm": 6})
+        r = er.preview_receive(self.req())
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030006", "QM-20261030006", "RM-20261030006"))
+        self.assertEqual(r["numbers"], {"im_no": "IM-20261030006", "qm_no": "QM-20261030006", "rm_no": "RM-20261030006"})
+
+    def test_serial_rm_differs_from_im(self):
+        # 正航手開了 RM-…007（沒有對應 IM / QM）→ IM / QM 002、RM 008，連結照樣 IM → QM → RM
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030007"})
+        self.rows("ordExamineMain").append({"Flag": 5, "ExamineNO": "IM-20261030003"})
+        r = er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030004", "QM-20261030002", "RM-20261030008"))
+        self.assertEqual(r["number_attempts"], 1)
+        qm_sub = [x for x in self.rows("ordExamineSub") if x["Flag"] == 6 and x["ExamineNO"] == "QM-20261030002"]
+        self.assertTrue(qm_sub and all(x["FromNO"] == "IM-20261030004" for x in qm_sub))
+        im_sub = [x for x in self.rows("ordExamineSub") if x["Flag"] == 5 and x["ExamineNO"] == "IM-20261030004"]
+        self.assertTrue(im_sub and all(x["FromNO"] == "PO-1" for x in im_sub))
+        rec = [x for x in self.rows("comProdRec") if x["BillNO"] == "RM-20261030008"]
+        self.assertTrue(rec and all(x["FromNO"] == "QM-20261030002" for x in rec))
+        self.assertTrue(self.erp.committed)
+
+    def test_serial_two_dates_each_type_uses_own_date(self):
+        # 進貨日 11/02：RM 只看 11/02，IM / QM 只看今天
         self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261102007"})
-        pre = ("IM-", "QM-", "RM-")
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030, 20261102], False), 8)
-        self.assertEqual(er.next_receive_serial(cur, pre, [20261030], False), 2)
+        self.rows("ordExamineMain").append({"Flag": 5, "ExamineNO": "IM-20261102020"})
+        self.assertEqual(self.serials(20261030, 20261102), {"im": 2, "qm": 2, "rm": 8})
+        self.assertEqual(self.serials(20261030, 20261030), {"im": 2, "qm": 2, "rm": 2})
 
     def test_serial_exhausted(self):
         self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030999"})
         with self.assertRaises(er.ReceiveValidationError):
-            er.next_receive_serial(FakeCursor(self.erp), ("IM-", "QM-", "RM-"), [20261030], False)
+            self.serials()
+        self.rows("stkBillMain").pop()
+        self.rows("ordExamineMain").append({"Flag": 6, "ExamineNO": "QM-20261030999"})
+        with self.assertRaises(er.ReceiveValidationError):
+            self.serials()
 
     def test_serial_malformed_raises(self):
-        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-2026103x001"})
-        self.rows("stkBillMain")[-1]["BillNO"] = "RM-20261030abc"
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030abc"})
         with self.assertRaises(ep.PoSchemaError):
-            er.next_receive_serial(FakeCursor(self.erp), ("IM-", "QM-", "RM-"), [20261030], False)
+            self.serials()
+
+    def test_existing_numbers_check(self):
+        cur = FakeCursor(self.erp)
+        nums = {"im_no": "IM-20261030002", "qm_no": "QM-20261030002", "rm_no": "RM-20261030002"}
+        self.assertEqual(er.existing_numbers(cur, nums), [])
+        self.rows("comBillAccounts").append({"Flag": 100, "SysID": 2, "FundBillNo": "RM-20261030002"})
+        self.rows("ordExamineMain").append({"Flag": 6, "ExamineNO": "QM-20261030002"})
+        self.assertEqual(er.existing_numbers(cur, nums), ["QM-20261030002", "RM-20261030002"])
+
+    def test_duplicate_key_detection(self):
+        self.assertTrue(er.is_duplicate_key_error(Exception(2627, b"Violation of PRIMARY KEY constraint 'PK_stkBillMain'")))
+        self.assertTrue(er.is_duplicate_key_error(Exception((2601, b"Cannot insert duplicate key row"))))
+        self.assertTrue(er.is_duplicate_key_error(Exception("Cannot insert duplicate key in object 'dbo.stkBillMain'")))
+        self.assertFalse(er.is_duplicate_key_error(Exception(20009, b"Unable to connect")))
+        self.assertFalse(er.is_duplicate_key_error(RuntimeError("boom")))
+
+    def test_retry_when_precheck_finds_number_taken(self):
+        # 第一次選號（模擬讀到舊資料）選到已存在的 RM-…001 → 寫入前檢查擋下、rollback、重選 002
+        self.rows("stkBillMain").append({"Flag": 100, "BillNO": "RM-20261030001"})
+        real = er.next_receive_serials
+        calls = []
+
+        def stale_first(*a, **kw):
+            calls.append(1)
+            return {"im": 1, "qm": 1, "rm": 1} if len(calls) == 1 else real(*a, **kw)
+
+        with patch.object(er, "next_receive_serials", stale_first):
+            r = er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(r["number_attempts"], 2)
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030002", "QM-20261030002", "RM-20261030002"))
+        self.assertTrue(self.erp.rolled_back and self.erp.committed)
+        self.assertEqual(len([x for x in self.rows("stkBillMain") if x["BillNO"] == "RM-20261030002"]), 1)
+        # 既有 001 沒被動到
+        self.assertEqual(self.rows("stkBillMain")[0], {"Flag": 100, "BillNO": "20261030001"})
+
+    def test_retry_on_duplicate_key_during_insert(self):
+        # 寫入時正航剛好手開了 RM-…002（重複索引 2627）→ rollback、重選 → RM-…003，IM / QM 仍 002
+        real_exec = er._execute_plan
+        state = {"n": 0}
+        erp = self.erp
+
+        def racing(wcur, plan):
+            state["n"] += 1
+            if state["n"] == 1:
+                row = {"Flag": 100, "BillNO": plan["numbers"]["rm_no"]}
+                erp._snapshot["stkBillMain"].append(dict(row))  # 別人已 commit：rollback 後仍在
+                raise Exception(2627, b"Violation of PRIMARY KEY constraint 'PK_stkBillMain'. secret-pw")
+            return real_exec(wcur, plan)
+
+        with patch.object(er, "_execute_plan", racing):
+            r = er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertEqual(state["n"], 2)
+        self.assertEqual(r["number_attempts"], 2)
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030002", "QM-20261030002", "RM-20261030003"))
+        rec = [x for x in self.rows("comProdRec") if x["BillNO"] == "RM-20261030003"]
+        self.assertTrue(rec and all(x["FromNO"] == "QM-20261030002" for x in rec))
+
+    def test_retry_gives_up_after_three_attempts(self):
+        def always_dup(wcur, plan):
+            raise Exception(2627, b"Violation of PRIMARY KEY constraint")
+
+        with patch.object(er, "_execute_plan", always_dup):
+            with self.assertRaises(ep.ErpUnavailable) as cm:
+                er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertIn("3 次撞號", str(cm.exception))
+        self.assertFalse(self.erp.committed)
+        self.assertFalse(self.erp.inserted("stkBillMain"))
+
+    def test_non_duplicate_error_not_retried(self):
+        self.erp.fail_on = "INSERT INTO dbo.stkBillMain"
+        with self.assertRaises(ep.ErpUnavailable) as cm:
+            er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertIn("已 rollback", str(cm.exception))
+        self.assertEqual(len(self.erp.inserted("stkBillMain")), 1)
+        self.assertFalse(self.erp.committed)
 
     def test_lock_hint_only_when_locking(self):
         er.create_receive(self.req(), "t", "1.2.3.4")
@@ -443,10 +558,11 @@ class PlanTests(ErpCase):
         for t in ("ordBillMain", "ordBillSub", "comWareAmount", "stkBillMain", "comCustTrade"):
             self.assertRegex(text, rf"FROM {t} WITH \(UPDLOCK, HOLDLOCK\)")
 
-    def test_rm_date_differs_uses_both_dates(self):
+    def test_rm_date_differs_each_type_own_date(self):
+        # v2026.10.30.15：IM / QM 看今天、RM 只看進貨日（不再取兩個日期的最大共用號）
         self.rows("stkBillMain").append({"Flag": 100, "BillNO": "20261102004"})
         r = er.preview_receive(self.req(rm_date=20261102))
-        self.assertEqual((r["im_no"], r["rm_no"]), ("IM-20261030005", "RM-20261102005"))
+        self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030002", "QM-20261030002", "RM-20261102005"))
         self.assertTrue(any(w["code"] == "rm_date_not_today" for w in r["warnings"]))
         self.assertEqual(r["terms"]["AccMonth"], 202611)
 
@@ -550,8 +666,9 @@ class CreateTests(ErpCase):
 
     def test_rm_date_in_rows(self):
         r = er.create_receive(self.req(rm_date=20261102), "t", "")
-        self.assertEqual((r["im_no"], r["rm_no"]), ("IM-20261030002", "RM-20261102002"))
-        acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == "RM-20261102002")
+        # 11/02 還沒有任何進貨單 → RM-20261102001；IM 照今天 002
+        self.assertEqual((r["im_no"], r["rm_no"]), ("IM-20261030002", "RM-20261102001"))
+        acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == "RM-20261102001")
         self.assertEqual((acc["BillDate"], acc["AccMonth"], acc["PrepayDay"]), (20261102, 202611, 20261206))
         sub = next(x for x in self.rows("ordExamineSub") if x["ExamineNO"] == "IM-20261030002")
         self.assertEqual(sub["ExamineDate"], 20261030)

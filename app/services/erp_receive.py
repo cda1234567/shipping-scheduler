@@ -12,7 +12,7 @@
 - 與 erp_purchase（只 INSERT）不同，這裡必須 UPDATE 採購單剩餘量、庫存與彙總表（正航本身也是這樣記帳）。
 - 整件事（收料、驗收、進貨、所有彙總與採購單回寫）在同一個 transaction，任何錯誤 rollback；寫完讀回比對才 commit。
 - 收料 / 驗收日 = 今天；進貨日 = 發票日（預設今天，可改）。
-- IM / QM / RM 共用同一個流水號（單號 = IM- / QM- / RM- + yyyymmdd + 3 碼）；流水號 = 當日有前綴與無前綴單號的最大號 + 1。
+- 單號 = IM- / QM- / RM- + yyyymmdd + 3 碼；v2026.10.30.15 起照正航各類分開編號：IM / QM 各自今天最大號 + 1、RM = 進貨日最大號 + 1（有前綴與無前綴都算）；寫入前確認不存在，撞號 rollback 重選（最多 3 次）。
 - 成本 / 日期更新照正航參數（comParams：CostByWare、ComCostDigs、comCostDot），見 build_plan 的 _cost_plan。
 - 進貨單表頭 BillStatus / Detail 照公司設定（v2026.10.30.10），見 load_bill_params。
 - 不寫 comInvoice、stkBatchInvo*、accVoucher*，也不碰任何計數表（正航單號 = 當日 MAX+1）。
@@ -278,53 +278,111 @@ def calc_discount(price: Any, po_price: Any, po_discount: Any) -> Decimal:
     return (base * p / pp).quantize(Decimal(1).scaleb(-DISCOUNT_DIGITS), rounding=ROUND_HALF_UP)
 
 
-def _serial_series(prefixes: Tuple[str, str, str]) -> List[Tuple[str, str, str, str]]:
+# v2026.10.30.15：照正航各類單據分開編號（不再共用流水號）
+#   收料 IM = ordExamineMain Flag 5 當天（今天）最大號 + 1
+#   驗收 QM = ordExamineMain Flag 6 當天（今天）最大號 + 1
+#   進貨 RM = stkBillMain Flag 100 與 comBillAccounts Flag 100 SysID 2 在進貨日的最大號 + 1
+#   正航會重用刪除後空出的最大號，所以只看「現存最大號」，中間跳號不補。
+SERIAL_KINDS = ("im", "qm", "rm")
+MAX_NUMBER_ATTEMPTS = 3  # 單號撞號（重複索引 / 寫入前發現已存在）時 rollback 重選的總次數
+DUPLICATE_KEY_ERRORS = (2627, 2601)  # SQL Server：PRIMARY KEY / UNIQUE 重複
+
+
+class NumberCollision(Exception):
+    """選好的單號在寫入前已存在、或寫入時遇到重複索引：rollback 後重選單號重試。"""
+
+
+def _serial_series(prefixes: Tuple[str, str, str]) -> Dict[str, List[Tuple[str, str, str, str]]]:
     im, qm, rm = prefixes
-    return [
-        ("ordExamineMain", "ExamineNO", "Flag = 5", im),
-        ("ordExamineMain", "ExamineNO", "Flag = 6", qm),
-        ("stkBillMain", "BillNO", "Flag = 100", rm),
-        ("comBillAccounts", "FundBillNo", "Flag = 100 AND SysID = 2", rm),  # 安全檢查
-    ]
+    return {
+        "im": [("ordExamineMain", "ExamineNO", "Flag = 5", im)],
+        "qm": [("ordExamineMain", "ExamineNO", "Flag = 6", qm)],
+        "rm": [
+            ("stkBillMain", "BillNO", "Flag = 100", rm),
+            ("comBillAccounts", "FundBillNo", "Flag = 100 AND SysID = 2", rm),  # 應付帳款也要避開
+        ],
+    }
 
 
-def next_receive_serial(cur, prefixes: Tuple[str, str, str], dates: Iterable[int], lock: bool) -> int:
-    """IM / QM / RM 共用的流水號 = 各系列（收料 Flag5、驗收 Flag6、進貨 Flag100、應付帳款）當日最大號 + 1。
+_KIND_LABEL = {"im": "收料", "qm": "驗收", "rm": "進貨"}
 
-    IM / QM 用今天、RM 用進貨日；兩日不同時每個系列都查兩個日期取最大，三張單才會用同一號且不撞號。
+
+def _max_serial(cur, series: List[Tuple[str, str, str, str]], d: int, hint: str) -> int:
+    top = 0
+    for table, col, cond, prefix in series:
+        # 有前綴與無前綴都要查（LEN 過濾讓兩者互不混淆）
+        for pre in dict.fromkeys((prefix, "")):
+            head = f"{pre}{d}"
+            cur.execute(
+                f"SELECT MAX({col}) FROM {table}{hint} WHERE {cond} AND {col} LIKE %s AND LEN({col}) = %s",
+                (head + "%", len(head) + 3),
+            )
+            found = cur.fetchone()
+            last = ep._text(found[0]) if found else ""
+            if last:
+                try:
+                    top = max(top, int(last[len(head):]))
+                except ValueError:
+                    raise ep.PoSchemaError(f"既有單號格式異常：{last}") from None
+    return top
+
+
+def next_receive_serials(cur, prefixes: Tuple[str, str, str], today: int, rm_date: int, lock: bool) -> Dict[str, int]:
+    """IM / QM / RM 各自的流水號（各類型當日最大號 + 1）；IM / QM 用今天、RM 用進貨日。
+
     lock=True 時用 UPDLOCK/HOLDLOCK 鎖住範圍（必須在寫入交易內）。
     """
     hint = _HINT if lock else ""
-    top = 0
-    for d in sorted(set(int(x) for x in dates)):
-        for table, col, cond, prefix in _serial_series(prefixes):
-            # 有前綴與無前綴都要查（LEN 過濾讓兩者互不混淆）
-            for pre in dict.fromkeys((prefix, "")):
-                head = f"{pre}{d}"
-                cur.execute(
-                    f"SELECT MAX({col}) FROM {table}{hint} WHERE {cond} AND {col} LIKE %s AND LEN({col}) = %s",
-                    (head + "%", len(head) + 3),
-                )
-                found = cur.fetchone()
-                last = ep._text(found[0]) if found else ""
-                if last:
-                    try:
-                        top = max(top, int(last[len(head):]))
-                    except ValueError:
-                        raise ep.PoSchemaError(f"既有單號格式異常：{last}") from None
-    serial = top + 1
-    if serial > 999:
-        raise ReceiveValidationError("當日收料 / 驗收 / 進貨單號已用完（最多 999 張）")
-    return serial
+    dates = {"im": int(today), "qm": int(today), "rm": int(rm_date)}
+    out: Dict[str, int] = {}
+    for kind, series in _serial_series(prefixes).items():
+        serial = _max_serial(cur, series, dates[kind], hint) + 1
+        if serial > 999:
+            raise ReceiveValidationError(f"{dates[kind]} 的{_KIND_LABEL[kind]}單號已用完（最多 999 張）")
+        out[kind] = serial
+    return out
 
 
-def make_numbers(prefixes: Tuple[str, str, str], today: int, rm_date: int, serial: int) -> Dict[str, str]:
+def make_numbers(prefixes: Tuple[str, str, str], today: int, rm_date: int, serials: Any) -> Dict[str, str]:
+    """serials：{"im","qm","rm"} 各自的流水號；給單一整數時三張共用（舊呼叫方式）。"""
+    if not isinstance(serials, dict):
+        serials = {k: int(serials) for k in SERIAL_KINDS}
     im, qm, rm = prefixes
     return {
-        "im_no": f"{im}{today}{serial:03d}",
-        "qm_no": f"{qm}{today}{serial:03d}",
-        "rm_no": f"{rm}{rm_date}{serial:03d}",
+        "im_no": f"{im}{today}{int(serials['im']):03d}",
+        "qm_no": f"{qm}{today}{int(serials['qm']):03d}",
+        "rm_no": f"{rm}{rm_date}{int(serials['rm']):03d}",
     }
+
+
+def existing_numbers(cur, numbers: Dict[str, str], lock: bool = True) -> List[str]:
+    """寫入前確認選好的單號在正航都還不存在；回傳已存在的單號（空 = 可以寫）。"""
+    hint = _HINT if lock else ""
+    checks = [
+        (numbers["im_no"], "ordExamineMain", "ExamineNO", "Flag = 5"),
+        (numbers["qm_no"], "ordExamineMain", "ExamineNO", "Flag = 6"),
+        (numbers["rm_no"], "stkBillMain", "BillNO", "Flag = 100"),
+        (numbers["rm_no"], "comBillAccounts", "FundBillNo", "Flag = 100 AND SysID = 2"),
+    ]
+    found: List[str] = []
+    for no, table, col, cond in checks:
+        cur.execute(f"SELECT 1 FROM {table}{hint} WHERE {cond} AND {col} = %s", (no,))
+        if cur.fetchone() and no not in found:
+            found.append(no)
+    return found
+
+
+def is_duplicate_key_error(exc: BaseException) -> bool:
+    """SQL Server 2627 / 2601（pymssql 把錯誤碼放在 args[0]）或訊息含 duplicate key。"""
+    args = getattr(exc, "args", ()) or ()
+    for a in args[:1]:
+        if isinstance(a, int) and a in DUPLICATE_KEY_ERRORS:
+            return True
+        if isinstance(a, (tuple, list)) and a and isinstance(a[0], int) and a[0] in DUPLICATE_KEY_ERRORS:
+            return True
+    text = " ".join(str(a.decode("utf-8", "ignore") if isinstance(a, bytes) else a) for a in args).lower()
+    return ("duplicate key" in text or "violation of primary key" in text or "violation of unique key" in text
+            or any(f"({code}" in text or f"{code}," in text for code in DUPLICATE_KEY_ERRORS))
 
 
 # ── 輸入驗證 ──────────────────────────────────────────────────────────────────
@@ -988,7 +1046,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
     out = {
         "target": target, "target_label": ep.target_label(target), "is_test": ep.is_test(target),
         "is_production": target == ep.PRODUCTION_TARGET, "update_cost": plan["update_cost"],
-        **plan["numbers"], "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
+        **plan["numbers"], "numbers": dict(plan["numbers"]), "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
         "vendor": plan["vendor"], "currency": plan["currency"], "warehouse": plan["warehouse"],
         "lines": _jsonable([
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
@@ -1017,9 +1075,9 @@ def _plan(wcur, target: str, req: Dict[str, Any], lock: bool, client_ip: str = "
     ctx = _load_context(wcur, target, req, lock)
     _load_rollup_state(wcur, ctx, rm_date // 100)
     prefixes = number_prefixes(target)
-    serial = next_receive_serial(wcur, prefixes, (today, rm_date), lock)
+    serials = next_receive_serials(wcur, prefixes, today, rm_date, lock)
     return build_plan(
-        ctx, target=target, today=today, rm_date=rm_date, numbers=make_numbers(prefixes, today, rm_date, serial),
+        ctx, target=target, today=today, rm_date=rm_date, numbers=make_numbers(prefixes, today, rm_date, serials),
         maker=ep._env("ERP_PO_MAKER", ep.DEFAULT_MAKER), maker_id=ep._env("ERP_PO_MAKER_ID", ep.DEFAULT_MAKER_ID),
         client_ip=client_ip, actor=actor, now=now, update_cost=req.get("update_cost", True))
 
@@ -1047,18 +1105,39 @@ def _fingerprint(target: str, req: Dict[str, Any], rm_date_raw: Any) -> str:
 
 
 def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, client_ip: str) -> Dict[str, Any]:
+    """寫入正航（單一交易）。單號撞號時 rollback、重選單號再試，最多 MAX_NUMBER_ATTEMPTS 次。"""
     with ep._write_lock:
         wconn = ep._connect_write(creds)
         committed = False
         plan: Dict[str, Any] = {}
+        collisions: List[str] = []
         try:
             wcur = wconn.cursor()
-            plan = _plan(wcur, target, req, lock=True, client_ip=client_ip, actor=actor)
-            if plan["needs_confirm"] and not req["confirm"]:
-                raise OverReceiveWarning(plan["over_receive"])  # 尚未寫入任何東西
-            _execute_plan(wcur, plan)
-            readback = _verify(wcur, plan)
-            ep._check_db_name(wcur, target)
+            for attempt in range(1, MAX_NUMBER_ATTEMPTS + 1):
+                try:
+                    plan = _plan(wcur, target, req, lock=True, client_ip=client_ip, actor=actor)
+                    if plan["needs_confirm"] and not req["confirm"]:
+                        raise OverReceiveWarning(plan["over_receive"])  # 尚未寫入任何東西
+                    taken = existing_numbers(wcur, plan["numbers"], lock=True)
+                    if taken:
+                        raise NumberCollision("單號已存在：" + "、".join(taken))
+                    try:
+                        _execute_plan(wcur, plan)
+                    except Exception as exc:
+                        if is_duplicate_key_error(exc):
+                            raise NumberCollision(f"寫入時單號重複：{ep._safe_message(exc, creds)}") from None
+                        raise
+                    readback = _verify(wcur, plan)
+                    ep._check_db_name(wcur, target)
+                    break
+                except NumberCollision as exc:
+                    collisions.append(str(exc))
+                    logger.warning("一次收料單號撞號（第 %s 次），rollback 後重選：%s", attempt, exc)
+                    wconn.rollback()
+                    if attempt >= MAX_NUMBER_ATTEMPTS:
+                        raise ErpUnavailable(
+                            f"單號連續 {MAX_NUMBER_ATTEMPTS} 次撞號，已 rollback、未寫入：{collisions[-1]}") from None
+            plan["number_attempts"] = attempt
             try:
                 wconn.commit()
                 committed = True
@@ -1072,7 +1151,7 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
             raise ErpUnavailable(f"寫入正航失敗，已 rollback：{ep._safe_message(exc, creds)}") from None
         finally:
             ep._close_quietly(wconn, rollback=not committed)
-    return {**_summary(plan, include_rows=False), "readback": readback}
+    return {**_summary(plan, include_rows=False), "readback": readback, "number_attempts": plan["number_attempts"]}
 
 
 def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") -> Dict[str, Any]:
