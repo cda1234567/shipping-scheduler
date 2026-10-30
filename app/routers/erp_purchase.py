@@ -15,6 +15,8 @@ ACTOR = "web"
 
 def _http_error(exc: Exception) -> HTTPException:
     message = erp_purchase._safe_message(exc)
+    if isinstance(exc, erp_purchase.DuplicateSubmitError):
+        return HTTPException(409, message)
     if isinstance(exc, erp_purchase.PoValidationError):
         return HTTPException(400, message)
     if isinstance(exc, (ErpNotConfigured, ErpUnavailable)):
@@ -57,6 +59,9 @@ async def po_create(req: ErpPoCreateRequest, request: Request):
     ip = request.client.host if request.client else ""
     try:
         return await run_in_threadpool(erp_purchase.create_po, req.dict(), ACTOR, ip)
+    except erp_purchase.DuplicateWarning as exc:
+        # 200 + duplicate_warning：沒有寫入任何東西，前端確認後帶 allow_duplicate=true 重送
+        return {"ok": False, "duplicate_warning": exc.items}
     except ErpError as exc:
         raise _http_error(exc) from None
     except Exception as exc:  # 其他例外（已記錄 error 紀錄）統一回 500，不洩漏細節

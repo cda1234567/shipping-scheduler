@@ -133,6 +133,8 @@ class DbCase(unittest.TestCase):
         ]
         for p in self.add_patchers:
             p.start()
+        # 既有案例的數字以 90 天窗口計（日均 = 用量 / 90）；預設 365 另有專屬案例
+        db.set_setting("low_stock_lookback_days", "90")
 
     def tearDown(self):
         for p in reversed(self.add_patchers + self.patchers):
@@ -291,6 +293,74 @@ class OnOrderTests(DbCase):
         self.assertEqual(rows[2]["next_expected_date"], "")
         self.assertEqual([a["part_number"] for a in ls.list_alerts()], ["B-1"])
 
+    def test_suggest_window_only_for_candidates_usage_uses_lookback(self):
+        db.set_setting("low_stock_lookback_days", "")
+        calls = []
+        long_usage = {"A-1": (3650.0, 5), "B-1": (730.0, 9)}  # 365 天窗口：A、B 都有量
+        short_usage = {"A-1": (900.0, 5)}  # 90 天窗口：只有 A 符合最少單據數
+
+        def fake(conn, ware, start, end, parts=None):
+            days = (end - start).days
+            calls.append(days)
+            return dict(long_usage if days == 365 else short_usage)
+
+        with patch.object(ls, "_query_usage", fake):
+            summary = ls.run_suggestion()
+        self.assertEqual(sorted(calls), [90, 365])
+        self.assertEqual(summary["candidates"], 1)  # 只有 A-1 在 90 天內符合
+        self.assertEqual(self.row("A-1")["avg_daily_usage"], 3650 / 365)  # 日均用 365 天窗口
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM low_stock_watch WHERE part_number='B-1'").fetchone())
+
+    def test_same_windows_query_once(self):
+        calls = []
+
+        def fake(conn, ware, start, end, parts=None):
+            calls.append((end - start).days)
+            return {}
+
+        db.set_setting("low_stock_lookback_days", "")
+        db.set_setting("low_stock_suggest_lookback_days", "365")
+        with patch.object(ls, "_query_usage", fake):
+            ls.run_suggestion()
+        self.assertEqual(calls, [365])
+
+    def test_config_defaults_and_env_override(self):
+        db.set_setting("low_stock_lookback_days", "")
+        cfg = ls.get_config()
+        self.assertEqual((cfg["lookback_days"], cfg["suggest_lookback_days"]), (365, 90))
+        with patch.dict("os.environ", {"LOW_STOCK_LOOKBACK_DAYS": "180"}):
+            self.assertEqual(ls.get_config()["lookback_days"], 180)
+            db.set_setting("low_stock_lookback_days", "100")  # 設定表優先於環境變數
+            self.assertEqual(ls.get_config()["lookback_days"], 100)
+        with patch.dict("os.environ", {"LOW_STOCK_LOOKBACK_DAYS": "abc"}):
+            db.set_setting("low_stock_lookback_days", "")
+            self.assertEqual(ls.get_config()["lookback_days"], 365)
+        with self.assertRaises(ls.LowStockError):
+            ls.validate_config({"suggest_lookback_days": 3})
+
+    def test_suggested_po_qty_respects_moq(self):
+        from app.services import moq as moq_service
+
+        self.usage = {"A-1": (900.0, 5), "B-1": (900.0, 5), "C-1": (900.0, 5)}
+        ls.run_suggestion()  # 門檻皆 105
+        self.set_stock("A-1", 10)  # 缺口 95 < MOQ 500 → 500
+        self.set_stock("B-1", 10)  # 缺口 95 > MOQ 50 → 95
+        self.set_stock("C-1", 10)  # 沒有 MOQ → 95
+        self.set_stock("A-1", 10)
+        with patch.object(moq_service, "site_moq_map", lambda: {"A-1": 500.0, "B-1": 50.0, "C-1": 0.0}):
+            rows = {r["part_number"]: r for r in ls.list_rows()}
+            alerts = {a["part_number"]: a for a in ls.list_alerts()}
+        self.assertEqual((rows["A-1"]["suggested_po_qty"], rows["A-1"]["moq"], rows["A-1"]["moq_source"]), (500, 500, "主檔"))
+        self.assertEqual(rows["B-1"]["suggested_po_qty"], 95)
+        self.assertEqual((rows["C-1"]["suggested_po_qty"], rows["C-1"]["moq"], rows["C-1"]["moq_source"]), (95, 0, ""))
+        self.assertEqual(alerts["A-1"]["suggested_po_qty"], 500)
+
+    def test_suggested_po_gap_minimum_one(self):
+        self.assertEqual(ls.suggested_po_gap({"threshold": 100, "qty": 10, "on_order_qty": 0}), 90)
+        self.assertEqual(ls.suggested_po_gap({"threshold": 100, "qty": 200, "on_order_qty": 0}), 1)
+        self.assertEqual(ls.suggested_po_gap({"threshold": 100, "qty": 10, "on_order_qty": 95}), 1)
+        self.assertEqual(ls.suggested_po_gap({"threshold": None, "qty": 10}), 1)
+
     def test_migration_adds_columns_to_old_table(self):
         self.conn.execute("DROP TABLE low_stock_watch")
         self.conn.execute("CREATE TABLE low_stock_watch (part_number TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '')")
@@ -443,7 +513,7 @@ class EditRuleTests(DbCase):
         self.usage["N-1"] = (300.0, 4)
         ls.add_part("N-1")
         r = self.row("N-1")
-        self.assertEqual(r["avg_daily_usage"], 300 / 90)
+        self.assertEqual(r["avg_daily_usage"], 300 / 90)  # 單一料號用 lookback_days
         self.assertIsNotNone(r["threshold_qty"])
 
     def test_add_survives_erp_failure(self):
@@ -564,9 +634,11 @@ class ApiTests(DbCase):
         self.assertEqual(parts, ["C-1", "A-1"])
 
     def test_watchlist(self):
+        db.set_setting("low_stock_lookback_days", "")
         data = self.client.get("/api/low-stock/watchlist").json()
         self.assertEqual(data["low_count"], 1)
-        self.assertEqual(data["settings"]["lookback_days"], 90)
+        self.assertEqual(data["settings"]["lookback_days"], 365)
+        self.assertEqual(data["settings"]["suggest_lookback_days"], 90)
         status = {r["part_number"]: r["status"] for r in data["rows"]}
         self.assertEqual(status, {"A-1": "low", "B-1": "ok", "C-1": "disabled"})
         self.assertEqual(data["rows"][0]["part_number"], "A-1")

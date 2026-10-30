@@ -16,6 +16,7 @@ from app.routers import dispatch as dispatch_router
 from app.routers import shortage_purchase as sp_router
 from app.services import erp_purchase as ep
 from app.services import low_stock
+from app.services import moq as moq_service
 from app.services import shortage_purchase as sp
 from app.services.edit_auth import request_requires_edit_auth
 
@@ -128,7 +129,9 @@ class FakeErpCursor:
         s = " ".join(sql.split())
         self.d["sql"].append(s)
         self.d["params"].append(params)
-        if "FROM comProduct" in s:
+        if "MinPurch" in s:
+            self.rows = [r for r in self.d.get("min_purch", []) if r[0] in params]
+        elif "FROM comProduct" in s:
             self.rows = [r for r in self.d["products"] if r[0] in params]
         elif "ROW_NUMBER" in s:
             self.rows = [r for r in self.d["last_po"] if r[0] in params]
@@ -176,6 +179,7 @@ class ShortageListTests(Base):
         ]
         self.st = {"EC-1": 60, "OC-1": -30, "PK-1": 100, "AC-1": 0}
         self.on_order = {"AC-1": (5.0, "2026-11-01")}
+        self.site_moq = {}
 
         @contextmanager
         def source_session():
@@ -194,6 +198,7 @@ class ShortageListTests(Base):
             patch.object(low_stock, "get_config", lambda: {"on_order_max_overdue_days": 90}),
             patch.object(ep, "get_config", lambda: {"label": "公司2（測試）", "available": True, "is_test": True}),
             patch.object(sp, "local_now", lambda: TODAY),
+            patch.object(moq_service, "site_moq_map", lambda: self.site_moq),
         ]
         for p in patches:
             p.start()
@@ -316,7 +321,7 @@ class ShortageListTests(Base):
     def test_lookups_use_nolock_and_chunking(self):
         self.groups = [group(1, "A", "2026-12-10", [item(f"P-{i:04d}", 1) for i in range(450)])]
         self.parts()
-        product_calls = [(s, p) for s, p in zip(self.erp["sql"], self.erp["params"]) if "FROM comProduct" in s]
+        product_calls = [(s, p) for s, p in zip(self.erp["sql"], self.erp["params"]) if "ProdName" in s]
         self.assertEqual([len(p) for _, p in product_calls], [200, 200, 50])
         self.assertTrue(all("WITH (NOLOCK)" in s for s in self.erp["sql"]))
 
@@ -330,6 +335,118 @@ class ShortageListTests(Base):
             res, p = self.parts()
         self.assertEqual(len(res["warnings"]), 2)
         self.assertEqual((p["EC-1"]["supplier_id"], p["EC-1"]["on_order"], p["EC-1"]["shortage"]), ("", 0, 80))
+
+    def test_suggested_qty_uses_site_moq(self):
+        self.site_moq = {"EC-1": 1000.0, "OC-1": 10.0}  # EC-1 缺 80 < 1000；OC-1 缺 70 > 10
+        _, p = self.parts()
+        ec = p["EC-1"]
+        self.assertEqual((ec["need_qty"], ec["moq"], ec["moq_source"], ec["moq_adjusted"], ec["suggested_qty"]),
+                         (80, 1000, "主檔", True, 1000))
+        oc = p["OC-1"]
+        self.assertEqual((oc["need_qty"], oc["suggested_qty"], oc["moq_adjusted"], oc["moq_source"]), (70, 70, False, "主檔"))
+        # 不缺的料不湊 MOQ；沒有 MOQ 的維持原值
+        self.site_moq["PK-1"] = 500.0
+        _, p = self.parts()
+        self.assertEqual((p["PK-1"]["suggested_qty"], p["PK-1"]["moq_adjusted"]), (0, False))
+        self.assertEqual((p["AC-1"]["suggested_qty"], p["AC-1"]["moq"], p["AC-1"]["moq_source"]), (5, 0, ""))
+        # 訂單分配以調整後的量為準：多買的記成備品
+        extra = [a for a in ec["allocations"] if a["kind"] == "extra"]
+        self.assertEqual(sum(a["qty"] for a in extra), 920)
+
+    def test_erp_min_purch_fallback_and_site_priority(self):
+        self.erp["min_purch"] = [("EC-1", 2000.0), ("OC-1", 300.0), ("AC-1", 0.0)]
+        self.site_moq = {"EC-1": 1000.0}
+        _, p = self.parts()
+        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (1000, "主檔", 1000))
+        self.assertEqual((p["OC-1"]["moq"], p["OC-1"]["moq_source"], p["OC-1"]["suggested_qty"]), (300, "ERP 最低採購量", 300))
+        self.assertEqual((p["AC-1"]["moq"], p["AC-1"]["moq_source"], p["AC-1"]["suggested_qty"]), (0, "", 5))
+        # 站內 MOQ 為 0 視為沒有 → 退回 ERP
+        self.site_moq = {"EC-1": 0.0}
+        _, p = self.parts()
+        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["moq_source"], p["EC-1"]["suggested_qty"]), (2000, "ERP 最低採購量", 2000))
+        # ERP 查詢只用 SELECT + NOLOCK，且站內已有 MOQ 的料號不再查
+        self.site_moq = {"EC-1": 1000.0}
+        self.erp["sql"].clear(); self.erp["params"].clear()
+        self.parts()
+        calls = [(s, q) for s, q in zip(self.erp["sql"], self.erp["params"]) if "MinPurch" in s]
+        self.assertTrue(calls and all(s.startswith("SELECT") and "WITH (NOLOCK)" in s for s, _ in calls))
+        self.assertNotIn("EC-1", calls[0][1])
+
+    def test_erp_unavailable_moq_ignored_silently(self):
+        calls = {"n": 0}
+
+        @contextmanager
+        def flaky():
+            calls["n"] += 1
+            if calls["n"] > 1:  # 第一次是供應商 / 單價查詢，之後（MOQ）失敗
+                raise ep.ErpUnavailable("連不上")
+            yield FakeErpConn(self.erp)
+
+        with patch.object(ep, "_source_session", flaky):
+            res = sp.build_shortage_list([1, 2, 3])
+        p = {x["part_number"]: x for x in res["parts"]}
+        self.assertEqual((p["EC-1"]["moq"], p["EC-1"]["suggested_qty"]), (0, 80))
+        self.assertEqual(res["warnings"], [])
+
+    def record_po(self, bill_no, part, qty, order_ids=(), target=None):
+        import json as _json
+        target = target or ep.get_target()
+        po_id = db.add_erp_purchase_order({
+            "bill_no": bill_no, "target_db": target, "supplier_id": "S1", "status": "ok",
+            "lines_json": _json.dumps([{"row_no": 1, "part_number": part, "qty": qty, "price": 1, "pre_in_date": "2026-11-15"}]),
+        })
+        rows = [{"row_no": 1, "part_number": part, "order_id": o, "qty": qty, "kind": "order"} for o in order_ids] \
+            or [{"row_no": 1, "part_number": part, "qty": qty, "kind": "manual"}]
+        db.save_po_line_allocations(po_id, bill_no, target, rows)
+
+    def test_already_ordered_badge_by_order_ids(self):
+        # EC-1 缺 80：ST 60 先抵最早出貨的訂單 2（40）與訂單 1 的 20，採購量 80 全分給訂單 1
+        self.record_po("PO-A", "EC-1", 40, order_ids=(1,))
+        self.record_po("PO-B", "OC-1", 10, order_ids=(99,))  # 無關訂單
+        self.record_po("PO-C", "AC-1", 5, order_ids=(1,), target="CHIComp13")  # 別的公司
+        self.record_po("PO-D", "PK-1", 5)  # PK-1 不缺 → 不列
+        _, p = self.parts()
+        self.assertEqual([(m["bill_no"], m["qty"]) for m in p["EC-1"]["already_ordered"]], [("PO-A", 40)])
+        self.assertEqual(p["EC-1"]["already_ordered"][0]["date"], db.list_erp_purchase_orders()[-1]["created_at"][:10])
+        self.assertEqual(p["OC-1"]["already_ordered"], [])
+        self.assertEqual(p["AC-1"]["already_ordered"], [])
+        self.assertEqual(p["PK-1"]["already_ordered"], [])
+
+    def test_already_ordered_manual_prior_matches_part_alone_and_lists_all(self):
+        self.record_po("PO-M1", "OC-1", 10)
+        self.record_po("PO-M2", "OC-1", 20)
+        _, p = self.parts()
+        self.assertEqual({m["bill_no"] for m in p["OC-1"]["already_ordered"]}, {"PO-M1", "PO-M2"})
+
+    def test_find_group_duplicates_and_router_no_write(self):
+        self.record_po("PO-A", "EC-1", 40, order_ids=(1,))
+        group = {"supplier_id": "S1", "lines": [{
+            "part_number": "EC-1", "qty": 40, "price": 1, "pre_in_date": "2026-12-01",
+            "allocations": [{"order_id": 1, "qty": 40, "kind": "order"}]}]}
+        dups = sp.find_group_duplicates([group])
+        self.assertEqual([(d["part_number"], d["matches"][0]["bill_no"]) for d in dups], [("EC-1", "PO-A")])
+        fresh = {"supplier_id": "S1", "lines": [{
+            "part_number": "EC-1", "qty": 40, "price": 1, "pre_in_date": "2026-12-01",
+            "allocations": [{"order_id": 2, "qty": 40, "kind": "order"}]}]}
+        self.assertEqual(sp.find_group_duplicates([fresh]), [])
+
+    def test_create_many_never_warns_per_group_and_keeps_qty(self):
+        seen = []
+
+        def fake_create(req, actor="web", client_ip=""):
+            seen.append(req["allow_duplicate"])
+            return {"ok": True, "bill_no": "PO-1", "supplier": {"id": "S1"}, "totals": {}, "lines": []}
+
+        with patch.object(ep, "create_po", fake_create):
+            sp.create_many([{"supplier_id": "S1", "lines": []}])
+        self.assertEqual(seen, [True])
+
+    def test_prepare_groups_keeps_submitted_qty(self):
+        groups = [{"supplier_id": "S1", "lines": [
+            {"part_number": "EC-1", "qty": 5, "price": 1, "pre_in_date": "2026-12-01"}]}]
+        self.site_moq = {"EC-1": 1000.0}
+        out = sp.prepare_groups(groups, [1, 2, 3])
+        self.assertEqual(out[0]["lines"][0]["qty"], 5)
 
     def test_no_groups_warns(self):
         self.groups = []
@@ -582,6 +699,18 @@ class CreateManyTests(Base):
         self.assertTrue(any(l["action"] == "shortage_po_created" and "成功 2" in l["detail"] and "失敗 2" in l["detail"]
                             for l in logs))
 
+    def test_create_keeps_submitted_qty_below_moq(self):
+        seen = []
+
+        def fake_create(req, actor="web", client_ip=""):
+            seen.append([l["qty"] for l in req["lines"]])
+            return {"ok": True, "bill_no": "PO-1", "supplier": {"id": "S1"}, "totals": {}, "lines": []}
+
+        groups = [{"supplier_id": "S1", "lines": [{"part_number": "EC-1", "qty": 5, "price": 1, "pre_in_date": "2026-12-01"}]}]
+        with patch.object(moq_service, "site_moq_map", lambda: {"EC-1": 1000.0}), patch.object(ep, "create_po", fake_create):
+            sp.create_many(groups)
+        self.assertEqual(seen, [[5]])  # 使用者手動改小的數量不會被後端調回 MOQ
+
     def test_max_groups(self):
         with self.assertRaises(ep.PoValidationError):
             sp.create_many([{"supplier_id": f"S{i}", "lines": []} for i in range(21)])
@@ -628,6 +757,20 @@ class RouterTests(Base):
         with patch.object(ep, "preview_many", lambda reqs: [{"ok": True, "n": len(reqs)}]):
             r = self.client.post("/api/shortage-po/preview", json={"groups": [self.GROUP]})
         self.assertEqual(r.json()["results"], [{"ok": True, "n": 1}])
+
+    def test_create_returns_duplicate_warning_without_writing(self):
+        dup = [{"line_no": 1, "part_number": "A", "supplier_id": "S1", "qty": 1,
+                "matches": [{"bill_no": "PO-1", "date": "2026-10-30", "qty": 1, "supplier_id": "S1"}]}]
+        calls = []
+        with patch.object(sp, "find_group_duplicates", lambda groups: dup), \
+                patch.object(sp, "create_many", lambda g, a, ip: calls.append(g) or []):
+            r = self.client.post("/api/shortage-po/create", json={"groups": [self.GROUP], "confirm": True})
+            self.assertEqual((r.status_code, r.json()), (200, {"results": [], "duplicate_warning": dup}))
+            self.assertEqual(calls, [])  # 沒有寫入
+            r = self.client.post("/api/shortage-po/create",
+                                 json={"groups": [self.GROUP], "confirm": True, "allow_duplicate": True})
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(len(calls), 1)
 
     def test_category_endpoint(self):
         r = self.client.post("/api/shortage-po/category", json={"part_number": "oc-1", "category": "smt"})
@@ -692,6 +835,32 @@ class TabFakeCursor(FakeErpCursor):
         super().execute(sql, params)
 
 
+class MoqAdjustTests(unittest.TestCase):
+    def test_adjust_qty(self):
+        self.assertEqual(moq_service.adjust_qty(80, 1000), 1000)  # 需求 < MOQ
+        self.assertEqual(moq_service.adjust_qty(1500, 1000), 1500)  # 需求 > MOQ
+        self.assertEqual(moq_service.adjust_qty(1000, 1000), 1000)
+        self.assertEqual(moq_service.adjust_qty(80.2, 0), 81)  # 無 MOQ：需求進位
+        self.assertEqual(moq_service.adjust_qty(80, None), 80)
+        self.assertEqual(moq_service.adjust_qty(80, "abc"), 80)
+        self.assertEqual(moq_service.adjust_qty(80, -5), 80)
+        self.assertEqual(moq_service.adjust_qty(0, 1000), 0)  # 不需要就不湊 MOQ
+        self.assertEqual(moq_service.adjust_qty(None, 1000), 0)
+        self.assertEqual(moq_service.adjust_qty(80.0000000001, 0), 80)  # 浮點雜訊不進位
+
+    def test_multiple_param(self):
+        self.assertEqual(moq_service.adjust_qty(80, 100, multiple=50), 100)
+        self.assertEqual(moq_service.adjust_qty(120, 100, multiple=50), 150)
+        self.assertEqual(moq_service.adjust_qty(120, 0, multiple=0), 120)
+        self.assertEqual(moq_service.adjust_qty(120, 0, multiple=None), 120)
+
+    def test_moq_fields(self):
+        f = moq_service.moq_fields(80, {"moq": 1000, "moq_source": "主檔"})
+        self.assertEqual((f["need_qty"], f["suggested_qty"], f["moq_adjusted"], f["moq_source"]), (80, 1000, True, "主檔"))
+        f = moq_service.moq_fields(80, None)
+        self.assertEqual((f["suggested_qty"], f["moq"], f["moq_source"], f["moq_adjusted"]), (80, 0, "", False))
+
+
 class CustomerSuppliedListTests(Base):
     def setUp(self):
         super().setUp()
@@ -736,6 +905,7 @@ class CustomerSuppliedListTests(Base):
             patch.object(low_stock, "get_config", lambda: {"on_order_max_overdue_days": 90}),
             patch.object(ep, "get_config", lambda: {"label": "x", "available": True, "is_test": True}),
             patch.object(sp, "local_now", lambda: TODAY),
+            patch.object(moq_service, "site_moq_map", lambda: {}),
         ]
         for p in patches:
             p.start()
@@ -761,6 +931,16 @@ class CustomerSuppliedListTests(Base):
         self.assertEqual(cs["CS-1-TAB"]["description"], "客供電阻")
         self.assertEqual(cs["CS-1-TAB"]["earliest_order"]["code"], "1-1")
         self.assertEqual(cs["CS-1-TAB"]["orders"][0]["qty"], 50)
+
+    def test_zero_shortage_count_for_frontend_filter(self):
+        self.erp["wares"].append(("002", "CS-2-TAB", 15.0))  # CS-2-TAB 庫存 20 ≥ 需求 8 → 缺 0
+        res, _, cs = self.build()
+        self.assertEqual(cs["CS-2-TAB"]["shortage"], 0)
+        self.assertEqual(res["customer_supplied_zero_count"], 1)
+        self.tab_down = True  # 庫存未知（shortage None）不算缺 0，前端照常列出
+        res, _, cs = self.build()
+        self.assertIsNone(cs["CS-1-TAB"]["shortage"])
+        self.assertEqual(res["customer_supplied_zero_count"], 0)
 
     def test_no_supplier_or_price_lookup_for_customer_supplied(self):
         self.build()

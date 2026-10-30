@@ -94,6 +94,7 @@ export async function refreshLowStock() {
 function renderSettings() {
   const map = {
     "low-stock-set-lookback": "lookback_days",
+    "low-stock-set-suggest-lookback": "suggest_lookback_days",
     "low-stock-set-min-bills": "min_bills",
     "low-stock-set-safety": "safety_factor",
     "low-stock-set-min-cover": "min_cover_days",
@@ -208,12 +209,14 @@ async function onTableClick(event) {
   const act = target.dataset.act;
   if (act === "toggle") return; // 由 change 事件處理
   if (act === "open-po") {
-    // 建議量 = 門檻 - 現有量 - 在途量，至少 1
+    // 建議量 = max(門檻 - 現有量 - 在途量（至少 1）, MOQ)；後端已算好，缺值時在這裡補算
     const gap = row.threshold === null || row.threshold === undefined
-      ? 0
-      : Number(row.threshold) - Number(row.qty || 0) - Number(row.on_order_qty || 0);
+      ? 1
+      : Math.max(1, Math.ceil(Number(row.threshold) - Number(row.qty || 0) - Number(row.on_order_qty || 0)));
+    const moq = Number(row.moq) > 0 ? Number(row.moq) : 0;
+    const qty = row.suggested_po_qty ?? Math.max(gap, Math.ceil(moq));
     document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
-    prefillPurchaseOrder(part, Math.max(1, Math.ceil(Math.max(gap, 0))));
+    prefillPurchaseOrder(part, qty, { need: gap, moq, moq_source: row.moq_source || "" });
     return;
   }
   if (act === "edit-threshold") {
@@ -301,6 +304,7 @@ async function handleSaveSettings() {
   try {
     _settings = await apiPost("/api/low-stock/settings", {
       lookback_days: val("low-stock-set-lookback"),
+      suggest_lookback_days: val("low-stock-set-suggest-lookback"),
       min_bills: val("low-stock-set-min-bills"),
       safety_factor: val("low-stock-set-safety"),
       min_cover_days: val("low-stock-set-min-cover"),

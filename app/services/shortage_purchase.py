@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import calendar
 import logging
-import math
 import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import database as db
-from . import erp_purchase, erp_stock, low_stock, part_conversion
+from . import erp_purchase, erp_stock, low_stock, moq as moq_service, part_conversion, po_duplicates
 from .shortage_rules import summarize_requested_supply
 from .local_time import local_now
 
@@ -511,6 +510,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     }
     lookups = _erp_lookups(keys, today)
     overrides = db.get_part_purchase_categories(keys)
+    moq_info = moq_service.lookup_moq([k for k in keys if not erp_purchase.customer_supplied_reason(k)])
 
     parts_out: List[Dict[str, Any]] = []
     customer_supplied: List[Dict[str, Any]] = []
@@ -540,7 +540,9 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         dates = {c: v[0].isoformat() if v else "" for c, v in clamped.items()}
         original_dates = {c: d.isoformat() if d else "" for c, d in raw_dates.items()}
         adjusted = {c: bool(v and v[1]) for c, v in clamped.items()}
-        suggested = int(math.ceil(shortage - 1e-9)) if shortage > 0 else 0
+        # 預設採購量 = max(缺料量, MOQ)；使用者可手動改，建立採購單時不再調整
+        qty_fields = moq_service.moq_fields(shortage, moq_info.get(key))
+        suggested = qty_fields["suggested_qty"]
         parts_out.append({
             "part_number": key,
             "description": description,
@@ -557,7 +559,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "on_order_date": open_date,
             "shortage": shortage,
             "needs_purchase": shortage > 0,
-            "suggested_qty": suggested,
+            **qty_fields,
             "allocations": allocate_purchase_to_orders(entry["orders"], st, suggested),
             "price": float(last.get("price") or 0),
             "last_bill_no": last.get("bill_no", ""),
@@ -572,6 +574,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "orders": entry["orders"],
         })
     parts_out.sort(key=lambda p: (p["supplier_id"], p["part_number"]))
+    _already_ordered(parts_out)
 
     orders = [o for o in (db.get_order(int(i)) for i in dict.fromkeys(order_ids)) if o]
     warnings = list(lookups["warnings"])
@@ -583,9 +586,42 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         "orders": [_order_summary(o) for o in orders],
         "parts": parts_out,
         "customer_supplied": customer_supplied,
+        "customer_supplied_zero_count": sum(
+            1 for c in customer_supplied if c["shortage"] is not None and c["shortage"] <= 0
+        ),
         "customer_supplied_ware_ids": lookups["tab_ware_ids"],
         "warnings": warnings,
     }
+
+
+# ── 重複開單保護 ─────────────────────────────────────────────────────────────
+
+def find_group_duplicates(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """各供應商組中，本站（同一寫入公司）已開過採購單的明細；不寫入任何東西。
+    格式錯誤的組略過（寫入時 create_po 會各自回報錯誤）。"""
+    target = erp_purchase.get_target()
+    found: List[Dict[str, Any]] = []
+    for group in groups:
+        try:
+            req = erp_purchase.normalize_request(group)
+        except erp_purchase.PoValidationError:
+            continue
+        found.extend(po_duplicates.find_duplicates(req, target))
+    return found
+
+
+def _already_ordered(parts_out: List[Dict[str, Any]]) -> None:
+    """替每個要買的料號加上 already_ordered（本站已開過的 PO，格式見 po_duplicates.find_matches）。"""
+    try:
+        target = erp_purchase.get_target()
+    except Exception:
+        target = ""
+    prior = po_duplicates.load_prior(target, [p["part_number"] for p in parts_out]) if target else {}
+    for p in parts_out:
+        ids = [a["order_id"] for a in p["allocations"] if a.get("order_id")]
+        p["already_ordered"] = po_duplicates.find_matches(
+            prior.get(p["part_number"].upper(), []), ids, p["supplier_id"]
+        ) if p["needs_purchase"] else []
 
 
 # ── 建立多張採購單 ───────────────────────────────────────────────────────────
@@ -598,7 +634,10 @@ def create_many(groups: List[Dict[str, Any]], actor: str = "web", client_ip: str
     for group in groups:
         supplier_id = str(group.get("supplier_id") or "").strip()
         try:
-            r = erp_purchase.create_po({**group, "confirm": True}, actor=actor, client_ip=client_ip)
+            # 重複開單的確認已在 router 一次做完（整批要嘛全寫、要嘛都不寫），這裡不再逐張警告；防連點仍然有效
+            r = erp_purchase.create_po(
+                {**group, "confirm": True, "allow_duplicate": True}, actor=actor, client_ip=client_ip
+            )
             results.append({
                 "supplier_id": supplier_id, "ok": True, "bill_no": r["bill_no"],
                 "supplier": r["supplier"], "totals": r["totals"], "lines": r["lines"],

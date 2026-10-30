@@ -26,7 +26,8 @@ LAST_SUGGESTED_KEY = "low_stock_last_suggested_at"
 IN_CHUNK = 500
 
 DEFAULT_CONFIG: Dict[str, float] = {
-    "lookback_days": 90,
+    "lookback_days": 365,
+    "suggest_lookback_days": 90,
     "min_bills": 3,
     "safety_factor": 1.5,
     "min_cover_days": 7,
@@ -40,6 +41,7 @@ DEFAULT_CONFIG: Dict[str, float] = {
 # (最小, 最大, 是否整數)
 CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
     "lookback_days": (7, 730, True),
+    "suggest_lookback_days": (7, 730, True),
     "min_bills": (1, 50, True),
     "safety_factor": (0.1, 10, False),
     "min_cover_days": (0, 365, False),
@@ -52,6 +54,7 @@ CONFIG_RULES: Dict[str, Tuple[float, float, bool]] = {
 }
 CONFIG_LABELS = {
     "lookback_days": "用量統計天數",
+    "suggest_lookback_days": "建議清單統計天數",
     "min_bills": "最少單據數",
     "safety_factor": "安全係數",
     "min_cover_days": "最低可撐天數",
@@ -227,9 +230,22 @@ def _coerce(key: str, value: Any) -> float:
     return num
 
 
+def _default_for(key: str) -> float:
+    """預設值；用量統計天數可用環境變數 LOW_STOCK_LOOKBACK_DAYS 覆蓋（設定表的值優先，格式不符則忽略）。"""
+    if key == "lookback_days":
+        env = os.environ.get("LOW_STOCK_LOOKBACK_DAYS", "").strip()
+        if env:
+            try:
+                return _coerce(key, env)
+            except LowStockError:
+                pass
+    return DEFAULT_CONFIG[key]
+
+
 def get_config() -> Dict[str, float]:
     cfg: Dict[str, float] = {}
-    for key, default in DEFAULT_CONFIG.items():
+    for key in DEFAULT_CONFIG:
+        default = _default_for(key)
         raw = db.get_setting(SETTING_PREFIX + key, "")
         try:
             cfg[key] = _coerce(key, raw) if str(raw).strip() != "" else default
@@ -634,7 +650,8 @@ def run_suggestion(actor: str = "system") -> dict:
     cfg = get_config()
     today = local_now().date()
     ware_id = erp_stock.get_settings()["ware_id"]
-    start = today - timedelta(days=int(cfg["lookback_days"]))
+    start = today - timedelta(days=int(cfg["lookback_days"]))  # 平均日用量（門檻）用
+    suggest_start = today - timedelta(days=int(cfg["suggest_lookback_days"]))  # 只用來判斷是否符合「最少單據數」候選
 
     with db.get_conn() as conn:
         existing = {r["part_number"]: dict(r) for r in conn.execute("SELECT * FROM low_stock_watch").fetchall()}
@@ -646,8 +663,9 @@ def run_suggestion(actor: str = "system") -> dict:
     # ── 階段一：只讀 ERP（失敗就直接丟出，尚未寫入任何資料） ──
     with _erp_session() as erp:
         usage = _query_usage(erp, ware_id, start, today)
+        suggest_usage = usage if suggest_start == start else _query_usage(erp, ware_id, suggest_start, today)
         qualifying = {
-            p for p, (net, bills) in usage.items()
+            p for p, (net, bills) in suggest_usage.items()
             if bills >= cfg["min_bills"] and net > 0 and in_main(p)
         }
         candidates = qualifying - dismissed
@@ -892,6 +910,28 @@ def _sort_key(view: dict) -> tuple:
     return (cover is None, cover if cover is not None else 0, -shortfall, view["part_number"])
 
 
+def suggested_po_gap(row: dict) -> int:
+    """開採購單建議量（未計 MOQ）：門檻 - 現有量 - 在途量，至少 1；沒有門檻則為 1。"""
+    threshold = row.get("threshold")
+    if threshold is None:
+        return 1
+    gap = float(threshold) - float(row.get("qty") or 0) - float(row.get("on_order_qty") or 0)
+    return max(1, int(math.ceil(max(gap, 0) - 1e-9)))
+
+
+def with_moq(views: List[dict]) -> List[dict]:
+    """替每列加上 moq / moq_source / suggested_po_qty（= max(缺口, MOQ)）。只用本站 MOQ，不連 ERP。"""
+    from . import moq as moq_service
+
+    site = moq_service.site_moq_map()
+    for v in views:
+        value = float(site.get(norm_part(v["part_number"]), 0) or 0)
+        v["moq"] = value
+        v["moq_source"] = moq_service.SOURCE_SITE if value > 0 else ""
+        v["suggested_po_qty"] = moq_service.adjust_qty(suggested_po_gap(v), value)
+    return views
+
+
 def list_rows(main_parts: Any = _UNSET) -> List[dict]:
     """所有未移除的關注料號（含現有量與狀態），低庫存在前，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。"""
     db.ensure_low_stock_table()
@@ -902,7 +942,7 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
     if main_parts is not None:
         recs = [r for r in recs if norm_part(r["part_number"]) in main_parts]
     stock = db.get_st_inventory_stock()
-    views = [_view_row(r, float(stock.get(r["part_number"], 0.0))) for r in recs]
+    views = with_moq([_view_row(r, float(stock.get(r["part_number"], 0.0))) for r in recs])
     order = {"low": 0, "on_order": 1, "ok": 2, "disabled": 3}
     views.sort(key=lambda v: (order[v["status"]], *_sort_key(v)))
     return views

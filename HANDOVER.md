@@ -84,6 +84,18 @@
 - 打件 / 後段自動判斷（`shortage_purchase.classify_part`）：料號前兩碼 EC / IC / UC / PB，或品名含 0201 0402 0603 0805 1206 SMD SMT SOT QFN QFP BGA SOP TSSOP PCB 電容 電阻 電感 → 打件；其餘（OC / PK / SP / AC / RC / CM / CF / SS / GH …）→ 後段。人工指定存在 SQLite `part_purchase_categories`，優先於自動判斷。
 - API（`/api/shortage-po`）：`GET /list?order_ids=1,2` 缺料清單、`GET /orders` 可選訂單 + `latest_batch_ids`、`POST /category` 存類別、`POST /preview`（`{groups}`，預估單號依序遞增）、`POST /create`（需 `confirm:true`，逐張寫入、單張失敗不中斷，活動日誌記成功 / 失敗張數）。POST 皆需編輯登入。
 
+### 採購 MOQ（v2026.10.30.4，`app/services/moq.py`）
+
+- 開採購單 / 缺料採購 / 低庫存「開採購單」的預設數量 = `max(需求, MOQ)`（`moq.adjust_qty`）；沒有 MOQ 就用需求。使用者可手動改，建立時後端照送出的數量寫入（不再調整）。
+- MOQ 來源（`moq.lookup_moq`）：① 本站有效 MOQ = `dispatch_pipeline.get_effective_moq(主檔路徑)`（主檔 MOQ 欄，被庫存快照 / 手動編輯覆蓋；標示「主檔」）；② 本站沒有或為 0 才查正航 `comProduct.MinPurch`（最低採購量，唯讀 SELECT + NOLOCK；標示「ERP 最低採購量」），正航連不上靜默略過。低庫存清單 API 不連 ERP，只用 ① ；ERP 補查發生在開採購單的 `part-defaults` 與缺料採購清單。
+- **沒有可靠的訂購倍數 / SPQ**：`TakeMatMultiple` 是領料倍數（不是採購）、`MinPackQty` 全為 0、`PackAmt` / `InPackAmt` 是單位換算。所以目前不進位到倍數；`adjust_qty(need, moq, multiple=0)` 已預留 `multiple`，之後有可靠來源再接。
+
+### 重複開單保護、無年份日期、低庫存統計窗口（v2026.10.30.4）
+
+- **重複開單**（`app/services/po_duplicates.py`）：只看本站 `erp_purchase_orders`（status=ok、同 `target_db`）+ `erp_po_line_allocations`。缺料採購清單每行有 `already_ordered`；`create_po` 偵測到已開過且沒帶 `allow_duplicate` → 丟 `DuplicateWarning`，router 回 200 + `duplicate_warning`（不寫入）；缺料採購 `/create` 在 router 先整批檢查，通過後各組以 `allow_duplicate=True` 建立。防連點 `fingerprint`（60 秒、含建立中 in-flight）不能用 allow_duplicate 繞過，回 409。
+- **無年份日期**（`app/services/date_infer.py`）：排程表 m/d 格式儲存格依今天推年（過去超過 60 天 → 明年）。舊資料修復：`python -m app.tools.fix_yearless_dates [--apply]`，手動執行、預設 dry-run，不在啟動時跑，不碰正航。
+- **低庫存**：`lookback_days`（平均日用量，預設 365，env `LOW_STOCK_LOOKBACK_DAYS`）與 `suggest_lookback_days`（建議清單候選窗口，預設 90）分開。
+
 ## 7. 跟 Andy 的合作方式
 
 - 全程繁中白話，講結論不寫論文；選項用「三選一＋推薦哪個」。他說「幾支幾」＝批次代碼（6-1 這種）。

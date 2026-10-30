@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field, validator
 import math
 import re
 
+from .services.date_infer import normalize_date_text
+
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
@@ -136,6 +138,10 @@ class CreateOrderRequest(BaseModel):
     def strip_text(cls, value):
         return value.strip() if isinstance(value, str) else value
 
+    @validator("ship_date", "delivery_date", pre=True)
+    def infer_missing_year(cls, value):
+        return normalize_date_text(value)  # 「1/29」這種沒有年份的文字依今天推斷年份
+
     @validator("insert_before_code")
     def validate_insert_code(cls, value):
         if value and not re.fullmatch(r"\d+-\d+", value):
@@ -149,6 +155,10 @@ class ReorderRequest(BaseModel):
 
 class UpdateDeliveryRequest(BaseModel):
     delivery_date: str
+
+    @validator("delivery_date", pre=True)
+    def infer_missing_year(cls, value):
+        return normalize_date_text(value)
 
 
 class BatchMergeRequest(BaseModel):
@@ -340,6 +350,7 @@ class LowStockRemoveRequest(BaseModel):
 
 class LowStockSettingsRequest(BaseModel):
     lookback_days: Optional[float] = None
+    suggest_lookback_days: Optional[float] = None
     min_bills: Optional[float] = None
     safety_factor: Optional[float] = None
     min_cover_days: Optional[float] = None
@@ -380,6 +391,7 @@ class ErpPoRequest(BaseModel):
 
 class ErpPoCreateRequest(ErpPoRequest):
     confirm: bool = False
+    allow_duplicate: bool = False  # 明細本站已開過時，使用者確認後才帶 true
 
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
@@ -396,6 +408,7 @@ class ShortagePoRequest(BaseModel):
 
 class ShortagePoCreateRequest(ShortagePoRequest):
     confirm: bool = False
+    allow_duplicate: bool = False
 
 
 # ── 轉換料 A→B ────────────────────────────────────────────────────────────────
@@ -417,6 +430,10 @@ class PullinConfirmRequest(BaseModel):
     new_ship_date: str
     update_order_ship_date: bool = False  # 預設不動訂單出貨日
     dry_run: bool = False
+
+    @validator("new_ship_date", pre=True)
+    def infer_missing_year(cls, value):
+        return normalize_date_text(value)
 
 
 class PullinLine(BaseModel):

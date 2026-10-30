@@ -7,6 +7,43 @@ import unittest
 from pathlib import Path
 
 
+
+class TabBarOrderTests(unittest.TestCase):
+    VISIBLE = ["schedule", "calc-workspace", "main-preview-v2", "completed", "low-stock-tab", "erp-po-tab",
+               "shortage-po-tab", "bom", "part-conversion-tab", "po-pullin-tab", "backups-tab", "analytics-tab",
+               "defectives-tab"]
+    HIDDEN = {"alerts-tab", "logs-tab", "st-inventory"}
+
+    def setUp(self):
+        import re
+        root = Path(__file__).resolve().parents[1] / "static"
+        self.html = (root / "index.html").read_text(encoding="utf-8")
+        self.css = (root / "style.css").read_text(encoding="utf-8")
+        self.buttons = re.findall(r'<button class="tab-btn([^"]*)"([^>]*)data-tab="([^"]+)"([^>]*)>', self.html)
+
+    def test_visible_order_and_hidden_tabs(self):
+        def is_hidden(b):
+            return " hidden" in (b[1] + b[3])
+        visible = [b[2] for b in self.buttons if not is_hidden(b)]
+        self.assertEqual(visible, self.VISIBLE)
+        self.assertTrue(self.HIDDEN <= {b[2] for b in self.buttons if is_hidden(b)})
+        self.assertEqual(self.buttons[0][2], "schedule")
+        self.assertIn("active", self.buttons[0][0])  # 預設仍是出貨排程
+
+    def test_hidden_tab_panels_and_handlers_kept(self):
+        for tab in self.HIDDEN:
+            self.assertIn(f'id="tab-{tab}"', self.html)
+        self.assertIn("refreshAlerts()", self.html)
+        self.assertIn("refreshLogs()", self.html)
+        self.assertIn(".tab-btn[hidden] { display: none !important; }", self.css)
+
+    def test_css_order_matches_dom_order(self):
+        import re
+        order = {t: int(n) for t, n in re.findall(r'\.tab-btn\[data-tab="([^"]+)"\] \{ order: (\d+); \}', self.css)}
+        dom = [b[2] for b in self.buttons]
+        self.assertEqual(sorted(dom, key=lambda t: order[t]), dom)
+
+
 class FrontendAssetTests(unittest.TestCase):
     def test_schedule_module_has_no_duplicate_top_level_function_declarations(self):
         schedule_module = Path(__file__).resolve().parents[1] / "static" / "modules" / "schedule.js"

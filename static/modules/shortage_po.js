@@ -1,6 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
-import { allocationText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
+import { allocationText, duplicateWarningText, moqHintText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
 
 const CATEGORY_LABELS = { smt: "打件", backend: "後段" };
 const SOURCE_LABELS = { master: "主檔", last_po: "最近採購", none: "未設定", manual: "手動" };
@@ -109,6 +109,10 @@ function toRow(p) {
     shortage: p.shortage,
     needsPurchase: p.needs_purchase,
     qty: p.suggested_qty > 0 ? String(p.suggested_qty) : "",
+    needQty: p.need_qty || 0,
+    moq: p.moq || 0,
+    moqSource: p.moq_source || "",
+    moqAdjusted: Boolean(p.moq_adjusted),
     price: String(p.price ?? 0),
     date: p.pre_in_date || "",
     dates: p.pre_in_dates || {},
@@ -117,7 +121,10 @@ function toRow(p) {
     dateEdited: false,
     earliest: p.earliest_order,
     orders: p.orders || [],
-    checked: false,
+    alreadyOrdered: p.already_ordered || [],
+    // 每次載入 / 重新整理預設全勾：要買（缺 > 0）且有供應商的才可勾，其餘維持不勾並在列上註明原因；
+    // 本站已開過採購單的例外，預設不勾（列上顯示「已開 PO-xxxx」）
+    checked: Boolean(p.needs_purchase && (p.supplier_id || "").trim() && !(p.already_ordered || []).length),
     doneBill: "",
   };
 }
@@ -157,8 +164,11 @@ function renderWarnings() {
 function renderCustomerSupplied() {
   const box = el("shortage-po-cs");
   if (!box) return;
-  const items = _data?.customer_supplied || [];
-  if (!items.length) { box.hidden = true; box.innerHTML = ""; return; }
+  const all = _data?.customer_supplied || [];
+  // 只列缺 > 0 的；庫存未知（shortage 為 null）無從判斷，照常列出
+  const items = all.filter(c => c.shortage === null || c.shortage === undefined || c.shortage > 0);
+  const hiddenZero = all.length - items.length;
+  if (!all.length) { box.hidden = true; box.innerHTML = ""; return; }
   const wares = (_data.customer_supplied_ware_ids || []).join("、");
   const rows = items.map(c => {
     const e = c.earliest_order || {};
@@ -177,11 +187,11 @@ function renderCustomerSupplied() {
   const errors = [...new Set(items.filter(c => !c.stock_known).map(c => c.stock_error))];
   box.hidden = false;
   box.innerHTML = `<div class="shortage-po-group-head"><strong>客供料（向客戶要料）</strong>
-      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）</span></div>
+      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）${hiddenZero ? `（另 ${hiddenZero} 筆缺 0 未列出）` : ""}</span></div>
     ${errors.map(e => `<div class="erp-po-warn">${esc(e)}，庫存暫顯示為未知</div>`).join("")}
-    <div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
+    ${items.length ? `<div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
       <th>料號</th><th>品名</th><th class="num">需求</th><th class="num">${esc(wares)} 庫存</th><th class="num">缺（向客戶要）</th><th>最早訂單</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>`;
+    </tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="erp-po-hint">沒有缺的客供料</div>'}`;
 }
 
 function visibleRows() {
@@ -234,10 +244,13 @@ function rowHtml(r) {
   const tip = r.orders.map(o => `${o.code} ${o.model} 出貨 ${o.ship_date || "—"} 需 ${fmtQty(o.qty)}`).join("\n");
   const e = r.earliest || {};
   const disabled = !r.supplierId.trim() || r.doneBill;
+  const reason = r.doneBill ? "" : (r.supplierId.trim() ? "" : "未設定供應商");
   return `<tr data-part="${esc(r.part)}" class="${r.doneBill ? "shortage-po-done" : ""}">
     <td><input type="checkbox" data-act="check" ${r.checked ? "checked" : ""} ${disabled ? "disabled" : ""}
-      title="${r.supplierId.trim() ? "" : "請先填供應商"}"></td>
-    <td class="mono">${esc(r.part)}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)}</div>` : ""}</td>
+      title="${reason ? "無法勾選：請先填供應商" : ""}">${reason ? `<div class="erp-po-hint shortage-po-adjusted">${esc(reason)}</div>` : ""}</td>
+    <td class="mono">${esc(r.part)}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)}</div>` : ""}${
+      r.alreadyOrdered.length && !r.doneBill ? `<div class="erp-po-hint shortage-po-adjusted shortage-po-ordered">${r.alreadyOrdered.map(m =>
+        `已開 ${esc(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}</td>
     <td>${esc(r.desc)}</td>
     <td><select data-act="category">
       ${Object.entries(CATEGORY_LABELS).map(([k, label]) => `<option value="${k}" ${r.category === k ? "selected" : ""}>${label}</option>`).join("")}
@@ -248,7 +261,8 @@ function rowHtml(r) {
     <td class="num">${fmtQty(r.st)}${r.mergedFrom.length ? `<div class="erp-po-hint" title="轉換料：B 有效庫存 = B + A">含 ${r.mergedFrom.map(m => `${esc(m.part)} ${fmtQty(m.stock)}`).join("、")}</div>` : ""}</td>
     <td class="num">${fmtQty(r.onOrder)}</td>
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
-    <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}></td>
+    <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}>
+      ${r.needQty ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource))}</div>` : ""}</td>
     <td><input type="number" data-act="price" class="num" min="0" step="any" value="${esc(r.price)}" ${r.doneBill ? "disabled" : ""}></td>
     <td><input type="date" data-act="date" value="${esc(r.date)}" ${r.doneBill ? "disabled" : ""}>
       ${note ? `<div class="erp-po-hint shortage-po-adjusted">${esc(note)}</div>` : ""}</td>
@@ -270,10 +284,11 @@ function renderGroups() {
   box.innerHTML = groupBySupplier(rows).map(([sid, list]) => {
     const selectable = list.filter(r => r.supplierId.trim() && !r.doneBill);
     const allChecked = selectable.length > 0 && selectable.every(r => r.checked);
+    const partial = !allChecked && selectable.some(r => r.checked);
     const name = list.find(r => r.supplierName)?.supplierName || "";
     return `<div class="shortage-po-group" data-supplier="${esc(sid)}">
       <div class="shortage-po-group-head">
-        <input type="checkbox" data-act="check-all" ${allChecked ? "checked" : ""} ${selectable.length ? "" : "disabled"}>
+        <input type="checkbox" data-act="check-all" ${allChecked ? "checked" : ""} ${partial ? 'data-partial="1"' : ""} ${selectable.length ? "" : "disabled"}>
         <strong class="mono">${sid ? esc(sid) : "（未設定供應商）"}</strong>
         <span>${esc(name)}</span>
         <span class="erp-po-hint">${list.length} 行</span>
@@ -288,6 +303,7 @@ function renderGroups() {
       </table></div>
     </div>`;
   }).join("");
+  box.querySelectorAll('input[data-act="check-all"][data-partial]').forEach(cb => { cb.indeterminate = true; });
   updateButtons();
 }
 
@@ -525,10 +541,29 @@ async function handleCreate() {
   if (!groups.length) return;
   const label = _previewResults.find(r => r.ok)?.target_label || _config?.label || "";
   if (!window.confirm(`確定要在「${label}」建立 ${groups.length} 張採購單嗎？\n寫入後無法從本系統修改或刪除。`)) return;
+  // 勾選的料若本站已開過採購單，先列出來再確認一次
+  const ordered = checkedRows().filter(r => r.alreadyOrdered.length);
+  let confirmedDuplicate = false;
+  if (ordered.length) {
+    const text = ordered.map(r => `・${r.part}：已開 ${r.alreadyOrdered.map(m => `${m.bill_no}（${m.date}，數量 ${fmtQty(m.qty)}）`).join("、")}`).join("\n");
+    if (!window.confirm(`以下料號本站已經開過採購單：\n${text}\n\n仍要再開一次嗎？`)) return;
+    confirmedDuplicate = true;
+  }
   setBusy(true);
   const out = el("shortage-po-result");
   try {
-    const data = await apiPost("/api/shortage-po/create", { groups, order_ids: _listOrderIds, confirm: true });
+    const payload = { groups, order_ids: _listOrderIds, confirm: true, ...(confirmedDuplicate ? { allow_duplicate: true } : {}) };
+    let data = await apiPost("/api/shortage-po/create", payload);
+    if (data.duplicate_warning) {
+      // 後端沒有寫入任何東西；確認後才帶 allow_duplicate 重送
+      if (!window.confirm(duplicateWarningText(data.duplicate_warning))) {
+        out.className = "shortage-po-result is-error";
+        out.textContent = "已取消：明細在本站已開過採購單，未寫入。";
+        out.hidden = false;
+        return;
+      }
+      data = await apiPost("/api/shortage-po/create", { ...payload, allow_duplicate: true });
+    }
     const results = data.results || [];
     out.innerHTML = resultHtml(results);
     out.className = `shortage-po-result ${results.every(r => r.ok) ? "is-ok" : "is-error"}`;

@@ -107,24 +107,24 @@
   <div id="main-content">
 
     <div id="tabs">
-      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
-      <button class="tab-btn" data-tab="st-inventory">ST 庫存</button>
       <button class="tab-btn active" data-tab="schedule">出貨排程</button>
-      <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="calc-workspace">算料工作區</button>
-      <button class="tab-btn" data-tab="bom">BOM 管理</button>
-      <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
+      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
+      <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
       <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
       <button class="tab-btn" data-tab="shortage-po-tab">缺料採購</button>
+      <button class="tab-btn" data-tab="bom">BOM 管理</button>
+      <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
       <button class="tab-btn" data-tab="part-conversion-tab">轉換料</button>
       <button class="tab-btn" data-tab="po-pullin-tab">提前清單 <span id="po-pullin-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
-      <button class="tab-btn" data-tab="alerts-tab">提醒</button>
-      <button class="tab-btn" data-tab="logs-tab">紀錄</button>
       <button class="tab-btn" data-tab="backups-tab">備份</button>
       <button class="tab-btn" data-tab="analytics-tab">分析</button>
       <button class="tab-btn" data-tab="defectives-tab">不良品</button>
       <button class="tab-btn" data-tab="sea-freight-tab" hidden>海運出貨</button>
+      <button class="tab-btn" hidden data-tab="st-inventory">ST 庫存</button>
+      <button class="tab-btn" hidden data-tab="alerts-tab">提醒</button>
+      <button class="tab-btn" hidden data-tab="logs-tab">紀錄</button>
     </div>
 
     <!-- ── Tab: 排程 ── -->
@@ -377,7 +377,7 @@
             <input type="text" id="erp-po-remark" autocomplete="off">
           </div>
         </div>
-        <div class="erp-po-table-wrap">
+        <div class="erp-po-table-wrap erp-po-lines-wrap">
           <table class="erp-po-table">
             <thead>
               <tr><th>#</th><th>料號</th><th>品名</th><th>數量</th><th>單價（未稅）</th><th>預計進貨日</th><th></th></tr>
@@ -487,6 +487,7 @@
         </div>
         <div id="low-stock-settings-panel" class="low-stock-panel" hidden>
           <label>用量統計天數 <input type="number" id="low-stock-set-lookback" min="7" max="730" step="1"></label>
+          <label>建議清單統計天數 <input type="number" id="low-stock-set-suggest-lookback" min="7" max="730" step="1"></label>
           <label>最少單據數 <input type="number" id="low-stock-set-min-bills" min="1" max="50" step="1"></label>
           <label>安全係數 <input type="number" id="low-stock-set-safety" min="0.1" max="10" step="0.1"></label>
           <label>最低可撐天數 <input type="number" id="low-stock-set-min-cover" min="0" max="365" step="1"></label>

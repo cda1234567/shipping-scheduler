@@ -61,6 +61,9 @@ async def get_low_stock_alerts():
                 "on_order_qty": a["on_order_qty"],
                 "next_expected_date": a["next_expected_date"],
                 "on_order_note": a["on_order_note"],
+                "moq": a["moq"],
+                "moq_source": a["moq_source"],
+                "suggested_po_qty": a["suggested_po_qty"],
             }
             for a in alerts
         ],

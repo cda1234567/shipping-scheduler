@@ -17,7 +17,10 @@ def open_workbook_any(path: str, read_only: bool = False, data_only: bool = True
 
 
 def _xls_to_openpyxl(path: str):
-    xls_wb = xlrd.open_workbook(path)
+    try:
+        xls_wb = xlrd.open_workbook(path, formatting_info=True)
+    except Exception:  # 格式資訊讀不到就退回只讀值（僅影響「無年份日期」判斷）
+        xls_wb = xlrd.open_workbook(path)
     new_wb = openpyxl.Workbook()
     new_wb.remove(new_wb.active)
 
@@ -30,6 +33,12 @@ def _xls_to_openpyxl(path: str):
                 val = cell.value
                 if cell.ctype == xlrd.XL_CELL_DATE:
                     val = xlrd.xldate.xldate_as_datetime(val, xls_wb.datemode)
-                new_ws.cell(row + 1, col + 1, val)
+                new_cell = new_ws.cell(row + 1, col + 1, val)
+                if cell.ctype == xlrd.XL_CELL_DATE:  # 保留日期格式，供「無年份」判斷
+                    try:
+                        xf = xls_wb.xf_list[cell.xf_index]
+                        new_cell.number_format = xls_wb.format_map[xf.format_key].format_str
+                    except (KeyError, IndexError, AttributeError):
+                        pass
 
     return new_wb

@@ -19,7 +19,17 @@ function defaultDate() {
 }
 
 function newLine(part = "") {
-  return { part, name: "", qty: "", price: "", date: defaultDate() };
+  return { part, name: "", qty: "", price: "", date: defaultDate(), hint: null, qtyAuto: false };
+}
+
+/** 數量欄下方的取整提示：「需 1,234，MOQ 2,000」（MOQ 來自 ERP 時附註來源）；沒有需求量時回空字串。 */
+export function moqHintText(need, moq, source) {
+  const n = Number(need);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const m = Number(moq);
+  if (!Number.isFinite(m) || m <= 0) return `需 ${fmtMoney(n)}`;
+  const from = source && source !== "主檔" ? `（${source}）` : "";
+  return `需 ${fmtMoney(n)}，MOQ ${fmtMoney(m)}${from}`;
 }
 
 function fmtMoney(value) {
@@ -112,7 +122,8 @@ function renderLines() {
     <td>${i + 1}</td>
     <td><input type="text" data-field="part" value="${esc(l.part)}" class="mono" autocomplete="off"></td>
     <td class="erp-po-name">${esc(l.name) || '<span class="erp-po-hint">—</span>'}</td>
-    <td><input type="number" data-field="qty" value="${esc(l.qty)}" min="0" step="any" class="num"></td>
+    <td><input type="number" data-field="qty" value="${esc(l.qty)}" min="0" step="any" class="num">${
+      l.hint ? `<div class="erp-po-hint erp-po-moq-hint">${esc(moqHintText(l.hint.need, l.hint.moq, l.hint.moq_source))}</div>` : ""}</td>
     <td><input type="number" data-field="price" value="${esc(l.price)}" min="0" step="any" class="num"></td>
     <td><input type="date" data-field="date" value="${esc(l.date)}"></td>
     <td><button class="btn btn-danger btn-sm" data-act="remove" type="button">移除</button></td>
@@ -129,7 +140,16 @@ async function fillDefaults(idx) {
     line.name = d.found ? d.product_name : "（正航查無此料號）";
     if (d.found) line.part = d.part_number || line.part;
     if ((line.price === "" || line.price === null) && d.last_price !== null && d.last_price !== undefined) line.price = String(d.last_price);
-    if ((line.qty === "" || line.qty === null) && d.suggested_qty !== null && d.suggested_qty !== undefined) line.qty = String(Math.max(1, d.suggested_qty));
+    if ((line.qty === "" || line.qty === null) && d.suggested_qty !== null && d.suggested_qty !== undefined) {
+      line.qty = String(Math.max(1, d.suggested_qty));
+      line.qtyAuto = true;
+      if (d.need_qty) line.hint = { need: d.need_qty, moq: d.moq, moq_source: d.moq_source };
+    } else if (line.qtyAuto && Number(d.moq) > 0) {
+      // 從低庫存帶入的數量尚未被改過：補上 ERP 最低採購量（本站 MOQ 已在帶入時處理）
+      const need = Number(line.hint?.need || line.qty);
+      line.qty = String(Math.max(Number(line.qty) || 0, Math.ceil(Number(d.moq))));
+      line.hint = { need, moq: d.moq, moq_source: d.moq_source };
+    }
     if (idx === 0 && !_supplier && d.supplier_id) _supplier = { id: d.supplier_id, name: d.supplier_name };
     renderSupplier();
     renderLines();
@@ -142,7 +162,9 @@ function onLinesInput(event) {
   const field = event.target.dataset?.field;
   const tr = event.target.closest("tr[data-idx]");
   if (!field || !tr) return;
-  _lines[Number(tr.dataset.idx)][field] = event.target.value;
+  const line = _lines[Number(tr.dataset.idx)];
+  line[field] = event.target.value;
+  if (field === "qty") line.qtyAuto = false; // 使用者自行改量後不再自動調整
 }
 
 function onLinesChange(event) {
@@ -160,12 +182,14 @@ function onLinesClick(event) {
   renderLines();
 }
 
-// 供低庫存提醒呼叫：帶入料號與建議數量
-export function prefillPurchaseOrder(part, qty) {
+// 供低庫存提醒呼叫：帶入料號與建議數量（已含 MOQ）；meta = { need, moq, moq_source } 用來顯示取整提示
+export function prefillPurchaseOrder(part, qty, meta = null) {
   const empty = _lines.length === 1 && !_lines[0].part.trim();
   if (empty) _lines = [];
   const line = newLine(String(part || "").toUpperCase());
   line.qty = qty ? String(qty) : "";
+  line.qtyAuto = Boolean(qty);
+  if (meta && meta.need) line.hint = { need: meta.need, moq: meta.moq, moq_source: meta.moq_source };
   _lines.push(line);
   renderLines();
   void fillDefaults(_lines.length - 1);
@@ -256,7 +280,19 @@ async function handleCreate() {
   setBusy(true);
   const result = document.getElementById("erp-po-result");
   try {
-    const r = await apiPost("/api/erp/po/create", { ...body, confirm: true });
+    let r = await apiPost("/api/erp/po/create", { ...body, confirm: true });
+    if (r.duplicate_warning) {
+      // 後端沒有寫入任何東西；使用者確認後才帶 allow_duplicate 重送
+      if (!window.confirm(duplicateWarningText(r.duplicate_warning))) {
+        if (result) {
+          result.className = "erp-po-result is-error";
+          result.textContent = "已取消：明細在本站已開過採購單，未寫入。";
+          result.hidden = false;
+        }
+        return;
+      }
+      r = await apiPost("/api/erp/po/create", { ...body, confirm: true, allow_duplicate: true });
+    }
     if (result) {
       result.className = "erp-po-result is-ok";
       result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong>，含稅合計 ${fmtMoney(r.totals.total)}`;
@@ -277,6 +313,15 @@ async function handleCreate() {
     setBusy(false);
     void refreshHistory();
   }
+}
+
+/** 重複開單警告（後端 duplicate_warning）轉成確認視窗文字：每行列出料號與已開過的單號 / 日期 / 數量。 */
+export function duplicateWarningText(items) {
+  const lines = (items || []).map(d => {
+    const prior = (d.matches || []).map(m => `${m.bill_no}（${m.date}，數量 ${fmtMoney(m.qty)}）`).join("、");
+    return `・${d.part_number}${d.supplier_id ? `（供應商 ${d.supplier_id}）` : ""}：已開 ${prior}`;
+  });
+  return `以下明細本站已經開過採購單：\n${lines.join("\n")}\n\n仍要再開一次嗎？`;
 }
 
 // ── 歷史 ────────────────────────────────────────────────────────────────────

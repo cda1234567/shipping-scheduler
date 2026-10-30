@@ -84,6 +84,10 @@ async def shortage_create(req: ShortagePoCreateRequest, request: Request):
         groups = await run_in_threadpool(
             shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
+        if req.allow_duplicate is not True:
+            dups = await run_in_threadpool(shortage_purchase.find_group_duplicates, groups)
+            if dups:  # 沒有寫入任何東西；前端確認後帶 allow_duplicate=true 重送
+                return {"results": [], "duplicate_warning": dups}
         results = await run_in_threadpool(shortage_purchase.create_many, groups, ACTOR, ip)
     except ErpError as exc:
         raise _http_error(exc) from None

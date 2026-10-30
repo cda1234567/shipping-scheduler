@@ -684,18 +684,25 @@ body.edit-auth-readonly #bom-upload-area {
   padding: 12px 18px; font-size: 14px; font-weight: 500;
   cursor: pointer; color: #8e8e93; transition: color .15s, border-color .15s;
 }
+/* 分頁順序（flex order 優先於 DOM 順序，兩邊要一致）；提醒 / 紀錄 / ST 庫存的按鈕隱藏，面板與程式照舊可由程式切換 */
 .tab-btn[data-tab="schedule"] { order: 0; }
-.tab-btn[data-tab="completed"] { order: 1; }
-.tab-btn[data-tab="main-preview"] { order: 2; }
-.tab-btn[data-tab="main-preview-v2"] { order: 3; }
-.tab-btn[data-tab="st-inventory"] { order: 4; }
-.tab-btn[data-tab="bom"] { order: 5; }
-.tab-btn[data-tab="st-packages-tab"] { order: 6; }
-.tab-btn[data-tab="alerts-tab"] { order: 7; }
-.tab-btn[data-tab="logs-tab"] { order: 8; }
-.tab-btn[data-tab="backups-tab"] { order: 9; }
-.tab-btn[data-tab="analytics-tab"] { order: 10; }
-.tab-btn[data-tab="defectives-tab"] { order: 11; }
+.tab-btn[data-tab="calc-workspace"] { order: 1; }
+.tab-btn[data-tab="main-preview-v2"] { order: 2; }
+.tab-btn[data-tab="completed"] { order: 3; }
+.tab-btn[data-tab="low-stock-tab"] { order: 4; }
+.tab-btn[data-tab="erp-po-tab"] { order: 5; }
+.tab-btn[data-tab="shortage-po-tab"] { order: 6; }
+.tab-btn[data-tab="bom"] { order: 7; }
+.tab-btn[data-tab="st-packages-tab"] { order: 8; }
+.tab-btn[data-tab="part-conversion-tab"] { order: 9; }
+.tab-btn[data-tab="po-pullin-tab"] { order: 10; }
+.tab-btn[data-tab="backups-tab"] { order: 11; }
+.tab-btn[data-tab="analytics-tab"] { order: 12; }
+.tab-btn[data-tab="defectives-tab"] { order: 13; }
+.tab-btn[data-tab="sea-freight-tab"] { order: 14; }
+.tab-btn[data-tab="st-inventory"] { order: 15; }
+.tab-btn[data-tab="alerts-tab"] { order: 16; }
+.tab-btn[data-tab="logs-tab"] { order: 17; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -5256,6 +5263,12 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-po-results li:hover { background: #eff6ff; }
 .erp-po-results li.is-empty { color: #9ca3af; cursor: default; }
 .erp-po-table-wrap { overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
+/* .erp-po-shell 是固定高度的直欄 flex：overflow:auto 的表格容器會被壓縮成約一列高，所以子項一律不縮 */
+.erp-po-shell > * { flex-shrink: 0; }
+/* 明細表隨列數長高，太長時最高 60vh 並可用滾輪捲動；表頭固定 */
+.erp-po-lines-wrap { max-height: 60vh; overflow-y: auto; }
+.erp-po-lines-wrap thead th { position: sticky; top: 0; z-index: 1; }
+.erp-po-moq-hint { margin-top: 2px; white-space: nowrap; }
 .erp-po-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .erp-po-table th, .erp-po-table td { padding: 6px 10px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: middle; }
 .erp-po-table th { background: #f8fafc; color: #374151; font-weight: 600; white-space: nowrap; }

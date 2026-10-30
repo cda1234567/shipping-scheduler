@@ -799,6 +799,166 @@ class SuggestedQtyTests(unittest.TestCase):
             self.assertIsNone(ep._suggested_qty("Z-9"))
 
 
+class PartDefaultsMoqTests(unittest.TestCase):
+    def defaults(self, need, info):
+        from contextlib import contextmanager
+        from app.services import moq as moq_service
+
+        class Cur:
+            def execute(self, *a, **k):
+                pass
+
+            def fetchone(self):
+                return None
+
+        class Conn:
+            def cursor(self):
+                return Cur()
+
+        @contextmanager
+        def session():
+            yield Conn()
+
+        with patch.object(ep, "_source_session", session), \
+                patch.object(ep, "_suggested_qty", lambda part: need), \
+                patch.object(moq_service, "lookup_moq", lambda parts: {"A-1": info}):
+            return ep.part_defaults("a-1")
+
+    def test_suggested_qty_is_max_of_need_and_moq(self):
+        d = self.defaults(30, {"moq": 100.0, "moq_source": "ERP 最低採購量"})
+        self.assertEqual((d["need_qty"], d["moq"], d["moq_source"], d["moq_adjusted"], d["suggested_qty"]),
+                         (30, 100, "ERP 最低採購量", True, 100))
+        d = self.defaults(300, {"moq": 100.0, "moq_source": "主檔"})
+        self.assertEqual((d["suggested_qty"], d["moq_adjusted"]), (300, False))
+        d = self.defaults(0, {"moq": 0, "moq_source": ""})  # 缺口 0 → 至少 1
+        self.assertEqual((d["need_qty"], d["suggested_qty"]), (1, 1))
+
+    def test_not_in_watchlist_has_no_suggestion(self):
+        d = self.defaults(None, {"moq": 100.0, "moq_source": "主檔"})
+        self.assertIsNone(d["suggested_qty"])
+        self.assertIsNone(d["need_qty"])
+        self.assertEqual(d["moq"], 100)
+
+
+class DuplicateProtectionTests(WriteFlowCase):
+    """重複開單保護：已開過警告（不寫入）、allow_duplicate、防連點冪等。"""
+
+    def record_po(self, bill_no, part, qty, order_ids=(), target="CHIComp01", supplier="P0175", price=10.0):
+        import json as _json
+        lines = [{"row_no": 1, "part_number": part, "qty": qty, "price": price, "pre_in_date": "2026-11-15"}]
+        po_id = db.add_erp_purchase_order({
+            "bill_no": bill_no, "target_db": target, "supplier_id": supplier, "status": "ok",
+            "lines_json": _json.dumps(lines),
+        })
+        rows = [{"row_no": 1, "part_number": part, "order_id": o, "qty": qty / max(len(order_ids), 1), "kind": "order"}
+                for o in order_ids] or [{"row_no": 1, "part_number": part, "qty": qty, "kind": "manual"}]
+        db.save_po_line_allocations(po_id, bill_no, target, rows)
+        return po_id
+
+    def test_manual_same_vendor_part_today_warns_without_writing(self):
+        self.record_po("PO-OLD-1", "AC-40838B", 5)
+        with self.assertRaises(ep.DuplicateWarning) as cm:
+            ep.create_po({**REQ, "confirm": True})
+        item, = cm.exception.items
+        self.assertEqual((item["part_number"], item["matches"][0]["bill_no"], item["matches"][0]["qty"]), ("AC-40838B", "PO-OLD-1", 5))
+        self.assertEqual(self.tgt.inserted, [])  # 完全沒有寫入
+        self.assertEqual(len(db.list_erp_purchase_orders()), 1)  # 也沒有新增本機紀錄
+
+    def test_allow_duplicate_proceeds(self):
+        self.record_po("PO-OLD-1", "AC-40838B", 5)
+        res = ep.create_po({**REQ, "confirm": True, "allow_duplicate": True})
+        self.assertTrue(res["ok"])
+        self.assertTrue(self.inserts("ordBillMain"))
+
+    def test_no_warning_for_other_vendor_other_part_other_target_or_error_rows(self):
+        self.record_po("PO-X1", "AC-40838B", 5, supplier="OTHER")  # 手動單只看同供應商
+        self.record_po("PO-X2", "ZZ-1", 5)
+        self.record_po("PO-X3", "AC-40838B", 5, target="CHIComp13")
+        import json as _json
+        db.add_erp_purchase_order({"bill_no": "", "target_db": "CHIComp01", "supplier_id": "P0175", "status": "error",
+                                   "lines_json": _json.dumps([{"part_number": "AC-40838B", "qty": 5}])})
+        self.assertTrue(ep.create_po({**REQ, "confirm": True})["ok"])
+
+    def test_manual_prior_on_earlier_day_not_flagged(self):
+        po_id = self.record_po("PO-OLD-1", "AC-40838B", 5)
+        self.conn.execute("UPDATE erp_purchase_orders SET created_at='2020-01-01T10:00:00' WHERE id=?", (po_id,))
+        self.assertTrue(ep.create_po({**REQ, "confirm": True})["ok"])
+
+    def test_order_bound_lines_match_by_order_intersection(self):
+        from app.services import po_duplicates as pd
+        self.record_po("PO-A", "AC-40838B", 10, order_ids=(7,))
+        prior = pd.load_prior("CHIComp01", ["ac-40838b"])["AC-40838B"]
+        self.assertEqual(prior[0]["order_ids"], [7])
+        self.assertEqual(len(pd.find_matches(prior, [7, 8], "P0175")), 1)
+        self.assertEqual(pd.find_matches(prior, [8], "P0175"), [])
+        # 之前是手動 / 備品（沒綁訂單）→ 只看料號（30 天內）
+        self.record_po("PO-M", "AC-40838B", 3)
+        prior = pd.load_prior("CHIComp01", ["AC-40838B"])["AC-40838B"]
+        self.assertEqual({m["bill_no"] for m in pd.find_matches(prior, [8], "P0175")}, {"PO-M"})
+
+    def test_idempotent_within_window_even_with_allow_duplicate(self):
+        from app.services import po_duplicates as pd
+        body = {**REQ, "confirm": True, "allow_duplicate": True}
+        ep.create_po(body)
+        inserted = len(self.inserts("ordBillMain"))
+        with self.assertRaises(ep.DuplicateSubmitError) as cm:
+            ep.create_po(body)
+        self.assertIn("PO-20261029001", str(cm.exception))
+        self.assertEqual(len(self.inserts("ordBillMain")), inserted)
+        # 明細不同（數量不同）不算同一筆
+        other = ep.normalize_request({**body, "lines": [{**REQ["lines"][0], "qty": 11}]})
+        self.assertNotEqual(pd.fingerprint("CHIComp01", other), pd.fingerprint("CHIComp01", ep.normalize_request(body)))
+        self.assertIsNone(pd.recent_identical("CHIComp01", other))
+        self.assertIsNotNone(pd.recent_identical("CHIComp01", ep.normalize_request(body)))
+        # 超過時間窗後不再視為同一筆（可以再開）
+        norm = ep.normalize_request(body)
+        self.assertIsNotNone(pd.recent_identical("CHIComp01", norm, now=local_now_plus(pd.IDEMPOTENCY_SECONDS - 5)))
+        self.assertIsNone(pd.recent_identical("CHIComp01", norm, now=local_now_plus(pd.IDEMPOTENCY_SECONDS + 5)))
+
+    def test_inflight_identical_submit_rejected(self):
+        from app.services import po_duplicates as pd
+        req = ep.normalize_request({**REQ, "confirm": True})
+        fp = pd.fingerprint("CHIComp01", req)
+        self.assertTrue(pd.claim(fp))
+        try:
+            with self.assertRaises(ep.DuplicateSubmitError):
+                ep.create_po({**REQ, "confirm": True, "allow_duplicate": True})
+            self.assertEqual(self.tgt.inserted, [])
+        finally:
+            pd.release(fp)
+        self.assertTrue(ep.create_po({**REQ, "confirm": True})["ok"])  # 釋放後恢復
+
+    def test_inflight_released_after_failure(self):
+        from app.services import po_duplicates as pd
+        with patch.object(ep, "_write", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                ep.create_po({**REQ, "confirm": True})
+        self.assertEqual(pd._INFLIGHT, set())
+
+    def test_router_returns_warning_payload_and_resends(self):
+        import os as _os
+        from fastapi.testclient import TestClient
+        from main import app
+        _os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        client = TestClient(app)
+        self.record_po("PO-OLD-1", "AC-40838B", 5)
+        r = client.post("/api/erp/po/create", json={**REQ, "confirm": True})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.json()["ok"])
+        self.assertEqual(r.json()["duplicate_warning"][0]["matches"][0]["bill_no"], "PO-OLD-1")
+        self.assertEqual(self.tgt.inserted, [])
+        r = client.post("/api/erp/po/create", json={**REQ, "confirm": True, "allow_duplicate": True})
+        self.assertTrue(r.json()["ok"])
+        r = client.post("/api/erp/po/create", json={**REQ, "confirm": True, "allow_duplicate": True})
+        self.assertEqual(r.status_code, 409)  # 防連點
+
+
+def local_now_plus(seconds):
+    from datetime import timedelta
+    from app.services.local_time import local_now
+    return local_now() + timedelta(seconds=seconds)
+
+
 class AllocationRecordTests(WriteFlowCase):
     """開採購單：每行為哪些訂單而買的紀錄（僅記錄）。"""
 

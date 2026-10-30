@@ -75,6 +75,18 @@ def _customer_supplied_error(part: str, reason: str = "suffix") -> PoValidationE
     return PoValidationError(f"料號 {part} 為客供料（料號以 -TAB 結尾），不可開採購單，請向客戶要料")
 
 
+class DuplicateWarning(PoValidationError):
+    """明細在本站已開過採購單，未帶 allow_duplicate 時不寫入並回報（items 為已開過的明細）。"""
+
+    def __init__(self, items: List[Dict[str, Any]]):
+        super().__init__("部分明細在本站已開過採購單，請確認後再送出")
+        self.items = items
+
+
+class DuplicateSubmitError(PoValidationError):
+    """相同內容的採購單剛建立過 / 正在建立中（防連點，不能用 allow_duplicate 繞過）。"""
+
+
 class PoSchemaError(ErpError):
     """目標資料庫欄位與要寫入的資料對不上（HTTP 500）。"""
 
@@ -1038,6 +1050,29 @@ def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") 
         raise PoValidationError("需確認後才會寫入正航（confirm=true）")
     req = normalize_request(raw_req)
     target, creds = _require_available()
+    from . import po_duplicates
+
+    fp = po_duplicates.fingerprint(target, req)
+    recent = po_duplicates.recent_identical(target, req)
+    if recent:
+        raise DuplicateSubmitError(
+            f"相同內容的採購單 {recent['bill_no']} 在 {recent['seconds_ago']} 秒前已建立，已略過重複送出"
+        )
+    if raw_req.get("allow_duplicate") is not True:
+        dups = po_duplicates.find_duplicates(req, target)
+        if dups:
+            raise DuplicateWarning(dups)
+    if not po_duplicates.claim(fp):
+        raise DuplicateSubmitError("相同內容的採購單正在建立中，請勿重複送出")
+    try:
+        return _create_checked(req, target, creds, actor, client_ip)
+    finally:
+        po_duplicates.release(fp)
+
+
+def _create_checked(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, client_ip: str) -> Dict[str, Any]:
+    from .. import database as db
+
     base_log = {
         "target_db": target,
         "supplier_id": req["supplier_id"],
@@ -1132,7 +1167,7 @@ def search_suppliers(q: str) -> List[Dict[str, str]]:
 
 
 def _suggested_qty(part: str) -> Optional[int]:
-    """低庫存關注清單內的料號：ceil(max(門檻 - 現有量 - 在途量, 0))；不在清單或無門檻回 None。"""
+    """低庫存關注清單內的料號：ceil(max(門檻 - 現有量 - 在途量, 0))（未計 MOQ）；不在清單或無門檻回 None。"""
     from . import low_stock
 
     try:
@@ -1154,6 +1189,7 @@ def part_defaults(part: str) -> Dict[str, Any]:
         "part_number": key, "found": False, "product_name": "",
         "supplier_id": "", "supplier_name": "", "last_price": None,
         "last_bill_no": "", "last_bill_date": "", "suggested_qty": None,
+        "need_qty": None, "moq": 0, "moq_source": "", "moq_adjusted": False,
     }
     if not key:
         return result
@@ -1185,5 +1221,15 @@ def part_defaults(part: str) -> Dict[str, Any]:
             name = cur.fetchone()
             if name:
                 result["supplier_name"] = _text(name[0]) or _text(name[1])
-    result["suggested_qty"] = _suggested_qty(key)
+    # 建議量 = max(缺口, MOQ)；MOQ 本站優先、正航 MinPurch 補缺；使用者仍可手動改數量
+    from . import moq as moq_service
+
+    need = _suggested_qty(key)
+    if need is not None:
+        need = max(1, need)  # 與低庫存頁相同：缺口至少 1，再與 MOQ 取大
+    info = moq_service.lookup_moq([key]).get(key)
+    result.update(moq_service.moq_fields(need, info))
+    if need is None:
+        result["need_qty"] = result["suggested_qty"] = None
+        result["moq_adjusted"] = False
     return result
