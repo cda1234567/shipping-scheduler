@@ -237,6 +237,7 @@ export async function initErpReceive() {
     qtyOf: l => l.qty_remain,
     priceOf: l => l.price,
     otherGroupText: "已隱藏其他廠商 {n} 筆",
+    multiGroupText: "目前顯示多家廠商，請先在搜尋框輸入廠商 / 單號縮小到單一廠商再全選（不可混廠商）",
     onRender: root => { void decoratePoMailBadges(root); },
     onChange: () => hidePreview(),
   });

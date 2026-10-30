@@ -5350,6 +5350,8 @@ body.desktop-dark .frequent-zero-usage li span {
 .olp-lock { background: #dbeafe; color: #1e40af; padding: 3px 8px; border-radius: 6px; font-weight: 600; }
 .olp-lock[hidden] { display: none; }
 .olp-count { color: #6b7280; }
+.olp-msg { color: #b45309; font-weight: 600; }
+.olp-msg:empty { display: none; }
 .olp-wrap { max-height: 50vh; overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; }
 .olp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .olp-table th, .olp-table td { padding: 5px 8px; border-bottom: 1px solid #eef2f7; text-align: left; vertical-align: middle; }

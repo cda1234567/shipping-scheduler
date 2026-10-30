@@ -12,6 +12,7 @@
  *   searchPlaceholder?: string,
  *   emptyText?: string,
  *   otherGroupText?: string,                   // 鎖定時隱藏其他分組的提示，{n} = 隱藏筆數；預設「已隱藏其他分組 {n} 筆」
+ *   multiGroupText?: string,                   // 全選時畫面上有多個分組的提示；預設「目前顯示多個分組，請先搜尋縮小到單一分組再全選」
  *   onRender?: (rootEl) => void,               // 表格重畫後呼叫（例：補上徽章）
  *   onChange?: (selection) => void,            // 勾選、數量、單價、鎖定變動時呼叫
  * });
@@ -20,6 +21,12 @@
  * picker.reload()       → Promise                  重新抓明細（已不存在的勾選會被移除）
  * picker.clear()        → void                     取消所有勾選並解除鎖定
  * picker.lockedGroup()  → string | null
+ * picker.selectAll()    → { ok, message? }       勾選目前畫面上（搜尋後、鎖定後）看得到的全部明細
+ * picker.selectNone()   → void                   全不選（= clear()）
+ *
+ * 全選（v2026.10.30.14）：只勾「目前顯示」的列；已鎖定時就是鎖定分組內看得到的列。
+ * 未鎖定且畫面上有多個分組 → 不勾任何列，顯示 multiGroupText 請使用者先搜尋縮小到單一分組（絕不混分組）。
+ * 表頭勾選框 = 全選 / 全不選切換。
  *
  * 鎖定：勾第一筆後，其他分組的列整個隱藏（不渲染），並在計數處顯示「已隱藏其他廠商 N 筆」之類的提示；
  * 取消最後一筆勾選、按橫幅「解除」或 clear() 後全部列重新顯示。搜尋仍在鎖定分組內運作。
@@ -32,8 +39,21 @@ export function visibleLines(lines, lockKey, groupKey) {
   return lockKey === null ? lines : lines.filter(line => groupKey(line) === lockKey);
 }
 
+/**
+ * 全選要勾哪些列（純函式）。visible = 目前畫面上的列。
+ * 回傳 { ok: true, keys, group } 或 { ok: false, reason: "empty" | "multi_group" }。
+ */
+export function planSelectAll(visible, lockKey, groupKey, lineKey) {
+  if (!visible.length) return { ok: false, reason: "empty" };
+  const groups = new Set(visible.map(groupKey));
+  if (lockKey === null && groups.size > 1) return { ok: false, reason: "multi_group", groups: groups.size };
+  const group = lockKey === null ? [...groups][0] : lockKey;
+  return { ok: true, group, keys: visible.filter(l => groupKey(l) === group).map(lineKey) };
+}
+
 export function createOpenLinePicker(root, options) {
-  const opts = { searchPlaceholder: "搜尋廠商 / 料號 / 單號", emptyText: "沒有可選的明細", otherGroupText: "已隱藏其他分組 {n} 筆", ...options };
+  const opts = { searchPlaceholder: "搜尋廠商 / 料號 / 單號", emptyText: "沒有可選的明細", otherGroupText: "已隱藏其他分組 {n} 筆",
+    multiGroupText: "目前顯示多個分組，請先搜尋縮小到單一分組再全選", ...options };
   const hasPrice = typeof opts.priceOf === "function";
   let lines = [];
   let truncated = false;
@@ -48,7 +68,10 @@ export function createOpenLinePicker(root, options) {
     <div class="olp-bar">
       <input type="search" class="olp-search" placeholder="${esc(opts.searchPlaceholder)}" autocomplete="off">
       <span class="olp-lock" hidden><span class="olp-lock-text"></span> <button type="button" class="btn btn-secondary btn-sm olp-unlock">解除</button></span>
+      <button type="button" class="btn btn-secondary btn-sm olp-all">全選</button>
+      <button type="button" class="btn btn-secondary btn-sm olp-none">全不選</button>
       <span class="olp-count"></span>
+      <span class="olp-msg" role="status"></span>
     </div>
     <div class="olp-wrap"><table class="olp-table"><thead></thead><tbody></tbody></table></div>`;
   const search = root.querySelector(".olp-search");
@@ -56,6 +79,8 @@ export function createOpenLinePicker(root, options) {
   const countEl = root.querySelector(".olp-count");
   const head = root.querySelector("thead");
   const body = root.querySelector("tbody");
+  const msgEl = root.querySelector(".olp-msg");
+  const setMsg = text => { if (msgEl) msgEl.textContent = text || ""; };
 
   const byKey = key => lines.find(l => opts.lineKey(l) === key);
   const fmtNum = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "");
@@ -77,7 +102,9 @@ export function createOpenLinePicker(root, options) {
   }
 
   function renderHead() {
-    head.innerHTML = `<tr><th></th>${opts.columns.map(c => `<th class="${c.align === "num" ? "num" : ""}">${esc(c.label)}</th>`).join("")}<th class="num">本次數量</th>${hasPrice ? '<th class="num">單價</th>' : ""}</tr>`;
+    const vis = visibleLines(lines, lockKey, opts.groupKey);
+    const allOn = vis.length > 0 && vis.every(l => order.includes(opts.lineKey(l)));
+    head.innerHTML = `<tr><th><input type="checkbox" class="olp-check-all" title="全選 / 全不選（目前顯示的列）" ${allOn ? "checked" : ""} ${vis.length ? "" : "disabled"}></th>${opts.columns.map(c => `<th class="${c.align === "num" ? "num" : ""}">${esc(c.label)}</th>`).join("")}<th class="num">本次數量</th>${hasPrice ? '<th class="num">單價</th>' : ""}</tr>`;
   }
 
   function renderLock() {
@@ -128,6 +155,7 @@ export function createOpenLinePicker(root, options) {
     if (!tr) return;
     const key = tr.dataset.key;
     if (event.target.classList.contains("olp-check")) {
+      setMsg("");
       pick(key, event.target.checked);
       render();
     } else {
@@ -141,6 +169,12 @@ export function createOpenLinePicker(root, options) {
   });
 
   root.querySelector(".olp-unlock").addEventListener("click", () => api.clear());
+  root.querySelector(".olp-all")?.addEventListener("click", () => { api.selectAll(); });
+  root.querySelector(".olp-none")?.addEventListener("click", () => api.selectNone());
+  head.addEventListener("change", event => {
+    if (!event.target.classList.contains("olp-check-all")) return;
+    if (event.target.checked) api.selectAll(); else api.selectNone();
+  });
 
   search.addEventListener("input", () => {
     clearTimeout(timer);
@@ -150,6 +184,25 @@ export function createOpenLinePicker(root, options) {
   const api = {
     getSelection: selection,
     lockedGroup: () => lockKey,
+    selectAll() {
+      const plan = planSelectAll(visibleLines(lines, lockKey, opts.groupKey), lockKey, opts.groupKey, opts.lineKey);
+      if (!plan.ok) {
+        const message = plan.reason === "multi_group" ? opts.multiGroupText : opts.emptyText;
+        setMsg(message);
+        render(); // 表頭勾選框回到實際狀態
+        notify();
+        return { ok: false, message };
+      }
+      setMsg("");
+      for (const key of plan.keys) pick(key, true);
+      render();
+      notify();
+      return { ok: true };
+    },
+    selectNone() {
+      setMsg("");
+      api.clear();
+    },
     clear() {
       order.length = 0;
       edits.clear();

@@ -617,6 +617,42 @@ def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warn
     return out
 
 
+def allocate_bill_tax(lines: List[Dict[str, Any]]) -> Decimal:
+    """正航進貨單（TaxType 0 外加稅）稅額規則；直接改寫 lines[i]["tax"]，回傳表頭稅額。
+
+    v2026.10.30.14：依 CHIComp03 實單驗證 —— 表頭 comBillAccounts.Tax = round(Σ未稅金額 × 稅率, 0)（整張單算一次），
+    而 comProdRec.TaxAmt 各行加總一定等於表頭（2025 起 512 張多行單稅率一致的進貨單全部相等）。
+    兩種算法不同的 151 張中 150 張表頭是整單四捨五入；尾差由第 1 行開始每行 ±1 吸收
+    （例：PO-20261022003 28 行逐行合計 5,364 → 表頭 5,362，第 1、2 行各 -1；RM-20261012003 / RM-20261001005 /
+    RM-20260921005 / RM-20260917001 / RM-20260914001 第 1 行 -1；RM-20260828001 第 1、2 行各 -1）。
+    稅率不同的行各自成組計算。
+    """
+    groups: Dict[Decimal, List[Dict[str, Any]]] = {}
+    for l in lines:
+        groups.setdefault(_dec(l["tax_rate"]), []).append(l)
+    total_tax = Decimal(0)
+    for rate, group in groups.items():
+        per_line = sum((l["tax"] for l in group), Decimal(0))
+        if rate == 0:
+            total_tax += per_line
+            continue
+        head = ep._round(sum((l["amount"] for l in group), Decimal(0)) * rate, 0)
+        diff = head - per_line
+        step = Decimal(1) if diff > 0 else Decimal(-1)
+        cand = [l for l in group if l["amount"] != 0]
+        i = 0
+        while diff != 0 and cand:
+            l = cand[i % len(cand)]
+            if step > 0 or l["tax"] > 0:
+                l["tax"] += step
+                diff -= step
+            elif all(c["tax"] <= 0 for c in cand):
+                break
+            i += 1
+        total_tax += head - diff
+    return total_tax
+
+
 def build_plan(
     ctx: Dict[str, Any], *, target: str, today: int, rm_date: int, numbers: Dict[str, str],
     maker: str, maker_id: str, client_ip: str, actor: str, now: datetime, update_cost: bool = True,
@@ -676,7 +712,7 @@ def build_plan(
 
     sum_qty = sum((l["qty"] for l in lines), Decimal(0))
     sum_amount = sum((l["amount"] for l in lines), Decimal(0))
-    sum_tax = sum((l["tax"] for l in lines), Decimal(0))
+    sum_tax = allocate_bill_tax(lines)
     total = sum_amount + sum_tax
     totals = {"sum_qty": sum_qty, "sum_amount": sum_amount, "sum_tax": sum_tax, "total": total}
 

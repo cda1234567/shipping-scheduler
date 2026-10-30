@@ -26,6 +26,65 @@ FORBIDDEN = ("comInvoice", "stkBatchInvo", "accVoucher")
 
 # ── 純函式 ───────────────────────────────────────────────────────────────────
 
+class BillTaxTests(unittest.TestCase):
+    """v2026.10.30.14：正航整單稅額（CHIComp03 實單）。"""
+
+    @staticmethod
+    def lines(amounts, rate="0.05"):
+        out = []
+        for a in amounts:
+            amount, tax = er.calc_line_amounts(1, a, rate)
+            out.append({"amount": amount, "tax": tax, "tax_rate": Decimal(rate)})
+        return out
+
+    def check(self, amounts, head, stored):
+        ls = self.lines(amounts)
+        self.assertEqual(er.allocate_bill_tax(ls), Decimal(head))
+        self.assertEqual(sum(l["tax"] for l in ls), Decimal(head))
+        self.assertEqual([int(l["tax"]) for l in ls], stored)
+
+    def test_po_20261022003_28_lines(self):
+        amounts = [1400, 700, 900, 700, 450, 400, 700, 730, 400, 400, 400, 400, 550, 770, 3600, 6000, 19000,
+                   7500, 24500, 7000, 4800, 900, 900, 850, 7800, 8400, 5400, 1680]
+        stored = [69, 34, 45, 35, 23, 20, 35, 37, 20, 20, 20, 20, 28, 39, 180, 300, 950, 375, 1225, 350, 240,
+                  45, 45, 43, 390, 420, 270, 84]
+        self.assertEqual(sum(amounts), 107230)
+        self.check(amounts, 5362, stored)
+
+    def test_real_rms_first_row_absorbs(self):
+        self.check([26460, 12900, 22100, 68250, 232780, 232780, 130530], 36290,
+                   [1322, 645, 1105, 3413, 11639, 11639, 6527])            # RM-20261012003
+        self.check([67320, 71030, 8800, 143685, 24780, 207750, 17690], 27053,
+                   [3365, 3552, 440, 7184, 1239, 10388, 885])              # RM-20261001005
+        self.check([60170, 128235, 166500], 17745, [3008, 6412, 8325])     # RM-20260921005
+        self.check([17935, 17935, 9963, 240960, 65276], 17603, [896, 897, 498, 12048, 3264])  # RM-20260917001
+        self.check([80970, 197800, 85530], 18215, [4048, 9890, 4277])      # RM-20260914001
+        self.check([20576, 44175, 1674], 3321, [1028, 2209, 84])           # RM-20260910001
+
+    def test_real_rm_header_only(self):
+        # RM-20261016002 / RM-20261006001 / RM-20261005001：表頭與整單四捨五入一致
+        for amounts, head in (([405833, 19470], 21265), ([47076, 206710], 12689),
+                              ([310600, 68160, 81310, 16262, 2574, 20570, 3699, 26730, 3739, 9500], 27157)):
+            ls = self.lines(amounts)
+            self.assertEqual(er.allocate_bill_tax(ls), Decimal(head))
+            self.assertEqual(sum(l["tax"] for l in ls), Decimal(head))
+
+    def test_same_as_per_line_when_no_diff(self):
+        ls = self.lines([2000, 400])
+        self.assertEqual(er.allocate_bill_tax(ls), Decimal(120))
+        self.assertEqual([int(l["tax"]) for l in ls], [100, 20])
+
+    def test_upward_and_zero_rate(self):
+        ls = self.lines([10, 10, 10])          # 0.5 ×3 → 逐行 3，整單 round(1.5)=2
+        self.assertEqual(er.allocate_bill_tax(ls), Decimal(2))
+        self.assertEqual([int(l["tax"]) for l in ls], [0, 1, 1])
+        ls = self.lines([4, 4, 4])             # 0.2 ×3 → 逐行 0，整單 round(0.6)=1
+        self.assertEqual(er.allocate_bill_tax(ls), Decimal(1))
+        self.assertEqual([int(l["tax"]) for l in ls], [1, 0, 0])
+        ls = self.lines([1000], "0") + self.lines([10, 10, 10])
+        self.assertEqual(er.allocate_bill_tax(ls), Decimal(2))
+
+
 class TermsTests(unittest.TestCase):
     def check(self, d, doc, g, gd, c, cd, acc, prepay, encash=None):
         t = er.calc_terms(d, doc, g, gd, c, cd)

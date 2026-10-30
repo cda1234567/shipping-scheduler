@@ -273,6 +273,75 @@ assert.equal(m.visibleLines(lines, null, l => l.v).length, 5);
         out = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
 
+    def test_picker_select_all(self):
+        script = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const src = fs.readFileSync('static/modules/open_line_picker.js', 'utf8').replace(/^import .*$/m,
+  'const esc = s => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");');
+const m = await import('data:text/javascript;base64,' + Buffer.from(src).toString('base64'));
+const mk = () => ({ innerHTML: '', textContent: '', hidden: false, value: '', handlers: {}, classList: { add() {} },
+  addEventListener(t, f) { this.handlers[t] = f; }, querySelector() { return null; } });
+const sels = ['.olp-search', '.olp-lock', '.olp-count', 'thead', 'tbody', '.olp-unlock', '.olp-lock-text', '.olp-all', '.olp-none', '.olp-msg'];
+const els = Object.fromEntries(sels.map(k => [k, mk()]));
+els['.olp-lock'].querySelector = () => els['.olp-lock-text'];
+const root = mk(); root.querySelector = sel => els[sel];
+const all = [
+  { id: 'a1', v: 'A', t: 'x' }, { id: 'a2', v: 'A', t: 'y' }, { id: 'b1', v: 'B', t: 'x' }, { id: 'b2', v: 'B', t: 'y' }, { id: 'b3', v: 'B', t: 'z' },
+];
+let q = '';
+const p = m.createOpenLinePicker(root, {
+  fetchLines: async () => all.filter(l => !q || l.v === q || l.t === q), lineKey: l => l.id, groupKey: l => l.v,
+  columns: [{ label: 'x', render: l => l.id }], qtyOf: () => 1, multiGroupText: '請先搜尋縮小到單一廠商',
+});
+const rows = () => [...els.tbody.innerHTML.matchAll(/data-key="([^"]+)"/g)].map(x => x[1]);
+const sel = () => p.getSelection().map(s => s.line.id);
+const toggle = (key, checked) => els.tbody.handlers.change({ target: { checked, classList: { contains: c => c === 'olp-check' }, closest: () => ({ dataset: { key } }) } });
+await p.reload();
+assert.ok(els.thead.innerHTML.includes('olp-check-all'));
+// 多廠商、未選 → 不勾，顯示訊息
+let r = p.selectAll();
+assert.equal(r.ok, false);
+assert.deepEqual(sel(), []);
+assert.equal(els['.olp-msg'].textContent, '請先搜尋縮小到單一廠商');
+assert.equal(p.lockedGroup(), null);
+// 搜尋縮小到單一廠商 → 全選
+q = 'B'; await p.reload();
+els['.olp-all'].handlers.click();
+assert.deepEqual(sel(), ['b1', 'b2', 'b3']);
+assert.equal(p.lockedGroup(), 'B');
+assert.equal(els['.olp-msg'].textContent, '');
+assert.ok(/olp-check-all"[^>]*checked/.test(els.thead.innerHTML));
+// 清掉搜尋：其他廠商仍隱藏
+q = ''; await p.reload();
+assert.deepEqual(rows(), ['b1', 'b2', 'b3']);
+// 全不選 → 解除鎖定
+els['.olp-none'].handlers.click();
+assert.deepEqual(sel(), []);
+assert.equal(p.lockedGroup(), null);
+assert.deepEqual(rows(), ['a1', 'a2', 'b1', 'b2', 'b3']);
+// 已鎖定時，搜尋結果混廠商也只勾鎖定廠商看得到的列
+toggle('a1', true);
+q = 'y'; await p.reload();
+assert.deepEqual(sel(), []);   // a1 不在搜尋結果 → 被移除、解除鎖定
+assert.equal(p.lockedGroup(), null);
+assert.equal(p.selectAll().ok, false);  // a2 + b2 兩家
+q = 'x'; await p.reload(); toggle('a1', true);
+q = ''; await p.reload();
+els.thead.handlers.change({ target: { checked: true, classList: { contains: c => c === 'olp-check-all' } } });
+assert.deepEqual(sel(), ['a1', 'a2']);
+els.thead.handlers.change({ target: { checked: false, classList: { contains: c => c === 'olp-check-all' } } });
+assert.deepEqual(sel(), []);
+// 純函式（customer 分組也一樣）
+const cust = [{ k: 1, c: 'C1' }, { k: 2, c: 'C1' }, { k: 3, c: 'C2' }];
+assert.deepEqual(m.planSelectAll(cust.slice(0, 2), null, l => l.c, l => l.k), { ok: true, group: 'C1', keys: [1, 2] });
+assert.equal(m.planSelectAll(cust, null, l => l.c, l => l.k).reason, 'multi_group');
+assert.deepEqual(m.planSelectAll(cust.slice(2), 'C2', l => l.c, l => l.k).keys, [3]);
+assert.equal(m.planSelectAll([], null, l => l.c, l => l.k).reason, 'empty');
+"""
+        out = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
     def test_server_still_rejects_mixed_vendors(self):
         src = (ROOT / "tests" / "test_erp_receive.py").read_text(encoding="utf-8")
         self.assertIn("def test_vendor_lock", src)  # 該測試實際驗證後端拒絕混廠商
