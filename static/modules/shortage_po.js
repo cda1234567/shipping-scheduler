@@ -177,7 +177,7 @@ function renderCustomerSupplied() {
   const errors = [...new Set(items.filter(c => !c.stock_known).map(c => c.stock_error))];
   box.hidden = false;
   box.innerHTML = `<div class="shortage-po-group-head"><strong>客供料（向客戶要料）</strong>
-      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾或正航類別 003。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）</span></div>
+      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）</span></div>
     ${errors.map(e => `<div class="erp-po-warn">${esc(e)}，庫存暫顯示為未知</div>`).join("")}
     <div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
       <th>料號</th><th>品名</th><th class="num">需求</th><th class="num">${esc(wares)} 庫存</th><th class="num">缺（向客戶要）</th><th>最早訂單</th>

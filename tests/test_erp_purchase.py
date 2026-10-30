@@ -281,6 +281,40 @@ class PureTests(unittest.TestCase):
         self.assertEqual(ok["lines"][0]["pre_in_date"], 20261115)
 
 
+class TestTargetsTests(EnvCase):
+    def test_default_includes_comp13(self):
+        with patch.dict(os.environ):
+            os.environ.pop("ERP_TEST_TARGETS", None)
+            os.environ.pop("ERP_SQL_DATABASE", None)
+            self.assertEqual(ep.test_targets(), {"CHIComp01", "CHIComp02", "CHIComp13"})
+            self.assertTrue(ep.is_test("CHIComp13"))
+            self.assertEqual(ep.target_label("CHIComp13"), "公司13（測試）")
+            self.assertTrue(ep._can_copy_masters("CHIComp13", "CHIComp03"))
+            self.assertIsNotNone(ep.write_credentials("CHIComp13"))
+
+    def test_env_override_evaluated_at_call_time(self):
+        with patch.dict(os.environ, {"ERP_TEST_TARGETS": "CHIComp05, CHIComp06,bad,CHIComp7"}):
+            self.assertEqual(ep.test_targets(), {"CHIComp05", "CHIComp06"})
+            self.assertEqual(ep.target_label("CHIComp05"), "公司5（測試）")
+            self.assertFalse(ep.is_test("CHIComp01"))
+            self.assertIsNone(ep.write_credentials("CHIComp01"))
+            self.assertIsNotNone(ep.write_credentials("CHIComp05"))
+            self.assertTrue(ep.get_config()["targets"][-1]["db"] in ("CHIComp05", "CHIComp06"))
+
+    def test_production_and_source_never_test_even_if_listed(self):
+        with patch.dict(os.environ, {"ERP_TEST_TARGETS": "CHIComp03,CHIComp13,CHIComp09",
+                                     "ERP_SQL_DATABASE": "CHIComp09"}):
+            self.assertEqual(ep.test_targets(), {"CHIComp13"})
+            for t in ("CHIComp03", "CHIComp09"):
+                self.assertFalse(ep.is_test(t))
+                self.assertFalse(ep._can_copy_masters(t, "CHIComp09"))
+                self.assertIsNone(ep.write_credentials(t))
+            self.assertEqual(ep.target_label("CHIComp03"), "公司3（正式）")
+        with patch.dict(os.environ, {"ERP_TEST_TARGETS": "CHIComp03"}):
+            self.assertEqual(ep.test_targets(), set())
+            self.assertFalse(ep._can_copy_masters("CHIComp03", "CHIComp01"))
+
+
 class CredentialTests(EnvCase):
     def test_test_login_used_for_both_test_targets(self):
         for target in ("CHIComp01", "CHIComp02"):
@@ -326,8 +360,9 @@ class CredentialTests(EnvCase):
         self.assertTrue(cfg["available"] and cfg["is_test"])
         self.assertNotIn("secret-pw", str(cfg))
         self.assertNotIn("tester", str(cfg))
-        self.assertEqual([t["db"] for t in cfg["targets"]], ["CHIComp01", "CHIComp02", "CHIComp03"])
-        self.assertEqual([t["available"] for t in cfg["targets"]], [True, True, False])
+        self.assertEqual([t["db"] for t in cfg["targets"]], ["CHIComp01", "CHIComp02", "CHIComp03", "CHIComp13"])
+        self.assertEqual([t["available"] for t in cfg["targets"]], [True, True, False, True])
+        self.assertEqual(cfg["targets"][3]["label"], "公司13（測試）")
         with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03"}):
             cfg = ep.get_config()
             self.assertFalse(cfg["available"])
@@ -473,6 +508,7 @@ class WriteFlowCase(EnvCase):
             ("comCustomer", "P1"), ("comProductClass", "C1"), ("comProduct", "A"), ("comProduct", "B"),
             ("comWareHouse", "001"), ("comDepartment", "D1"), ("comPerson", "017")])
         self.assertEqual([s["required"] for s in specs], [True, False, True, True, True, False, False])
+        self.assertEqual([s["copy_required"] for s in specs], [False] * 6 + [True])  # 人員複製時來源一定要有
         bare = ep._master_specs("P1", ["A"], "001")
         self.assertEqual([s["table"] for s in bare], ["comCustomer", "comProduct", "comWareHouse"])
 
@@ -496,17 +532,68 @@ class WriteFlowCase(EnvCase):
 
     def test_optional_masters_missing_in_source_are_skipped(self):
         self.tgt.master_ids = {k: set() for k in ("comCustomer", "comProduct", "comWareHouse", "comProductClass", "comDepartment", "comPerson")}
-        self.src.master_rows = {"comProductClass": set(), "comDepartment": set(), "comPerson": set()}
-        self.src.master_ids.update(comProductClass=set(), comDepartment=set(), comPerson=set())
+        self.src.master_rows = {"comProductClass": set(), "comDepartment": set(), "comPerson": {"017"}}
+        self.src.master_ids.update(comProductClass=set(), comDepartment=set(), comPerson={"017"})
         self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容", "ClassID": "C1"}}
         self.src.main_template = main_tpl(DepartID="D1")
         self.tgt.columns["ordBillMain"] = list(reversed(MAIN_COLS + ["DepartID"]))
         self.tgt.columns["comProduct"] = ["ProdID", "ProdName", "ClassID"]
         out = ep.preview_po(REQ)
-        self.assertEqual([m["table"] for m in out["masters_to_copy"]], ["comCustomer", "comProduct", "comWareHouse"])
+        self.assertEqual([m["table"] for m in out["masters_to_copy"]], ["comCustomer", "comProduct", "comWareHouse", "comPerson"])
         ep.create_po({**REQ, "confirm": True})
         self.assertEqual([i[0] for i in self.tgt.inserted],
-                         ["comCustomer", "comProduct", "comWareHouse", "ordBillMain", "ordBillSub"])
+                         ["comCustomer", "comProduct", "comWareHouse", "comPerson", "ordBillMain", "ordBillSub"])
+
+    def _comp13_setup(self):
+        """公司13 範例公司：沒有我們的供應商 / 料號 / 倉庫 001 / 人員 017。"""
+        self.tgt = make_target("CHIComp13")
+        self.tgt.master_ids = {k: set() for k in ("comCustomer", "comProduct", "comWareHouse", "comProductClass", "comDepartment", "comPerson")}
+        self.tgt.master_ids["comWareHouse"] = {"01", "02", "03", "04", "05"}
+        self.src.master_rows["comDepartment"] = {"D9"}
+        self.tgt.columns["comPerson"] = ["PersonID", "Name", "DepartID"]
+        orig = FakeCursor.execute
+
+        def execute(cur, sql, params=None):
+            orig(cur, sql, params)
+            if " ".join(sql.split()).startswith("SELECT * FROM comPerson") and cur.rows:
+                cur.rows = [(*cur.rows[0], "D9")]
+                cur.description = [("PersonID",), ("Name",), ("DepartID",)]
+
+        patcher = patch.object(FakeCursor, "execute", execute)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_comp13_copies_warehouse_person_and_person_department(self):
+        self._comp13_setup()
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp13"}):
+            out = ep.preview_po(REQ)
+            self.assertTrue(out["is_test"])
+            self.assertEqual(out["target_label"], "公司13（測試）")
+            self.assertEqual([(m["table"], m["key"]) for m in out["masters_to_copy"]], [
+                ("comCustomer", "P0175"), ("comProduct", "AC-40838B"), ("comWareHouse", "001"),
+                ("comDepartment", "D9"), ("comPerson", "017")])
+            self.assertEqual(self.tgt.inserted, [])
+            ep.create_po({**REQ, "confirm": True})
+        self.assertEqual([i[0] for i in self.tgt.inserted], [
+            "comCustomer", "comProduct", "comWareHouse", "comDepartment", "comPerson", "ordBillMain", "ordBillSub"])
+        person = next(i[1] for i in self.tgt.inserted if i[0] == "comPerson")
+        self.assertEqual((person["PersonID"], person["DepartID"]), ("017", "D9"))
+        self.assertEqual(self.tgt.commits, 1)
+        self.assertEqual(self.connect_calls, ["CHIComp13", "CHIComp13"])
+        # 只有來源 SELECT：來源連線沒有任何 INSERT / UPDATE / DELETE
+        for sql, _ in self.src.log:
+            self.assertTrue(sql.upper().startswith("SELECT"), sql)
+
+    def test_comp13_person_missing_in_source_fails_before_any_write(self):
+        self._comp13_setup()
+        self.src.master_rows["comPerson"] = set()
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp13"}):
+            with self.assertRaises(ep.PoValidationError) as cm:
+                ep.preview_po(REQ)
+            self.assertIn("來源公司也找不到人員 017", str(cm.exception))
+            with self.assertRaises(ep.PoValidationError):
+                ep.create_po({**REQ, "confirm": True})
+        self.assertEqual((self.tgt.inserted, self.tgt.commits), ([], 0))
 
     def test_required_master_missing_in_source_still_fails(self):
         self.tgt.master_ids["comWareHouse"] = set()  # 來源 FakeCursor 的倉庫一律存在 → 改掉來源行為
@@ -820,7 +907,7 @@ if __name__ == "__main__":
 
 
 class CustomerSuppliedGuardTests(WriteFlowCase):
-    """客供料（-TAB 結尾或 ClassID 003）不可開採購單：預覽與建立都在寫入前擋下。"""
+    """客供料（僅料號 -TAB 結尾）不可開採購單：預覽與建立都在寫入前擋下。"""
 
     def setUp(self):
         super().setUp()
@@ -834,8 +921,8 @@ class CustomerSuppliedGuardTests(WriteFlowCase):
     def test_reason_function(self):
         self.assertEqual(ep.customer_supplied_reason("abc-tab"), "suffix")
         self.assertEqual(ep.customer_supplied_reason("ABC-TAB "), "suffix")
-        self.assertEqual(ep.customer_supplied_reason("ABC", "003"), "class003")
-        self.assertEqual(ep.customer_supplied_reason("ABC", " 003 "), "class003")
+        self.assertEqual(ep.customer_supplied_reason("ABC", "003"), "")  # 類別 003 不再是客供料
+        self.assertEqual(ep.customer_supplied_reason("OC-10222B", " 003 "), "")
         self.assertEqual(ep.customer_supplied_reason("ABC-TABX", "001"), "")
         self.assertEqual(ep.customer_supplied_reason("TAB-1", ""), "")
 
@@ -852,20 +939,12 @@ class CustomerSuppliedGuardTests(WriteFlowCase):
         self.assertEqual(self.inserts("ordBillMain"), [])
         self.assertEqual(self.tgt.commits, 0)
 
-    def test_class_003_rejected_everywhere(self):
-        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "客供", "ClassID": "003"}}
-        with self.assertRaises(ep.PoValidationError) as ctx:
-            ep.preview_po(REQ)
-        self.assertIn("003", str(ctx.exception))
-        self.assertIn("客供料", str(ctx.exception))
-        with self.assertRaises(ep.PoValidationError):
-            ep.create_po({**REQ, "confirm": True})
-        r = ep.preview_many([REQ])
-        self.assertFalse(r[0]["ok"])
-        self.assertIn("客供料", r[0]["error"])
-        self.assertEqual(self.inserts("ordBillMain"), [])
-        self.assertEqual(self.inserts("ordBillSub"), [])
-        self.assertEqual(self.tgt.commits, 0)
+    def test_class_003_non_tab_allowed(self):
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "類別003", "ClassID": "003"}}
+        self.assertEqual(ep.preview_po(REQ)["bill_no"], "PO-20261029001")
+        self.assertTrue(ep.preview_many([REQ])[0]["ok"])
+        self.assertEqual(ep.create_po({**REQ, "confirm": True})["bill_no"], "PO-20261029001")
+        self.assertEqual(self.tgt.commits, 1)
 
     def test_normal_part_still_works(self):
         self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "電容", "ClassID": "001"}}
@@ -890,15 +969,7 @@ class CustomerSuppliedGuardTests(WriteFlowCase):
                 self.assertIn("客供料", r.json()["detail"])
         self.assertEqual(self.tgt.commits, 0)
 
-    def test_api_class_003_returns_400(self):
-        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "客供", "ClassID": "003"}}
-        for path, body in (
-            ("/api/erp/po/preview", REQ),
-            ("/api/erp/po/create", {**REQ, "confirm": True}),
-        ):
-            r = self.client.post(path, json=body)
-            self.assertEqual(r.status_code, 400, (path, r.text))
-            self.assertIn("客供料", r.json()["detail"])
-        r = self.client.post("/api/shortage-po/create", json={"groups": [REQ], "order_ids": [], "confirm": True})
-        self.assertFalse(r.json()["results"][0]["ok"])
-        self.assertEqual(self.tgt.commits, 0)
+    def test_api_class_003_non_tab_allowed(self):
+        self.src.products = {"AC-40838B": {"ProdID": "AC-40838B", "ProdName": "類別003", "ClassID": "003"}}
+        r = self.client.post("/api/erp/po/preview", json=REQ)
+        self.assertEqual(r.status_code, 200, r.text)

@@ -138,7 +138,7 @@ function renderResult() {
       <th>料號</th><th>品名</th><th class="num">缺料</th><th class="num">未下單量</th><th>需要到貨日</th></tr></thead><tbody>${unordered}</tbody></table></div>`
       : '<div class="erp-po-hint">無</div>'}
     ${(d.customer_supplied || []).length ? `<h4 class="erp-po-history-title">客供料（向客戶要料）</h4>
-    <div class="erp-po-hint">料號 -TAB 結尾或正航類別 003：不採購，不列入未下單 / 詢問信 / 徽章。</div>
+    <div class="erp-po-hint">料號 -TAB 結尾：不採購，不列入未下單 / 詢問信 / 徽章。</div>
     <div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
       <th>料號</th><th>品名</th><th class="num">需求</th><th class="num">倉庫庫存</th><th class="num">缺（向客戶要）</th><th>需要到貨日</th></tr></thead><tbody>${
       d.customer_supplied.map(c => `<tr><td class="mono">${esc(c.part_number)}</td><td>${esc(c.description)}</td>

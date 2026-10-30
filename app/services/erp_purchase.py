@@ -27,7 +27,7 @@ from .local_time import local_now
 
 TARGET_RE = re.compile(r"^CHIComp\d\d$")
 KNOWN_TARGETS = ["CHIComp01", "CHIComp02", "CHIComp03"]
-TEST_TARGETS = {"CHIComp01", "CHIComp02"}  # 測試公司：可共用 ERP_SQL_TEST_* 帳密、可從來源複製主檔
+DEFAULT_TEST_TARGETS = "CHIComp01,CHIComp02,CHIComp13"
 PRODUCTION_TARGET = "CHIComp03"  # 正式公司：絕不自動複製主檔進去、絕不使用測試帳密
 DEFAULT_TARGET = "CHIComp02"
 TAX_RATE = Decimal("0.05")
@@ -42,27 +42,37 @@ BILL_PREFIX = "PO-"
 _write_lock = threading.Lock()  # 同一程序內一次只寫一張，避免單號競爭
 
 
+def test_targets() -> set:
+    """測試公司（可共用 ERP_SQL_TEST_* 帳密、可從來源複製主檔）；每次呼叫都讀 ERP_TEST_TARGETS。
+
+    格式不符 CHIComp + 兩位數字者略過；正式公司與來源資料庫即使列入也一律排除。
+    """
+    source_db = _env("ERP_SQL_DATABASE", "CHIComp03")
+    items = {t.strip() for t in _env("ERP_TEST_TARGETS", DEFAULT_TEST_TARGETS).split(",")}
+    return {t for t in items if TARGET_RE.match(t) and t != PRODUCTION_TARGET and t != source_db}
+
+
+def is_test(target: str) -> bool:
+    return target in test_targets()
+
+
 class PoValidationError(ErpError):
     """輸入資料或 ERP 資料不符規則（HTTP 400）。"""
 
 
-# 客供料：料號 -TAB 結尾，或正航 comProduct.ClassID = '003'（物料(客供品)）。客供料向客戶要料，不可開採購單。
+# 客供料：只看料號 -TAB 結尾（不分大小寫），與正航料號類別無關。客供料向客戶要料，不可開採購單。
 CUSTOMER_SUPPLIED_SUFFIX = "-TAB"
-CUSTOMER_SUPPLIED_CLASS_ID = "003"
 
 
 def customer_supplied_reason(part_number: Any, class_id: Any = "") -> str:
-    """客供料判斷：回傳 'suffix' / 'class003' / ''（不是客供料）。"""
+    """客供料判斷：回傳 'suffix' / ''（不是客供料）。class_id 保留參數相容，已不參與判斷。"""
     if str(part_number or "").strip().upper().endswith(CUSTOMER_SUPPLIED_SUFFIX):
         return "suffix"
-    if str(class_id or "").strip() == CUSTOMER_SUPPLIED_CLASS_ID:
-        return "class003"
     return ""
 
 
-def _customer_supplied_error(part: str, reason: str) -> PoValidationError:
-    rule = "料號以 -TAB 結尾" if reason == "suffix" else "正航料號類別為 003（物料(客供品)）"
-    return PoValidationError(f"料號 {part} 為客供料（{rule}），不可開採購單，請向客戶要料")
+def _customer_supplied_error(part: str, reason: str = "suffix") -> PoValidationError:
+    return PoValidationError(f"料號 {part} 為客供料（料號以 -TAB 結尾），不可開採購單，請向客戶要料")
 
 
 class PoSchemaError(ErpError):
@@ -76,14 +86,12 @@ def _env(name: str, default: str = "") -> str:
 
 
 def target_label(target: str) -> str:
-    if target == "CHIComp01":
-        return "公司1（測試）"
-    if target == "CHIComp02":
-        return "公司2（測試）"
-    if target == "CHIComp03":
+    if target == PRODUCTION_TARGET:
         return "公司3（正式）"
     m = re.match(r"^CHIComp(\d\d)$", target or "")
-    return f"公司{int(m.group(1))}" if m else str(target)
+    if not m:
+        return str(target)
+    return f"公司{int(m.group(1))}" + ("（測試）" if is_test(target) else "")
 
 
 def get_target() -> str:
@@ -115,7 +123,7 @@ def write_credentials(target: str) -> Optional[Dict[str, Any]]:
     server_value = _env(f"ERP_SQL_WRITE_SERVER_{suffix}")
     if not (user and password):
         # 測試帳只給測試公司用；資料庫一律是 target，不看 ERP_SQL_TEST_DB
-        if target in TEST_TARGETS:
+        if is_test(target):
             user = _env("ERP_SQL_TEST_USER")
             password = os.environ.get("ERP_SQL_TEST_PASSWORD") or ""
             server_value = _env("ERP_SQL_TEST_SERVER")
@@ -144,7 +152,7 @@ def get_config() -> Dict[str, Any]:
     base = erp_stock.get_settings()
     targets = [
         {"db": t, "label": target_label(t), "available": write_credentials(t) is not None}
-        for t in KNOWN_TARGETS
+        for t in dict.fromkeys(KNOWN_TARGETS + sorted(test_targets()))
     ]
     result: Dict[str, Any] = {
         "target": "",
@@ -165,7 +173,7 @@ def get_config() -> Dict[str, Any]:
         return result
     result["target"] = target
     result["label"] = target_label(target)
-    result["is_test"] = target in TEST_TARGETS
+    result["is_test"] = is_test(target)
     if write_credentials(target) is None:
         result["reason"] = UNAVAILABLE_REASON
     else:
@@ -669,11 +677,13 @@ def _master_specs(
     """
     specs: List[Dict[str, Any]] = []
 
-    def add(table: str, label: str, key: str, where: str, required: bool) -> None:
+    def add(table: str, label: str, key: str, where: str, required: bool, copy_required: bool = False) -> None:
         key = _text(key)
         if key:
             specs.append({"table": table, "label": label, "key": key, "where": where,
-                          "params": (key,), "required": required})
+                          "params": (key,), "required": required,
+                          # 複製進測試公司時來源一定要有（採購員 / 製單人缺了單據會不完整）
+                          "copy_required": copy_required})
 
     add("comCustomer", "供應商", supplier_id, "Flag = 2 AND ID = %s", True)
     for cid in dict.fromkeys(_text(c) for c in (class_ids or [])):
@@ -683,13 +693,13 @@ def _master_specs(
     add("comWareHouse", "倉庫", ware_id, "WareHouseID = %s", True)
     add("comDepartment", "部門", depart_id, "DepartID = %s", False)
     for pid in dict.fromkeys(_text(p) for p in (person_ids or [])):
-        add("comPerson", "人員", pid, "PersonID = %s", False)
+        add("comPerson", "人員", pid, "PersonID = %s", False, copy_required=True)
     return specs
 
 
 def _can_copy_masters(target: str, source_db: str) -> bool:
     """只有測試公司（且不是來源本身）才可從來源複製主檔；正式公司一律不行。"""
-    return target in TEST_TARGETS and target != PRODUCTION_TARGET and target != source_db
+    return is_test(target) and target != PRODUCTION_TARGET and target != source_db
 
 
 def _offset_bill_no(bill_no: str, offset: int) -> str:
@@ -710,9 +720,6 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
     """讀來源範本 + 目標欄位 / 缺少的主檔 / 單號，組出整張單的 INSERT；不寫入。"""
     _check_db_name(wcur, target)
     ctx = _load_source(src, req)
-    for prod in ctx["products"].values():
-        if customer_supplied_reason(_get(prod, "ProdID"), _get(prod, "ClassID")) == "class003":
-            raise _customer_supplied_error(_text(_get(prod, "ProdID")), "class003")
     source_db = erp_stock.get_settings()["database"]
 
     main_cols = table_columns(wcur, "ordBillMain")
@@ -736,7 +743,22 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
         scur = src.cursor()
         kept = []
         for spec in missing:
-            if not spec["required"]:
+            if spec["table"] == "comPerson":
+                # 人員自己的部門（DepartID）也要在目標存在，否則補上（排在人員前面）
+                scur.execute(f"SELECT * FROM {spec['table']} WHERE {spec['where']}", spec["params"])
+                prow = _one(scur)
+                if prow is None:
+                    if spec.get("copy_required"):
+                        raise PoValidationError(f"來源公司也找不到{spec['label']} {spec['key']}，無法複製主檔")
+                    continue
+                dept = _text(_get(prow, "DepartID"))
+                if dept and not any(k["table"] == "comDepartment" and k["key"] == dept for k in kept):
+                    wcur.execute("SELECT 1 FROM comDepartment WHERE DepartID = %s", (dept,))
+                    if wcur.fetchone() is None:
+                        kept.append({"table": "comDepartment", "label": "部門", "key": dept,
+                                     "where": "DepartID = %s", "params": (dept,),
+                                     "required": False, "copy_required": False})
+            elif not spec["required"]:
                 scur.execute(f"SELECT 1 FROM {spec['table']} WHERE {spec['where']}", spec["params"])
                 if scur.fetchone() is None:
                     continue
@@ -823,7 +845,7 @@ def _summary(plan: Dict[str, Any], target: str, req: Dict[str, Any]) -> Dict[str
     return {
         "target": target,
         "target_label": target_label(target),
-        "is_test": target in TEST_TARGETS,
+        "is_test": is_test(target),
         "bill_no": plan["bill_no"],
         "supplier": {
             "id": plan["supplier_id"],
@@ -928,7 +950,7 @@ def _copy_masters(src_cur, wcur, missing: List[Dict[str, Any]], target: str = ""
         src_cur.execute(f"SELECT * FROM {spec['table']} WHERE {spec['where']}", spec["params"])
         row = _one(src_cur)
         if row is None:
-            if not spec.get("required", True):
+            if not spec.get("required", True) and not spec.get("copy_required"):
                 continue
             raise PoValidationError(f"來源公司也找不到{spec['label']} {spec['key']}，無法複製主檔")
         cols = table_columns(wcur, spec["table"])

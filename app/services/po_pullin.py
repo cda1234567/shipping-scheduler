@@ -138,14 +138,6 @@ def _fetch_open_lines(parts: List[str], today: date) -> List[Dict[str, Any]]:
         return _query_open_po_lines(conn, parts, today, max_overdue)
 
 
-def _fetch_class_ids(parts: List[str]) -> Dict[str, str]:
-    """料號 → 正航 ClassID（唯讀，沿用缺料採購的 comProduct 查詢）。"""
-    if not parts:
-        return {}
-    with erp_purchase._source_session() as conn:
-        return {k: v.get("class_id", "") for k, v in sp._lookup_products(conn, parts).items()}
-
-
 def _fetch_tab_stock(parts: List[str], ware_ids: List[str]) -> Dict[str, float]:
     """客供料倉庫（預設 002）庫存，沿用缺料採購的查詢。"""
     with low_stock._erp_session() as conn:
@@ -203,14 +195,8 @@ def build_pullin_list(order_ids: List[int], new_ship_date: Any) -> Dict[str, Any
     overrides = db.get_part_purchase_categories(keys)
 
     warnings: List[str] = []
-    # 客供料（-TAB 結尾或 ClassID 003，與缺料採購同一判斷）：不採購，不列未下單 / 草稿 / 徽章
-    class_ids: Dict[str, str] = {}
-    try:
-        class_ids = _fetch_class_ids(keys)
-    except Exception as exc:
-        logger.warning("提前清單：料號類別查詢失敗：%s", type(exc).__name__)
-        warnings.append(f"料號類別查詢失敗，客供料僅依 -TAB 結尾判斷（{erp_purchase._safe_message(exc)}）")
-    cs_keys = [k for k in keys if erp_purchase.customer_supplied_reason(k, class_ids.get(k, ""))]
+    # 客供料（僅料號 -TAB 結尾，與缺料採購同一判斷）：不採購，不列未下單 / 草稿 / 徽章
+    cs_keys = [k for k in keys if erp_purchase.customer_supplied_reason(k)]
     tab_wares = sp.tab_ware_ids()
     tab_stock: Dict[str, float] = {}
     tab_error = ""

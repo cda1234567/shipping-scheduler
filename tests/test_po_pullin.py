@@ -125,7 +125,6 @@ class Base(unittest.TestCase):
             line(50, "2026-12-15", "PO4", 1, "S3", "OC-1"),         # 後段準時
         ]
         self.names = {"S1": "供一", "S2": "供二", "S3": "供三"}
-        self.class_map = {}
         self.tab_map = {}
         self.open_calls = []
 
@@ -146,18 +145,12 @@ class Base(unittest.TestCase):
             patch.object(db, "get_st_inventory_stock", lambda: self.st),
             patch.object(pp, "_fetch_open_lines", fake_open),
             patch.object(pp, "_fetch_supplier_names", fake_names),
-            patch.object(pp, "_fetch_class_ids", lambda parts: self.class_ids(parts)),
             patch.object(pp, "_fetch_tab_stock", lambda parts, wares: self.tab_stock(parts, wares)),
             patch.object(pp, "local_now", lambda: TODAY),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-
-    def class_ids(self, parts):
-        if isinstance(self.class_map, Exception):
-            raise self.class_map
-        return {k: v for k, v in self.class_map.items() if k in parts}
 
     def tab_stock(self, parts, wares):
         if isinstance(self.tab_map, Exception):
@@ -471,33 +464,32 @@ class CustomerSuppliedTests(Base):
     def setUp(self):
         super().setUp()
         self.groups[0]["items"] += [
-            {"part": "CS-1", "desc": "客供", "need_qty": 50},       # ClassID 003
+            {"part": "CS-1-TAB", "desc": "客供", "need_qty": 50},       # -TAB 結尾（類別不影響）
             {"part": "BOARD-TAB", "desc": "客供板", "need_qty": 8},  # -TAB 結尾
         ]
-        self.st.update({"CS-1": 0, "BOARD-TAB": 0})
-        self.class_map = {"CS-1": "003", "EC-1": "001"}
-        self.tab_map = {"CS-1": 30.0, "BOARD-TAB": 5.0}
+        self.st.update({"CS-1-TAB": 0, "BOARD-TAB": 0})
+        self.tab_map = {"CS-1-TAB": 30.0, "BOARD-TAB": 5.0}
 
     def test_not_unordered_not_in_drafts_or_badge(self):
         r = pp.confirm([1], NEW_SHIP)
-        self.assertNotIn("CS-1", {p["part_number"] for p in r["unordered"]})
+        self.assertNotIn("CS-1-TAB", {p["part_number"] for p in r["unordered"]})
         self.assertNotIn("BOARD-TAB", {p["part_number"] for p in r["unordered"]})
         self.assertEqual({p["part_number"] for p in r["unordered"]}, {"EC-3", "PK-1"})
-        self.assertNotIn("CS-1", {p["part_number"] for p in r["parts"]})
+        self.assertNotIn("CS-1-TAB", {p["part_number"] for p in r["parts"]})
         for s in r["suppliers"]:
-            self.assertNotIn("CS-1", s["draft_text"])
+            self.assertNotIn("CS-1-TAB", s["draft_text"])
             self.assertNotIn("BOARD-TAB", s["draft_text"])
-        self.assertTrue(all(i["part_number"] not in ("CS-1", "BOARD-TAB") for i in db.list_pullin_items()))
+        self.assertTrue(all(i["part_number"] not in ("CS-1-TAB", "BOARD-TAB") for i in db.list_pullin_items()))
         self.assertEqual(pp.unresolved_count(), 2)
 
     def test_separate_list_with_stock_and_shortage(self):
         r = pp.build_pullin_list([1], NEW_SHIP)
         cs = {c["part_number"]: c for c in r["customer_supplied"]}
-        self.assertEqual(set(cs), {"CS-1", "BOARD-TAB"})
-        self.assertEqual((cs["CS-1"]["need"], cs["CS-1"]["tab_stock"], cs["CS-1"]["shortage"]), (50, 30, 20))
+        self.assertEqual(set(cs), {"CS-1-TAB", "BOARD-TAB"})
+        self.assertEqual((cs["CS-1-TAB"]["need"], cs["CS-1-TAB"]["tab_stock"], cs["CS-1-TAB"]["shortage"]), (50, 30, 20))
         self.assertEqual(cs["BOARD-TAB"]["shortage"], 3)
-        self.assertEqual(cs["CS-1"]["ware_ids"], ["002"])
-        self.assertTrue(cs["CS-1"]["required_date"])
+        self.assertEqual(cs["CS-1-TAB"]["ware_ids"], ["002"])
+        self.assertTrue(cs["CS-1-TAB"]["required_date"])
         self.assertEqual(r["summary"]["customer_supplied_parts"], 2)
         self.assertEqual(r["summary"]["pull_in_lines"], 2)  # 其餘不受影響
 
@@ -505,20 +497,21 @@ class CustomerSuppliedTests(Base):
         self.tab_map = RuntimeError("down")
         r = pp.build_pullin_list([1], NEW_SHIP)
         cs = {c["part_number"]: c for c in r["customer_supplied"]}
-        self.assertIsNone(cs["CS-1"]["tab_stock"])
-        self.assertFalse(cs["CS-1"]["stock_known"])
-        self.assertIsNone(cs["CS-1"]["shortage"])
+        self.assertIsNone(cs["CS-1-TAB"]["tab_stock"])
+        self.assertFalse(cs["CS-1-TAB"]["stock_known"])
+        self.assertIsNone(cs["CS-1-TAB"]["shortage"])
         self.assertTrue(any("客供料倉庫" in w for w in r["warnings"]))
 
-    def test_class_lookup_failure_falls_back_to_suffix(self):
-        self.class_map = RuntimeError("down")
+    def test_class_003_non_tab_is_treated_as_normal_part(self):
+        self.groups[0]["items"].append({"part": "OC-10222B", "desc": "類別003一般料", "need_qty": 40})
+        self.st["OC-10222B"] = 0
         r = pp.build_pullin_list([1], NEW_SHIP)
-        self.assertEqual({c["part_number"] for c in r["customer_supplied"]}, {"BOARD-TAB"})
-        self.assertTrue(any("料號類別查詢失敗" in w for w in r["warnings"]))
-        self.assertIn("CS-1", {p["part_number"] for p in r["unordered"]})  # 003 無法判斷時維持原行為
+        self.assertEqual({c["part_number"] for c in r["customer_supplied"]}, {"CS-1-TAB", "BOARD-TAB"})
+        self.assertIn("OC-10222B", {p["part_number"] for p in r["unordered"]})
+        self.assertFalse(hasattr(pp, "_fetch_class_ids"))
 
     def test_open_po_not_queried_for_customer_supplied(self):
         pp.build_pullin_list([1], NEW_SHIP)
         for call in self.open_calls:
-            self.assertNotIn("CS-1", call)
+            self.assertNotIn("CS-1-TAB", call)
             self.assertNotIn("BOARD-TAB", call)

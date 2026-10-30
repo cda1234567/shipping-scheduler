@@ -302,7 +302,7 @@ def _lookup_products(conn, parts: List[str]) -> Dict[str, Dict[str, str]]:
     return result
 
 
-# ── 客供料（-TAB 結尾或正航類別 003）：向客戶要料，不採購 ────────────────────────
+# ── 客供料（僅料號 -TAB 結尾）：向客戶要料，不採購 ────────────────────────
 
 DEFAULT_TAB_WARE_IDS = "002"  # TABLEAU；不含 015
 
@@ -389,8 +389,7 @@ def resolve_supplier(
 def _erp_lookups(parts: List[str], today: date) -> Dict[str, Any]:
     """所有 ERP 唯讀查詢；ERP 連不上時回空結果並附 warnings，缺料清單照常產生。
 
-    客供料（-TAB 結尾或 ClassID 003）不查供應商 / 最近採購 / 單價 / 在途，改查客供倉庫庫存。
-    ERP 不可用時只能靠 -TAB 結尾判斷客供料（products 為空）。
+    客供料（-TAB 結尾）不查供應商 / 最近採購 / 單價 / 在途，改查客供倉庫庫存。
     """
     out: Dict[str, Any] = {
         "products": {}, "last_po": {}, "suppliers": {}, "on_order": {}, "warnings": [],
@@ -402,10 +401,6 @@ def _erp_lookups(parts: List[str], today: date) -> Dict[str, Any]:
     try:
         with erp_purchase._source_session() as conn:
             out["products"] = _lookup_products(conn, parts)
-            purchasable = [
-                p for p in parts
-                if not erp_purchase.customer_supplied_reason(p, out["products"].get(p, {}).get("class_id", ""))
-            ]
             out["last_po"] = _lookup_last_po(conn, purchasable)
             ids = {p["major_supplier"] for k, p in out["products"].items() if p["major_supplier"] and k in purchasable}
             ids |= {p["supplier_id"] for p in out["last_po"].values() if p["supplier_id"]}
@@ -522,7 +517,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     for key in keys:
         entry = aggregated[key]
         product = lookups["products"].get(key, {})
-        reason = erp_purchase.customer_supplied_reason(key, product.get("class_id", ""))
+        reason = erp_purchase.customer_supplied_reason(key)
         if reason:
             customer_supplied.append(_customer_supplied_item(key, entry, product, reason, lookups))
             continue
