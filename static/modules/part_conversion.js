@@ -39,7 +39,7 @@ function renderPreview() {
   const stockB = p.stock[p.part_b] || {};
   const warnings = (p.warnings || []).map(w => `<div class="erp-po-warn">${esc(w)}</div>`).join("");
   const notes = [];
-  if (p.merge_count) notes.push(`${p.merge_count} 份 BOM 已含 ${esc(p.part_b)}，用量會相加合併`);
+  if (p.merge_count) notes.push(`${p.merge_count} 份 BOM 已含 ${esc(p.part_b)}：視為互換料，保留 ${esc(p.part_b)} 原本的用量與需求量、刪除 ${esc(p.part_a)} 那列（用量不相加）`);
   if (p.db_only_count) notes.push(`${p.db_only_count} 份 BOM 沒有可編輯的 xlsx 檔（.xls 或檔案遺失），只更新資料庫`);
   const rows = p.affected.map(x => `<tr>
     <td>${esc(x.filename)}</td>
@@ -47,7 +47,8 @@ function renderPreview() {
     <td>${esc(x.group_model)}</td>
     <td class="num">${fmtQty(x.qty_per_board)}</td>
     <td class="num">${fmtQty(x.needed_qty)}</td>
-    <td>${x.merge ? `<span class="pc-flag-merge">合併（${fmtQty(x.b_qty_per_board_before)} + ${fmtQty(x.qty_per_board)} = ${fmtQty(x.qty_per_board_after)}）</span>` : "改料號"}</td>
+    <td class="num">${fmtQty(x.needed_qty_after ?? x.needed_qty)}</td>
+    <td>${x.merge ? `<span class="pc-flag-merge${x.qty_mismatch ? " pc-flag-mismatch" : ""}">互換料，保留 ${esc(p.part_b)} 用量 ${fmtQty(x.b_qty_per_board_before)}（刪除 ${esc(p.part_a)}）</span>${x.qty_mismatch ? `<div class="erp-po-warn">用量不同：${esc(p.part_a)} ${fmtQty(x.qty_per_board)}、${esc(p.part_b)} ${fmtQty(x.b_qty_per_board_before)}</div>` : ""}` : "改料號"}</td>
     <td>${x.file_mode === "xlsx" ? "xlsx + 資料庫" : "僅資料庫"}</td>
   </tr>`).join("");
   box.hidden = false;
@@ -58,7 +59,7 @@ function renderPreview() {
     <div class="erp-po-hint">庫存：${esc(p.part_a)} ST ${fmtQty(stockA.st_stock)}｜${esc(p.part_b)} ST ${fmtQty(stockB.st_stock)}｜轉換後 ${esc(p.part_b)} 有效庫存 ${fmtQty(p.effective_stock_b)}
       （主檔快照：${esc(p.part_a)} ${stockA.main_snapshot_stock == null ? "—" : fmtQty(stockA.main_snapshot_stock)}、${esc(p.part_b)} ${stockB.main_snapshot_stock == null ? "—" : fmtQty(stockB.main_snapshot_stock)}，主檔不會被修改）</div>
     ${p.count ? `<div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
-      <th>BOM 檔案</th><th>機種</th><th>群組</th><th class="num">每板用量</th><th class="num">需求量</th><th>處理</th><th>寫入</th>
+      <th>BOM 檔案</th><th>機種</th><th>群組</th><th class="num">A 每板用量</th><th class="num">A 需求量</th><th class="num">轉換後 B 需求量</th><th>處理</th><th>寫入</th>
     </tr></thead><tbody>${rows}</tbody></table></div>` : ""}`;
 }
 

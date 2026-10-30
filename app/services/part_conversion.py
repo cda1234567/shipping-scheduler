@@ -1,7 +1,10 @@
 """轉換料 A→B：把本網站所有 BOM 裡的料號 A 換成 B，可預覽、可還原。
 
 - 只改本網站自己的資料（bom_files / bom_components 與 BOM xlsx 檔），完全不碰正航 / ERP。
-- B 已存在於同一份 BOM 時：每板用量相加、需求量相加，A 那列清空（xlsx）/ 移除（資料庫），預覽中標示「合併」。
+- B 已存在於同一份 BOM 時：A、B 視為互換料（替代料），用量不相加 —— 保留 B 原本那列（每板用量、需求量都不變），
+  A 那列清空（xlsx）/ 移除（資料庫），預覽中標示「互換料，保留 B 用量 n（刪除 A）」；
+  A、B 每板用量不同時仍保留 B 的用量，預覽列出兩個數值警告。虛線（-）列也照同一規則。
+  （v2026.10.30.9 之前的版本是把用量相加。）
 - 確認時先把受影響 BOM 的元件與 xlsx 備份存成快照（part_conversions.snapshot_json），
   資料庫部分在單一 transaction 內完成；任何一份 BOM 失敗，已改動的 xlsx 一律從備份還原。
 - 轉換後 A 記入 part_conversion_active：缺料採購不再列出 A，A 的需求與庫存併入 B
@@ -90,9 +93,9 @@ def effective_stock(
 # ── 純函式：元件轉換 ─────────────────────────────────────────────────────────
 
 def transform_components(components: List[Dict[str, Any]], part_a: str, part_b: str) -> Tuple[List[Dict[str, Any]], bool]:
-    """回傳 (轉換後元件, 是否合併進既有 B)。不修改傳入的清單。
+    """回傳 (轉換後元件, 是否為互換料（BOM 已有 B）)。不修改傳入的清單。
 
-    同一份 BOM 已有 B：第一個 B 列加上所有 A 列的每板用量與需求量，A 列移除。
+    同一份 BOM 已有 B：A、B 是互換料，用量不相加 —— B 列原封不動，A 列移除。
     沒有 B：A 列直接改成 B 料號（其餘欄位不變）。
     """
     a, b = norm(part_a), norm(part_b)
@@ -105,9 +108,6 @@ def transform_components(components: List[Dict[str, Any]], part_a: str, part_b: 
         for c in a_rows:
             c["part_number"] = b
         return out, False
-    for c in a_rows:
-        b_row["qty_per_board"] = float(b_row.get("qty_per_board") or 0) + float(c.get("qty_per_board") or 0)
-        b_row["needed_qty"] = float(b_row.get("needed_qty") or 0) + float(c.get("needed_qty") or 0)
     return [c for c in out if norm(c.get("part_number")) != a], True
 
 
@@ -179,10 +179,11 @@ def _stock_info(parts: List[str]) -> Dict[str, Dict[str, Any]]:
 
 
 def preview(part_a: str, part_b: str) -> Dict[str, Any]:
-    """唯讀 dry-run：列出所有使用 A 的 BOM（含合併標記）；不改任何資料。"""
+    """唯讀 dry-run：列出所有使用 A 的 BOM（含互換料標記）；不改任何資料。"""
     mapping = active_map()
     a, b = _validate_pair(part_a, part_b, mapping)
     affected: List[Dict[str, Any]] = []
+    warnings: List[str] = []
     for bom in db.get_bom_files():
         comps = db.get_bom_components(bom["id"])
         a_rows = [c for c in comps if norm(c["part_number"]) == a]
@@ -191,16 +192,38 @@ def preview(part_a: str, part_b: str) -> Dict[str, Any]:
         b_rows = [c for c in comps if norm(c["part_number"]) == b]
         qty_a = sum(float(c["qty_per_board"] or 0) for c in a_rows)
         qty_b = sum(float(c["qty_per_board"] or 0) for c in b_rows)
+        needed_a = sum(float(c["needed_qty"] or 0) for c in a_rows)
+        needed_b = sum(float(c["needed_qty"] or 0) for c in b_rows)
+        merge = bool(b_rows)
+        a_dash = all(bool(c.get("is_dash")) for c in a_rows)
+        b_dash = merge and all(bool(c.get("is_dash")) for c in b_rows)
+        mismatch = merge and abs(qty_a - qty_b) > 1e-9
+        label = bom.get("filename") or bom["id"]
+        if mismatch:
+            warnings.append(
+                f"{label}：{a} 每板用量 {qty_a:g} 與 {b} 每板用量 {qty_b:g} 不同，依互換料規則保留 {b} 的 {qty_b:g}"
+            )
+        if merge and b_dash and not a_dash:
+            warnings.append(
+                f"{label}：{b} 在此 BOM 是虛線（-，不計需求）列、{a} 是一般列；保留 {b} 後此料在這份 BOM 不再計算需求，請確認"
+            )
         affected.append({
             **_bom_label(bom),
             "file_mode": _file_mode(bom),
             "rows": len(a_rows),
             "qty_per_board": qty_a,
-            "needed_qty": sum(float(c["needed_qty"] or 0) for c in a_rows),
+            "needed_qty": needed_a,
             "description": a_rows[0].get("description") or "",
-            "merge": bool(b_rows),
+            # merge = BOM 已有 B（互換料：保留 B、刪除 A，用量不相加）；欄位名稱沿用以相容舊紀錄
+            "merge": merge,
+            "interchangeable": merge,
             "b_qty_per_board_before": qty_b,
-            "qty_per_board_after": qty_a + qty_b if b_rows else qty_a,
+            "b_needed_qty_before": needed_b,
+            "qty_per_board_after": qty_b if merge else qty_a,
+            "needed_qty_after": needed_b if merge else needed_a,
+            "qty_mismatch": mismatch,
+            "a_is_dash": a_dash,
+            "b_is_dash": b_dash,
         })
     stock = _stock_info([a, b])
     return {
@@ -212,24 +235,14 @@ def preview(part_a: str, part_b: str) -> Dict[str, Any]:
         "affected": affected,
         "stock": stock,
         "effective_stock_b": stock[a]["st_stock"] + stock[b]["st_stock"],
-        "warnings": ([] if affected else [f"本網站的 BOM 中找不到料號 {a}"]),
+        "warnings": (warnings if affected else [f"本網站的 BOM 中找不到料號 {a}"]),
     }
 
 
 # ── xlsx 編輯 ────────────────────────────────────────────────────────────────
 
-def _cell_number(ws, row: int, col: int, label: str) -> float:
-    cell = bom_editor._resolve_cell_for_write(ws, row, col)
-    if bom_editor._is_formula_excel_cell(cell):
-        raise ConversionError(f"{label} 第 {row} 列的用量為公式，無法自動合併，請先手動調整")
-    try:
-        return float(cell.value or 0)
-    except (TypeError, ValueError):
-        raise ConversionError(f"{label} 第 {row} 列的用量不是數字") from None
-
-
-def _edit_workbook(path: str, a: str, b: str, a_needed: float, label: str) -> None:
-    """就地修改 xlsx：沒有 B 就把 A 列料號改成 B；有 B 就把用量併入 B、清空 A 列。"""
+def _edit_workbook(path: str, a: str, b: str, label: str) -> None:
+    """就地修改 xlsx：沒有 B 就把 A 列料號改成 B；有 B（互換料）就保留 B 列不動、清空 A 列。"""
     suffix = Path(path).suffix.lower()
     wb = openpyxl.load_workbook(path, keep_vba=(suffix == ".xlsm"))
     try:
@@ -252,19 +265,13 @@ def _edit_workbook(path: str, a: str, b: str, a_needed: float, label: str) -> No
             for r in rows_a:
                 bom_editor._set_cell_value(ws, r, part_col, b)
         else:
-            target = rows_b[0]
-            qty = _cell_number(ws, target, qty_col, label)
-            needed_cell = bom_editor._resolve_cell_for_write(ws, target, needed_col)
+            # 互換料：B 列（用量、需求量、虛線標記）完全不動，只清空 A 列
             for r in rows_a:
-                qty += _cell_number(ws, r, qty_col, label)
                 bom_editor._set_cell_value(ws, r, part_col, None)
                 bom_editor._set_cell_value(ws, r, desc_col, None)
                 bom_editor._set_cell_value(ws, r, qty_col, 0)
                 if not bom_editor._is_formula_excel_cell(bom_editor._resolve_cell_for_write(ws, r, needed_col)):
                     bom_editor._set_cell_value(ws, r, needed_col, 0)
-            bom_editor._set_cell_value(ws, target, qty_col, qty)
-            if not bom_editor._is_formula_excel_cell(needed_cell):
-                needed_cell.value = float(needed_cell.value or 0) + a_needed
         bom_editor.mark_workbook_for_recalc(wb)
         wb.save(path)
     finally:
@@ -323,9 +330,11 @@ def convert(part_a: str, part_b: str, actor: str = "web", dry_run: bool = False)
                     logger.warning("BOM 歷史版本建立失敗：%s", type(exc).__name__)
                 backup_path = bom_editor.backup_bom_file(bom["filepath"])
                 backups.append((bom["filepath"], backup_path))
-                a_needed = sum(float(c["needed_qty"] or 0) for c in before if norm(c["part_number"]) == a)
-                _edit_workbook(bom["filepath"], a, b, a_needed, bom.get("filename") or bom["id"])
+                label = bom.get("filename") or bom["id"]
+                _edit_workbook(bom["filepath"], a, b, label)
                 after = _reparse(bom)
+                if any(norm(c["part_number"]) == a for c in after):
+                    raise ConversionError(f"{label} 轉換後仍有 {a}，已取消")
             else:
                 after, _ = transform_components(before, a, b)
             snapshot_boms.append({
@@ -336,8 +345,10 @@ def convert(part_a: str, part_b: str, actor: str = "web", dry_run: bool = False)
             states.append({"bom_id": bom["id"], "components": after})
         conversion_id = db.apply_part_conversion(
             a, b, states, {"boms": snapshot_boms},
-            [{k: x[k] for k in ("bom_id", "filename", "model", "group_model", "merge", "file_mode",
-                                 "qty_per_board", "needed_qty")} for x in info["affected"]],
+            [{**{k: x[k] for k in ("bom_id", "filename", "model", "group_model", "merge", "file_mode",
+                                   "qty_per_board", "needed_qty", "b_qty_per_board_before",
+                                   "qty_per_board_after", "needed_qty_after")},
+              "rule": "interchangeable"} for x in info["affected"]],
             actor,
         )
     except Exception:

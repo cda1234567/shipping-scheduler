@@ -1558,3 +1558,19 @@ class ErpReceiveInvoiceDateTests(unittest.TestCase):
         except FileNotFoundError:
             self.skipTest("node not installed")
         self.assertEqual(out.returncode, 0, out.stderr)
+
+
+class PartConversionInterchangeableTextTests(unittest.TestCase):
+    """轉換料：BOM 已有 B 時是互換料（保留 B 用量、刪除 A），畫面不可再顯示「合併（x + y = z）」。"""
+
+    def test_texts(self):
+        root = Path(__file__).resolve().parents[1] / "static"
+        js = (root / "modules" / "part_conversion.js").read_text(encoding="utf-8")
+        html = (root / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("合併（", js)
+        self.assertNotIn("用量會相加合併", js)
+        self.assertIn("互換料，保留 ${esc(p.part_b)} 用量", js)
+        self.assertIn("（刪除 ${esc(p.part_a)}）", js)
+        self.assertIn("needed_qty_after", js)
+        self.assertNotIn("B 的需求含 A", html)
+        self.assertIn("視為互換料，保留 B 原本的用量與需求量、刪除 A 那列", html)

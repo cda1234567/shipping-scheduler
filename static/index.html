@@ -435,7 +435,7 @@
     <!-- ── Tab: 轉換料 A→B（只改本網站 BOM，不碰正航） ── -->
     <div id="tab-part-conversion-tab" class="tab-content">
       <div class="erp-po-shell">
-        <div class="erp-po-hint">把本網站所有 BOM 裡的料號 A 換成 B；轉換後 A 停用（不再出現在缺料採購），B 的需求含 A、庫存 = B + A。可在下方還原。不會修改正航，也不會修改主檔。</div>
+        <div class="erp-po-hint">把本網站所有 BOM 裡的料號 A 換成 B：BOM 沒有 B 時直接把 A 改成 B（用量不變）；BOM 已有 B 時視為互換料，保留 B 原本的用量與需求量、刪除 A 那列（用量不相加，A、B 用量不同時會警告）。轉換後 A 停用（不再出現在缺料採購），B 的有效庫存 = B + A。可在下方還原。不會修改正航，也不會修改主檔。</div>
         <div class="erp-po-actions">
           <label>料號 A（舊） <input id="pc-part-a" type="text" placeholder="例如 EC-1001" autocomplete="off"></label>
           <span>→</span>

@@ -32,13 +32,23 @@ class PureTests(unittest.TestCase):
         self.assertEqual([c["part_number"] for c in out], ["B-1", "X"])
         self.assertEqual(out[0]["qty_per_board"], 2)
 
-    def test_transform_merge_sums_qty(self):
+    def test_transform_interchangeable_keeps_b_usage(self):
+        # 互換料：BOM 已有 B → 保留 B 原本用量與需求量、刪除 A，不相加（v2026.10.30.9）
         src = [comp("A", 2, 20), comp("B", 3, 30)]
         out, merged = pc.transform_components(src, "A", "B")
         self.assertTrue(merged)
         self.assertEqual(len(out), 1)
-        self.assertEqual((out[0]["part_number"], out[0]["qty_per_board"], out[0]["needed_qty"]), ("B", 5, 50))
+        self.assertEqual((out[0]["part_number"], out[0]["qty_per_board"], out[0]["needed_qty"]), ("B", 3, 30))
         self.assertEqual(len(src), 2)  # 不改傳入資料
+        self.assertEqual(src[1]["qty_per_board"], 3)
+
+    def test_transform_interchangeable_dash_rows(self):
+        a = {**comp("A", 1, 10), "is_dash": True}
+        b = {**comp("B", 1, 10), "is_dash": True}
+        out, merged = pc.transform_components([comp("X"), a, b], "A", "B")
+        self.assertTrue(merged)
+        self.assertEqual([(c["part_number"], c["is_dash"], c["qty_per_board"]) for c in out],
+                         [("X", False, 1.0), ("B", True, 1)])
 
     def test_transform_untouched_when_no_a(self):
         out, merged = pc.transform_components([comp("X")], "A", "B")
@@ -130,7 +140,11 @@ class PreviewTests(Base):
         by_id = {x["bom_id"]: x for x in r["affected"]}
         self.assertFalse(by_id["b1"]["merge"])
         self.assertTrue(by_id["b2"]["merge"])
-        self.assertEqual(by_id["b2"]["qty_per_board_after"], 5)
+        self.assertEqual(by_id["b2"]["qty_per_board_after"], 4)  # 互換料：保留 B 的 4，不是 1 + 4
+        self.assertEqual(by_id["b2"]["needed_qty_after"], 40)
+        self.assertEqual(by_id["b1"]["needed_qty_after"], 20)
+        self.assertTrue(by_id["b2"]["qty_mismatch"])
+        self.assertTrue(any("b2.xlsx" in w and "1" in w and "4" in w for w in r["warnings"]))
         self.assertEqual(by_id["b1"]["model"], "M1")
         self.assertEqual(r["effective_stock_b"], 45)
         self.assertEqual(r["db_only_count"], 2)
@@ -166,7 +180,7 @@ class ConvertRestoreTests(Base):
         self.assertEqual(self.parts("b1"), ["B", "X"])
         self.assertEqual(self.parts("b2"), ["B"])
         merged = db.get_bom_components("b2")[0]
-        self.assertEqual((merged["qty_per_board"], merged["needed_qty"]), (5, 50))
+        self.assertEqual((merged["qty_per_board"], merged["needed_qty"]), (4, 40))
         self.assertEqual(db.get_active_part_conversions(), {"A": "B"})
         log = db.list_part_conversions()[0]
         self.assertEqual((log["part_a"], log["part_b"], log["actor"], log["status"]), ("A", "B", "tester", "active"))
@@ -244,23 +258,49 @@ class ConvertRestoreTests(Base):
         self.assertEqual(Path(path).read_bytes(), original)
         self.assertEqual(self.parts("b1"), ["A", "X"])
 
-    def test_xlsx_merge_sums_and_clears_a_row(self):
+    def test_xlsx_interchangeable_keeps_b_and_clears_a_row(self):
         path = self.write_xlsx("b1.xlsx", [(2, "A", "電阻A", 20), (3, "B", "電阻B", 30)])
         self.add_bom("b1", "M1", [comp("A", 2, 20), comp("B", 3, 30)], filepath=path)
+        original = Path(path).read_bytes()
         r = pc.convert("A", "B")
         self.assertTrue(r["affected"][0]["merge"])
+        self.assertEqual(r["affected"][0]["qty_per_board_after"], 3)
         ws = load_workbook(path).active
-        self.assertEqual((ws["B6"].value, ws["F6"].value), (5, 50))
+        self.assertEqual((ws["B6"].value, ws["C6"].value, ws["F6"].value), (3, "B", 30))  # B 不動
         self.assertIsNone(ws["C5"].value)
         comps = db.get_bom_components("b1")
-        self.assertEqual([(c["part_number"], c["qty_per_board"]) for c in comps], [("B", 5.0)])
+        self.assertEqual([(c["part_number"], c["qty_per_board"], c["needed_qty"]) for c in comps], [("B", 3.0, 30.0)])
+        log = db.list_part_conversions()[0]
+        self.assertEqual(log["affected"][0]["rule"], "interchangeable")
+        pc.restore(r["conversion_id"])
+        self.assertEqual(Path(path).read_bytes(), original)
+        self.assertEqual(self.parts("b1"), ["A", "B"])
+
+    def test_xlsx_interchangeable_dash_row(self):
+        path = self.write_xlsx("b1.xlsx", [(1, "A", "a", 10), (1, "B", "b", 10)])
+        wb = load_workbook(path); ws = wb.active
+        ws["G6"], ws["H6"] = "-", "-"  # B 是虛線列
+        wb.save(path); wb.close()
+        self.add_bom("b1", "M1", [comp("A", 1, 10), {**comp("B", 1, 10), "is_dash": True}], filepath=path)
+        p = pc.preview("A", "B")
+        self.assertTrue(any("虛線" in w for w in p["warnings"]))
+        self.assertFalse(p["affected"][0]["qty_mismatch"])
+        pc.convert("A", "B")
+        ws = load_workbook(path).active
+        self.assertEqual((ws["C6"].value, ws["G6"].value, ws["H6"].value), ("B", "-", "-"))
+        comps = db.get_bom_components("b1")
+        self.assertEqual([(c["part_number"], bool(c["is_dash"])) for c in comps], [("B", True)])
 
     def test_xlsx_failure_restores_file_and_db(self):
-        # 用量是公式 → 無法自動合併 → 整筆失敗，檔案與資料庫都維持原樣
-        path = self.write_xlsx("b1.xlsx", [("=1+1", "A", "a", 20), (3, "B", "b", 30)])
+        # 寫資料庫失敗 → 整筆失敗，檔案與資料庫都維持原樣
+        path = self.write_xlsx("b1.xlsx", [(2, "A", "a", 20), (3, "B", "b", 30)])
         self.add_bom("b1", "M1", [comp("A", 2, 20), comp("B", 3, 30)], filepath=path)
         original = Path(path).read_bytes()
-        with self.assertRaises(pc.ConversionError):
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("boom")
+
+        with patch.object(db, "apply_part_conversion", boom), self.assertRaises(RuntimeError):
             pc.convert("A", "B")
         self.assertEqual(Path(path).read_bytes(), original)
         self.assertEqual(self.parts("b1"), ["A", "B"])
