@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.10.30.10"
+APP_VERSION = "v2026.10.30.11"
 APP_RELEASED_AT = "2026-10-30"
-APP_HEADLINE = "一次收料（勾選同廠商多張採購單明細，一鍵產生收料 / 驗收 / 進貨）、鈞洋後段加工連動（缺料採購自動帶出加工件）、所有預交日遇台灣假日提前、測試公司複製主檔補齊供應商 / 料號關聯表"
+APP_HEADLINE = "一次收料可寫入正式公司3（環境變數開關）與「更新平均成本」選項、一次收料（勾選同廠商多張採購單明細，一鍵產生收料 / 驗收 / 進貨）、鈞洋後段加工連動（缺料採購自動帶出加工件）、所有預交日遇台灣假日提前、測試公司複製主檔補齊供應商 / 料號關聯表"
 APP_CHANGELOG = [
     {
-        "title": "一次收料：收料 → 驗收 → 進貨（正航測試庫）",
+        "title": "一次收料：收料 → 驗收 → 進貨（正航測試庫 / 正式公司3）",
         "items": [
+            "v2026.10.30.11：一次收料可寫入正式公司 CHIComp03（公司3），需同時設定 ERP_RECEIVE_TARGET=CHIComp03、ERP_ALLOW_PROD_WRITE_CHICOMP03=1 與專用寫入帳密 ERP_SQL_WRITE_USER_CHICOMP03 / ERP_SQL_WRITE_PASSWORD_CHICOMP03（可選 ERP_SQL_WRITE_SERVER_CHICOMP03）；缺任何一項一律拒絕，正式公司不會退回測試帳密。一次收料的寫入公司改由 ERP_RECEIVE_TARGET 決定（沒設定時沿用 ERP_WRITE_TARGET），開採購單仍寫 ERP_WRITE_TARGET（CHIComp13）。畫面上方、預覽與確認視窗都明確標示「寫入：公司3（正式）」（紅色）或「公司13（測試）」。",
+            "v2026.10.30.11：新增「更新平均成本」勾選（預設值 = 環境變數 ERP_RECEIVE_UPDATE_COST，預設 1；API 參數 update_cost）。不勾時 comProduct.CAvgCost / CTotalCost 與 comWareAmount.Cost / TotalCost 不動（comProdRec.CostAvg 帶現有成本），庫存量、月庫存與 LatestPurchDate 照常更新，預覽顯示「不更新平均成本」。超收仍只是警告（確認後寫入，採購單剩餘量扣到 0）。Comp03 既有寫入規則（BillStatus 0、Detail、成本公式、IM-/QM-/RM- 共用流水號）不變。",
             "一次收料：勾選同廠商多張採購單明細，一鍵產生收料/驗收/進貨（正航測試庫）。新分頁「一次收料」：勾第一筆後鎖定該廠商（其他廠商變灰，可按「解除」），可改本次數量與單價，進貨（發票）日預設今天可改；預覽顯示單號、帳款月份、預計付款日 / 兌現日、每列金額與稅額、警告，確認後寫入。",
             "規則：收料 / 驗收日 = 今天，驗收一律 A1（良好）；收料 / 驗收 / 進貨共用同一個流水號（一律 IM- / QM- / RM- 前綴，例如 IM-20261030003），在寫入交易內鎖定計算；全部在單一交易，寫完讀回比對才 commit，任何錯誤整張 rollback。超收會警告並需確認（採購單剩餘量最少扣到 0）；全部列收完的採購單自動結案。只允許 ERP_TEST_TARGETS 內的測試公司，正式公司 CHIComp03 一律拒絕；不寫發票、傳票。倉庫預設 001（環境變數 ERP_RECEIVE_WAREHOUSE）。",
             "v2026.10.30.10：進貨單表頭照公司設定 —— BillStatus（建立時）：Comp03 = 0（未轉傳票，會計轉傳票時正航才改 1 並回寫 NotPayed / InCost / ShareType / LocalPayment）、Comp13 = 1（與正航自己建單相同）；其他公司依 comParams.CreateAccByFund（'1' → 0）。Detail = comParams.ComDefDescribe（Comp03 ''、Comp13 'A'），不再寫死 'A'。comBillAccounts.FaxNo 帶採購單 FaxNo（Comp03 2026 年 494/494 張相同）。採購單結案（ordBillMain.BillStatus）不受影響。",

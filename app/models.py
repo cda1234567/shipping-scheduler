@@ -405,11 +405,12 @@ class ErpReceiveLine(BaseModel):
 
 
 class ErpReceiveRequest(BaseModel):
-    target: Optional[str] = None  # 空 = 設定的寫入公司（僅限測試公司）
+    target: Optional[str] = None  # 空 = ERP_RECEIVE_TARGET（沒設定時 ERP_WRITE_TARGET）
     rm_date: Optional[int] = None  # 進貨（發票）日 yyyymmdd，空 = 今天
     lines: list[ErpReceiveLine]
     confirm: bool = False  # 超收時使用者確認後才帶 true
     client_token: str = ""  # 前端每次開啟預覽產生，防重複送出
+    update_cost: Optional[bool] = None  # 是否更新平均成本；空 = 環境變數 ERP_RECEIVE_UPDATE_COST（預設 1）
 
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────

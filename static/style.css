@@ -5367,4 +5367,6 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-receive-date-field input[type="date"] { padding: 5px 8px; border: 2px solid #f59e0b; border-radius: 6px; font-size: 14px; font-weight: 600; }
 .erp-receive-date-field input[type="date"]:invalid { border-color: #dc2626; }
 .erp-receive-preview-date { font-weight: 700; }
+.erp-receive-cost-field { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; }
+.erp-receive-cost-off { color: #b91c1c; font-weight: 700; }
 .pc-flag-mismatch { color: #dc2626; }

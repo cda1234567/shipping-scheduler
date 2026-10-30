@@ -894,3 +894,167 @@ class BillParamTests(ErpCase):
         r = er.create_receive(self.req(), "t", "")
         acc = next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == r["rm_no"])
         self.assertEqual(acc["FaxNo"], "06-2535027")
+
+
+# ── v2026.10.30.11：正式公司 CHIComp03 開關、ERP_RECEIVE_TARGET、更新平均成本開關 ───────────
+
+PROD_ON = {"ERP_RECEIVE_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1",
+           "ERP_SQL_WRITE_USER_CHICOMP03": "w03", "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "prod-secret",
+           "ERP_SQL_WRITE_SERVER_CHICOMP03": "10.0.0.3,1433"}
+
+
+class ProductionTargetTests(ErpCase):
+    def prod_env(self, **overrides):
+        env = {**PROD_ON, **overrides}
+        for k in [k for k, v in env.items() if v is None]:
+            env.pop(k)
+            os.environ.pop(k, None)
+        return patch.dict(os.environ, env)
+
+    def test_prod_write_allowed_with_flag_target_and_creds(self):
+        self.erp.db_name = "CHIComp03"
+        self.erp.tables["comParams"] = params(0, 3, 1, describe="")
+        with self.prod_env():
+            cfg = er.get_config()
+            self.assertEqual((cfg["target"], cfg["label"], cfg["is_production"], cfg["available"]),
+                             ("CHIComp03", "公司3（正式）", True, True))
+            self.assertNotIn("prod-secret", str(cfg))
+            creds = ep.write_credentials("CHIComp03")
+            self.assertEqual((creds["user"], creds["server"], creds["port"], creds["database"]),
+                             ("w03", "10.0.0.3", 1433, "CHIComp03"))
+            pv = er.preview_receive(self.req())
+            self.assertEqual((pv["target"], pv["target_label"], pv["is_production"]), ("CHIComp03", "公司3（正式）", True))
+            r = er.create_receive(self.req(), "t", "")
+            self.assertEqual(r["target"], "CHIComp03")
+            stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == r["rm_no"])
+            self.assertEqual((stk["BillStatus"], stk["Detail"]), (0, ""))  # Comp03 既有規則不變
+            self.assertTrue(r["rm_no"].startswith("RM-"))
+            # 開採購單仍寫 ERP_WRITE_TARGET（CHIComp13）
+            self.assertEqual(ep.get_target(), "CHIComp13")
+            self.assertEqual(ep.get_config()["target"], "CHIComp13")
+
+    def test_prod_refused_without_each_requirement(self):
+        self.erp.db_name = "CHIComp03"
+        cases = [
+            {"ERP_ALLOW_PROD_WRITE_CHICOMP03": None},
+            {"ERP_ALLOW_PROD_WRITE_CHICOMP03": "0"},
+            {"ERP_ALLOW_PROD_WRITE_CHICOMP03": "true"},  # 只接受 '1'
+            {"ERP_RECEIVE_TARGET": None},  # 只靠 ERP_WRITE_TARGET / 前端 target 不能開正式公司
+        ]
+        for case in cases:
+            with self.subTest(case=case), self.prod_env(**case):
+                with self.assertRaises(er.ReceiveValidationError):
+                    er.create_receive(self.req(target="CHIComp03"), "t", "")
+                with self.assertRaises(er.ReceiveValidationError):
+                    er.preview_receive(self.req(target="CHIComp03"))
+        with self.prod_env(ERP_RECEIVE_TARGET=None, ERP_WRITE_TARGET="CHIComp03"):
+            self.assertFalse(er.get_config()["available"])
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(self.req(), "t", "")
+        # 沒有專用帳密：不可退回測試帳（ERP_SQL_TEST_*）
+        with self.prod_env(ERP_SQL_WRITE_USER_CHICOMP03=None, ERP_SQL_WRITE_PASSWORD_CHICOMP03=None):
+            self.assertFalse(er.get_config()["available"])
+            with self.assertRaises(ep.ErpNotConfigured):
+                er.create_receive(self.req(), "t", "")
+        self.assertEqual(self.erp.executed, [])
+
+    def test_receive_target_on_test_company_refuses_requested_prod(self):
+        with patch.dict(os.environ, {**PROD_ON, "ERP_RECEIVE_TARGET": "CHIComp13"}):
+            self.assertEqual(er.get_config()["target"], "CHIComp13")
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(self.req(target="CHIComp03"), "t", "")
+            r = er.create_receive(self.req(), "t", "")
+            self.assertEqual(r["target"], "CHIComp13")
+        with patch.dict(os.environ, {"ERP_RECEIVE_TARGET": "bad"}):
+            self.assertIn("ERP_RECEIVE_TARGET", er.get_config()["reason"])
+
+    def test_over_receive_2582_of_2500_allowed_on_prod(self):
+        self.erp.db_name = "CHIComp03"
+        self.erp.tables["comParams"] = params(0, 3, 1, describe="")
+        self.erp.tables["ordBillSub"] = [po_sub("PO-2", 1, "AC-1", 2500)]
+        line = [{"po_no": "PO-2", "row_no": 1, "qty": 2582}]
+        with self.prod_env():
+            pv = er.preview_receive(self.req(line))
+            self.assertTrue(pv["needs_confirm"])
+            self.assertTrue(any(w["code"] == "over_receive" for w in pv["warnings"]))
+            with self.assertRaises(er.OverReceiveWarning) as cm:
+                er.create_receive(self.req(line), "t", "")
+            self.assertEqual(cm.exception.items[0]["over"], 82.0)
+            r = er.create_receive(self.req(line, confirm=True), "t", "")
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["totals"]["sum_qty"], 2582.0)
+        sub = next(x for x in self.rows("ordBillSub") if x["BillNO"] == "PO-2")
+        self.assertEqual(sub["QtyRemain"], 0)
+
+
+class UpdateCostFlagTests(ErpCase):
+    def product(self, prod):
+        return next(x for x in self.rows("comProduct") if x["ProdID"] == prod)
+
+    def ware(self, prod):
+        return next(x for x in self.rows("comWareAmount") if x["ProdID"] == prod)
+
+    def test_default_on_and_env_off(self):
+        self.assertTrue(er.get_config()["update_cost_default"])
+        self.assertTrue(er.normalize_request(self.req())["update_cost"])
+        for v in ("0", "false", "off", "no"):
+            with patch.dict(os.environ, {"ERP_RECEIVE_UPDATE_COST": v}):
+                self.assertFalse(er.get_config()["update_cost_default"])
+                self.assertFalse(er.normalize_request(self.req())["update_cost"])
+                self.assertTrue(er.normalize_request(self.req(update_cost=True))["update_cost"])
+        with patch.dict(os.environ, {"ERP_RECEIVE_UPDATE_COST": "1"}):
+            self.assertFalse(er.normalize_request(self.req(update_cost=False))["update_cost"])
+
+    def test_skip_cost_company_wide(self):
+        # CostByWare = 0（Comp03 方式）：CAvgCost / CTotalCost 不動，LatestPurchDate 與庫存量照常
+        self.erp.tables["comParams"] = params(0, 3, 1)
+        self.erp.tables["comProduct"] = [{"ProdID": "AC-2", "CTotalCost": Decimal(100), "CAvgCost": 10.0, "LatestPurchDate": 0}]
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 2, "qty": 50}], update_cost=False), "t", "")
+        self.assertFalse(r["update_cost"])
+        self.assertTrue(any(w["code"] == "cost_not_updated" for w in r["warnings"]))
+        p = self.product("AC-2")
+        self.assertEqual((p["CAvgCost"], p["CTotalCost"], p["LatestPurchDate"]), (10.0, Decimal(100), 20261030))
+        w = self.ware("AC-2")
+        self.assertEqual((w["Quantity"], w["TotalCost"], w["Cost"], w["LatestPurchDate"]),
+                         (Decimal(60), Decimal(100), Decimal(10), 20261030))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == r["rm_no"])
+        self.assertEqual(rec["CostAvg"], 10.0)  # 帶現有平均成本
+        updates = " ".join(sql for sql, _ in self.erp.executed if sql.startswith("UPDATE dbo.comProduct")).lower()
+        self.assertNotIn("cavgcost", updates)
+        self.assertNotIn("ctotalcost", updates)
+        self.assertIn("latestpurchdate", updates)
+
+    def test_skip_cost_by_ware_and_new_ware_row(self):
+        # CostByWare = 1（Comp13 方式）：倉庫 Cost / TotalCost 不動；新倉庫列 TotalCost = 0、Cost = 0
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 100},
+                                        {"po_no": "PO-1", "row_no": 2, "qty": 50}], update_cost=False), "t", "")
+        w2 = self.ware("AC-2")
+        self.assertEqual((w2["Quantity"], w2["TotalCost"], w2["Cost"]), (Decimal(60), Decimal(100), Decimal(10)))
+        w1 = self.ware("AC-1")
+        self.assertEqual((w1["Quantity"], w1["TotalCost"], w1["Cost"], w1["LatestPurchDate"]), (100, 0, 0, 20261030))
+        p1 = self.product("AC-1")
+        self.assertEqual((p1["CTotalCost"], p1["LatestPurchDate"]), (Decimal(5447), 20261030))
+        recs = {x["ProdID"]: x["CostAvg"] for x in self.rows("comProdRec") if x["BillNO"] == r["rm_no"]}
+        self.assertEqual(recs, {"AC-1": 0.0, "AC-2": 10.0})
+
+    def test_cost_on_still_updates(self):
+        r = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 2, "qty": 50}], update_cost=True), "t", "")
+        self.assertTrue(r["update_cost"])
+        self.assertEqual(self.ware("AC-2")["TotalCost"], Decimal(1300))
+        self.assertEqual(self.product("AC-2")["CTotalCost"], Decimal(6647))
+
+    def test_api_param(self):
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        from main import app
+        client = TestClient(app)
+        with patch.dict(os.environ, {"ERP_RECEIVE_UPDATE_COST": "0"}):
+            self.assertFalse(client.get("/api/erp-receive/config").json()["update_cost_default"])
+            body = {"lines": [{"po_no": "PO-1", "row_no": 2, "qty": 50}]}
+            pv = client.post("/api/erp-receive/preview", json=body).json()
+            self.assertFalse(pv["update_cost"])
+            pv = client.post("/api/erp-receive/preview", json={**body, "update_cost": True}).json()
+            self.assertTrue(pv["update_cost"])
+            r = client.post("/api/erp-receive/create", json={**body, "update_cost": False, "client_token": "c1"})
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertFalse(r.json()["update_cost"])
+        self.assertEqual(self.ware("AC-2")["TotalCost"], Decimal(100))

@@ -406,7 +406,7 @@
       </div>
     </div>
 
-    <!-- ── Tab: 一次收料（收料 → 驗收 → 進貨，只限正航測試庫） ── -->
+    <!-- ── Tab: 一次收料（收料 → 驗收 → 進貨；寫入公司見上方標示，正式公司需環境變數開啟） ── -->
     <div id="tab-erp-receive-tab" class="tab-content">
       <div class="erp-po-shell">
         <div id="erp-receive-badge" class="erp-po-badge">讀取設定中...</div>
@@ -417,6 +417,9 @@
             <input type="date" id="erp-receive-date" required>
           </label>
           <span class="erp-po-hint">收料 / 驗收日固定為今天；改日期會自動重新預覽</span>
+          <label class="erp-receive-cost-field" for="erp-receive-update-cost" title="不勾：平均成本（CAvgCost / CTotalCost / 倉庫成本）不動，庫存量與最近進貨日照常更新">
+            <input type="checkbox" id="erp-receive-update-cost" checked> 更新平均成本
+          </label>
           <button class="btn btn-primary" id="btn-erp-receive-preview" type="button">預覽</button>
         </div>
         <div id="erp-receive-preview" class="erp-po-preview" hidden></div>

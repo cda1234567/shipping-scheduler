@@ -9,6 +9,7 @@ let _busy = false;
 let _preview = null;
 let _token = "";
 let _rePreviewPending = false;
+let _costTouched = false;
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
 const el = id => document.getElementById(id);
@@ -30,8 +31,25 @@ function renderBadge() {
   if (!badge) return;
   if (!_config) { badge.className = "erp-po-badge is-unavailable"; badge.textContent = "無法使用：讀取設定失敗"; return; }
   if (!_config.available) { badge.className = "erp-po-badge is-unavailable"; badge.textContent = `無法使用　${_config.reason || ""}`; return; }
-  badge.className = "erp-po-badge is-test";
-  badge.textContent = `寫入：${_config.label}（測試庫）　倉庫 ${_config.warehouse}`;
+  badge.className = `erp-po-badge ${_config.is_production ? "is-prod" : "is-test"}`;
+  badge.textContent = `寫入：${targetText(_config.label, _config.is_production)}　倉庫 ${_config.warehouse}`;
+}
+
+// label 已帶「（正式）」/「（測試）」，例如「公司3（正式）」
+function targetText(label, isProduction) {
+  const text = label || "";
+  if (isProduction && !text.includes("正式")) return `${text}（正式）`;
+  return text;
+}
+
+function updateCostChecked() {
+  const box = el("erp-receive-update-cost");
+  return box ? box.checked : true;
+}
+
+function syncCostDefault() {
+  const box = el("erp-receive-update-cost");
+  if (box && _config && !_costTouched) box.checked = _config.update_cost_default !== false;
 }
 
 function buildBody(confirm = false) {
@@ -49,6 +67,7 @@ function buildBody(confirm = false) {
     lines: sel.map(s => ({ po_no: s.line.po_no, row_no: s.line.row_no, qty: s.qty, price: s.price })),
     confirm,
     client_token: _token,
+    update_cost: updateCostChecked(),
   };
 }
 
@@ -62,7 +81,11 @@ function hidePreview() {
 function renderPreview(r) {
   const p = el("erp-receive-preview");
   const warn = (r.warnings || []).map(w => `<div class="erp-po-warn">${esc(w.message)}</div>`).join("");
+  const costText = r.update_cost === false
+    ? '<span class="erp-receive-cost-off">不更新平均成本</span>'
+    : "更新平均成本";
   p.innerHTML = `
+    <div class="erp-po-badge ${r.is_production ? "is-prod" : "is-test"} erp-po-badge-small">寫入：${esc(targetText(r.target_label, r.is_production))}　${costText}</div>
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>　廠商 ${esc(r.vendor.id)} ${esc(r.vendor.name)}</div>
     <div class="erp-po-hint">收料 / 驗收日 ${ymd(r.today)}　<span class="erp-receive-preview-date">發票日期（進貨日）${ymd(r.rm_date)}</span>　帳款月份 ${esc(r.terms.AccMonth)}　預計付款日 ${ymd(r.terms.PrepayDay)}　兌現日 ${ymd(r.terms.EncashDay)}</div>
     ${warn}
@@ -127,7 +150,13 @@ async function handleCreate() {
     await handlePreview();
     return;
   }
-  if (!window.confirm(`確定要在「${_config?.label || ""}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n寫入後無法從本系統修改或刪除。`)) return;
+  if (_preview.update_cost !== body.update_cost) {
+    showToast("「更新平均成本」已變更，已重新預覽，請確認後再按「確認收料」");
+    await handlePreview();
+    return;
+  }
+  const tgt = targetText(_preview.target_label || _config?.label, _preview.is_production);
+  if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n平均成本：${body.update_cost ? "更新" : "不更新"}\n確定要在「${tgt}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n寫入後無法從本系統修改或刪除。`)) return;
   _busy = true;
   const btn = el("btn-erp-receive-create");
   if (btn) btn.disabled = true;
@@ -176,6 +205,7 @@ async function refreshHistory() {
 async function loadConfig() {
   try { _config = await apiJson("/api/erp-receive/config"); } catch (_) { _config = null; }
   renderBadge();
+  syncCostDefault();
 }
 
 export async function onErpReceiveTabActivated() {
@@ -209,5 +239,6 @@ export async function initErpReceive() {
   });
   el("btn-erp-receive-preview").addEventListener("click", handlePreview);
   el("erp-receive-date").addEventListener("change", () => { void handleDateChange(); });
+  el("erp-receive-update-cost")?.addEventListener("change", () => { _costTouched = true; void handleDateChange(); });
   await loadConfig();
 }

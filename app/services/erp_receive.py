@@ -2,8 +2,13 @@
 
 欄位逐欄對照 Andy 在 CHIComp13 的手動鏈（採購 20261030001 → 收料 → 驗收 → 進貨），
 資料欄位預設值取自 erp_receive_schema（該手動鏈的 SELECT *）。規則：
-- 只允許 ERP_TEST_TARGETS 內的測試公司；正式公司（CHIComp03）一律拒絕。
-  TODO：日後若要開放正式公司，需另加明確的設定開關，目前刻意不提供。
+- 寫入公司 = ERP_RECEIVE_TARGET（沒設定時沿用 ERP_WRITE_TARGET），與開採購單（ERP_WRITE_TARGET）分開設定。
+- 測試公司（ERP_TEST_TARGETS）可直接寫；正式公司 CHIComp03（v2026.10.30.11 起）只有同時符合才准寫：
+  ERP_RECEIVE_TARGET=CHIComp03、ERP_ALLOW_PROD_WRITE_CHICOMP03=1、且有專用寫入帳密
+  ERP_SQL_WRITE_USER_CHICOMP03 / ERP_SQL_WRITE_PASSWORD_CHICOMP03（可選 ERP_SQL_WRITE_SERVER_CHICOMP03；正式公司絕不使用測試帳密）。
+  前端傳來的 target 若是正式公司，也必須等於 ERP_RECEIVE_TARGET；其他非測試公司一律拒絕。
+- 平均成本：ERP_RECEIVE_UPDATE_COST（預設 1）為預設值，每次請求可帶 update_cost 覆寫；
+  false 時不動 comProduct.CAvgCost / CTotalCost 與 comWareAmount.Cost / TotalCost（庫存量、LatestPurchDate 照常更新）。
 - 與 erp_purchase（只 INSERT）不同，這裡必須 UPDATE 採購單剩餘量、庫存與彙總表（正航本身也是這樣記帳）。
 - 整件事（收料、驗收、進貨、所有彙總與採購單回寫）在同一個 transaction，任何錯誤 rollback；寫完讀回比對才 commit。
 - 收料 / 驗收日 = 今天；進貨日 = 發票日（預設今天，可改）。
@@ -80,16 +85,57 @@ def number_prefixes(target: str) -> Tuple[str, str, str]:
     return NUMBER_PREFIXES.get(target, DEFAULT_PREFIXES)
 
 
+RECEIVE_TARGET_ENV = "ERP_RECEIVE_TARGET"
+PROD_WRITE_FLAG_ENV = "ERP_ALLOW_PROD_WRITE_CHICOMP03"
+UPDATE_COST_ENV = "ERP_RECEIVE_UPDATE_COST"
+_FALSY = {"0", "false", "no", "off", "n", "f"}
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = ep._env(name, "")
+    if not raw:
+        return default
+    return raw.strip().lower() not in _FALSY
+
+
+def update_cost_default() -> bool:
+    """ERP_RECEIVE_UPDATE_COST：預設 1（更新平均成本）；0 / false / no / off = 不更新。"""
+    return _env_flag(UPDATE_COST_ENV, True)
+
+
+def get_receive_target() -> str:
+    """一次收料的寫入公司：ERP_RECEIVE_TARGET，沒設定時沿用開採購單的 ERP_WRITE_TARGET。"""
+    raw = ep._env(RECEIVE_TARGET_ENV, "")
+    if not raw:
+        return ep.get_target()
+    if not ep.TARGET_RE.match(raw):
+        raise ErpNotConfigured("ERP_RECEIVE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp13）")
+    return raw
+
+
+def production_write_allowed(target: str) -> bool:
+    """正式公司只有在 ERP_RECEIVE_TARGET 明確指向它、且 ERP_ALLOW_PROD_WRITE_CHICOMP03=1 時才開放。"""
+    return (
+        target == ep.PRODUCTION_TARGET
+        and ep._env(RECEIVE_TARGET_ENV, "") == ep.PRODUCTION_TARGET
+        and ep._env(PROD_WRITE_FLAG_ENV, "") == "1"
+    )
+
+
 def ensure_writable_target(target: str) -> None:
-    """只准測試公司；正式公司無條件拒絕。"""
+    """測試公司照常；正式公司需明確開關（見模組說明）；其他公司一律拒絕。"""
     if target == ep.PRODUCTION_TARGET:
-        raise ReceiveValidationError(f"{ep.target_label(target)} 目前不開放一次收料（只限測試公司）")
+        if not production_write_allowed(target):
+            raise ReceiveValidationError(
+                f"{ep.target_label(target)} 未開放一次收料（需設定 ERP_RECEIVE_TARGET=CHIComp03 與 "
+                f"{PROD_WRITE_FLAG_ENV}=1）")
+        return
     if not ep.is_test(target):
         raise ReceiveValidationError(f"{target} 不在測試公司清單（ERP_TEST_TARGETS），拒絕寫入")
 
 
 def resolve_target(requested: Optional[str]) -> Tuple[str, Dict[str, Any]]:
-    target = ep._text(requested) or ep.get_target()
+    target = ep._text(requested) or get_receive_target()
     if not ep.TARGET_RE.match(target):
         raise ReceiveValidationError("目標公司格式不正確")
     ensure_writable_target(target)
@@ -105,13 +151,15 @@ def get_config() -> Dict[str, Any]:
         "target": "", "label": "", "is_test": False, "available": False, "reason": "",
         "warehouse": warehouse(), "today": date_to_int(local_now().date()),
         "maker": ep._env("ERP_PO_MAKER", ep.DEFAULT_MAKER),
+        "is_production": False, "update_cost_default": update_cost_default(),
     }
     try:
-        target = ep.get_target()
+        target = get_receive_target()
     except ErpError as exc:
         result["reason"] = str(exc)
         return result
-    result.update(target=target, label=ep.target_label(target), is_test=ep.is_test(target))
+    result.update(target=target, label=ep.target_label(target), is_test=ep.is_test(target),
+                  is_production=target == ep.PRODUCTION_TARGET)
     try:
         ensure_writable_target(target)
     except ErpError as exc:
@@ -294,6 +342,7 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
         "lines": lines,
         "confirm": raw.get("confirm") is True,
         "client_token": ep._text(raw.get("client_token"))[:80],
+        "update_cost": update_cost_default() if raw.get("update_cost") is None else raw.get("update_cost") is True,
     }
 
 
@@ -498,12 +547,14 @@ def _round_cost(value: Decimal, params: Dict[str, Any]) -> float:
     return float(value)
 
 
-def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warnings: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warnings: List[Dict[str, Any]],
+               update_cost: bool = True) -> Dict[str, Dict[str, Any]]:
     """每個料號進貨後的成本（依正航 CostByWare / ComCostDigs / comCostDot）。
 
     CostByWare = 0（全公司，如 Comp03）：CAvgCost = r((舊 CTotalCost + 金額) / (所有倉庫舊庫存合計 + 數量))；
       新庫存 <= 0 時 CAvgCost 不動並警告（行為未確認）。comWareAmount.Cost 不維護。
     CostByWare = 1（依倉庫，如 Comp13）：comWareAmount.Cost = r(新倉庫 TotalCost / 新倉庫數量)；comProduct.CAvgCost 不動。
+    update_cost=False：不重算，CostAvg 帶現有成本（CostByWare=1 取倉庫 Cost，否則 CAvgCost），avg / ware_cost 皆 None。
     回傳 {prod: {"cost": comProdRec.CostAvg, "avg": 新 CAvgCost 或 None, "ware_cost": 倉庫 Cost 或 None}}
     """
     params = ctx["cost_params"]
@@ -511,6 +562,15 @@ def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warn
     for prod, agg in by_prod.items():
         q, amt = agg["qty"], agg["amount"]
         product = ctx["products"][prod]
+        if not update_cost:
+            # 不更新平均成本：comProdRec.CostAvg 帶現有成本，CAvgCost / 倉庫 Cost 都不動
+            if params["cost_by_ware"]:
+                wa = ctx["ware_amounts"].get(prod)
+                cost = float(_dec(ep._get(wa, "Cost"))) if wa is not None else 0.0
+            else:
+                cost = float(_dec(ep._get(product, "CAvgCost")))
+            out[prod] = {"cost": cost, "avg": None, "ware_cost": None}
+            continue
         if params["cost_by_ware"]:
             wa = ctx["ware_amounts"].get(prod)
             old_cost = float(_dec(ep._get(wa, "Cost"))) if wa is not None else 0.0
@@ -540,7 +600,7 @@ def _cost_plan(ctx: Dict[str, Any], by_prod: Dict[str, Dict[str, Decimal]], warn
 
 def build_plan(
     ctx: Dict[str, Any], *, target: str, today: int, rm_date: int, numbers: Dict[str, str],
-    maker: str, maker_id: str, client_ip: str, actor: str, now: datetime,
+    maker: str, maker_id: str, client_ip: str, actor: str, now: datetime, update_cost: bool = True,
 ) -> Dict[str, Any]:
     picked = ctx["picked"]
     first = picked[0]["main"]
@@ -606,7 +666,10 @@ def build_plan(
         agg = by_prod.setdefault(l["prod_id"], {"qty": Decimal(0), "amount": Decimal(0)})
         agg["qty"] += l["qty"]
         agg["amount"] += l["amount"]
-    costs = _cost_plan(ctx, by_prod, warnings)
+    costs = _cost_plan(ctx, by_prod, warnings, update_cost)
+    if not update_cost:
+        warnings.append({"code": "cost_not_updated", "needs_confirm": False,
+                         "message": "本次不更新平均成本（CAvgCost / CTotalCost / 倉庫成本不動，庫存量與最近進貨日照常更新）"})
     cost_params = ctx["cost_params"]
 
     inserts: List[Tuple[str, Dict[str, Any]]] = []
@@ -690,18 +753,20 @@ def build_plan(
         if wa is None:
             ware_cost = c["ware_cost"] if cost_params["cost_by_ware"] else 0
             updates.append({"op": "insert", "table": "comWareAmount", "values": _row(
-                "comWareAmount", ProdID=prod, WareID=ware, Cost=ware_cost or 0, Quantity=q, TotalCost=amt,
-                LatestPurchDate=rm_date, BCQty=q)})
+                "comWareAmount", ProdID=prod, WareID=ware, Cost=ware_cost or 0, Quantity=q,
+                TotalCost=amt if update_cost else 0, LatestPurchDate=rm_date, BCQty=q)})
         else:
             ware_set = {"Quantity": _dec(ep._get(wa, "Quantity")) + q,
-                        "TotalCost": _dec(ep._get(wa, "TotalCost")) + amt,
                         "BCQty": _dec(ep._get(wa, "BCQty")) + q, "LatestPurchDate": rm_date}
+            if update_cost:
+                ware_set["TotalCost"] = _dec(ep._get(wa, "TotalCost")) + amt
             if cost_params["cost_by_ware"] and c["ware_cost"] is not None:
                 ware_set["Cost"] = c["ware_cost"]
             updates.append({"op": "update", "table": "comWareAmount", "where": {"ProdID": prod, "WareID": ware},
                             "set": ware_set})
-        prod_set: Dict[str, Any] = {"CTotalCost": _dec(ep._get(ctx["products"][prod], "CTotalCost")) + amt,
-                                    "LatestPurchDate": rm_date}
+        prod_set: Dict[str, Any] = {"LatestPurchDate": rm_date}
+        if update_cost:
+            prod_set["CTotalCost"] = _dec(ep._get(ctx["products"][prod], "CTotalCost")) + amt
         if c["avg"] is not None:
             prod_set["CAvgCost"] = c["avg"]
         updates.append({"op": "update", "table": "comProduct", "where": {"ProdID": prod}, "set": prod_set})
@@ -751,7 +816,7 @@ def build_plan(
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
-        "cost_params": cost_params, "bill_params": ctx["bill_params"],
+        "cost_params": cost_params, "bill_params": ctx["bill_params"], "update_cost": update_cost,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
         "change_logs": logs,
     }
@@ -867,6 +932,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
     target = plan["target"]
     out = {
         "target": target, "target_label": ep.target_label(target), "is_test": ep.is_test(target),
+        "is_production": target == ep.PRODUCTION_TARGET, "update_cost": plan["update_cost"],
         **plan["numbers"], "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
         "vendor": plan["vendor"], "currency": plan["currency"], "warehouse": plan["warehouse"],
         "lines": _jsonable([
@@ -900,7 +966,7 @@ def _plan(wcur, target: str, req: Dict[str, Any], lock: bool, client_ip: str = "
     return build_plan(
         ctx, target=target, today=today, rm_date=rm_date, numbers=make_numbers(prefixes, today, rm_date, serial),
         maker=ep._env("ERP_PO_MAKER", ep.DEFAULT_MAKER), maker_id=ep._env("ERP_PO_MAKER_ID", ep.DEFAULT_MAKER_ID),
-        client_ip=client_ip, actor=actor, now=now)
+        client_ip=client_ip, actor=actor, now=now, update_cost=req.get("update_cost", True))
 
 
 def preview_receive(raw_req: Dict[str, Any]) -> Dict[str, Any]:
@@ -921,7 +987,7 @@ def preview_receive(raw_req: Dict[str, Any]) -> Dict[str, Any]:
 
 def _fingerprint(target: str, req: Dict[str, Any], rm_date_raw: Any) -> str:
     lines = sorted([l["po_no"], l["row_no"], str(l["qty"]), str(l["price"])] for l in req["lines"])
-    raw = json.dumps([target, str(rm_date_raw or ""), lines], ensure_ascii=False)
+    raw = json.dumps([target, str(rm_date_raw or ""), lines, bool(req.get("update_cost", True))], ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -955,7 +1021,7 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
 
 
 def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") -> Dict[str, Any]:
-    """建立收料 / 驗收 / 進貨並記錄本機紀錄（成功與失敗都記）。超收需 confirm=true。"""
+    """建立收料 / 驗收 / 進貨並記錄本機紀錄（成功與失敗都記）。超收只是警告：帶 confirm=true 即寫入（剩餘量扣到 0）。"""
     from .. import database as db
 
     req = normalize_request(raw_req)
@@ -996,7 +1062,8 @@ def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str =
         db.log_activity(
             "erp_receive_created",
             f"{ep.target_label(target)} 收料 {result['im_no']} / 驗收 {result['qm_no']} / 進貨 {result['rm_no']}，"
-            f"廠商 {result['vendor']['id']}，{len(result['lines'])} 行，含稅合計 {t['total']:.0f}")
+            f"廠商 {result['vendor']['id']}，{len(result['lines'])} 行，含稅合計 {t['total']:.0f}"
+            + ("" if result["update_cost"] else "（未更新平均成本）"))
         return {"ok": True, **result}
     finally:
         po_duplicates.release("rcv:" + fp)
