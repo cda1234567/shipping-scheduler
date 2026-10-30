@@ -1,5 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
+import { decoratePoMailBadges, poMailFailedHint, poMailSlot } from "/static/modules/po_mail_status.js";
 
 const LEAD_DAYS = 14;
 
@@ -523,8 +524,9 @@ async function handleCreate() {
     if (result) {
       result.className = "erp-po-result is-ok";
       result.innerHTML = done.map(r =>
-        `<div>✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong>（${esc(r.supplier.id)}），含稅合計 ${fmtMoney(r.totals.total)}</div>`).join("");
+        `<div>✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}（${esc(r.supplier.id)}），含稅合計 ${fmtMoney(r.totals.total)}</div>`).join("");
       result.hidden = false;
+      void decoratePoMailBadges(result);
     }
     const preview = document.getElementById("erp-po-preview");
     if (preview) { preview.hidden = true; preview.innerHTML = ""; }
@@ -593,7 +595,7 @@ async function refreshHistory() {
       const ok = o.status === "ok";
       return `<tr class="${ok ? "" : "erp-po-row-error"}">
         <td>${esc(String(o.created_at).slice(0, 16).replace("T", " "))}</td>
-        <td class="mono">${esc(o.bill_no) || "—"}</td>
+        <td class="mono">${esc(o.bill_no) || "—"}${ok && o.bill_no ? ` ${poMailSlot(o.bill_no)}` : ""}</td>
         <td>${esc(o.target_db)}</td>
         <td>${esc(o.supplier_id)} ${esc(o.supplier_name)}</td>
         <td>${first}${more}${historyLinesHtml(o, lines)}</td>
@@ -602,7 +604,16 @@ async function refreshHistory() {
     }).join("") : '<tr><td colspan="7" class="erp-po-hint">尚無紀錄</td></tr>';
   } catch (error) {
     body.innerHTML = `<tr><td colspan="7" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
+    return;
   }
+  void decorateHistoryMail(false);
+}
+
+async function decorateHistoryMail(force) {
+  const body = document.getElementById("erp-po-history");
+  if (body) await decoratePoMailBadges(body, { force });
+  const hint = document.getElementById("erp-po-mail-hint");
+  if (hint) hint.textContent = await poMailFailedHint();
 }
 
 // 供缺料採購在寫入後更新開採購單的歷史紀錄
@@ -634,6 +645,7 @@ export async function initErpPurchase() {
     renderLines();
   });
   document.getElementById("btn-erp-po-preview")?.addEventListener("click", handlePreview);
+  document.getElementById("btn-erp-po-mail-refresh")?.addEventListener("click", () => { void decorateHistoryMail(true); });
   document.getElementById("erp-po-supplier-input")?.addEventListener("input", () => {
     clearTimeout(_searchTimer);
     _searchTimer = setTimeout(() => { void searchSuppliers(); }, 250);

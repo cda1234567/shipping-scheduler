@@ -5358,7 +5358,6 @@ body.desktop-dark .frequent-zero-usage li span {
 .olp-table input.num { width: 90px; padding: 3px 5px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
 .olp-table .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
 .olp-picked { background: #eff6ff; }
-.olp-blocked { opacity: .4; }
 .olp-empty { color: #6b7280; text-align: center; }
 
 /* 一次收料：發票日期（進貨日）放在預覽按鈕旁 */
@@ -5370,3 +5369,13 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-receive-cost-field { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; }
 .erp-receive-cost-off { color: #b91c1c; font-weight: 700; }
 .pc-flag-mismatch { color: #dc2626; }
+
+/* 採購單寄信狀態徽章（automail） */
+.po-mail { display: inline-flex; gap: 4px; flex-wrap: wrap; vertical-align: middle; }
+.po-mail-sent, .po-mail-unsent, .po-mail-replied { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; white-space: nowrap; font-family: inherit; font-weight: 600; }
+.po-mail-sent { background: #dcfce7; color: #166534; }
+.po-mail-unsent { background: #e5e7eb; color: #4b5563; }
+.po-mail-replied { background: #dbeafe; color: #1e40af; }
+body.desktop-dark .po-mail-sent { background: #14532d; color: #bbf7d0; }
+body.desktop-dark .po-mail-unsent { background: #374151; color: #d1d5db; }
+body.desktop-dark .po-mail-replied { background: #1e3a8a; color: #bfdbfe; }

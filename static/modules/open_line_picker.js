@@ -11,6 +11,8 @@
  *   priceOf: (line) => number | null,          // 回 null 或省略 = 不顯示可編輯單價欄
  *   searchPlaceholder?: string,
  *   emptyText?: string,
+ *   otherGroupText?: string,                   // 鎖定時隱藏其他分組的提示，{n} = 隱藏筆數；預設「已隱藏其他分組 {n} 筆」
+ *   onRender?: (rootEl) => void,               // 表格重畫後呼叫（例：補上徽章）
  *   onChange?: (selection) => void,            // 勾選、數量、單價、鎖定變動時呼叫
  * });
  *
@@ -19,12 +21,19 @@
  * picker.clear()        → void                     取消所有勾選並解除鎖定
  * picker.lockedGroup()  → string | null
  *
- * 鎖定：勾第一筆後，其他分組的列變灰、不可勾；橫幅有「解除」鈕（會取消所有勾選）。
+ * 鎖定：勾第一筆後，其他分組的列整個隱藏（不渲染），並在計數處顯示「已隱藏其他廠商 N 筆」之類的提示；
+ * 取消最後一筆勾選、按橫幅「解除」或 clear() 後全部列重新顯示。搜尋仍在鎖定分組內運作。
+ * （送出時的同廠商檢查仍由後端負責。）
  */
 import { esc } from "/static/modules/api.js";
 
+/** 鎖定某分組時只顯示該組的列；未鎖定（lockKey === null）時全部顯示。 */
+export function visibleLines(lines, lockKey, groupKey) {
+  return lockKey === null ? lines : lines.filter(line => groupKey(line) === lockKey);
+}
+
 export function createOpenLinePicker(root, options) {
-  const opts = { searchPlaceholder: "搜尋廠商 / 料號 / 單號", emptyText: "沒有可選的明細", ...options };
+  const opts = { searchPlaceholder: "搜尋廠商 / 料號 / 單號", emptyText: "沒有可選的明細", otherGroupText: "已隱藏其他分組 {n} 筆", ...options };
   const hasPrice = typeof opts.priceOf === "function";
   let lines = [];
   let truncated = false;
@@ -59,7 +68,11 @@ export function createOpenLinePicker(root, options) {
   }
 
   function notify() {
-    countEl.textContent = order.length ? `已選 ${order.length} 筆` : "";
+    const hidden = lines.length - visibleLines(lines, lockKey, opts.groupKey).length;
+    const parts = [];
+    if (order.length) parts.push(`已選 ${order.length} 筆`);
+    if (hidden > 0) parts.push(opts.otherGroupText.replace("{n}", String(hidden)));
+    countEl.textContent = parts.join("　");
     if (typeof opts.onChange === "function") opts.onChange(selection());
   }
 
@@ -78,15 +91,14 @@ export function createOpenLinePicker(root, options) {
       body.innerHTML = `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.emptyText)}</td></tr>`;
       return;
     }
-    body.innerHTML = lines.map(line => {
+    body.innerHTML = visibleLines(lines, lockKey, opts.groupKey).map(line => {
       const key = opts.lineKey(line);
       const checked = order.includes(key);
-      const blocked = lockKey !== null && opts.groupKey(line) !== lockKey;
       const e = edits.get(key);
       const cells = opts.columns.map(c => `<td class="${c.align === "num" ? "num" : ""}">${c.render(line)}</td>`).join("");
       const qty = `<td class="num"><input type="number" class="olp-qty num" min="0" step="any" value="${esc(e ? e.qty : opts.qtyOf(line))}" ${checked ? "" : "disabled"}></td>`;
       const price = hasPrice ? `<td class="num"><input type="number" class="olp-price num" min="0" step="any" value="${esc(e ? e.price : opts.priceOf(line))}" ${checked ? "" : "disabled"}></td>` : "";
-      return `<tr data-key="${esc(key)}" class="${blocked ? "olp-blocked" : ""}${checked ? " olp-picked" : ""}"><td><input type="checkbox" class="olp-check" ${checked ? "checked" : ""} ${blocked ? "disabled" : ""}></td>${cells}${qty}${price}</tr>`;
+      return `<tr data-key="${esc(key)}" class="${checked ? "olp-picked" : ""}"><td><input type="checkbox" class="olp-check" ${checked ? "checked" : ""}></td>${cells}${qty}${price}</tr>`;
     }).join("") + (truncated ? `<tr><td colspan="${colspan}" class="olp-empty">結果過多，只顯示前面一部分，請用搜尋縮小範圍</td></tr>` : "");
   }
 
@@ -94,6 +106,7 @@ export function createOpenLinePicker(root, options) {
     renderHead();
     renderLock();
     renderBody();
+    if (typeof opts.onRender === "function") opts.onRender(root);
   }
 
   function pick(key, on) {
@@ -106,6 +119,7 @@ export function createOpenLinePicker(root, options) {
     } else {
       const i = order.indexOf(key);
       if (i >= 0) order.splice(i, 1);
+      if (!order.length) { lockKey = null; lockLabel = ""; } // 最後一筆取消 → 解除鎖定，其他分組重新顯示
     }
   }
 
@@ -150,6 +164,7 @@ export function createOpenLinePicker(root, options) {
       truncated = !Array.isArray(result) && Boolean(result.truncated);
       const keys = new Set(lines.map(opts.lineKey));
       for (let i = order.length - 1; i >= 0; i--) if (!keys.has(order[i])) order.splice(i, 1);
+      if (!order.length) { lockKey = null; lockLabel = ""; }
       render();
       notify();
     },

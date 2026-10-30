@@ -28,6 +28,7 @@ _EXEMPT_PATHS = {
     "/api/schedule/completed/drafts/download",
     "/api/reconcile/st/preview",
     "/api/health",
+    "/api/automail/refresh",  # 只讀（重新讀取寄信狀態），不寫入任何東西
 }
 
 

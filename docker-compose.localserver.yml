@@ -33,6 +33,9 @@ services:
       ERP_ALLOW_PROD_WRITE_CHICOMP03: ${ERP_ALLOW_PROD_WRITE_CHICOMP03:-0}
       # 一次收料「更新平均成本」預設值（1 = 更新，0 = 不更新；畫面可逐次改）
       ERP_RECEIVE_UPDATE_COST: ${ERP_RECEIVE_UPDATE_COST:-1}
+      # 採購單寄信狀態來源（automail；唯讀，本站不寄信）。AUTOMAIL_BASE_URL 設 off = 停用
+      AUTOMAIL_BASE_URL: ${AUTOMAIL_BASE_URL:-https://automail.cda.tw}
+      AUTOMAIL_REFRESH_SECONDS: ${AUTOMAIL_REFRESH_SECONDS:-180}
       ERP_PO_SALESMAN: ${ERP_PO_SALESMAN:-017}
       ERP_PO_MAKER: ${ERP_PO_MAKER:-Andy}
       ERP_PO_MAKER_ID: ${ERP_PO_MAKER_ID:-017}

@@ -1,5 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
+import { decoratePoMailBadges, poMailSlot } from "/static/modules/po_mail_status.js";
 import { createOpenLinePicker } from "/static/modules/open_line_picker.js";
 
 let _config = null;
@@ -226,7 +227,7 @@ export async function initErpReceive() {
     groupKey: l => l.vendor_id,
     groupLabel: l => `${l.vendor_id} ${l.vendor_name}`,
     columns: [
-      { label: "採購單", render: l => `<span class="mono">${esc(l.po_no)} #${l.row_no}</span>` },
+      { label: "採購單", render: l => `<span class="mono">${esc(l.po_no)} #${l.row_no}</span> ${poMailSlot(l.po_no)}` },
       { label: "日期", render: l => esc(l.date_text) },
       { label: "廠商", render: l => esc(`${l.vendor_id} ${l.vendor_name}`) },
       { label: "料號", render: l => `<span class="mono">${esc(l.part_number)}</span>` },
@@ -235,6 +236,8 @@ export async function initErpReceive() {
     ],
     qtyOf: l => l.qty_remain,
     priceOf: l => l.price,
+    otherGroupText: "已隱藏其他廠商 {n} 筆",
+    onRender: root => { void decoratePoMailBadges(root); },
     onChange: () => hidePreview(),
   });
   el("btn-erp-receive-preview").addEventListener("click", handlePreview);

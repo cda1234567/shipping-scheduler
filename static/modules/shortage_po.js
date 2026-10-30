@@ -1,5 +1,6 @@
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
+import { decoratePoMailBadges, poMailSlot } from "/static/modules/po_mail_status.js";
 import { allocationText, duplicateWarningText, moqHintText, postprocessWarningText, refreshErpPurchaseHistory } from "/static/modules/erp_purchase.js";
 
 const CATEGORY_LABELS = { smt: "打件", backend: "後段" };
@@ -385,9 +386,9 @@ function rowHtml(r) {
   return `<tr data-part="${esc(r.part)}" class="${r.doneBill ? "shortage-po-done" : ""}${r.isLinked ? " pp-linked-row" : ""}">
     <td><input type="checkbox" data-act="check" ${r.checked ? "checked" : ""} ${disabled ? "disabled" : ""}
       title="${reason ? "無法勾選：請先填供應商" : ""}">${reason ? `<div class="erp-po-hint shortage-po-adjusted">${esc(reason)}</div>` : ""}</td>
-    <td class="mono">${esc(r.part)}${lnote ? `<div class="erp-po-hint pp-linked">${esc(lnote)}${r.isLinked && !r.doneBill ? ' <button class="btn btn-secondary btn-sm pp-unlink" data-act="unlink" type="button">移除</button>' : ""}</div>` : ""}${pnote ? `<div class="erp-po-hint pp-linked">${esc(pnote)}</div>` : ""}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)}</div>` : ""}${
+    <td class="mono">${esc(r.part)}${lnote ? `<div class="erp-po-hint pp-linked">${esc(lnote)}${r.isLinked && !r.doneBill ? ' <button class="btn btn-secondary btn-sm pp-unlink" data-act="unlink" type="button">移除</button>' : ""}</div>` : ""}${pnote ? `<div class="erp-po-hint pp-linked">${esc(pnote)}</div>` : ""}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)} ${poMailSlot(r.doneBill)}</div>` : ""}${
       r.alreadyOrdered.length && !r.doneBill ? `<div class="erp-po-hint shortage-po-adjusted shortage-po-ordered">${r.alreadyOrdered.map(m =>
-        `已開 ${esc(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}</td>
+        `已開 ${esc(m.bill_no)} ${poMailSlot(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}</td>
     <td>${esc(r.desc)}</td>
     <td><select data-act="category">
       ${Object.entries(CATEGORY_LABELS).map(([k, label]) => `<option value="${k}" ${r.category === k ? "selected" : ""}>${label}</option>`).join("")}
@@ -441,6 +442,7 @@ function renderGroups() {
     </div>`;
   }).join("");
   box.querySelectorAll('input[data-act="check-all"][data-partial]').forEach(cb => { cb.indeterminate = true; });
+  void decoratePoMailBadges(box);
   updateButtons();
 }
 
@@ -710,7 +712,7 @@ async function handlePreview() {
 
 function resultHtml(results) {
   return results.map(r => r.ok
-    ? `<div class="is-ok">✅ ${esc(r.supplier?.id || r.supplier_id)} ${esc(r.supplier?.name || "")}：成功 單號 <strong class="mono">${esc(r.bill_no)}</strong>，含稅合計 ${fmtQty(r.totals?.total)}</div>`
+    ? `<div class="is-ok">✅ ${esc(r.supplier?.id || r.supplier_id)} ${esc(r.supplier?.name || "")}：成功 單號 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}，含稅合計 ${fmtQty(r.totals?.total)}</div>`
     : `<div class="is-error">❌ ${esc(r.supplier_id)}：失敗 ${esc(r.error)}</div>`).join("");
 }
 
@@ -758,6 +760,7 @@ async function handleCreate() {
     }
     const results = data.results || [];
     out.innerHTML = resultHtml(results);
+    void decoratePoMailBadges(out);
     out.className = `shortage-po-result ${results.every(r => r.ok) ? "is-ok" : "is-error"}`;
     out.hidden = false;
     const bills = new Map(results.filter(r => r.ok).map(r => [r.supplier_id, r.bill_no]));
