@@ -26,6 +26,7 @@ let _previewSig = "";
 let _previewResults = null;
 let _previewWarning = []; // 預覽回傳的 postprocess_warning（鈞洋件缺加工件）
 let _dismissedLinks = new Set(); // 使用者移除過的自動加工行（料號），重新產生清單前不再自動加回
+let _cutoff = null; // /api/shortage-po/transfer-cutoff 回應
 
 function fmtQty(value) {
   const n = Number(value);
@@ -65,6 +66,59 @@ async function loadConfig() {
     _config = null;
   }
   renderBadge();
+}
+
+// ── 調撥截止批次（待調撥）──────────────────────────────────────────────────
+function mmdd(text) {
+  const m = String(text || "").match(/^\d{4}-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}/${m[2]}` : "";
+}
+
+export function cutoffInfoText(info) {
+  if (!info || !info.cutoff_code) return "";
+  const parts = [`截止 ${info.cutoff_code}`];
+  if (info.transfer_after) parts.push(`正航調撥從 ${mmdd(info.transfer_after)} 之後起算${info.settle_source === "auto" ? `（${info.cutoff_code} 的料在 ${mmdd(info.transfer_after)} 調撥）` : ""}`);
+  if (info.batches && info.batches.length) parts.push(`計入批次 ${info.batches[0]}～${info.batches[info.batches.length - 1]}（不含本次勾選的訂單）`);
+  return parts.join("；");
+}
+
+function renderCutoff() {
+  const sel = el("shortage-po-cutoff");
+  if (!sel) return;
+  const batches = _cutoff?.batches || [];
+  const current = _cutoff?.cutoff || "";
+  const options = batches.map(b => `<option value="${esc(b.key)}" ${b.key === current ? "selected" : ""}>${esc(b.label)}</option>`);
+  if (_cutoff && !_cutoff.cutoff_found) options.unshift(`<option value="" selected>（找不到 ${esc(_cutoff.cutoff_code)}，請選擇）</option>`);
+  sel.innerHTML = options.join("");
+  const info = el("shortage-po-cutoff-info");
+  if (info) info.textContent = cutoffInfoText(_data?.pending_transfer);
+}
+
+async function loadCutoff() {
+  try {
+    _cutoff = await apiJson("/api/shortage-po/transfer-cutoff");
+  } catch (_) {
+    _cutoff = null;
+  }
+  renderCutoff();
+}
+
+async function onCutoffChange(event) {
+  const value = event.target.value;
+  if (!value) return;
+  if (!requireEdit()) { renderCutoff(); return; }
+  try {
+    _cutoff = await apiPost("/api/shortage-po/transfer-cutoff", { cutoff: value });
+    showToast(`調撥截止批次已改為 ${_cutoff.cutoff_code}`);
+  } catch (error) {
+    showToast(`儲存截止批次失敗：${error.message}`, { tone: "error" });
+  }
+  renderCutoff();
+  if (_data && _listOrderIds.length) {
+    _checkedOrders = new Set(_listOrderIds);
+    renderOrders();
+    await buildList();
+  }
 }
 
 // ── 訂單選擇 ────────────────────────────────────────────────────────────────
@@ -109,6 +163,10 @@ function toRow(p) {
     supplierName: p.supplier_name || "",
     supplierSource: p.supplier_source,
     need: p.need,
+    pending: p.pending_transfer || 0,
+    pendingDeducted: p.pending_deducted || 0,
+    pendingTransferred: p.pending_transferred || 0,
+    overTransfer: p.over_transfer || 0,
     st: p.st,
     mergedFrom: p.merged_from || [],
     onOrder: p.on_order,
@@ -160,6 +218,7 @@ async function buildList() {
     _dismissedLinks = new Set();
     syncLinked();
     renderWarnings();
+    renderCutoff();
     el("shortage-po-list").hidden = false;
     renderGroups();
     renderCustomerSupplied();
@@ -410,6 +469,13 @@ async function loadTaxDefaults() {
   finally { ids.forEach(sid => _taxLoading.delete(sid)); }
 }
 
+export function pendingTip(r) {
+  if (!r.pendingDeducted && !r.pendingTransferred) return "截止批次之後沒有網站扣量 / 正航調撥";
+  const lines = [`截止批次之後網站已扣 ${fmtQty(r.pendingDeducted)}`, `正航已調撥 001→015 ${fmtQty(r.pendingTransferred)}`];
+  lines.push(r.overTransfer > 0 ? `超轉 ${fmtQty(r.overTransfer)}（只供參考，待調撥當 0）` : `待調撥 ${fmtQty(r.pending)}`);
+  return lines.join("\n");
+}
+
 function rowHtml(r) {
   const note = adjustedNote(r);
   const lnote = linkNote(r);
@@ -431,6 +497,7 @@ function rowHtml(r) {
     <td><input type="text" data-act="supplier" class="mono" value="${esc(r.supplierId)}" autocomplete="off" ${r.doneBill ? "disabled" : ""}>
       <div class="erp-po-hint">${esc(r.supplierName)} ${esc(SOURCE_LABELS[r.supplierSource] || "")}</div></td>
     <td class="num">${fmtQty(r.need)}</td>
+    <td class="num" title="${esc(pendingTip(r))}">${fmtQty(r.pending)}${r.overTransfer > 0 ? `<div class="erp-po-hint shortage-po-adjusted shortage-po-over">超轉 ${fmtQty(r.overTransfer)}</div>` : ""}</td>
     <td class="num">${fmtQty(r.st)}${r.mergedFrom.length ? `<div class="erp-po-hint" title="轉換料：B 有效庫存 = B + A">含 ${r.mergedFrom.map(m => `${esc(m.part)} ${fmtQty(m.stock)}`).join("、")}</div>` : ""}</td>
     <td class="num">${fmtQty(r.onOrder)}</td>
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
@@ -477,8 +544,8 @@ function renderGroups() {
         ${sid ? `<label class="shortage-po-remark">備註 <input type="text" data-act="remark" value="${esc(remarkFor(sid, list))}" autocomplete="off"></label>` : ""}
       </div>
       <div class="erp-po-table-wrap"><table class="erp-po-table shortage-po-table">
-        <thead><tr><th></th><th>料號</th><th>品名</th><th>類別</th><th>供應商</th><th class="num">需求</th><th class="num">ST 現有</th>
-          <th class="num" title="僅供參考，不從缺料量扣除（缺 = 需求 − ST）">在途（僅參考）</th><th class="num">缺</th><th>數量</th><th>單價</th><th title="自動 = 依該供應商此料號最近一張正航採購單">幣別</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
+        <thead><tr><th></th><th>料號</th><th>品名</th><th>類別</th><th>供應商</th><th class="num">需求</th><th class="num" title="截止批次之後網站已扣 ST、正航還沒調撥到庚霖的量（扣量 − 調撥量）；調撥比扣量多時顯示「超轉」，只供參考">待調撥</th><th class="num">ST 現有</th>
+          <th class="num" title="僅供參考，不從缺料量扣除（缺 = 需求 + 待調撥 − ST）">在途（僅參考）</th><th class="num">缺</th><th>數量</th><th>單價</th><th title="自動 = 依該供應商此料號最近一張正航採購單">幣別</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
         <tbody>${list.map(rowHtml).join("")}</tbody>
       </table></div>
     </div>`;
@@ -863,7 +930,7 @@ async function handleCreate() {
 
 // ── 對外 ────────────────────────────────────────────────────────────────────
 export async function onShortagePurchaseTabActivated() {
-  await Promise.all([loadConfig(), loadOrders()]);
+  await Promise.all([loadConfig(), loadOrders(), loadCutoff()]);
   if (_pendingIds) {
     const ids = _pendingIds;
     _pendingIds = null;
@@ -895,6 +962,7 @@ export async function initShortagePurchase() {
     if (event.target.checked) _checkedOrders.add(id); else _checkedOrders.delete(id);
   });
   el("btn-shortage-po-build")?.addEventListener("click", () => { void buildList(); });
+  el("shortage-po-cutoff")?.addEventListener("change", event => { void onCutoffChange(event); });
   el("btn-shortage-po-preview")?.addEventListener("click", handlePreview);
   el("shortage-po-show-all")?.addEventListener("change", event => {
     _showAll = event.target.checked;

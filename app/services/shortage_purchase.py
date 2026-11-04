@@ -1,6 +1,7 @@
 """缺料採購：寫入主檔 / 生成發料單之後，列出哪些料要買，勾選後依供應商各開一張正航採購單。
 
-流程：選訂單 → build_shortage_list（彙整需求、扣 ST 現有（在途僅供參考、不扣除）、解析供應商 / 單價 / 預計進貨日）
+流程：選訂單 → build_shortage_list（彙整需求、加待調撥、扣 ST 現有（在途僅供參考、不扣除）、解析供應商 / 單價 / 預計進貨日）
+缺 = max(0, 需求 + 待調撥 − ST)，再套 MOQ。待調撥見 st_pending_transfer（截止批次之後網站已扣、正航還沒調撥的量）。
 → 使用者勾選 → erp_purchase.preview_many 預覽 → create_many 逐張寫入（每張獨立 transaction）。
 
 預計進貨日（以「最早出貨日的訂單」為準）：
@@ -27,7 +28,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .. import database as db
-from . import erp_purchase, erp_stock, low_stock, moq as moq_service, part_conversion, po_duplicates, postprocess, tw_holidays
+from . import erp_purchase, erp_stock, low_stock, moq as moq_service, part_conversion, po_duplicates, postprocess, st_pending_transfer, tw_holidays
 from .shortage_rules import summarize_requested_supply
 from .local_time import local_now
 
@@ -173,8 +174,14 @@ def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
     }
     mapping = part_conversion.active_map()
     sources = part_conversion.sources_by_target(mapping)
+    pending = st_pending_transfer.compute(order_ids, mapping)["parts"]
+    # 可用 ST = ST − 待調撥（已被前面批次用掉、只是正航還沒調撥）
     return {
-        key: {"st": part_conversion.effective_stock(key, st_stock, sources)[0], "orders": entry["orders"]}
+        key: {
+            "st": part_conversion.effective_stock(key, st_stock, sources)[0]
+            - pending.get(key, {}).get("pending", 0.0),
+            "orders": entry["orders"],
+        }
         for key, entry in _aggregate(groups, mapping).items()
     }
 
@@ -551,6 +558,8 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     lookups = _erp_lookups(sorted(set(keys) | set(process_extra)), today)
     overrides = db.get_part_purchase_categories(keys)
     moq_info = moq_service.lookup_moq([k for k in keys if not erp_purchase.customer_supplied_reason(k)])
+    pending_result = st_pending_transfer.compute(order_ids, conversions)
+    pending_parts = pending_result["parts"]
 
     parts_out: List[Dict[str, Any]] = []
     customer_supplied: List[Dict[str, Any]] = []
@@ -571,8 +580,10 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         # 轉換料：B 的有效庫存 = B + 併入的 A（A 可為負），與 A→B 之後 A 的需求一併計算
         st, st_own, merged_from = part_conversion.effective_stock(key, st_stock, sources)
         open_qty, open_date = lookups["on_order"].get(key, (0.0, ""))
-        # 與發料單同一套規則：需求 − ST；在途僅供參考，不扣除
-        shortage = float(summarize_requested_supply(entry["need"], st)["purchase_needed_qty"])
+        # 待調撥：截止批次之後網站已扣、正航還沒 001→015 調撥的量（超轉只顯示，不影響缺料）
+        pend = pending_parts.get(key) or st_pending_transfer.net_pending(0, 0)
+        # 缺 = max(0, 需求 + 待調撥 − ST)；在途僅供參考，不扣除
+        shortage = float(summarize_requested_supply(entry["need"] + pend["pending"], st)["purchase_needed_qty"])
 
         ship = parse_ship_date(entry["earliest"]["ship_date"])
         raw_dates = {c: pre_in_date_for(c, ship) if ship else None for c in CATEGORY_LABELS}
@@ -603,12 +614,16 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "st": st,
             "st_own": st_own,
             "merged_from": merged_from,
+            "pending_transfer": pend["pending"],
+            "pending_deducted": pend["deducted"],
+            "pending_transferred": pend["transferred"],
+            "over_transfer": pend["over"],
             "on_order": float(open_qty or 0),
             "on_order_date": open_date,
             "shortage": shortage,
             "needs_purchase": shortage > 0,
             **qty_fields,
-            "allocations": allocate_purchase_to_orders(entry["orders"], st, suggested),
+            "allocations": allocate_purchase_to_orders(entry["orders"], st - pend["pending"], suggested),
             "price": float(last.get("price") or 0),
             "last_bill_no": last.get("bill_no", ""),
             "last_bill_date": last.get("bill_date", ""),
@@ -628,7 +643,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     _already_ordered(parts_out)
 
     orders = [o for o in (db.get_order(int(i)) for i in dict.fromkeys(order_ids)) if o]
-    warnings = list(lookups["warnings"])
+    warnings = list(lookups["warnings"]) + list(pending_result["warnings"])
     if not parts_out and not customer_supplied:
         warnings.append("選取的訂單沒有補料 / 缺料內容")
     return {
@@ -641,6 +656,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             1 for c in customer_supplied if c["shortage"] is not None and c["shortage"] <= 0
         ),
         "customer_supplied_ware_ids": lookups["tab_ware_ids"],
+        "pending_transfer": pending_result["info"],
         "warnings": warnings,
     }
 

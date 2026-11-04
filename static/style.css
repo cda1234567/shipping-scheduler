@@ -5294,6 +5294,9 @@ body.desktop-dark .frequent-zero-usage li span {
 .shortage-po-orders { border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
 .shortage-po-orders-head { display: flex; align-items: center; gap: 10px; font-size: 13px; }
 .shortage-po-orders-head .spacer, .shortage-po-group-head .spacer { flex: 1; }
+.shortage-po-cutoff { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 13px; border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px 12px; }
+.shortage-po-cutoff select { margin-left: 6px; }
+.shortage-po-over { color: #b45309; }
 .shortage-po-order-list { max-height: 180px; overflow: auto; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 .shortage-po-order { display: flex; align-items: center; gap: 10px; padding: 2px 4px; border-radius: 4px; cursor: pointer; }
 .shortage-po-order:hover { background: #f1f5f9; }

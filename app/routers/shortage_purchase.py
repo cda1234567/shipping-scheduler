@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from .. import database as db
-from ..models import ShortagePoCategoryRequest, ShortagePoCreateRequest, ShortagePoRequest
-from ..services import erp_purchase, postprocess, shortage_purchase
+from ..models import ShortagePoCategoryRequest, ShortagePoCreateRequest, ShortagePoRequest, ShortagePoTransferCutoffRequest
+from ..services import erp_purchase, postprocess, shortage_purchase, st_pending_transfer
 from ..services.erp_stock import ErpError
 from .erp_purchase import ACTOR, _http_error
 
@@ -58,6 +58,20 @@ async def shortage_config():
 async def shortage_orders():
     orders = await run_in_threadpool(db.list_dispatched_orders_for_purchase)
     return {"orders": orders, "latest_batch_ids": _latest_batch_ids(orders)}
+
+
+@router.get("/transfer-cutoff")
+async def transfer_cutoff():
+    """待調撥的截止批次（該批次含以前視為已調撥完成）與可選批次清單（依批次順序）。"""
+    return await run_in_threadpool(st_pending_transfer.config)
+
+
+@router.post("/transfer-cutoff")
+async def set_transfer_cutoff(req: ShortagePoTransferCutoffRequest):
+    try:
+        return await run_in_threadpool(st_pending_transfer.set_cutoff_setting, req.cutoff)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @router.post("/category")

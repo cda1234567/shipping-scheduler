@@ -434,6 +434,10 @@ class ShortagePoCategoryRequest(BaseModel):
     category: str  # smt | backend
 
 
+class ShortagePoTransferCutoffRequest(BaseModel):
+    cutoff: str  # 批次代碼，例如 10-3 或 2026/10-3
+
+
 class ShortagePoRequest(BaseModel):
     groups: list[ErpPoRequest]
     order_ids: list[int] = []  # 產生缺料清單時勾選的訂單，用來重算各料的訂單分配
