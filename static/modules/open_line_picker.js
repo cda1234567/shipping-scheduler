@@ -2,7 +2,7 @@
  * 通用「未結明細挑選器」（不含任何收料專屬邏輯；之後開 invoice 可用 customer 當分組）。
  *
  * const picker = createOpenLinePicker(containerEl, {
- *   fetchLines: async (query) => lines[],      // query = { q }；回傳扁平明細陣列
+ *   fetchLines: async (query) => lines[],      // query = { q, group }；group = 已鎖定的分組鍵（未鎖定為 null）
  *   lineKey:    (line) => string,              // 每筆明細的唯一鍵（必填）
  *   groupKey:   (line) => string,              // 分組鍵（例：廠商代號）；第一筆勾選後鎖定該組
  *   groupLabel: (line) => string,              // 鎖定橫幅顯示的名稱
@@ -18,7 +18,7 @@
  * });
  *
  * picker.getSelection() → [{ line, qty, price }]   依勾選順序；price 沒有 priceOf 時為 null
- * picker.reload()       → Promise                  重新抓明細（已不存在的勾選會被移除）
+ * picker.reload()       → Promise                  重新抓明細（已勾選的列一律保留，不在搜尋結果裡也一樣）
  * picker.clear()        → void                     取消所有勾選並解除鎖定
  * picker.lockedGroup()  → string | null
  * picker.selectAll()    → { ok, message? }       勾選目前畫面上（搜尋後、鎖定後）看得到的全部明細
@@ -31,6 +31,10 @@
  * 鎖定：勾第一筆後，其他分組的列整個隱藏（不渲染），並在計數處顯示「已隱藏其他廠商 N 筆」之類的提示；
  * 取消最後一筆勾選、按橫幅「解除」或 clear() 後全部列重新顯示。搜尋仍在鎖定分組內運作。
  * （送出時的同廠商檢查仍由後端負責。）
+ *
+ * 勾選跨搜尋保留（v2026.11.04.1）：勾了 A 再搜尋 B，A 仍是勾選狀態，並以「已選（不在本次搜尋結果）」
+ * 固定顯示在表格最上方，可在那裡取消；只有使用者自己取消勾選、按全不選 / 解除，或呼叫 clear() 才會移除。
+ * 全選 / 表頭勾選框只作用在「本次搜尋結果」看得到的列。
  */
 import { esc } from "/static/modules/api.js";
 
@@ -60,6 +64,7 @@ export function createOpenLinePicker(root, options) {
   let lockKey = null;
   let lockLabel = "";
   const order = []; // 勾選順序（lineKey）
+  const picked = new Map(); // lineKey → line（勾選當下的資料；之後的搜尋結果有同一筆就更新）
   const edits = new Map(); // lineKey → { qty, price }
   let timer = null;
 
@@ -82,11 +87,16 @@ export function createOpenLinePicker(root, options) {
   const msgEl = root.querySelector(".olp-msg");
   const setMsg = text => { if (msgEl) msgEl.textContent = text || ""; };
 
-  const byKey = key => lines.find(l => opts.lineKey(l) === key);
+  const byKey = key => lines.find(l => opts.lineKey(l) === key) || picked.get(key);
+  // 已勾選但不在本次搜尋結果的列（固定顯示在最上方，讓使用者看得到、也能取消）
+  const pinnedLines = () => {
+    const keys = new Set(lines.map(opts.lineKey));
+    return order.filter(key => !keys.has(key)).map(key => picked.get(key)).filter(Boolean);
+  };
   const fmtNum = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "");
 
   function selection() {
-    return order.map(key => byKey(key)).filter(Boolean).map(line => {
+    return order.map(key => picked.get(key)).filter(Boolean).map(line => {
       const e = edits.get(opts.lineKey(line)) || {};
       return { line, qty: Number(e.qty), price: hasPrice ? Number(e.price) : null };
     });
@@ -114,19 +124,26 @@ export function createOpenLinePicker(root, options) {
 
   function renderBody() {
     const colspan = opts.columns.length + 2 + (hasPrice ? 1 : 0);
-    if (!lines.length) {
+    const pinned = pinnedLines();
+    if (!lines.length && !pinned.length) {
       body.innerHTML = `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.emptyText)}</td></tr>`;
       return;
     }
-    body.innerHTML = visibleLines(lines, lockKey, opts.groupKey).map(line => {
+    const rowHtml = (line, isPinned) => {
       const key = opts.lineKey(line);
       const checked = order.includes(key);
       const e = edits.get(key);
       const cells = opts.columns.map(c => `<td class="${c.align === "num" ? "num" : ""}">${c.render(line)}</td>`).join("");
       const qty = `<td class="num"><input type="number" class="olp-qty num" min="0" step="any" value="${esc(e ? e.qty : opts.qtyOf(line))}" ${checked ? "" : "disabled"}></td>`;
       const price = hasPrice ? `<td class="num"><input type="number" class="olp-price num" min="0" step="any" value="${esc(e ? e.price : opts.priceOf(line))}" ${checked ? "" : "disabled"}></td>` : "";
-      return `<tr data-key="${esc(key)}" class="${checked ? "olp-picked" : ""}"><td><input type="checkbox" class="olp-check" ${checked ? "checked" : ""}></td>${cells}${qty}${price}</tr>`;
-    }).join("") + (truncated ? `<tr><td colspan="${colspan}" class="olp-empty">結果過多，只顯示前面一部分，請用搜尋縮小範圍</td></tr>` : "");
+      return `<tr data-key="${esc(key)}" class="${checked ? "olp-picked" : ""}${isPinned ? " olp-pinned" : ""}"><td><input type="checkbox" class="olp-check" ${checked ? "checked" : ""}></td>${cells}${qty}${price}</tr>`;
+    };
+    const pinnedHtml = pinned.length
+      ? `<tr class="olp-pinned-head"><td colspan="${colspan}" class="olp-empty">已選 ${pinned.length} 筆不在本次搜尋結果（仍保留勾選，取消請點勾選框）</td></tr>${pinned.map(l => rowHtml(l, true)).join("")}`
+      : "";
+    const rest = visibleLines(lines, lockKey, opts.groupKey);
+    body.innerHTML = pinnedHtml + (pinned.length && rest.length ? `<tr class="olp-pinned-head"><td colspan="${colspan}" class="olp-empty">本次搜尋結果</td></tr>` : "")
+      + (rest.length ? rest.map(l => rowHtml(l, false)).join("") : (lines.length ? "" : `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.emptyText)}</td></tr>`)) + (truncated ? `<tr><td colspan="${colspan}" class="olp-empty">結果過多，只顯示前面一部分，請用搜尋縮小範圍</td></tr>` : "");
   }
 
   function render() {
@@ -142,10 +159,12 @@ export function createOpenLinePicker(root, options) {
     if (on) {
       if (lockKey === null) { lockKey = opts.groupKey(line); lockLabel = opts.groupLabel ? opts.groupLabel(line) : lockKey; }
       if (!order.includes(key)) order.push(key);
+      picked.set(key, line);
       if (!edits.has(key)) edits.set(key, { qty: opts.qtyOf(line), price: hasPrice ? opts.priceOf(line) : null });
     } else {
       const i = order.indexOf(key);
       if (i >= 0) order.splice(i, 1);
+      picked.delete(key);
       if (!order.length) { lockKey = null; lockLabel = ""; } // 最後一筆取消 → 解除鎖定，其他分組重新顯示
     }
   }
@@ -205,6 +224,7 @@ export function createOpenLinePicker(root, options) {
     },
     clear() {
       order.length = 0;
+      picked.clear();
       edits.clear();
       lockKey = null;
       lockLabel = "";
@@ -212,12 +232,14 @@ export function createOpenLinePicker(root, options) {
       notify();
     },
     async reload() {
-      const result = await opts.fetchLines({ q: search.value.trim() });
+      const result = await opts.fetchLines({ q: search.value.trim(), group: lockKey });
       lines = Array.isArray(result) ? result : (result.lines || []);
       truncated = !Array.isArray(result) && Boolean(result.truncated);
-      const keys = new Set(lines.map(opts.lineKey));
-      for (let i = order.length - 1; i >= 0; i--) if (!keys.has(order[i])) order.splice(i, 1);
-      if (!order.length) { lockKey = null; lockLabel = ""; }
+      // 勾選不因搜尋而取消：搜尋結果有同一筆就更新它的資料（例：未收量），沒有就照舊保留
+      for (const line of lines) {
+        const key = opts.lineKey(line);
+        if (picked.has(key)) picked.set(key, line);
+      }
       render();
       notify();
     },

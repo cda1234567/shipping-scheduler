@@ -323,7 +323,14 @@ assert.deepEqual(rows(), ['a1', 'a2', 'b1', 'b2', 'b3']);
 // 已鎖定時，搜尋結果混廠商也只勾鎖定廠商看得到的列
 toggle('a1', true);
 q = 'y'; await p.reload();
-assert.deepEqual(sel(), []);   // a1 不在搜尋結果 → 被移除、解除鎖定
+assert.deepEqual(sel(), ['a1']);   // v2026.11.04.1：a1 不在搜尋結果也保留勾選（固定顯示在最上方）
+assert.equal(p.lockedGroup(), 'A');
+assert.ok(els.tbody.innerHTML.includes('olp-pinned'));
+assert.deepEqual(rows(), ['a1', 'a2']);  // b2 照樣隱藏
+assert.equal(p.selectAll().ok, true);    // 只勾本次搜尋結果看得到的 a2
+assert.deepEqual(sel(), ['a1', 'a2']);
+toggle('a1', false); toggle('a2', false);  // 只有自己取消才移除
+assert.deepEqual(sel(), []);
 assert.equal(p.lockedGroup(), null);
 assert.equal(p.selectAll().ok, false);  // a2 + b2 兩家
 q = 'x'; await p.reload(); toggle('a1', true);

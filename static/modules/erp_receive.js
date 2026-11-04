@@ -11,6 +11,8 @@ let _preview = null;
 let _token = "";
 let _rePreviewPending = false;
 let _costTouched = false;
+let _rate = "";          // 預覽畫面手動改的匯率（外幣採購單）；空 = 用正航幣別檔匯率
+let _rateVendor = null;  // 匯率是哪家廠商時輸入的；換廠商就不沿用
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
 const el = id => document.getElementById(id);
@@ -69,7 +71,25 @@ function buildBody(confirm = false) {
     confirm,
     client_token: _token,
     update_cost: updateCostChecked(),
+    exch_rate: currentRate(),
   };
+}
+
+function currentRate() {
+  if (!_rate || _picker.lockedGroup() !== _rateVendor) return null;
+  const n = Number(_rate);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+const RATE_SOURCE = { manual: "手動輸入", currency: "正航幣別檔", po: "採購單" };
+
+function currencyBlock(r) {
+  const tax = Number(r.tax_type || 0) === 0 ? esc(r.tax_label || "應稅") : `<strong>${esc(r.tax_label || "")}</strong>`;
+  if (!r.mode || r.mode === "local") return `<div class="erp-po-hint">幣別 ${esc(r.currency)}　課稅別：${tax}</div>`;
+  const what = r.mode === "foreign"
+    ? `<strong>${esc(r.currency)} 進貨單</strong>（單價 / 金額為 ${esc(r.currency)}，台幣 = 金額 × 匯率）`
+    : `採購單幣別 <strong>${esc(r.po_currency)}</strong> → 開<strong>台幣</strong>進貨單（單價 = ${esc(r.po_currency)} 單價 × 匯率）`;
+  return `<div class="erp-po-hint erp-receive-currency">${what}　匯率 <input type="number" id="erp-receive-rate" class="num" min="0" step="any" style="width:7em" value="${esc(r.exch_rate)}"> <span class="erp-po-hint">（${esc(RATE_SOURCE[r.rate_source] || "")}；改了會重新預覽）</span>　課稅別：${tax}</div>`;
 }
 
 function hidePreview() {
@@ -82,6 +102,9 @@ function hidePreview() {
 function renderPreview(r) {
   const p = el("erp-receive-preview");
   const warn = (r.warnings || []).map(w => `<div class="erp-po-warn">${esc(w.message)}</div>`).join("");
+  const cur = esc(r.currency || "NTD");
+  const foreign = r.mode === "foreign";
+  const conv = r.mode === "convert";
   const costText = r.update_cost === false
     ? '<span class="erp-receive-cost-off">不更新平均成本</span>'
     : "更新平均成本";
@@ -90,15 +113,23 @@ function renderPreview(r) {
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>　廠商 ${esc(r.vendor.id)} ${esc(r.vendor.name)}</div>
     <div class="erp-po-hint">單號照正航各類分開編號（收料 / 驗收 / 進貨各自當日最大號 + 1，三個號碼可能不同）；寫入時若撞號會自動重選。</div>
     <div class="erp-po-hint">收料 / 驗收日 ${ymd(r.today)}　<span class="erp-receive-preview-date">發票日期（進貨日）${ymd(r.rm_date)}</span>　帳款月份 ${esc(r.terms.AccMonth)}　預計付款日 ${ymd(r.terms.PrepayDay)}　兌現日 ${ymd(r.terms.EncashDay)}</div>
+    ${currencyBlock(r)}
     ${warn}
     <div class="erp-po-table-wrap"><table class="erp-po-table">
-      <thead><tr><th>#</th><th>採購單</th><th>料號</th><th class="num">數量</th><th class="num">單價</th><th class="num">未稅金額</th><th class="num">稅額</th></tr></thead>
-      <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.po_no)} #${l.po_row}</td><td class="mono">${esc(l.prod_id)}</td><td class="num">${fmt(l.qty)}</td><td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.tax)}</td></tr>`).join("")}</tbody>
+      <thead><tr><th>#</th><th>採購單</th><th>料號</th><th class="num">數量</th>${conv ? `<th class="num">原單價（${esc(r.po_currency)}）</th>` : ""}<th class="num">單價（${cur}）</th><th class="num">未稅金額（${cur}）</th><th class="num">稅額</th>${foreign ? '<th class="num">台幣金額</th>' : ""}</tr></thead>
+      <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.po_no)} #${l.po_row}</td><td class="mono">${esc(l.prod_id)}</td><td class="num">${fmt(l.qty)}</td>${conv ? `<td class="num">${fmt(l.src_price)}</td>` : ""}<td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.tax)}</td>${foreign ? `<td class="num">${fmt(l.ml_amount)}</td>` : ""}</tr>`).join("")}</tbody>
     </table></div>
-    <div class="erp-po-totals">數量 ${fmt(r.totals.sum_qty)}　未稅 ${fmt(r.totals.sum_amount)}　稅 ${fmt(r.totals.sum_tax)}　<strong>含稅合計 ${fmt(r.totals.total)}</strong></div>
+    <div class="erp-po-totals">幣別 ${cur}　數量 ${fmt(r.totals.sum_qty)}　未稅 ${fmt(r.totals.sum_amount)}　稅 ${fmt(r.totals.sum_tax)}${Number(r.tax_type || 0) !== 0 ? "（免稅）" : ""}　<strong>${Number(r.tax_type || 0) !== 0 ? "合計" : "含稅合計"} ${cur} ${fmt(r.totals.total)}</strong>${foreign ? `　台幣 ${fmt(r.totals.local_total)}` : ""}</div>
     <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-receive-create" type="button">確認收料</button></div>`;
   p.hidden = false;
   el("btn-erp-receive-create").addEventListener("click", handleCreate);
+  el("erp-receive-rate")?.addEventListener("change", event => {
+    const n = Number(event.target.value);
+    if (!Number.isFinite(n) || n <= 0) { showToast("匯率必須大於 0", { tone: "error" }); return; }
+    _rate = String(n);
+    _rateVendor = _picker.lockedGroup();
+    void handlePreview();
+  });
 }
 
 function currentRmDate() {
@@ -157,8 +188,14 @@ async function handleCreate() {
     await handlePreview();
     return;
   }
+  if (body.exch_rate !== null && Number(_preview.exch_rate) !== body.exch_rate) {
+    showToast("匯率已變更，已重新預覽，請確認後再按「確認收料」");
+    await handlePreview();
+    return;
+  }
   const tgt = targetText(_preview.target_label || _config?.label, _preview.is_production);
-  if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n平均成本：${body.update_cost ? "更新" : "不更新"}\n確定要在「${tgt}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n寫入後無法從本系統修改或刪除。`)) return;
+  const curLine = `幣別 ${_preview.currency || "NTD"}${_preview.mode && _preview.mode !== "local" ? `　匯率 ${_preview.exch_rate}` : ""}　${_preview.tax_label || ""}　合計 ${fmt(_preview.totals?.total)}`;
+  if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n平均成本：${body.update_cost ? "更新" : "不更新"}\n確定要在「${tgt}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n${curLine}\n寫入後無法從本系統修改或刪除。`)) return;
   _busy = true;
   const btn = el("btn-erp-receive-create");
   if (btn) btn.disabled = true;
@@ -170,7 +207,7 @@ async function handleCreate() {
       r = await apiPost("/api/erp-receive/create", { ...body, confirm: true });
     }
     result.className = "erp-po-result is-ok";
-    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>，含稅合計 ${fmt(r.totals.total)}${r.closed_pos?.length ? `　已結案採購單：${esc(r.closed_pos.join("、"))}` : ""}`;
+    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>，合計 ${esc(r.currency || "NTD")} ${fmt(r.totals.total)}${r.closed_pos?.length ? `　已結案採購單：${esc(r.closed_pos.join("、"))}` : ""}`;
     result.hidden = false;
     hidePreview();
     _picker.clear();
@@ -223,7 +260,8 @@ export async function initErpReceive() {
   _initialized = true;
   el("erp-receive-date").value = todayText();
   _picker = createOpenLinePicker(el("erp-receive-picker"), {
-    fetchLines: async ({ q }) => apiJson(`/api/erp-receive/open-lines?q=${encodeURIComponent(q)}`),
+    // 已鎖定廠商時只抓該廠商（勾選跨搜尋保留，且不會被 300 筆上限截掉）
+    fetchLines: async ({ q, group }) => apiJson(`/api/erp-receive/open-lines?q=${encodeURIComponent(q)}${group ? `&vendor=${encodeURIComponent(group)}` : ""}`),
     lineKey: l => `${l.po_no}#${l.row_no}`,
     groupKey: l => l.vendor_id,
     groupLabel: l => `${l.vendor_id} ${l.vendor_name}`,

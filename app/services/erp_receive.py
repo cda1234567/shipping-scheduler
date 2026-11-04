@@ -413,10 +413,16 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
             if price < 0:
                 raise ReceiveValidationError(f"第 {i} 行：單價不可為負")
         lines.append({"po_no": po_no, "row_no": row_no, "qty": qty, "price": price})
+    exch_rate = None
+    if raw.get("exch_rate") not in (None, ""):
+        exch_rate = ep._to_decimal(raw.get("exch_rate"), "匯率")
+        if exch_rate <= 0:
+            raise ReceiveValidationError("匯率必須大於 0")
     return {
         "target": ep._text(raw.get("target")),
         "rm_date_raw": raw.get("rm_date"),
         "lines": lines,
+        "exch_rate": exch_rate,
         "confirm": raw.get("confirm") is True,
         "client_token": ep._text(raw.get("client_token"))[:80],
         "update_cost": update_cost_default() if raw.get("update_cost") is None else raw.get("update_cost") is True,
@@ -520,6 +526,49 @@ def load_bill_params(wcur, target: str) -> Dict[str, Any]:
     return {"detail": detail, "bill_status": status, "bill_status_source": source, "create_acc_by_fund": by_fund}
 
 
+# ── 課稅別 / 幣別（v2026.11.04.1，依 CHIComp03 實單）─────────────────────────
+# 進貨單課稅別照採購單 ordBillMain.TaxType（2023 起 1,963 張 RM 全部 = 來源 PO）：
+#   0 = 應稅外加 5%（allocate_bill_tax）；1 / 2 / 3 / 4 = 稅額一律 0（TaxRate 仍存 0.05，正航手開單也是）。
+#   例：RM-20261023001（W0214 USD，課稅別 1）稅 0；RM-20260129001（NTD，課稅別 2）稅 0；RM-20260302006（NTD，課稅別 4）稅 0。
+# 外幣（USD）採購單：
+#   課稅別 ≠ 0（國外廠商，例 W0214 / P0317 / P0375）→ 美金進貨單：Price / Amount / Total 為 USD，
+#     Amount = round(數量 × 單價, 3)（comCurrencySys.AmountDeciDigits；1,281/1,281 列相符）；
+#     MLPrice = round(單價 × 匯率, 4)、MLAmount = round(Amount × 匯率, 0)（1,276/1,281）；
+#     StkMlAmount / CostForAcc / 成本 用台幣（MLAmount）；comBillAccounts.LocalTotal = round(Total × 匯率, 0)（287/287）。
+#     例：RM-20261023001 0.47 × 1010 = 474.7 USD、匯率 32.215 → MLPrice 15.141 / MLAmount 15,292 / LocalTotal 15,292。
+#   課稅別 0（國內廠商用美金報價，例 P0304 / P0373 / P0289）→ 正航實務一律開「台幣」進貨單（102 列，匯率 1、稅 5%）：
+#     單價 = round(USD 單價 × 當日匯率, 4)、金額 = round(數量 × 單價, 0)。例：RM-20261016002 P0304 19.3 USD × 32.45 = 626.285。
+# 匯率：預設 comCurrencySys.BuyInRate（目前 USD 30.385，= 採購單匯率）；預覽畫面可改成當日匯率（Tracy 的單都手 key 當日匯率）。
+LOCAL_CURRENCY = "NTD"
+ML_PRICE_DIGITS = 4  # comProdRec.MLPrice：2023–2026 USD 列 round 4 位 1,253/1,281（3 位 1,174）
+TAX_TYPE_LABELS = {0: "應稅（外加 5%）"}
+
+
+def is_local_currency(curr: Any) -> bool:
+    return ep._text(curr).upper() in ("", LOCAL_CURRENCY)
+
+
+def tax_type_label(tax_type: int) -> str:
+    return TAX_TYPE_LABELS.get(int(tax_type), f"不計稅（正航課稅別 {int(tax_type)}，稅額 0）")
+
+
+def load_currency(wcur, curr: str) -> Optional[Dict[str, Any]]:
+    return _one_row(wcur, "SELECT CurrencyID, BuyInRate, FixedRate, AmountDeciDigits FROM comCurrencySys WHERE CurrencyID = %s",
+                    (curr,))
+
+
+def receive_mode(curr: Any, tax_type: int) -> str:
+    """local = 台幣採購單；foreign = 外幣且免稅 → 外幣進貨單；convert = 外幣但應稅（國內廠商）→ 轉台幣進貨單。"""
+    if is_local_currency(curr):
+        return "local"
+    return "convert" if int(tax_type) == 0 else "foreign"
+
+
+def bill_currency(ctx: Dict[str, Any]) -> str:
+    return ctx["curr"] if receive_mode(ctx["curr"], ctx.get("tax_type", 0)) == "foreign" else (
+        ctx["curr"] if is_local_currency(ctx["curr"]) else LOCAL_CURRENCY)
+
+
 def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[str, Any]:
     hint = _HINT if lock else ""
     cost_params = load_cost_params(wcur, target)
@@ -548,7 +597,13 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
     currs = {ep._text(ep._get(p["main"], "CurrID")) for p in pos.values()}
     if len(currs) != 1:
         raise ReceiveValidationError("一次收料的採購單幣別必須相同")
+    tax_types = {int(ep._get(p["main"], "TaxType", 0) or 0) for p in pos.values()}
+    if len(tax_types) != 1:
+        raise ReceiveValidationError("一次收料的採購單課稅別必須相同（應稅 / 免稅不可混在同一張進貨單）："
+                                     + "、".join(f"{no} 課稅別 {int(ep._get(p['main'], 'TaxType', 0) or 0)}" for no, p in pos.items()))
     vendor_id = vendors.pop()
+    po_curr = next(iter(currs))
+    currency = load_currency(wcur, po_curr) if not is_local_currency(po_curr) else None
 
     cust = _one_row(wcur, "SELECT ShortName, FullName FROM comCustomer WHERE Flag = 2 AND ID = %s", (vendor_id,)) or {}
     trade = _one_row(wcur, f"SELECT * FROM comCustTrade{hint} WHERE Flag = 2 AND ID = %s", (vendor_id,))
@@ -576,7 +631,8 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         "pos": pos, "picked": picked, "vendor_id": vendor_id,
         "vendor_name": ep._text(ep._get(cust, "ShortName")) or ep._text(ep._get(cust, "FullName")),
         "trade": trade, "ware": ware, "products": products, "ware_amounts": ware_amounts,
-        "curr": currs.pop(), "hint": hint,
+        "curr": po_curr, "tax_type": tax_types.pop(), "currency_row": currency,
+        "req_exch_rate": req.get("exch_rate"), "hint": hint,
         "cost_params": cost_params, "all_qty": all_qty, "bill_params": bill_params,
     }
 
@@ -596,7 +652,7 @@ def _load_rollup_state(wcur, ctx: Dict[str, Any], ym: int) -> None:
             (ym, prod, avg_ware, ""))
     ctx["accounts"] = _one_row(
         wcur, f"SELECT * FROM comCustAccounts{hint} WHERE Flag = 2 AND SysID = 2 AND ID = %s AND CurrID = %s",
-        (ctx["vendor_id"], ctx["curr"]))
+        (ctx["vendor_id"], bill_currency(ctx)))
 
 
 # ── 規劃（純函式）────────────────────────────────────────────────────────────
@@ -694,9 +750,30 @@ def build_plan(
 ) -> Dict[str, Any]:
     picked = ctx["picked"]
     first = picked[0]["main"]
-    vendor_id, ware, curr = ctx["vendor_id"], ctx["ware"], ctx["curr"]
+    vendor_id, ware, po_curr = ctx["vendor_id"], ctx["ware"], ctx["curr"]
     im_no, qm_no, rm_no = numbers["im_no"], numbers["qm_no"], numbers["rm_no"]
-    exch = _dec(ep._get(first, "ExchRate", 1)) or Decimal(1)
+    tax_type = int(ctx.get("tax_type", 0) or 0)
+    mode = receive_mode(po_curr, tax_type)
+    curr = bill_currency(ctx)
+    po_exch = _dec(ep._get(first, "ExchRate", 1)) or Decimal(1)
+    rate_source = ""
+    if mode == "local":
+        exch = po_exch  # 台幣採購單匯率 1
+        rate = Decimal(1)
+    else:
+        cur_row = ctx.get("currency_row") or {}
+        sys_rate = _dec(ep._get(cur_row, "BuyInRate", 0)) or _dec(ep._get(cur_row, "FixedRate", 0))
+        if ctx.get("req_exch_rate"):
+            rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
+        elif sys_rate > 0:
+            rate, rate_source = sys_rate, "currency"
+        else:
+            rate, rate_source = po_exch, "po"
+        exch = rate if mode == "foreign" else Decimal(1)
+    amount_digits = 0
+    if mode == "foreign":
+        digits_raw = ep._get(ctx.get("currency_row") or {}, "AmountDeciDigits", None)
+        amount_digits = int(digits_raw) if ctx.get("currency_row") is not None and digits_raw is not None else 3
     salesman = ep._text(ep._get(first, "SalesMan"))
     depart = ep._text(ep._get(first, "DepartID"))
     g_style, g_delay = int(ep._get(first, "GatherStyle", 0) or 0), int(ep._get(first, "GatherDelay", 0) or 0)
@@ -711,16 +788,29 @@ def build_plan(
         qty = p["qty"]
         remain = _dec(ep._get(sub, "QtyRemain"))
         po_price = _dec(ep._get(sub, "Price"))
-        price = p["price"] if p["price"] is not None else po_price
-        discount = calc_discount(price, po_price, ep._get(sub, "Discount", 1))
+        src_price = p["price"] if p["price"] is not None else po_price  # 採購單幣別
+        discount = calc_discount(src_price, po_price, ep._get(sub, "Discount", 1))
         tax_rate = _dec(ep._get(sub, "TaxRate", 0))
-        amount, tax = calc_line_amounts(qty, price, tax_rate)
+        if mode == "convert":
+            price = ep._round(src_price * rate, ML_PRICE_DIGITS)
+        else:
+            price = src_price
+        if mode == "foreign":
+            amount = ep._round(_dec(qty) * price, amount_digits)
+            tax = Decimal(0)
+            ml_price = ep._round(price * rate, ML_PRICE_DIGITS)
+            ml_amount = ep._round(amount * rate, 0)
+        else:
+            amount, tax = calc_line_amounts(qty, price, tax_rate)
+            if tax_type != 0:
+                tax = Decimal(0)
+            ml_price, ml_amount = price, amount
         line = {
             "row_no": i, "po_no": p["po_no"], "po_row": p["row_no"],
             "prod_id": ep._text(ep._get(sub, "ProdID")), "prod_name": ep._text(ep._get(sub, "ProdName")),
             "unit": ep._text(ep._get(sub, "Unit")), "qty": qty, "qty_remain": remain, "price": price,
-            "po_price": po_price, "discount": discount, "tax_rate": tax_rate,
-            "amount": amount, "tax": tax,
+            "src_price": src_price, "po_price": po_price, "discount": discount, "tax_rate": tax_rate,
+            "amount": amount, "tax": tax, "ml_price": ml_price, "ml_amount": ml_amount,
         }
         lines.append(line)
         if qty > remain:
@@ -730,11 +820,11 @@ def build_plan(
         warnings.append({"code": "over_receive", "needs_confirm": True, "items": over,
                          "message": "收料量超過採購單剩餘量：" + "、".join(
                              f"{o['po_no']}#{o['row_no']} {o['part_number']} 超收 {o['over']:g}" for o in over)})
-    diff = [l for l in lines if l["price"] != l["po_price"]]
+    diff = [l for l in lines if l["src_price"] != l["po_price"]]
     if diff:
         warnings.append({"code": "price_diff", "needs_confirm": False,
                          "message": "單價與採購單不同：" + "、".join(
-                             f"{l['po_no']}#{l['po_row']} {l['po_price']:g}→{l['price']:g}" for l in diff)})
+                             f"{l['po_no']}#{l['po_row']} {l['po_price']:g}→{l['src_price']:g}" for l in diff)})
     if rm_date != today:
         warnings.append({"code": "rm_date_not_today", "needs_confirm": False,
                          "message": f"進貨日期（{rm_date}）不是今天，收料 / 驗收仍用今天（{today}）"})
@@ -745,17 +835,35 @@ def build_plan(
         warnings.append({"code": "terms_mismatch", "needs_confirm": False,
                          "message": "各採購單付款條件不同，進貨單以第一張採購單的條件為準"})
 
+    rate_text = {"manual": "手動輸入", "currency": "正航幣別檔", "po": "採購單"}.get(rate_source, "")
+    if tax_type != 0:
+        warnings.append({"code": "tax_free", "needs_confirm": False,
+                         "message": f"採購單課稅別 {tax_type}：{tax_type_label(tax_type)}，進貨單照採購單不加營業稅"})
+    if mode == "foreign":
+        warnings.append({"code": "foreign_currency", "needs_confirm": False,
+                         "message": f"{curr} 進貨單：單價 / 金額為 {curr}，匯率 {rate:g}（{rate_text}），台幣金額 = 金額 × 匯率"})
+    elif mode == "convert":
+        warnings.append({"code": "currency_converted", "needs_confirm": False,
+                         "message": f"採購單為 {po_curr}、課稅別 0（應稅）：照正航慣例開台幣進貨單，"
+                                    f"單價 = {po_curr} 單價 × 匯率 {rate:g}（{rate_text}，4 位小數），稅 5%"})
+
     sum_qty = sum((l["qty"] for l in lines), Decimal(0))
     sum_amount = sum((l["amount"] for l in lines), Decimal(0))
-    sum_tax = allocate_bill_tax(lines)
+    if tax_type == 0:
+        sum_tax = allocate_bill_tax(lines)
+    else:
+        sum_tax = Decimal(0)
     total = sum_amount + sum_tax
-    totals = {"sum_qty": sum_qty, "sum_amount": sum_amount, "sum_tax": sum_tax, "total": total}
+    local_amount = ep._round(sum_amount * exch, 0)
+    local_tax = ep._round(sum_tax * exch, 0)
+    totals = {"sum_qty": sum_qty, "sum_amount": sum_amount, "sum_tax": sum_tax, "total": total,
+              "local_amount": local_amount, "local_tax": local_tax, "local_total": local_amount + local_tax}
 
     by_prod: Dict[str, Dict[str, Decimal]] = {}
     for l in lines:
         agg = by_prod.setdefault(l["prod_id"], {"qty": Decimal(0), "amount": Decimal(0)})
         agg["qty"] += l["qty"]
-        agg["amount"] += l["amount"]
+        agg["amount"] += l["ml_amount"]  # 成本一律台幣
     costs = _cost_plan(ctx, by_prod, warnings, update_cost)
     if not update_cost:
         warnings.append({"code": "cost_not_updated", "needs_confirm": False,
@@ -780,18 +888,18 @@ def build_plan(
                 sQuantity=l["qty"], srcFrom=304, EQuantity=l["qty"], IsOdd=True)))
     # 進貨（Flag 100）
     inserts.append(("stkBillMain", _row(
-        "stkBillMain", Flag=100, BillNO=rm_no, SumAmtATax=total, SumNum=sum_qty, GatherStyle=g_style,
+        "stkBillMain", Flag=100, BillNO=rm_no, SumAmtATax=total, SumNum=sum_qty, TaxType=tax_type, GatherStyle=g_style,
         GatherDelay=g_delay, CheckStyle=c_style, CheckDelay=c_delay,
         Detail=ctx["bill_params"]["detail"], BillStatus=ctx["bill_params"]["bill_status"],
         GatherOther=ep._text(ep._get(first, "GatherOther")), CheckOther=ep._text(ep._get(first, "CheckOther")))))
     for l in lines:
         inserts.append(("stkBillSub", _row(
-            "stkBillSub", Flag=100, BillNO=rm_no, RowNO=l["row_no"], SerNO=l["row_no"], StkMlAmount=l["amount"],
-            LocalPayment=l["amount"] if STK_SUB_LOCAL_PAYMENT_EQUALS_AMOUNT else 0)))
+            "stkBillSub", Flag=100, BillNO=rm_no, RowNO=l["row_no"], SerNO=l["row_no"], StkMlAmount=l["ml_amount"],
+            LocalPayment=l["ml_amount"] if STK_SUB_LOCAL_PAYMENT_EQUALS_AMOUNT else 0)))
     inserts.append(("comBillAccounts", _row(
         "comBillAccounts", Flag=100, SysID=2, FundBillNo=rm_no, BillDate=rm_date, CustFlag=2, CustID=vendor_id,
         DueTo=vendor_id, AccMonth=terms["AccMonth"], CurrID=curr, ExchRate=exch, Total=sum_amount, Tax=sum_tax,
-        LocalTotal=ep._round(sum_amount * exch, 0), LocalTax=ep._round(sum_tax * exch, 0),
+        LocalTotal=local_amount, LocalTax=local_tax, TaxType=tax_type,
         PrepayDay=terms["PrepayDay"], EncashDay=terms["EncashDay"], DeptID=depart, Status=1,
         InvoStyle=int(ep._get(ctx["trade"], "InvoiceStyle", 1) or 0), Salesman=salesman,
         CashPayStyle="001", VisaPayStyle="002", HasCheck=True, CostFlag=100,
@@ -805,10 +913,10 @@ def build_plan(
         inserts.append(("comProdRec", _row(
             "comProdRec", Flag=100, BillNO=rm_no, RowNO=l["row_no"], SerNO=l["row_no"], BillDate=rm_date,
             ProdID=l["prod_id"], ProdName=l["prod_name"], CostAvg=costs[l["prod_id"]]["cost"], Quantity=l["qty"],
-            MLPrice=l["price"], MLAmount=l["amount"], WareID=ware, QtyRemain=l["qty"], TranType=205,
+            MLPrice=l["ml_price"], MLAmount=l["ml_amount"], WareID=ware, QtyRemain=l["qty"], TranType=205,
             FromNO=qm_no, FromRow=l["row_no"], TaxRate=l["tax_rate"], TaxAmt=l["tax"], NeedUpdate=True,
-            CostForAcc=l["amount"], HasCheck=True, Price=l["price"], DisCount=l["discount"], Amount=l["amount"],
-            SPrice=l["price"], SQuantity=l["qty"], UnitRelation=1, EQuantity=l["qty"], MLTaxAmt=l["tax"],
+            CostForAcc=l["ml_amount"], HasCheck=True, Price=l["price"], DisCount=l["discount"], Amount=l["amount"],
+            SPrice=l["price"], SQuantity=l["qty"], UnitRelation=1, EQuantity=l["qty"], MLTaxAmt=ep._round(l["tax"] * exch, 0),
             IsOdd=True)))
 
     updates: List[Dict[str, Any]] = []
@@ -880,7 +988,7 @@ def build_plan(
     updates.append({"op": "update", "table": "comCustTrade", "where": {"Flag": 2, "ID": vendor_id},
                     "set": {"LatelyTradeDate": rm_date}})
     # comCustAccounts：inferred from Andy's chain (CS007 2520) —— 應付 = 含稅總額
-    local_total = ep._round(total * exch, 0)
+    local_total = totals["local_total"]
     acc = ctx["accounts"]
     if acc is None:
         updates.append({"op": "insert", "table": "comCustAccounts", "values": _row(
@@ -905,6 +1013,8 @@ def build_plan(
     return {
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
+        "po_currency": po_curr, "mode": mode, "exch_rate": exch if mode == "foreign" else rate,
+        "rate_source": rate_source, "tax_type": tax_type, "tax_label": tax_type_label(tax_type),
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
         "cost_params": cost_params, "bill_params": ctx["bill_params"], "update_cost": update_cost,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
@@ -972,12 +1082,14 @@ def _verify(wcur, plan: Dict[str, Any]) -> Dict[str, Any]:
         fail("進貨單合計")
     if len(rows("SELECT RowNO FROM stkBillSub WHERE Flag = 100 AND BillNO = %s", (n["rm_no"],))) != len(lines):
         fail("進貨單明細行數")
-    acct = rows("SELECT Total, Tax, AccMonth, PrepayDay, EncashDay FROM comBillAccounts "
+    acct = rows("SELECT Total, Tax, AccMonth, PrepayDay, EncashDay, CurrID, TaxType FROM comBillAccounts "
                 "WHERE Flag = 100 AND SysID = 2 AND FundBillNo = %s", (n["rm_no"],))
     terms = plan["terms"]
     if not acct or not ep._same(ep._get(acct[0], "Total"), t["sum_amount"]) or not ep._same(ep._get(acct[0], "Tax"), t["sum_tax"]) \
             or int(ep._get(acct[0], "AccMonth")) != terms["AccMonth"] or int(ep._get(acct[0], "PrepayDay")) != terms["PrepayDay"] \
-            or int(ep._get(acct[0], "EncashDay")) != terms["EncashDay"]:
+            or int(ep._get(acct[0], "EncashDay")) != terms["EncashDay"] \
+            or ep._text(ep._get(acct[0], "CurrID")) != ep._text(plan["currency"]) \
+            or int(ep._get(acct[0], "TaxType") or 0) != int(plan.get("tax_type", 0)):
         fail("應付帳款")
     recs = rows("SELECT RowNO, ProdID, Quantity, Amount, TaxAmt, WareID, FromNO, FromRow FROM comProdRec "
                 "WHERE Flag = 100 AND BillNO = %s ORDER BY RowNO", (n["rm_no"],))
@@ -1025,9 +1137,12 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
         "is_production": target == ep.PRODUCTION_TARGET, "update_cost": plan["update_cost"],
         **plan["numbers"], "numbers": dict(plan["numbers"]), "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
         "vendor": plan["vendor"], "currency": plan["currency"], "warehouse": plan["warehouse"],
+        "po_currency": plan.get("po_currency"), "mode": plan.get("mode"), "exch_rate": _jsonable(plan.get("exch_rate")),
+        "rate_source": plan.get("rate_source"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
         "lines": _jsonable([
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
-                               "price", "po_price", "tax_rate", "amount", "tax")} for l in plan["lines"]]),
+                               "price", "src_price", "po_price", "tax_rate", "amount", "tax", "ml_price", "ml_amount")}
+            for l in plan["lines"]]),
         "totals": _jsonable(plan["totals"]),
         "cost_params": plan["cost_params"], "bill_params": plan["bill_params"], "warnings": plan["warnings"], "needs_confirm": plan["needs_confirm"], "closed_pos": plan["closed_pos"],
     }
@@ -1077,7 +1192,10 @@ def preview_receive(raw_req: Dict[str, Any]) -> Dict[str, Any]:
 
 def _fingerprint(target: str, req: Dict[str, Any], rm_date_raw: Any) -> str:
     lines = sorted([l["po_no"], l["row_no"], str(l["qty"]), str(l["price"])] for l in req["lines"])
-    raw = json.dumps([target, str(rm_date_raw or ""), lines, bool(req.get("update_cost", True))], ensure_ascii=False)
+    parts: List[Any] = [target, str(rm_date_raw or ""), lines, bool(req.get("update_cost", True))]
+    if req.get("exch_rate") is not None:
+        parts.append(str(req["exch_rate"]))
+    raw = json.dumps(parts, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 

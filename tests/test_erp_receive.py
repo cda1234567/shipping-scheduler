@@ -390,7 +390,8 @@ class PlanTests(ErpCase):
         r = er.preview_receive(self.req())
         self.assertEqual((r["im_no"], r["qm_no"], r["rm_no"]), ("IM-20261030002", "QM-20261030002", "RM-20261030002"))
         self.assertEqual(r["terms"], {"AccMonth": 202610, "PrepayDay": 20261106, "EncashDay": 20261109})
-        self.assertEqual(r["totals"], {"sum_qty": 100.0, "sum_amount": 2400.0, "sum_tax": 120.0, "total": 2520.0})
+        self.assertEqual(r["totals"], {"sum_qty": 100.0, "sum_amount": 2400.0, "sum_tax": 120.0, "total": 2520.0,
+                                       "local_amount": 2400.0, "local_tax": 120.0, "local_total": 2520.0})
         self.assertTrue(r["numbers_estimated"])
         self.assertEqual(set(r["rows"]), {"ordExamineMain", "ordExamineSub", "stkBillMain", "stkBillSub",
                                           "comBillAccounts", "comProdRec", "StkYearMonthQty", "stkYearMonthAvg",
@@ -1281,3 +1282,107 @@ class UpdateCostFlagTests(ErpCase):
             self.assertEqual(r.status_code, 200, r.text)
             self.assertFalse(r.json()["update_cost"])
         self.assertEqual(self.ware("AC-2")["TotalCost"], Decimal(100))
+
+
+class TaxCurrencyTests(ErpCase):
+    """v2026.11.04.1：課稅別照採購單、外幣採購單（依 CHIComp03 實單 RM-20261023001 / RM-20261016002）。"""
+
+    def set_po(self, **kw):
+        self.rows("ordBillMain")[0].update(kw)
+
+    def acc(self, n):
+        return next(x for x in self.rows("comBillAccounts") if x["FundBillNo"] == n)
+
+    def test_tax_free_po_gives_zero_tax(self):
+        self.set_po(TaxType=2)
+        r = er.preview_receive(self.req())
+        self.assertEqual((r["totals"]["sum_tax"], r["totals"]["total"]), (0.0, 2400.0))
+        self.assertEqual((r["tax_type"], r["mode"], r["currency"]), (2, "local", "NTD"))
+        self.assertIn("稅額 0", r["tax_label"])
+        self.assertTrue(any(w["code"] == "tax_free" for w in r["warnings"]))
+        res = er.create_receive(self.req(), "t", "1.2.3.4")
+        n = res["rm_no"]
+        acc = self.acc(n)
+        self.assertEqual((acc["Total"], acc["Tax"], acc["TaxType"], acc["CurrID"]), (Decimal(2400), 0, 2, "NTD"))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["TaxType"]), (Decimal(2400), 2))
+        rec = [x for x in self.rows("comProdRec") if x["BillNO"] == n]
+        self.assertTrue(rec and all(x["TaxAmt"] == 0 and x["MLTaxAmt"] == 0 for x in rec))
+
+    def test_taxed_po_keeps_tax_type_zero(self):
+        res = er.create_receive(self.req(), "t", "1.2.3.4")
+        acc = self.acc(res["rm_no"])
+        self.assertEqual((acc["Tax"], acc["TaxType"]), (Decimal(120), 0))
+
+    def test_mixed_tax_types_rejected(self):
+        self.rows("ordBillMain")[1].update(TaxType=1)
+        with self.assertRaises(er.ReceiveValidationError) as cm:
+            er.preview_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1}, {"po_no": "PO-2", "row_no": 1, "qty": 1}]))
+        self.assertIn("課稅別", str(cm.exception))
+
+    def usd_setup(self, tax_type, price="0.47", rate="30.385"):
+        self.set_po(CurrID="USD", ExchRate=Decimal("30.385"), TaxType=tax_type)
+        self.rows("ordBillSub")[0].update(Price=Decimal(price))
+        self.erp.table("comCurrencySys").append({"CurrencyID": "USD", "BuyInRate": Decimal(rate), "FixedRate": Decimal(rate),
+                                            "AmountDeciDigits": 3})
+        self.rows("comCustAccounts").append({"Flag": 2, "SysID": 2, "ID": "CS007", "CurrID": "USD",
+                                             "CurReceivable": Decimal("100"), "LocCurReceivable": Decimal("3000")})
+
+    def test_usd_foreign_bill_like_rm_20261023001(self):
+        # RM-20261023001：0.47 USD × 1010 = 474.7、匯率 32.215 → MLPrice 15.141、MLAmount 15292、稅 0
+        self.usd_setup(1)
+        self.rows("ordBillSub")[0].update(Quantity=Decimal(1010), QtyRemain=Decimal(1010))
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1010}], exch_rate="32.215")
+        r = er.preview_receive(req)
+        self.assertEqual((r["mode"], r["currency"], r["exch_rate"], r["rate_source"]), ("foreign", "USD", 32.215, "manual"))
+        self.assertEqual((r["totals"]["sum_amount"], r["totals"]["sum_tax"], r["totals"]["local_total"]), (474.7, 0.0, 15292.0))
+        line = r["lines"][0]
+        self.assertEqual((line["price"], line["amount"], line["ml_price"], line["ml_amount"]), (0.47, 474.7, 15.1411, 15292.0))
+        res = er.create_receive(req, "t", "1.2.3.4")
+        n = res["rm_no"]
+        acc = self.acc(n)
+        self.assertEqual((acc["CurrID"], acc["ExchRate"], acc["Total"], acc["Tax"], acc["LocalTotal"], acc["TaxType"]),
+                         ("USD", Decimal("32.215"), Decimal("474.7"), 0, Decimal(15292), 1))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["TaxType"]), (Decimal("474.7"), 1))
+        sub = next(x for x in self.rows("stkBillSub") if x["BillNO"] == n)
+        self.assertEqual(sub["StkMlAmount"], Decimal(15292))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == n)
+        self.assertEqual((rec["Price"], rec["Amount"], rec["MLAmount"], rec["CostForAcc"], rec["TaxAmt"]),
+                         (Decimal("0.47"), Decimal("474.7"), Decimal(15292), Decimal(15292), 0))
+        cust = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "USD")
+        self.assertEqual((cust["CurReceivable"], cust["LocCurReceivable"]), (Decimal("574.7"), Decimal(18292)))
+        ntd = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "NTD")
+        self.assertEqual(ntd["CurReceivable"], Decimal(2520))
+
+    def test_usd_default_rate_from_currency_table(self):
+        self.usd_setup(1, rate="31")
+        r = er.preview_receive(self.req())
+        self.assertEqual((r["exch_rate"], r["rate_source"]), (31.0, "currency"))
+        self.erp.table("comCurrencySys").clear()
+        r = er.preview_receive(self.req())
+        self.assertEqual((r["exch_rate"], r["rate_source"]), (30.385, "po"))
+
+    def test_usd_taxed_po_becomes_ntd_bill_like_rm_20261016002(self):
+        # RM-20261016002（P0304）：19.3 USD × 32.45 = 626.285 NTD、稅 5%、單據台幣
+        self.usd_setup(0, price="19.3")
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.45")
+        r = er.preview_receive(req)
+        self.assertEqual((r["mode"], r["currency"], r["po_currency"], r["exch_rate"]), ("convert", "NTD", "USD", 32.45))
+        line = r["lines"][0]
+        self.assertEqual((line["src_price"], line["price"], line["amount"], line["tax"]), (19.3, 626.285, 6263.0, 313.0))
+        self.assertTrue(any(w["code"] == "currency_converted" for w in r["warnings"]))
+        res = er.create_receive(req, "t", "1.2.3.4")
+        acc = self.acc(res["rm_no"])
+        self.assertEqual((acc["CurrID"], acc["ExchRate"], acc["Total"], acc["Tax"], acc["LocalTotal"], acc["TaxType"]),
+                         ("NTD", Decimal(1), Decimal(6263), Decimal(313), Decimal(6263), 0))
+        cust = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "NTD")
+        self.assertEqual(cust["CurReceivable"], Decimal(2520 + 6576))
+
+    def test_rate_in_fingerprint_and_validation(self):
+        with self.assertRaises(er.ReceiveValidationError):
+            er.normalize_request(self.req(exch_rate="0"))
+        a = er._fingerprint("CHIComp13", er.normalize_request(self.req(exch_rate="32")), "")
+        b = er._fingerprint("CHIComp13", er.normalize_request(self.req(exch_rate="33")), "")
+        c = er._fingerprint("CHIComp13", er.normalize_request(self.req()), "")
+        self.assertEqual(len({a, b, c}), 3)

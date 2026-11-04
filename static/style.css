@@ -5381,3 +5381,5 @@ body.desktop-dark .frequent-zero-usage li span {
 body.desktop-dark .po-mail-sent { background: #14532d; color: #bbf7d0; }
 body.desktop-dark .po-mail-unsent { background: #374151; color: #d1d5db; }
 body.desktop-dark .po-mail-replied { background: #1e3a8a; color: #bfdbfe; }
+.olp-pinned { background: #fef9c3; }
+.olp-pinned-head td { font-size: 12px; color: #92400e; background: #fffbeb; }
