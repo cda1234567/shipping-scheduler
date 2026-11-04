@@ -10,7 +10,7 @@
   "tax_no": "16768035",
   "contact_phone": "02-2698-0598",
   "fax": "02-2698-0597",
-  "price_of_tax": false,
+  "price_of_tax": true,
   "currency": "NTD",
   "buyer": "李志強",
   "dept": "工程部",

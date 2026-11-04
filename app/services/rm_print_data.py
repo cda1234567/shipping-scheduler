@@ -77,16 +77,32 @@ def _optional(cur, sql: str, params) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _optional_all(cur, sql: str, params) -> List[Dict[str, Any]]:
+    try:
+        return _all(cur, sql, params)
+    except Exception as exc:
+        logger.info("進貨單列印：選用查詢失敗（%s）", type(exc).__name__)
+        return []
+
+
 def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: List[Dict[str, Any]],
                    vendor: Optional[Dict[str, Any]], buyer: Optional[Dict[str, Any]], dept: Optional[Dict[str, Any]],
                    units: Dict[str, str], wares: Dict[str, str], local: Dict[str, Any],
-                   amount_digits: int = 0) -> Dict[str, Any]:
+                   amount_digits: int = 0, invoice: Optional[Dict[str, Any]] = None,
+                   addresses: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """把正航讀回的列組成列印資料（純函式，方便測試）。"""
     from . import rm_print
 
-    cust_addr = _text(_pick(acct, "CustAddress")) or _text(_pick(vendor, "Address", "CustAddress", "ComAddress"))
-    inv_addr = (_text(_pick(main, "InvAddress", "InvoAddr")) or _text(_pick(vendor, "InvoiceAddress", "InvAddress", "InvoAddress"))
-                or cust_addr)
+    addresses = addresses or {}
+
+    def addr_of(addr_id: Any) -> str:
+        return _text(_pick(addresses.get(_text(addr_id)), "Address"))
+
+    # 廠商地址：單據上的地址 → 單據地址代號（comCustAddress）
+    cust_addr = _text(_pick(acct, "CustAddress")) or addr_of(_pick(acct, "AddrID"))
+    # 發票地址：stkBillMain.InvAddress（文字）→ InvoAddr 是地址「代號」要查 comCustAddress → 發票主檔地址 → 廠商地址
+    inv_addr = (_text(_pick(main, "InvAddress")) or addr_of(_pick(main, "InvoAddr"))
+                or _text(_pick(invoice, "Address")) or cust_addr)
     tax_type = int(_pick(acct, "TaxType", default=0) or 0)
     lines = []
     for r in recs:
@@ -109,14 +125,15 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
         "rm_date": _pick(acct, "BillDate", default=local["rm_date"]),
         "vendor_id": _text(_pick(acct, "CustID")) or local["vendor_id"],
         "vendor_name": _text(_pick(vendor, "FullName", "ShortName")) or local["vendor_name"],
-        "vendor_phone": _text(_pick(vendor, "Telephone1", "TelePhone1", "Telephone", "Tel", "Phone")) or _text(_pick(acct, "ContactPhone")),
-        "tax_no": _text(_pick(vendor, "TaxNo", "UniformNo", "UnifiedNo")) or _text(_pick(main, "TaxNo")),
+        "vendor_phone": _text(_pick(vendor, "Telephone1")) or _text(_pick(acct, "ContactPhone")),
+        "tax_no": _text(_pick(main, "TaxNo")) or _text(_pick(vendor, "TaxNo")),
         "contact_phone": _text(_pick(acct, "ContactPhone")),
-        "fax": _text(_pick(acct, "FaxNo")) or _text(_pick(vendor, "FaxNo", "Fax")),
+        "fax": _text(_pick(acct, "FaxNo")) or _text(_pick(vendor, "FaxNo")),
+        # comBillAccounts.PriceOfTax：1 = 單價未稅（stkBillMain.PriceofTax 正航自己的單也是 0，不用它）
         "price_of_tax": bool(_pick(acct, "PriceOfTax", default=False)),
         "currency": curr,
-        "buyer": _text(_pick(buyer, "PersonName", "Name", "ChineseName")) or _text(_pick(acct, "Salesman")),
-        "dept": _text(_pick(dept, "DepartName", "DeptName", "Name")) or _text(_pick(acct, "DeptID")),
+        "buyer": _text(_pick(buyer, "PersonName")) or _text(_pick(acct, "Salesman")),
+        "dept": _text(_pick(dept, "DepartName")) or _text(_pick(acct, "DeptID")),
         "vendor_address": cust_addr,
         "maker": _text(_pick(acct, "Maker")),
         "invoice_address": inv_addr,
@@ -125,10 +142,11 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
         "prepay_date": _pick(acct, "PrepayDay"), "encash_date": _pick(acct, "EncashDay"),
         "tax_type": tax_type,
         "invoice_no": _text(_pick(acct, "InvoiceNo")),
-        "invoice_date": _pick(acct, "InvoiceDate", "InvoDate") if _text(_pick(acct, "InvoiceNo")) else None,
+        # 發票日期在 comInvoice.InvoiceDate（以 comBillAccounts.InvoBillNO 對 comInvoice.InvoBillNo）
+        "invoice_date": _pick(invoice, "InvoiceDate") if _text(_pick(acct, "InvoiceNo")) else None,
         "invoice_style": "",
         "discount": _pick(acct, "Discount", default=0) or 0,
-        "cash_pay": _pick(acct, "CashPay", "CashPayAmt", default=0) or 0,
+        "cash_pay": _pick(acct, "CashPay", default=0) or 0,
         "remark": _text(_pick(acct, "Remark")),
         "sum_amount": _pick(acct, "Total", default=local.get("sum_amount")),
         "sum_tax": _pick(acct, "Tax", default=local.get("sum_tax")),
@@ -157,14 +175,31 @@ def load_from_erp(rec: Dict[str, Any]) -> Dict[str, Any]:
         units: Dict[str, str] = {}
         for prod in dict.fromkeys(_text(_pick(r, "ProdID")) for r in recs):
             row = _optional(cur, "SELECT * FROM comProduct WHERE ProdID = %s", (prod,))
-            units[prod] = _text(_pick(row, "Unit", "UnitName", "StdUnit"))
+            units[prod] = _text(_pick(row, "Unit"))
+        wares: Dict[str, str] = {}
+        for ware in dict.fromkeys(_text(_pick(r, "WareID")) for r in recs):
+            if ware:
+                row = _optional(cur, "SELECT WareHouseID, WareHouseName FROM comWareHouse WHERE WareHouseID = %s", (ware,))
+                wares[ware] = _text(_pick(row, "WareHouseName")) or ware
+        addresses: Dict[str, Dict[str, Any]] = {}
+        for row in _optional_all(cur, "SELECT * FROM comCustAddress WHERE Flag = 2 AND ID = %s", (_text(_pick(acct, "CustID")),)):
+            addresses[_text(_pick(row, "AddrID"))] = row
+        invoice = None
+        if _text(_pick(acct, "InvoiceNo")):
+            inv_bill = _text(_pick(acct, "InvoBillNO"))
+            if inv_bill:
+                invoice = _optional(cur, "SELECT * FROM comInvoice WHERE InvoBillNo = %s", (inv_bill,))
+            if invoice is None:
+                invoice = _optional(cur, "SELECT * FROM comInvoice WHERE InvoiceNO = %s AND SrcBillNO = %s",
+                                    (_text(_pick(acct, "InvoiceNo")), rm_no))
         digits = 0
         curr = _text(_pick(acct, "CurrID"))
         if curr and curr.upper() != "NTD":
             row = _optional(cur, "SELECT * FROM comCurrencySys WHERE CurrencyID = %s", (curr,))
             raw = _pick(row, "AmountDeciDigits")
             digits = int(raw) if raw is not None else 2
-        return build_from_erp(acct, main, recs, vendor, buyer, dept, units, {}, local, digits)
+        return build_from_erp(acct, main, recs, vendor, buyer, dept, units, wares, local, digits,
+                              invoice=invoice, addresses=addresses)
     except ErpError:
         raise
     except Exception as exc:

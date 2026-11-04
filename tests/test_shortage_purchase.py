@@ -183,6 +183,9 @@ class ShortageListTests(Base):
         self.st = {"EC-1": 60, "OC-1": -30, "PK-1": 100, "AC-1": 0}
         self.on_order = {"AC-1": (5.0, "2026-11-01")}
         self.site_moq = {}
+        # 最近進貨量有模組層快取：pytest 由 conftest.py 自動清，unittest discover 沒有 conftest，這裡自己清
+        moq_service.clear_receipt_cache()
+        self.addCleanup(moq_service.clear_receipt_cache)
 
         @contextmanager
         def source_session():

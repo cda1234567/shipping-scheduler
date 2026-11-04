@@ -90,6 +90,14 @@ PMINGLIU_LATIN = {
 LATIN_SCALE = 0.94
 
 DEFAULT_COMPANY = "辰尚企業有限公司"
+def price_label(price_of_tax: Any) -> str:
+    """正航 comBillAccounts.PriceOfTax：1 = 單價未稅、0 = 單價含稅（正航採購單版面同樣以 PriceOfTax 為真時取未稅金額）。
+    沒讀到（None，例如正航連不上用本機紀錄）就留白。"""
+    if price_of_tax is None:
+        return ""
+    return "未稅" if bool(price_of_tax) else "含稅"
+
+
 def tax_type_text(tax_type: Any) -> str:
     """課稅類別：0 = 應稅，其他一律免稅（Andy 確認）。"""
     try:
@@ -454,7 +462,7 @@ def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int) ->
     cell(2, 2, f"統一編號: {data.get('tax_no') or ''}", wr)
     cell(0, 3, f"聯絡電話: {data.get('contact_phone') or ''}", w2)
     cell(1, 3, f"傳真號碼: {data.get('fax') or ''}", w3)
-    cell(2, 3, f"產品單價: {'含稅' if data.get('price_of_tax') else '未稅'}", wr)
+    cell(2, 3, f"產品單價: {price_label(data.get('price_of_tax'))}", wr)
     cell(0, 4, f"幣別編號: {data.get('currency') or 'NTD'}", w2)
     cell(1, 4, f"採購人員: {data.get('buyer') or ''}", w3)
     cell(2, 4, f"所屬部門: {data.get('dept') or ''}", wr)
