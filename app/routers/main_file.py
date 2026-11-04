@@ -373,7 +373,7 @@ async def get_main_preview(request: Request, sheet: str | None = None):
         mtime_ns = Path(main_path).stat().st_mtime_ns
     except OSError:
         mtime_ns = 0
-    etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}"
+    etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}|{db.list_archived_orders()}"
     etag = 'W/"' + hashlib.md5(etag_raw.encode("utf-8")).hexdigest() + '"'
 
     if request.headers.get("if-none-match") == etag:

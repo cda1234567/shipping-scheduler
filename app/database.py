@@ -198,6 +198,9 @@ CREATE TABLE IF NOT EXISTS orders (
     row_index     INTEGER NOT NULL DEFAULT 0,
     is_manual     INTEGER NOT NULL DEFAULT 0,
     insert_before_code TEXT NOT NULL DEFAULT '',
+    archived_at TEXT NOT NULL DEFAULT '',
+    archive_reason TEXT NOT NULL DEFAULT '',
+    archive_keep INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL DEFAULT '',
     updated_at    TEXT    NOT NULL DEFAULT ''
 );
@@ -778,6 +781,11 @@ def init_db():
             conn.execute("ALTER TABLE erp_receipts ADD COLUMN exch_rate REAL")
         # migration: orders 加 folder 欄位
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
+        for name, definition in (("archived_at", "TEXT NOT NULL DEFAULT ''"),
+                                 ("archive_reason", "TEXT NOT NULL DEFAULT ''"),
+                                 ("archive_keep", "INTEGER NOT NULL DEFAULT 0")):
+            if name not in cols:
+                conn.execute(f"ALTER TABLE orders ADD COLUMN {name} {definition}")
         if "is_manual" not in cols:
             conn.execute("ALTER TABLE orders ADD COLUMN is_manual INTEGER NOT NULL DEFAULT 0")
         if "insert_before_code" not in cols:
@@ -848,6 +856,7 @@ def init_db():
         seed_postprocess_links(conn)
 
         _repair_managed_paths(conn)
+        auto_archive_orders(conn)
 
 
 @contextmanager
@@ -2073,7 +2082,7 @@ def get_st_reconcile_cutoff_batch_options(limit: int = 200) -> list[dict]:
             JOIN orders o ON o.id = s.order_id
             LEFT JOIN st_dispatch_consumptions c
                    ON c.dispatch_session_id = s.id AND c.rolled_back_at=''
-            WHERE s.rolled_back_at='' AND TRIM(IFNULL(o.code,'')) <> ''
+            WHERE o.archived_at='' AND s.rolled_back_at='' AND TRIM(IFNULL(o.code,'')) <> ''
             GROUP BY TRIM(o.code)
             ORDER BY MAX(s.dispatched_at) DESC
             LIMIT ?
@@ -2370,6 +2379,7 @@ def apply_dispatch_code_shifts(code_shifts: dict[str, str], exclude_order_ids: l
             changes.append({"id": row["id"], "old_code": row["code"], "new_code": new_code,
                             "old_insert_before_code": old_anchor, "new_insert_before_code": new_anchor})
             conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (new_code, new_anchor, _now(), row["id"]))
+        auto_archive_orders(conn)
     return changes
 
 
@@ -2397,6 +2407,8 @@ def restore_dispatch_code_shifts(changes: list[dict]):
         for change in changes:
             conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (change["old_code"], change["old_insert_before_code"], _now(), change["id"]))
 
+        auto_archive_orders(conn)
+
 
 def create_manual_order(data: dict) -> dict:
     """手動建立未排程單據；業務欄位完全採用輸入值。"""
@@ -2406,7 +2418,7 @@ def create_manual_order(data: dict) -> dict:
         insert_before_code = data.get("insert_before_code", "")
         if insert_before_code and data["code"] != insert_before_code:
             raise ValueError("插入單據的編號必須與插入位置編號相同")
-        if not insert_before_code and conn.execute("SELECT 1 FROM orders WHERE code=?", (data["code"],)).fetchone():
+        if not insert_before_code and conn.execute("SELECT 1 FROM orders WHERE archived_at='' AND code=?", (data["code"],)).fetchone():
             raise ValueError("此單據編號已存在，請使用其他編號")
         sort_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM orders").fetchone()[0]
         fields = ("code", "po_number", "model", "pcb", "order_qty", "balance_qty", "ship_date", "delivery_date", "remark")
@@ -2417,6 +2429,7 @@ def create_manual_order(data: dict) -> dict:
             "VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
             (*values, sort_order, insert_before_code, now, now),
         )
+        auto_archive_orders(conn)
         return dict(conn.execute("SELECT * FROM orders WHERE id=?", (cursor.lastrowid,)).fetchone())
 
 
@@ -2431,7 +2444,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
 
     with get_conn() as conn:
         all_orders = conn.execute(
-            "SELECT id, po_number, model, pcb, order_qty, ship_date, delivery_date, status, code, is_manual FROM orders"
+            "SELECT id, po_number, model, pcb, order_qty, ship_date, delivery_date, status, code, is_manual, archived_at FROM orders"
         ).fetchall()
 
         # 用 PO+機種+出貨日 當 key，同 PO/機種不同出貨日分開處理
@@ -2440,12 +2453,17 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
         for o in all_orders:
             key = _order_key(o["po_number"], o["model"], o["ship_date"] or o["delivery_date"])
             existing = dict(o)
-            existing_by_key[key] = existing
+            # 封存單仍參與比對（避免同 PO+機種+出貨日被重新新增），但同 key 以未封存的為準
+            prev = existing_by_key.get(key)
+            if prev is None or (prev.get("archived_at") and not existing.get("archived_at")):
+                existing_by_key[key] = existing
+            elif not (existing.get("archived_at") and not prev.get("archived_at")):
+                existing_by_key[key] = existing
             if existing["status"] in ("dispatched", "completed"):
-                dispatched_by_base_key.setdefault(
-                    _order_base_key(existing["po_number"], existing["model"]),
-                    existing,
-                )
+                base_key = _order_base_key(existing["po_number"], existing["model"])
+                prev_base = dispatched_by_base_key.get(base_key)
+                if prev_base is None or (prev_base.get("archived_at") and not existing.get("archived_at")):
+                    dispatched_by_base_key[base_key] = existing
 
         new_key_set = {
             _order_key(r.get("po_number", ""), r.get("model", ""), r.get("ship_date"))
@@ -2464,7 +2482,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
         # 刪掉「新排程表中不存在」的 pending/merged 訂單
         removed_count = 0
         for key, existing in list(existing_by_key.items()):
-            if not existing["is_manual"] and key not in new_key_set and existing["status"] in ("pending", "merged"):
+            if not existing["is_manual"] and key not in new_key_set and not existing.get("archived_at") and existing["status"] in ("pending", "merged"):
                 conn.execute("DELETE FROM decisions WHERE order_id = ?", (existing["id"],))
                 conn.execute("DELETE FROM order_supplements WHERE order_id = ?", (existing["id"],))
                 conn.execute("DELETE FROM orders WHERE id = ?", (existing["id"],))
@@ -2493,7 +2511,7 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
                 and new_base_key_counts.get(base_key, 0) == 1
                 and dispatched_existing
             ):
-                if existing and existing["status"] in ("pending", "merged"):
+                if existing and existing["status"] in ("pending", "merged") and not existing.get("archived_at"):
                     conn.execute("DELETE FROM decisions WHERE order_id = ?", (existing["id"],))
                     conn.execute("DELETE FROM order_supplements WHERE order_id = ?", (existing["id"],))
                     conn.execute("DELETE FROM orders WHERE id = ?", (existing["id"],))
@@ -2564,6 +2582,8 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
             })
             added_count += 1
 
+        auto_archive_orders(conn)
+
     return {
         "added": added_count,
         "updated": updated_count,
@@ -2595,17 +2615,63 @@ def _compare_order_fields(existing: dict, new_row: dict) -> list[dict]:
     return changes
 
 
+def auto_archive_orders(conn: sqlite3.Connection | None = None) -> list[dict]:
+    """同代號只保留最新訂單；可共用呼叫端交易，不刪除任何資料。"""
+    if conn is None:
+        with get_conn() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return auto_archive_orders(connection)
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE TRIM(code) != '' ORDER BY code, created_at DESC, id DESC"
+    ).fetchall()
+    newest: dict[str, int] = {}
+    archived = []
+    now = _now()
+    for row in rows:
+        code = row["code"]
+        if code not in newest:
+            newest[code] = row["id"]
+            continue
+        if row["archive_keep"] or row["archived_at"]:
+            continue
+        reason = f"同批次代號 {code} 已有較新訂單 #{newest[code]}"
+        conn.execute("UPDATE orders SET archived_at=?, archive_reason=? WHERE id=?",
+                     (now, reason, row["id"]))
+        archived.append({**dict(row), "archived_at": now, "archive_reason": reason})
+        conn.execute("INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
+                     ("自動封存訂單", f"訂單 #{row['id']}：{reason}", now))
+    return archived
+
+
+def list_archived_orders() -> list[dict]:
+    with get_conn() as conn:
+        return [dict(row) for row in conn.execute(
+            "SELECT id, code, po_number, model, status, ship_date, created_at, archived_at, archive_reason "
+            "FROM orders WHERE archived_at != '' ORDER BY archived_at DESC, id DESC")]
+
+
+def unarchive_order(order_id: int) -> bool:
+    with get_conn() as conn:
+        result = conn.execute(
+            "UPDATE orders SET archived_at='', archive_reason='', archive_keep=1, updated_at=? WHERE id=?",
+            (_now(), order_id))
+        if result.rowcount:
+            conn.execute("INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
+                         ("還原封存訂單", f"訂單 #{order_id}，保留顯示", _now()))
+        return bool(result.rowcount)
+
+
 def get_orders(statuses: list[str] | None = None) -> list[dict]:
     """取得訂單列表。statuses=None 取全部。"""
     with get_conn() as conn:
         if statuses:
             placeholders = ",".join("?" * len(statuses))
             rows = conn.execute(
-                f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY sort_order, delivery_date, row_index",
+                f"SELECT * FROM orders WHERE archived_at='' AND status IN ({placeholders}) ORDER BY sort_order, delivery_date, row_index",
                 statuses,
             ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM orders ORDER BY sort_order, delivery_date, row_index").fetchall()
+            rows = conn.execute("SELECT * FROM orders WHERE archived_at='' ORDER BY sort_order, delivery_date, row_index").fetchall()
     return [dict(r) for r in rows]
 
 
@@ -2621,7 +2687,7 @@ def get_order_by_code(code: str) -> dict | None:
         return None
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT * FROM orders WHERE code=? ORDER BY id DESC LIMIT 1",
+            "SELECT * FROM orders WHERE code=? ORDER BY (archived_at != ''), created_at DESC, id DESC LIMIT 1",
             (normalized_code,),
         ).fetchone()
     return dict(row) if row else None
@@ -2639,7 +2705,7 @@ def remove_duplicate_pending_orders() -> dict:
         }
 
         pending_orders = conn.execute(
-            "SELECT id, po_number, model, ship_date, delivery_date FROM orders WHERE status IN ('pending','merged') AND is_manual=0"
+            "SELECT id, po_number, model, ship_date, delivery_date FROM orders WHERE archived_at='' AND status IN ('pending','merged') AND is_manual=0"
         ).fetchall()
 
         duplicates: list[dict] = []
@@ -2669,13 +2735,15 @@ def update_order(order_id: int, **fields):
     vals = list(fields.values()) + [order_id]
     with get_conn() as conn:
         conn.execute(f"UPDATE orders SET {sets} WHERE id=?", vals)
+        if "code" in fields:
+            auto_archive_orders(conn)
 
 
 def get_dispatch_folders() -> list[str]:
     """取得已發料訂單中所有不重複的 folder 名稱（不含空字串）。"""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT DISTINCT folder FROM orders WHERE status IN ('dispatched','completed') AND folder != '' ORDER BY folder"
+            "SELECT DISTINCT folder FROM orders WHERE archived_at='' AND status IN ('dispatched','completed') AND folder != '' ORDER BY folder"
         ).fetchall()
     return [r["folder"] for r in rows]
 
@@ -2751,7 +2819,7 @@ def batch_merge_orders(order_ids: list[int]):
     with get_conn() as conn:
         placeholders = ",".join("?" * len(order_ids))
         conn.execute(
-            f"UPDATE orders SET status='merged', updated_at=? WHERE id IN ({placeholders}) AND status IN ('pending','merged')",
+            f"UPDATE orders SET status='merged', updated_at=? WHERE id IN ({placeholders}) AND archived_at='' AND status IN ('pending','merged')",
             [now] + order_ids,
         )
 
@@ -3396,7 +3464,7 @@ def get_all_decisions() -> dict[str, str]:
         rows = conn.execute(
             "SELECT d.part_number, d.decision FROM decisions d "
             "JOIN orders o ON o.id = d.order_id "
-            "WHERE o.status IN ('pending','merged') AND d.decision != 'None' "
+            "WHERE o.archived_at='' AND o.status IN ('pending','merged') AND d.decision != 'None' "
             "ORDER BY d.part_number, d.decided_at, d.id"
         ).fetchall()
     decisions: dict[str, str] = {}
@@ -3847,7 +3915,7 @@ def get_active_merge_drafts(order_ids: list[int] | None = None) -> list[dict]:
         "SELECT md.*, o.po_number, o.model, o.pcb, o.order_qty, o.delivery_date, o.ship_date, o.sort_order, o.row_index "
         "FROM merge_drafts md "
         "JOIN orders o ON o.id = md.order_id "
-        "WHERE md.status='active'"
+        "WHERE o.archived_at='' AND md.status='active'"
     )
     params: list[int] = []
     if normalized_ids:
@@ -4208,7 +4276,7 @@ def list_dispatched_orders_for_purchase(limit: int = 300) -> list[dict]:
                       COALESCE((SELECT MAX(ds.dispatched_at) FROM dispatch_sessions ds
                                 WHERE ds.order_id = o.id AND ds.rolled_back_at = ''), '') AS dispatched_at
                FROM orders o
-               WHERE o.status IN ('dispatched', 'completed')
+               WHERE o.archived_at='' AND o.status IN ('dispatched', 'completed')
                ORDER BY dispatched_at DESC, o.id DESC
                LIMIT ?""",
             (int(limit),),

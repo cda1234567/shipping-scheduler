@@ -74,6 +74,9 @@ export async function initSchedule(onRefreshMain) {
   _onRefreshMain = onRefreshMain || null;
   if (!_scheduleInitialized) {
     initCreateOrderForm();
+    document.getElementById("archived-orders-view")?.addEventListener("toggle", event => {
+      if (event.target.open) void loadArchivedOrders();
+    });
     document.getElementById("btn-auto-sort").addEventListener("click", handleAutoSort);
     document.getElementById("btn-save-order").addEventListener("click", handleSaveOrder);
     document.getElementById("btn-batch-merge")?.addEventListener("click", handleBatchMerge);
@@ -184,12 +187,14 @@ export async function refresh() {
   await Promise.all([loadMainData(), loadStInventoryData(), loadScheduleRows(), loadBomData(), loadCompletedRows()]);
   recalculate();
   renderSchedule();
+  if (document.getElementById("archived-orders-view")?.open) await loadArchivedOrders();
 }
 
 export async function refreshScheduleOnly() {
   await loadScheduleRows();
   recalculate();
   renderSchedule();
+  if (document.getElementById("archived-orders-view")?.open) await loadArchivedOrders();
 }
 
 function waitForNextFrame() {
@@ -6665,4 +6670,39 @@ async function handleSaveOrder() {
     await apiPost("/api/schedule/reorder", { order_ids });
     showToast("順序已儲存");
   } catch (e) { showToast("錯誤：" + e.message); }
+}
+
+async function loadArchivedOrders() {
+  const list = document.getElementById("archived-orders-list");
+  if (!list) return;
+  try {
+    const data = await apiJson("/api/schedule/orders/archived");
+    list.replaceChildren();
+    if (!data.rows.length) list.textContent = "目前沒有已封存訂單";
+    for (const row of data.rows) {
+      const item = document.createElement("div");
+      item.className = "po-group";
+      const text = document.createElement("span");
+      text.textContent = `#${row.id} ${row.code}｜${row.po_number}｜${row.model}｜${({pending:"未排程",merged:"已合併",dispatched:"已發料",completed:"已完成",cancelled:"已取消"})[row.status] || row.status}｜出貨 ${row.ship_date || "—"}｜建立 ${row.created_at || "—"}｜封存 ${row.archived_at}｜${row.archive_reason} `;
+      const button = document.createElement("button");
+      button.className = "btn btn-secondary btn-sm";
+      button.textContent = "還原";
+      button.addEventListener("click", async () => {
+        if (!confirm(`還原訂單 #${row.id}（${row.code}）？還原後將保留顯示，不再自動封存。`)) return;
+        button.disabled = true;
+        try {
+          await apiPost(`/api/schedule/orders/${row.id}/unarchive`, {});
+          await Promise.all([refresh(), refreshCompleted()]);
+        } catch (err) {
+          alert(`還原失敗：${err.message}`);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      item.append(text, button);
+      list.append(item);
+    }
+  } catch (err) {
+    list.textContent = `載入已封存訂單失敗：${err.message}`;
+  }
 }

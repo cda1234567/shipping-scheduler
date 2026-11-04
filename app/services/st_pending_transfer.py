@@ -107,7 +107,7 @@ def _load_orders() -> List[Dict[str, Any]]:
                        COALESCE((SELECT MIN(ds.dispatched_at) FROM dispatch_sessions ds
                                  WHERE ds.order_id = o.id AND ds.rolled_back_at = ''), '') AS first_dispatched_at
                 FROM orders o
-                WHERE o.status IN ({','.join('?' * len(ACTIVE_STATUSES))})""",
+                WHERE o.archived_at='' AND o.status IN ({','.join('?' * len(ACTIVE_STATUSES))})""",
             ACTIVE_STATUSES,
         ).fetchall()
     return [dict(r) for r in rows]
@@ -118,6 +118,8 @@ def list_batches(orders: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str
     orders = _load_orders() if orders is None else orders
     batches: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
     for o in orders:
+        if o.get("archived_at"):
+            continue
         anchor = _parse_dt(o.get("first_dispatched_at")) or _parse_dt(o.get("created_at"))
         key = batch_key(o.get("code"), anchor)
         if not key:

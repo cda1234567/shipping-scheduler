@@ -864,6 +864,18 @@ async def dedup_schedule():
 
 # ── Get orders by status ─────────────────────────────────────────────────────
 
+@router.get("/schedule/orders/archived")
+async def archived_orders():
+    return {"rows": db.list_archived_orders()}
+
+
+@router.post("/schedule/orders/{order_id}/unarchive")
+async def unarchive_order(order_id: int):
+    if not db.unarchive_order(order_id):
+        raise HTTPException(status_code=404, detail="找不到訂單")
+    return {"ok": True}
+
+
 @router.get("/schedule/rows")
 async def get_schedule_rows():
     """回傳未完成的訂單（pending + merged）。"""

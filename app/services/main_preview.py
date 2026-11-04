@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 from datetime import date, datetime, time
@@ -10,6 +11,7 @@ from urllib.parse import quote
 from openpyxl.styles.numbers import is_date_format
 from openpyxl.utils import get_column_letter, range_boundaries
 
+from .. import database as db
 from ..config import DATA_DIR
 from .xls_reader import is_xls, open_workbook_any
 
@@ -21,12 +23,36 @@ MAIN_PREVIEW_CACHE_DIR = DATA_DIR / "cache" / "main_preview"
 def read_live_main_preview(path: str, sheet_name: str | None = None) -> dict:
     path_obj = Path(path)
     stat = path_obj.stat()
-    return _read_live_main_preview_cached(
+    preview = _read_live_main_preview_cached(
         str(path_obj),
         stat.st_mtime_ns,
         stat.st_size,
         str(sheet_name or "").strip(),
     )
+
+    return _exclude_archived_columns(preview)
+
+
+def _exclude_archived_columns(preview: dict) -> dict:
+    archived = db.list_archived_orders()
+    if not archived:
+        return copy.deepcopy(preview)
+    active = db.get_orders()
+    archived_keys = {(str(o["code"]), str(o["po_number"])) for o in archived}
+    active_keys = {(str(o["code"]), str(o["po_number"])) for o in active}
+    sheet = preview["sheet"]
+    headers = {c["col"]: str(c.get("value") or "").strip() for r in sheet["rows"] if r["index"] == 1 for c in r["cells"]}
+    hidden = set()
+    for col, code in headers.items():
+        key = (code, headers.get(col + 1, ""))
+        if key in archived_keys and key not in active_keys:
+            hidden.update((col, col + 1, col + 2))
+    result = copy.deepcopy(preview)
+    result["sheet"]["columns"] = [c for c in sheet["columns"] if c["index"] not in hidden]
+    for row in result["sheet"]["rows"]:
+        row["cells"] = [c for c in row["cells"] if c["col"] not in hidden]
+    # 保留原始座標與總欄數，讓未封存欄位仍可正確編輯。
+    return result
 
 
 @lru_cache(maxsize=16)
