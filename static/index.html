@@ -207,6 +207,7 @@
           <button class="btn btn-secondary btn-sm" id="btn-completed-download-drafts" disabled>下載副檔</button>
           <button class="btn btn-primary btn-sm" id="btn-completed-gen-dispatch" disabled>生成發料單</button>
           <button class="btn btn-secondary btn-sm" id="btn-completed-shortage-po" disabled>缺料採購</button>
+          <button class="btn btn-danger btn-sm" id="btn-completed-rollback-selected" disabled title="依發料時間由新到舊逐筆精準退回勾選的單">退回選取的單</button>
           <span id="completed-selected-count" style="font-size:12px;color:#6b7280"></span>
           <span class="spacer"></span>
           <input type="text" id="new-folder-name" placeholder="新資料夾名稱" style="width:120px;padding:3px 8px;border:1px solid #e5e5ea;border-radius:4px;font-size:12px">
@@ -373,6 +374,14 @@
             <label for="erp-po-salesman">採購員</label>
             <input type="text" id="erp-po-salesman" value="017" autocomplete="off">
           </div>
+          <div class="erp-po-field">
+            <label for="erp-po-tax">課稅別</label>
+            <select id="erp-po-tax">
+              <option value="taxable">應稅（外加 5%）</option>
+              <option value="exempt">免稅</option>
+            </select>
+            <div id="erp-po-tax-hint" class="erp-po-hint">預設應稅；正航標記國外廠商預設免稅</div>
+          </div>
           <div class="erp-po-field erp-po-remark-field">
             <label for="erp-po-remark">備註</label>
             <input type="text" id="erp-po-remark" autocomplete="off">
@@ -381,7 +390,7 @@
         <div class="erp-po-table-wrap erp-po-lines-wrap">
           <table class="erp-po-table">
             <thead>
-              <tr><th>#</th><th>料號</th><th>品名</th><th>數量</th><th>單價（未稅）</th><th>預計進貨日</th><th></th></tr>
+              <tr><th>#</th><th>料號</th><th>品名</th><th>數量</th><th>單價（未稅）</th><th>幣別</th><th>預計進貨日</th><th></th></tr>
             </thead>
             <tbody id="erp-po-lines"></tbody>
           </table>

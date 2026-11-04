@@ -30,3 +30,10 @@
 - `RM_PRINT_PRINTER_HALF` / `RM_PRINT_PRINTER_FULL`：印表機名稱（需與小幫手 `PRINT_HELPER_PRINTERS` 一致）
 - `RM_PRINT_HALF_PAGE_MM`：半張判斷上限（預設 148.5）
 - `RM_PRINT_FONT_PATH`：指定 mingliu.ttc（有授權時用，版面最接近正航；未設定時用 AR PL UMing TW + Liberation Serif 依新細明體字寬縮放）
+
+## v2026.11.04.7 補充
+
+- 一律 A4：`SUMATRA_SETTINGS` 預設改為 `noscale,paper=A4`。
+- 來源限制：`PRINT_HELPER_ALLOW`（預設 `127.0.0.0/8,::1/128,192.168.65.0/24,172.16.0.0/12`），其他來源回 403。
+  Docker Desktop 會把容器連到 `host.docker.internal` 的流量從本機 127.0.0.1 轉入，所以可設 `PRINT_HELPER_BIND=127.0.0.1`，區網其他電腦連不到。
+- 開機自動啟動：用工作排程器「登入時」執行 `py -3 print_helper.py`（環境變數由啟動用的 .cmd 設定，token 不要寫進 git）。

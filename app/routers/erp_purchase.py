@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
-from ..models import ErpPoCreateRequest, ErpPoRequest
+from ..models import ErpPoCreateRequest, ErpPoRequest, ErpPoTermsRequest
 from ..services import erp_purchase, postprocess
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
@@ -42,6 +42,15 @@ async def po_suppliers(q: str = ""):
 async def po_part_defaults(part: str = ""):
     try:
         return await run_in_threadpool(erp_purchase.part_defaults, part)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.post("/terms")
+async def po_terms(req: ErpPoTermsRequest):
+    """預設幣別（每料號：最近一張該供應商採購單 USD → USD，否則台幣）與課稅別（國外廠商免稅，其餘應稅）。唯讀。"""
+    try:
+        return await run_in_threadpool(erp_purchase.resolve_terms, req.supplier_id, req.parts[:erp_purchase.MAX_LINES])
     except ErpError as exc:
         raise _http_error(exc) from None
 

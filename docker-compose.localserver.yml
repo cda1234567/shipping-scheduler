@@ -39,6 +39,18 @@ services:
       ERP_PO_SALESMAN: ${ERP_PO_SALESMAN:-017}
       ERP_PO_MAKER: ${ERP_PO_MAKER:-Andy}
       ERP_PO_MAKER_ID: ${ERP_PO_MAKER_ID:-017}
+      # 開採購單 / 缺料採購：免稅課稅類別代碼（正航廠商主檔 IsForeign=1 的國外廠商用）
+      ERP_PO_EXEMPT_TAX_TYPE: ${ERP_PO_EXEMPT_TAX_TYPE:-3}
+      # 缺料採購寫入公司（空 = 和開採購單一樣用 ERP_WRITE_TARGET）；寫正式公司3需同時 ERP_ALLOW_PROD_WRITE_CHICOMP03=1
+      ERP_SHORTAGE_PO_TARGET: ${ERP_SHORTAGE_PO_TARGET:-}
+      # 一次收料進貨單自動送印（主機端 tools/print_helper，SumatraPDF）；TOKEN 只放 .env.localserver，不可提交到 git
+      RM_PRINT_HELPER_ENABLED: ${RM_PRINT_HELPER_ENABLED:-0}
+      RM_PRINT_HELPER_URL: ${RM_PRINT_HELPER_URL:-http://host.docker.internal:8766}
+      RM_PRINT_HELPER_TOKEN: ${RM_PRINT_HELPER_TOKEN:-}
+      RM_PRINT_PRINTER_HALF: ${RM_PRINT_PRINTER_HALF:-NPI975BEF (HP LaserJet M111w)}
+      RM_PRINT_PRINTER_FULL: ${RM_PRINT_PRINTER_FULL:-HP Color LaserJet M652 [7D2006]}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - scheduler-data:/app/data
       - D:/Download/excel:/app/user_downloads

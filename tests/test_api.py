@@ -2391,6 +2391,8 @@ class ApiTests(unittest.TestCase):
                 stack.enter_context(patch("app.routers.schedule.db.save_st_dispatch_consumptions"))
                 stack.enter_context(patch("app.routers.schedule.refresh_snapshot_from_main"))
                 stack.enter_context(patch("app.routers.schedule.db.log_activity"))
+                # v2026.11.04.7 批次扣帳 BOM 預檢：此測試的訂單都有 BOM（context 已含零件）
+                stack.enter_context(patch("app.routers.schedule._orders_missing_bom", return_value=[]))
                 response = self.client.post("/api/schedule/update-and-commit-drafts", json={
                     "order_ids": [1, 2],
                     "decisions": {"ec-001": "CreateRequirement"},

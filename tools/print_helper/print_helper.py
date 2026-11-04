@@ -6,15 +6,17 @@
 環境變數：
   PRINT_HELPER_TOKEN    必填，與容器的 RM_PRINT_HELPER_TOKEN 相同
   PRINT_HELPER_PORT     預設 8766
-  PRINT_HELPER_BIND     預設 0.0.0.0（容器經 host.docker.internal 連入；請用防火牆限制來源）
+  PRINT_HELPER_BIND     預設 0.0.0.0（容器經 host.docker.internal 連入；Docker Desktop 會從 127.0.0.1 轉入，可設 127.0.0.1）
+  PRINT_HELPER_ALLOW    允許的來源 IP / 網段（以 , 分隔），預設只允許本機與 Docker 內部網段
   PRINT_HELPER_PRINTERS 允許的印表機（以 ; 分隔），預設 "NPI975BEF (HP LaserJet M111w);HP Color LaserJet M652 [7D2006]"
   SUMATRA_PDF           SumatraPDF.exe 路徑，預設 C:\\Program Files\\SumatraPDF\\SumatraPDF.exe
-  SUMATRA_SETTINGS      -print-settings，預設 "noscale"（實際大小，不可縮放，否則半張位置會跑掉）
+  SUMATRA_SETTINGS      -print-settings，預設 "noscale,paper=A4"（一律 A4、實際大小，不可縮放，否則半張位置會跑掉）
   PRINT_HELPER_DRY_RUN  1 = 不真的列印，只存檔並回 ok（測試用）
 """
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import json
 import os
 import subprocess
@@ -25,6 +27,26 @@ from urllib.parse import parse_qs, urlparse
 
 MAX_BYTES = 20 * 1024 * 1024
 DEFAULT_PRINTERS = "NPI975BEF (HP LaserJet M111w);HP Color LaserJet M652 [7D2006]"
+DEFAULT_ALLOW = "127.0.0.0/8,::1/128,192.168.65.0/24,172.16.0.0/12"
+
+
+def _allowed(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip.split("%")[0])
+    except ValueError:
+        return False
+    if getattr(addr, "ipv4_mapped", None):
+        addr = addr.ipv4_mapped
+    for item in os.environ.get("PRINT_HELPER_ALLOW", DEFAULT_ALLOW).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            if addr in ipaddress.ip_network(item, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _cfg():
@@ -32,7 +54,7 @@ def _cfg():
         "token": os.environ.get("PRINT_HELPER_TOKEN", "").strip(),
         "printers": [p.strip() for p in os.environ.get("PRINT_HELPER_PRINTERS", DEFAULT_PRINTERS).split(";") if p.strip()],
         "sumatra": os.environ.get("SUMATRA_PDF", r"C:\Program Files\SumatraPDF\SumatraPDF.exe"),
-        "settings": os.environ.get("SUMATRA_SETTINGS", "noscale"),
+        "settings": os.environ.get("SUMATRA_SETTINGS", "noscale,paper=A4"),
         "dry_run": os.environ.get("PRINT_HELPER_DRY_RUN", "") == "1",
     }
 
@@ -48,13 +70,23 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _reject_foreign(self) -> bool:
+        if _allowed(self.client_address[0]):
+            return False
+        self._send(403, {"ok": False, "error": "forbidden"})
+        return True
+
     def do_GET(self):
+        if self._reject_foreign():
+            return
         if urlparse(self.path).path == "/health":
             cfg = _cfg()
             return self._send(200, {"ok": True, "printers": cfg["printers"], "sumatra_found": os.path.exists(cfg["sumatra"])})
         self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self):
+        if self._reject_foreign():
+            return
         cfg = _cfg()
         url = urlparse(self.path)
         if url.path != "/print":
@@ -86,11 +118,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send(500, {"ok": False, "error": type(exc).__name__})
         finally:
-            if not cfg["dry_run"]:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     def log_message(self, fmt, *args):
         print("[print_helper] " + (fmt % args))

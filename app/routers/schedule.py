@@ -73,8 +73,9 @@ from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
     BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
-    SupplementPartRequest, MoveCompletedFolderRequest, CreateOrderRequest,
+    SupplementPartRequest, MoveCompletedFolderRequest, CreateOrderRequest, BatchRollbackRequest,
 )
+from ..services import batch_rollback
 from .. import database as db
 
 router = APIRouter()
@@ -1207,6 +1208,48 @@ def calc_preview(req: BatchDispatchRequest):
     return response
 
 
+def _orders_missing_bom(order_ids: list[int]) -> list[dict]:
+    """批次扣帳前的 BOM 預檢（v2026.11.04.7）：回傳沒有網站 BOM（或 BOM 沒有零件）的訂單清單。
+    找不到的訂單不在這裡判斷（後續流程會回報）。"""
+    missing: list[dict] = []
+    cache: dict[str, bool] = {}
+    for order_id in order_ids:
+        order = db.get_order(order_id)
+        if not order:
+            continue
+        model_key = str(order.get("model") or "").strip().upper()
+        if model_key not in cache:
+            files = db.get_bom_files_by_models([model_key]) if model_key else []
+            cache[model_key] = any(db.get_bom_components(bf["id"]) for bf in files)
+        if not cache[model_key]:
+            missing.append({
+                "order_id": int(order_id),
+                "po_number": str(order.get("po_number") or ""),
+                "code": str(order.get("code") or ""),
+                "model": str(order.get("model") or ""),
+            })
+    return missing
+
+
+def _format_missing_bom_message(missing: list[dict]) -> str:
+    labels = []
+    for item in missing:
+        name = item.get("po_number") or item.get("code") or f"#{item.get('order_id')}"
+        labels.append(f"{name}（機種 {item.get('model') or '未填'}）")
+    return (
+        f"有 {len(missing)} 筆訂單沒有網站 BOM，這批全部沒有扣帳（主檔未寫入任何一筆）："
+        + "、".join(labels)
+        + "。請先上傳 BOM，或取消勾選這些訂單後再試。"
+    )
+
+
+def _require_bom_for_all_orders(order_ids: list[int]) -> None:
+    """全有或全無：任何一筆缺 BOM 就整批不扣帳，並列出缺 BOM 的訂單 / 機種。"""
+    missing = _orders_missing_bom(order_ids)
+    if missing:
+        raise HTTPException(400, _format_missing_bom_message(missing))
+
+
 @router.post("/schedule/batch-dispatch")
 def batch_dispatch(req: BatchDispatchRequest):
     if not req.order_ids:
@@ -1216,6 +1259,7 @@ def batch_dispatch(req: BatchDispatchRequest):
     if not normalized_order_ids:
         raise HTTPException(400, "請選擇要發料的訂單")
 
+    _require_bom_for_all_orders(normalized_order_ids)
     main_path = _require_existing_main_path()
     plan = _resolve_batch_dispatch_plan(req, normalized_order_ids, main_path)
 
@@ -1309,6 +1353,8 @@ async def update_selected_schedule_drafts(req: BatchDispatchRequest):
 
 def _run_update_and_commit_drafts_job(job_id: str, req_payload: dict):
     req = BatchDispatchRequest(**req_payload)
+    # 開始前再檢查一次（全有或全無）：缺 BOM 就整批不寫主檔
+    _require_bom_for_all_orders(_normalize_order_ids(req.order_ids))
     normalized_order_ids, refreshed, _ = _apply_batch_draft_updates(
         req,
         write_files=False,
@@ -1535,6 +1581,7 @@ def _start_update_and_commit_drafts_job(req: BatchDispatchRequest) -> dict:
 
 @router.post("/schedule/update-and-commit-drafts")
 def update_and_commit_drafts(req: BatchDispatchRequest):
+    _require_bom_for_all_orders(_normalize_order_ids(req.order_ids))
     job = _start_update_and_commit_drafts_job(req)
     return {
         "ok": True,
@@ -1713,6 +1760,62 @@ def _ensure_no_precise_rollback_crossing(cutoff: str) -> None:
             "這次發料之後有訂單已用「精準反悔」撤銷（" + "、".join(orders) + "），"
             "整檔還原會把它們的發料欄位救回來，已停止。請改對要反悔的訂單逐筆精準反悔。",
         )
+
+
+@router.post("/schedule/rollback-batch/plan")
+async def rollback_batch_plan(req: BatchRollbackRequest):
+    """退回選取的單：唯讀試算（依發料時間新→舊），列出可精準退回 / 需整檔還原的單。不動主檔與資料庫。"""
+    try:
+        return await run_in_threadpool(batch_rollback.plan, req.order_ids)
+    except batch_rollback.BatchRollbackError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+
+
+def _after_batch_precise_rollback(order: dict, result: dict) -> None:
+    precise = result.get("precise") or {}
+    db.log_activity(
+        PRECISE_ROLLBACK_LOG_ACTION,
+        (
+            f"訂單 {order.get('po_number')} ({order.get('model')}) 批次退回（精準反悔）：只撤銷這筆的發料欄位"
+            f"（{len(precise.get('part_deltas') or {})} 個料號），其他主檔資料保留"
+        ),
+    )
+    try:
+        from .main_file import invalidate_main_data_cache
+        invalidate_main_data_cache()
+    except Exception:
+        pass
+
+
+@router.post("/schedule/rollback-batch/execute")
+async def rollback_batch_execute(req: BatchRollbackRequest):
+    """退回選取的單：依新→舊逐筆精準退回；有需整檔還原的單會先停下（需 acknowledge_full 確認，且那些單不處理）；
+    中途失敗就停止剩下的，回報已退回 / 未退回。"""
+    def run():
+        return batch_rollback.execute(
+            req.order_ids,
+            confirm=req.confirm,
+            acknowledge_full=req.acknowledge_full,
+            rollback_one=lambda session: _precise_rollback_dispatch_session(session, backup_dir=str(BACKUP_DIR)),
+            after_each=_after_batch_precise_rollback,
+        )
+    try:
+        result = await run_in_threadpool(run)
+    except batch_rollback.BatchRollbackError as exc:
+        raise HTTPException(exc.status, exc.message) from exc
+    if result.get("rolled_back"):
+        try:
+            active_order_ids = [int(item["order_id"]) for item in db.get_active_merge_drafts()
+                                if item.get("order_id") is not None]
+            if active_order_ids:
+                rebuild_merge_drafts(active_order_ids)
+        except Exception as exc:
+            log.warning("批次退回後更新待發料草稿失敗：%s", exc)
+        db.log_activity(
+            "order_rollback_batch",
+            f"批次退回選取的單：{result.get('message')}",
+        )
+    return result
 
 
 @router.post("/schedule/orders/{order_id}/rollback")

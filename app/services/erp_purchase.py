@@ -38,6 +38,23 @@ DEFAULT_MAKER = "Andy"
 DEFAULT_MAKER_ID = "017"
 UNAVAILABLE_REASON = "無法使用（未設定寫入帳號）"
 BILL_PREFIX = "PO-"
+# ── 幣別 / 課稅別（v2026.11.04.7）──────────────────────────────────────────────
+# 幣別：該料號 + 該供應商最近一張採購單是 USD → USD，否則（含查無）一律台幣 NTD；使用者可逐行改。
+# 課稅別：預設應稅（TaxType 0 外加 5%）；只有正航供應商主檔 comCustomer.IsForeign = 1（國外廠商）預設免稅。
+#   免稅寫入的 TaxType 預設 3（正航課稅別 3 = 免稅；可用 ERP_PO_EXEMPT_TAX_TYPE 改），稅額 0、明細 TaxRate 照舊 0.05（與正航手開免稅單相同）。
+# USD 金額規則（依 CHIComp03 2024 起 USD 採購單驗證）：Amount = round(數量 × 單價, comCurrencySys.AmountDeciDigits=3)；
+#   稅額（應稅）= Amount × 5%（不取整，存 4 位，例 PO-20260716001 4647.5 → 232.375）；ExchRate = comCurrencySys.BuyInRate；
+#   LocalTotal = round(未稅合計 × 匯率, 0)，明細 MlAmount = round(Amount × 匯率, 0) 尾差由第 1 行起 ±1 吸收（PO-20260812003 / PO-20260716001）；
+#   LocalTax = round(LocalTotal × 5%, 0)，明細 MLTaxAmt 同樣分攤。
+LOCAL_CURRENCY = "NTD"
+FOREIGN_CURRENCIES = ("USD",)
+_CURRENCY_ALIASES = {"NTD": "NTD", "TWD": "NTD", "NT": "NTD", "台幣": "NTD", "新台幣": "NTD", "USD": "USD", "美金": "USD", "US": "USD"}
+TAX_TAXABLE = "taxable"
+TAX_EXEMPT = "exempt"
+_TAX_ALIASES = {"taxable": TAX_TAXABLE, "應稅": TAX_TAXABLE, "0": TAX_TAXABLE, "exempt": TAX_EXEMPT, "免稅": TAX_EXEMPT}
+DEFAULT_EXEMPT_TAX_TYPE = 3
+TAX_MODE_LABELS = {TAX_TAXABLE: "應稅（外加 5%）", TAX_EXEMPT: "免稅"}
+CURRENCY_LABELS = {"NTD": "台幣", "USD": "美金"}
 
 _write_lock = threading.Lock()  # 同一程序內一次只寫一張，避免單號競爭
 
@@ -106,7 +123,14 @@ def target_label(target: str) -> str:
     return f"公司{int(m.group(1))}" + ("（測試）" if is_test(target) else "")
 
 
-def get_target() -> str:
+def get_target(kind: str = "") -> str:
+    """寫入目標公司。kind="shortage"（缺料採購）時若有設 ERP_SHORTAGE_PO_TARGET 就用它，否則同 ERP_WRITE_TARGET（開採購單）。"""
+    if kind == "shortage":
+        override = _env("ERP_SHORTAGE_PO_TARGET", "")
+        if override:
+            if not TARGET_RE.match(override):
+                raise ErpNotConfigured("ERP_SHORTAGE_PO_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp03）")
+            return override
     target = _env("ERP_WRITE_TARGET", DEFAULT_TARGET)
     if not TARGET_RE.match(target):
         raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp02）")
@@ -159,7 +183,7 @@ def _salesman_default() -> str:
     return _env("ERP_PO_SALESMAN", DEFAULT_SALESMAN)
 
 
-def get_config() -> Dict[str, Any]:
+def get_config(kind: str = "") -> Dict[str, Any]:
     """前端顯示用設定；絕不含帳號 / 密碼。"""
     base = erp_stock.get_settings()
     targets = [
@@ -179,7 +203,7 @@ def get_config() -> Dict[str, Any]:
         "targets": targets,
     }
     try:
-        target = get_target()
+        target = get_target(kind)
     except ErpError as exc:
         result["reason"] = str(exc)
         return result
@@ -193,8 +217,8 @@ def get_config() -> Dict[str, Any]:
     return result
 
 
-def _require_available() -> Tuple[str, Dict[str, Any]]:
-    target = get_target()
+def _require_available(kind: str = "") -> Tuple[str, Dict[str, Any]]:
+    target = get_target(kind)
     creds = write_credentials(target)
     if creds is None:
         raise ErpNotConfigured(UNAVAILABLE_REASON)
@@ -324,26 +348,75 @@ def allocate_bill_tax(lines: List[Dict[str, Any]], tax_key: str = "tax", default
     return total_tax
 
 
-def compute_money(lines: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Decimal]]:
-    """每行 amount=round(qty*price,2)、tax=round(amount*5%,0)；表頭稅額 = round(未稅合計 × 5%, 0)（正航整數稅），
-    明細稅額尾差由第 1 行起每行 ±1 吸收，讓明細加總 = 表頭（v2026.10.30.16，與一次收料進貨單同一規則）。"""
+def _spread_to(lines: List[Dict[str, Any]], key: str, head: Decimal) -> None:
+    """明細 lines[i][key]（整數）加總對齊表頭 head：尾差由第 1 行起每行 ±1 吸收（略過金額 0 的行）。"""
+    diff = head - sum((l[key] for l in lines), Decimal(0))
+    cand = [l for l in lines if l["amount"] != 0]
+    i = 0
+    while diff != 0 and cand:
+        l = cand[i % len(cand)]
+        step = Decimal(1) if diff > 0 else Decimal(-1)
+        if step > 0 or l[key] > 0:
+            l[key] += step
+            diff -= step
+        elif all(c[key] <= 0 for c in cand):
+            break
+        i += 1
+
+
+def compute_money(
+    lines: List[Dict[str, Any]], *, currency: str = "NTD", exch_rate: Any = 1, taxable: bool = True,
+    amount_digits: Optional[int] = None,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Decimal]]:
+    """台幣應稅：每行 amount=round(qty*price,2)、tax=round(amount*5%,0)；表頭稅額 = round(未稅合計 × 5%, 0)（正航整數稅），
+    明細稅額尾差由第 1 行起每行 ±1 吸收，讓明細加總 = 表頭（v2026.10.30.16，與一次收料進貨單同一規則）。
+    免稅：稅額一律 0。美金（v2026.11.04.7）：金額 / 稅額為美金（稅不取整），本幣金額 MlAmount / LocalTotal 依匯率換台幣。"""
+    foreign = currency != LOCAL_CURRENCY
+    rate = Decimal(str(exch_rate)) if foreign else Decimal(1)
+    digits = amount_digits if amount_digits is not None else (3 if foreign else 2)
     out = []
     sum_qty = Decimal(0)
     sum_amount = Decimal(0)
     for line in lines:
         qty = Decimal(line["qty"])
         price = Decimal(line["price"])
-        amount = _round(qty * price, 2)
-        tax = _round(amount * TAX_RATE, 0)
+        amount = _round(qty * price, digits)
+        if not taxable:
+            tax = Decimal(0)
+        elif foreign:
+            tax = _round(amount * TAX_RATE, 4)
+        else:
+            tax = _round(amount * TAX_RATE, 0)
         out.append({**line, "qty": qty, "price": price, "amount": amount, "tax_amt": tax})
         sum_qty += qty
         sum_amount += amount
-    sum_tax = allocate_bill_tax(out, tax_key="tax_amt", default_rate=TAX_RATE)
+    if not taxable:
+        sum_tax = Decimal(0)
+    elif foreign:
+        sum_tax = sum((l["tax_amt"] for l in out), Decimal(0))
+    else:
+        sum_tax = allocate_bill_tax(out, tax_key="tax_amt", default_rate=TAX_RATE)
+    if foreign:
+        local_total = _round(sum_amount * rate, 0)
+        for l in out:
+            l["ml_amount"] = _round(l["amount"] * rate, 0)
+        _spread_to(out, "ml_amount", local_total)
+        local_tax = _round(local_total * TAX_RATE, 0) if taxable else Decimal(0)
+        for l in out:
+            l["ml_tax"] = _round(l["ml_amount"] * TAX_RATE, 0) if taxable else Decimal(0)
+        if taxable:
+            _spread_to(out, "ml_tax", local_tax)
+    else:
+        local_total, local_tax = sum_amount, sum_tax
+        for l in out:
+            l["ml_amount"], l["ml_tax"] = l["amount"], l["tax_amt"]
     totals = {
         "sum_qty": sum_qty,
         "sum_amount": sum_amount,
         "sum_tax": sum_tax,
         "total": sum_amount + sum_tax,
+        "local_total": local_total,
+        "local_tax": local_tax,
     }
     return out, totals
 
@@ -486,8 +559,14 @@ def _with(row: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_main_row(
     template: Dict[str, Any], *, bill_no: str, today: int, remark: str, salesman: str,
-    totals: Dict[str, Decimal],
+    totals: Dict[str, Decimal], currency: Optional[str] = None, exch_rate: Any = None, tax_type: int = 0,
 ) -> Dict[str, Any]:
+    tpl = _lower(template)
+    extra: Dict[str, Any] = {}
+    if currency and "currid" in tpl:
+        extra["CurrID"] = currency
+    if exch_rate is not None and "exchrate" in tpl:
+        extra["ExchRate"] = Decimal(str(exch_rate))
     return _with(template, {
         "Flag": 4,
         "BillNO": bill_no,
@@ -497,11 +576,11 @@ def build_main_row(
         "SumBTaxAmt": totals["sum_amount"],
         "SumTax": totals["sum_tax"],
         "SumAmtATax": totals["total"],
-        "LocalTotal": totals["sum_amount"],
-        "LocalTax": totals["sum_tax"],
+        "LocalTotal": totals.get("local_total", totals["sum_amount"]),
+        "LocalTax": totals.get("local_tax", totals["sum_tax"]),
         "BillStatus": 0,
         "EndacaseDate": 0,
-        "TaxType": 0,
+        "TaxType": int(tax_type),
         "SalesMan": salesman,
         "Maker": _env("ERP_PO_MAKER", DEFAULT_MAKER),
         "MakerID": _env("ERP_PO_MAKER_ID", DEFAULT_MAKER_ID),
@@ -511,6 +590,7 @@ def build_main_row(
         "MergeOutState": 0,
         "CustBillNo": "",
         **payment_dates(template, today),
+        **extra,
     })
 
 
@@ -535,8 +615,8 @@ def build_sub_row(
         "TaxAmt": tax,
         "PreInDate": line["pre_in_date"],
         "QtyRemain": qty,
-        "MlAmount": amount,
-        "MLTaxAmt": tax,
+        "MlAmount": line.get("ml_amount", amount),
+        "MLTaxAmt": line.get("ml_tax", tax),
         "sPrice": price,
         "sQuantity": qty,
         "EQuantity": qty,
@@ -626,6 +706,160 @@ def _resolve_allocation_orders(lines: List[Dict[str, Any]]) -> None:
                 a["ship_date"] = a["ship_date"] or _text(order.get("delivery_date") or order.get("ship_date"))
 
 
+def normalize_currency(value: Any, label: str = "幣別") -> Optional[str]:
+    """'' / None = 自動判斷；NTD / TWD / 台幣 → NTD；USD / 美金 → USD；其他幣別不支援。"""
+    text = _text(value)
+    if not text:
+        return None
+    code = _CURRENCY_ALIASES.get(text) or _CURRENCY_ALIASES.get(text.upper())
+    if code is None:
+        raise PoValidationError(f"{label}只支援台幣（NTD）或美金（USD），收到：{_text(value)}")
+    return code
+
+
+def normalize_tax_mode(value: Any) -> Optional[str]:
+    """'' / None = 依供應商主檔自動判斷；taxable / 應稅 → 應稅；exempt / 免稅 → 免稅。"""
+    text = _text(value)
+    if not text:
+        return None
+    mode = _TAX_ALIASES.get(text) or _TAX_ALIASES.get(text.lower())
+    if mode is None:
+        raise PoValidationError(f"課稅別只能是應稅或免稅，收到：{text}")
+    return mode
+
+
+def exempt_tax_type() -> int:
+    raw = _env("ERP_PO_EXEMPT_TAX_TYPE", str(DEFAULT_EXEMPT_TAX_TYPE))
+    try:
+        value = int(raw)
+    except ValueError:
+        value = DEFAULT_EXEMPT_TAX_TYPE
+    return value if value in (1, 2, 3, 4) else DEFAULT_EXEMPT_TAX_TYPE
+
+
+def supplier_is_foreign(supplier: Optional[Dict[str, Any]]) -> bool:
+    try:
+        return bool(int(_get(supplier or {}, "IsForeign", 0) or 0))
+    except (TypeError, ValueError):
+        return False
+
+
+def default_tax_mode(supplier: Optional[Dict[str, Any]]) -> str:
+    """Andy 規則：預設應稅；只有正航供應商主檔標記為國外廠商（comCustomer.IsForeign = 1）才預設免稅。"""
+    return TAX_EXEMPT if supplier_is_foreign(supplier) else TAX_TAXABLE
+
+
+def _ymd_text(value: Any) -> str:
+    try:
+        v = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    return f"{v // 10000:04d}-{v // 100 % 100:02d}-{v % 100:02d}" if v else ""
+
+
+def _site_last_currency(supplier_id: str, part: str) -> Optional[Dict[str, Any]]:
+    """本站採購單紀錄（erp_purchase_orders.lines_json，v2026.11.04.7 起記錄幣別）中該供應商 + 料號最近一張的幣別。"""
+    from .. import database as db
+
+    try:
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT bill_no, created_at, lines_json FROM erp_purchase_orders "
+                "WHERE status='ok' AND UPPER(supplier_id)=? ORDER BY id DESC LIMIT 500",
+                (supplier_id.upper(),),
+            ).fetchall()
+    except Exception:
+        return None
+    for r in rows:
+        try:
+            lines = json.loads(r["lines_json"] or "[]")
+        except ValueError:
+            continue
+        for line in lines:
+            if _text(line.get("part_number")).upper() == part.upper() and line.get("currency"):
+                code = _CURRENCY_ALIASES.get(_text(line.get("currency")).upper())
+                if code:
+                    return {"currency": code, "source": "site", "bill_no": _text(r["bill_no"]),
+                            "date": _text(r["created_at"])[:10]}
+    return None
+
+
+def last_po_currency(cur, supplier_id: str, part: str) -> Dict[str, Any]:
+    """該料號 + 該供應商最近一張採購單的幣別：先查正航（唯讀），沒有再查本站紀錄；都沒有 → NTD（source=default）。"""
+    cur.execute(
+        "SELECT TOP 1 m.CurrID, m.BillNO, m.BillDate FROM ordBillSub s "
+        "JOIN ordBillMain m ON m.Flag = s.Flag AND m.BillNO = s.BillNO "
+        "WHERE s.Flag = 4 AND m.CustomerID = %s AND s.ProdID = %s ORDER BY m.BillDate DESC, m.BillNO DESC",
+        (supplier_id, part),
+    )
+    row = _one(cur)
+    if row:
+        curr = _CURRENCY_ALIASES.get(_text(_get(row, "CurrID")).upper(), LOCAL_CURRENCY)
+        return {"currency": "USD" if curr == "USD" else LOCAL_CURRENCY, "source": "erp",
+                "bill_no": _text(_get(row, "BillNO")), "date": _ymd_text(_get(row, "BillDate"))}
+    site = _site_last_currency(supplier_id, part)
+    if site:
+        return {**site, "currency": "USD" if site["currency"] == "USD" else LOCAL_CURRENCY}
+    return {"currency": LOCAL_CURRENCY, "source": "default", "bill_no": "", "date": ""}
+
+
+def resolve_terms(supplier_id: str, parts: List[str]) -> Dict[str, Any]:
+    """開採購單畫面用：供應商預設課稅別 + 每個料號的預設幣別（唯讀查正航）。"""
+    supplier_id = _text(supplier_id)
+    keys = list(dict.fromkeys(_text(p).upper() for p in parts or [] if _text(p)))
+    out: Dict[str, Any] = {"supplier_id": supplier_id, "found": False, "is_foreign": False,
+                           "tax_mode": TAX_TAXABLE, "currencies": {}}
+    if not supplier_id:
+        return out
+    with _source_session() as src:
+        cur = src.cursor()
+        cur.execute("SELECT * FROM comCustomer WHERE Flag = 2 AND ID = %s", (supplier_id,))
+        supplier = _one(cur)
+        if supplier is not None:
+            out.update(found=True, supplier_id=_text(_get(supplier, "ID")), is_foreign=supplier_is_foreign(supplier),
+                       tax_mode=default_tax_mode(supplier))
+        for part in keys:
+            out["currencies"][part] = last_po_currency(cur, out["supplier_id"], part)
+    return out
+
+
+def split_by_currency(raw_groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """同一供應商的明細有 USD 也有台幣時，依幣別拆成多張（每張單一幣別）；沒指定幣別的行依最近採購單自動判斷。
+    拆出來的每組帶 currency；順序依幣別第一次出現。格式錯誤的組原樣保留（之後 normalize_request 會回報）。"""
+    out: List[Dict[str, Any]] = []
+    cache: Dict[Tuple[str, str], str] = {}
+    with _source_session() as src:
+        cur = src.cursor()
+        for group in raw_groups:
+            supplier_id = _text((group or {}).get("supplier_id"))
+            lines = (group or {}).get("lines") or []
+            try:
+                forced = normalize_currency(group.get("currency"))
+            except PoValidationError:
+                out.append(group)
+                continue
+            if not supplier_id or not lines:
+                out.append(group)
+                continue
+            buckets: Dict[str, List[Dict[str, Any]]] = {}
+            try:
+                for line in lines:
+                    curr = normalize_currency(line.get("currency")) or forced
+                    if curr is None:
+                        part = _text(line.get("part_number")).upper()
+                        key = (supplier_id.upper(), part)
+                        if key not in cache:
+                            cache[key] = last_po_currency(cur, supplier_id, part)["currency"] if part else LOCAL_CURRENCY
+                        curr = cache[key]
+                    buckets.setdefault(curr, []).append({**line, "currency": curr})
+            except PoValidationError:
+                out.append(group)
+                continue
+            for curr, blines in buckets.items():
+                out.append({**group, "currency": curr, "lines": blines})
+    return out
+
+
 def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
     supplier_id = _text(req.get("supplier_id"))
     if not supplier_id:
@@ -633,6 +867,7 @@ def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
     raw_lines = req.get("lines") or []
     if not 1 <= len(raw_lines) <= MAX_LINES:
         raise PoValidationError(f"明細需為 1～{MAX_LINES} 行")
+    group_curr = normalize_currency(req.get("currency"), "幣別")
     lines = []
     for i, raw in enumerate(raw_lines, 1):
         part = _text(raw.get("part_number")).upper()
@@ -650,12 +885,18 @@ def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
             pre_in = datetime.strptime(_text(raw.get("pre_in_date")), "%Y-%m-%d").date()
         except ValueError:
             raise PoValidationError(f"第 {i} 行：預計進貨日格式需為 YYYY-MM-DD") from None
+        line_curr = normalize_currency(raw.get("currency"), f"第 {i} 行幣別") or group_curr
+        if group_curr and line_curr != group_curr:
+            raise PoValidationError(f"第 {i} 行幣別 {line_curr} 與整張單幣別 {group_curr} 不同，請依幣別分開開單")
         lines.append({
             "part_number": part, "qty": qty, "price": price, "pre_in_date": date_to_int(pre_in),
             "allocations": _normalize_allocations(raw.get("allocations"), qty, i),
+            "currency": line_curr,
         })
     _resolve_allocation_orders(lines)
     return {
+        "currency": group_curr,
+        "tax_mode": normalize_tax_mode(req.get("tax_mode")),
         "alloc_source": _text(req.get("alloc_source")) if _text(req.get("alloc_source")) in ALLOC_SOURCES else "manual_po",
         "supplier_id": supplier_id,
         "remark": _text(req.get("remark")),
@@ -941,12 +1182,19 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
             "prod_id": _text(_get(prod, "ProdID")),
             "prod_name": _text(_get(prod, "ProdName")),
         })
-    lines, totals = compute_money(lines_in)
+    terms = _resolve_plan_terms(src, req, ctx["supplier"], supplier_id)
+    lines, totals = compute_money(
+        lines_in, currency=terms["currency"], exch_rate=terms["exch_rate"],
+        taxable=terms["tax_mode"] == TAX_TAXABLE, amount_digits=terms["amount_digits"],
+    )
+    for l in lines:
+        l["currency"] = terms["currency"]
 
     bill_no = _offset_bill_no(next_bill_no(wcur, today, lock), bill_offset)
     main_values = build_main_row(
         ctx["main_tpl"], bill_no=bill_no, today=today, remark=req["remark"],
-        salesman=req["salesman"], totals=totals,
+        salesman=req["salesman"], totals=totals, currency=terms["currency"], exch_rate=terms["exch_rate"],
+        tax_type=terms["tax_type"],
     )
     main_insert = build_insert("ordBillMain", main_cols, main_values)
     sub_inserts = []
@@ -964,9 +1212,54 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
         "template_bill_no": _text(_get(ctx["main_tpl"], "BillNO")),
         "lines": lines,
         "totals": totals,
+        "terms": terms,
         "missing_masters": missing,
         "main_insert": main_insert,
         "sub_inserts": sub_inserts,
+    }
+
+
+def _resolve_plan_terms(src, req: Dict[str, Any], supplier: Dict[str, Any], supplier_id: str) -> Dict[str, Any]:
+    """整張單的幣別 / 匯率 / 課稅別。明細幣別不一致時中止（需先依幣別拆單）。"""
+    cur = src.cursor()
+    currs: Dict[str, None] = {}
+    sources: Dict[str, str] = {}
+    for line in req["lines"]:
+        curr = line.get("currency") or req.get("currency")
+        source = "manual"
+        if not curr:
+            info = last_po_currency(cur, supplier_id, line["part_number"])
+            curr, source = info["currency"], info["source"]
+            line["currency"] = curr
+        currs[curr] = None
+        sources[line["part_number"]] = source
+    if len(currs) > 1:
+        raise PoValidationError("同一張採購單的明細幣別不同（" + " / ".join(currs) + "），請依幣別分開開單")
+    currency = next(iter(currs)) if currs else LOCAL_CURRENCY
+    exch_rate: Decimal = Decimal(1)
+    amount_digits = 2
+    if currency != LOCAL_CURRENCY:
+        cur.execute(
+            "SELECT CurrencyID, BuyInRate, FixedRate, AmountDeciDigits FROM comCurrencySys WHERE CurrencyID = %s",
+            (currency,),
+        )
+        row = _one(cur)
+        rate = Decimal(str(_get(row or {}, "BuyInRate", 0) or 0)) or Decimal(str(_get(row or {}, "FixedRate", 0) or 0))
+        if row is None or rate <= 0:
+            raise PoValidationError(f"正航幣別檔（comCurrencySys）找不到 {currency} 的匯率，無法開美金採購單")
+        exch_rate = rate
+        digits = _get(row, "AmountDeciDigits", None)
+        amount_digits = int(digits) if digits is not None else 3
+    tax_mode = req.get("tax_mode") or default_tax_mode(supplier)
+    return {
+        "currency": currency,
+        "exch_rate": exch_rate,
+        "amount_digits": amount_digits,
+        "tax_mode": tax_mode,
+        "tax_mode_source": "manual" if req.get("tax_mode") else "default",
+        "tax_type": 0 if tax_mode == TAX_TAXABLE else exempt_tax_type(),
+        "is_foreign": supplier_is_foreign(supplier),
+        "currency_sources": sources,
     }
 
 
@@ -990,6 +1283,8 @@ def _jsonable_lines(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "price": float(line["price"]),
             "amount": float(line["amount"]),
             "tax_amt": float(line["tax_amt"]),
+            "currency": line.get("currency") or LOCAL_CURRENCY,
+            "ml_amount": float(line.get("ml_amount", line["amount"])),
             "pre_in_date": f"{p // 10000:04d}-{p // 100 % 100:02d}-{p % 100:02d}",
             "allocations": [dict(a) for a in line.get("allocations") or []],
         })
@@ -1016,7 +1311,25 @@ def _summary(plan: Dict[str, Any], target: str, req: Dict[str, Any]) -> Dict[str
         "template_bill_no": plan["template_bill_no"],
         "lines": _jsonable_lines(plan["lines"]),
         "totals": _jsonable_totals(plan["totals"]),
+        **_terms_summary(plan.get("terms")),
         "masters_to_copy": [{"table": m["table"], "label": m["label"], "key": m["key"]} for m in plan["missing_masters"]],
+    }
+
+
+def _terms_summary(terms: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    t = terms or {}
+    currency = t.get("currency") or LOCAL_CURRENCY
+    mode = t.get("tax_mode") or TAX_TAXABLE
+    return {
+        "currency": currency,
+        "currency_label": CURRENCY_LABELS.get(currency, currency),
+        "exch_rate": float(t.get("exch_rate") or 1),
+        "tax_mode": mode,
+        "tax_mode_source": t.get("tax_mode_source", "default"),
+        "tax_type": int(t.get("tax_type") or 0),
+        "tax_label": TAX_MODE_LABELS.get(mode, mode),
+        "is_foreign": bool(t.get("is_foreign")),
+        "currency_sources": dict(t.get("currency_sources") or {}),
     }
 
 
@@ -1039,14 +1352,14 @@ def preview_po(raw_req: Dict[str, Any]) -> Dict[str, Any]:
     return _summary(plan, target, req)
 
 
-def preview_many(raw_reqs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def preview_many(raw_reqs: List[Dict[str, Any]], kind: str = "") -> List[Dict[str, Any]]:
     """多張採購單一次預覽：共用一個來源連線與一個（唯讀、最後 rollback）寫入連線。
 
     預估單號依序遞增（第一張取下一個可用號，之後 +1）；每張的錯誤只回在該筆，不影響其他張。
     """
     if len(raw_reqs) > MAX_PREVIEW_GROUPS:
         raise PoValidationError(f"一次最多預覽 {MAX_PREVIEW_GROUPS} 張採購單")
-    target, creds = _require_available()
+    target, creds = _require_available(kind)
     today = date_to_int(local_now().date())
     results: List[Dict[str, Any]] = []
     with _source_session() as src:
@@ -1192,14 +1505,14 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any]) -> Dict[str,
     return _summary(plan, target, req)
 
 
-def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "") -> Dict[str, Any]:
+def create_po(raw_req: Dict[str, Any], actor: str = "web", client_ip: str = "", kind: str = "") -> Dict[str, Any]:
     """建立採購單並記錄本機紀錄（成功 / 失敗嘗試都記）。需 confirm=True。"""
     from .. import database as db
 
     if raw_req.get("confirm") is not True:
         raise PoValidationError("需確認後才會寫入正航（confirm=true）")
     req = normalize_request(raw_req)
-    target, creds = _require_available()
+    target, creds = _require_available(kind)
     from . import po_duplicates
 
     fp = po_duplicates.fingerprint(target, req)
@@ -1231,7 +1544,7 @@ def _create_checked(req: Dict[str, Any], target: str, creds: Dict[str, Any], act
         "client_ip": client_ip,
         "lines_json": json.dumps(
             [{"part_number": l["part_number"], "qty": str(l["qty"]), "price": str(l["price"]),
-              "pre_in_date": l["pre_in_date"]} for l in req["lines"]],
+              "pre_in_date": l["pre_in_date"], "currency": l.get("currency") or ""} for l in req["lines"]],
             ensure_ascii=False,
         ),
     }

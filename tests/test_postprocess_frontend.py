@@ -12,6 +12,18 @@ def read(path: Path) -> str:
 
 
 class FrontendWiringTests(unittest.TestCase):
+    def test_po_currency_tax_controls(self):
+        html = read(ROOT / "static" / "index.html")
+        self.assertIn('id="erp-po-tax"', html)
+        self.assertIn('id="erp-po-tax-hint"', html)
+        js = read(MOD / "erp_purchase.js")
+        for needle in ('data-field="currency"', "/api/erp/po/terms", "export function splitLinesByCurrency",
+                       "function buildBodies", "tax_mode"):
+            self.assertIn(needle, js)
+        sp = read(MOD / "shortage_po.js")
+        self.assertIn("/api/shortage-po/config", sp)
+        self.assertIn("export function billsBySupplierPart", sp)
+
     def test_moq_hint_only_shows_moq_without_real_need(self):
         js = read(MOD / "erp_purchase.js")
         self.assertIn("const hasNeed = Number.isFinite(n) && n > 1;", js)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sqlite3
@@ -115,6 +116,13 @@ class FakeCursor:
             return self._dicts(c.sub_templates.get(params[0]))
         if s.startswith("SELECT TOP 1 * FROM ordBillSub WHERE Flag = 4 AND BillNO"):
             return self._dicts(c.fallback_sub)
+        if s.startswith("SELECT TOP 1 m.CurrID, m.BillNO, m.BillDate FROM ordBillSub s"):
+            c.currency_lookups.append(tuple(params))
+            hit = c.last_currency.get((params[0], params[1]))
+            return self._dicts({"CurrID": hit[0], "BillNO": hit[1], "BillDate": hit[2]} if hit else None)
+        if s.startswith("SELECT CurrencyID, BuyInRate"):
+            r = c.currency_rates.get(params[0])
+            return self._dicts({"CurrencyID": params[0], "BuyInRate": r[0], "FixedRate": 0, "AmountDeciDigits": r[1]} if r else None)
         if s.startswith("SELECT BillNO, SumQty"):
             main = [i for i in c.inserted if i[0] == "ordBillMain"][0][1]
             keys = ["BillNO", "SumQty", "SumBTaxAmt", "SumTax", "SumAmtATax"]
@@ -169,6 +177,9 @@ class FakeConn:
         self.main_template = main_tpl()
         self.sub_templates = {"AC-40838B": sub_tpl()}
         self.fallback_sub = sub_tpl(ProdID="OTHER")
+        self.last_currency = {}  # (供應商, 料號) → (CurrID, BillNO, BillDate)
+        self.currency_lookups = []
+        self.currency_rates = {"USD": (Decimal("30.385"), 3)}
 
     def cursor(self):
         return FakeCursor(self)
@@ -821,6 +832,14 @@ class ApiCase(WriteFlowCase):
             na = self.client.post("/api/erp/po/preview", json=REQ)
             self.assertEqual(na.status_code, 503)
 
+    def test_terms_endpoint(self):
+        self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
+        r = self.client.post("/api/erp/po/terms", json={"supplier_id": "P0175", "parts": ["ac-40838b"]})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["tax_mode"], r.json()["currencies"]["AC-40838B"]["currency"]), ("taxable", "USD"))
+        self.assertTrue(request_requires_edit_auth(Request({"type": "http", "method": "POST", "path": "/api/erp/po/terms",
+                                                            "headers": [], "query_string": b""})))
+
     def test_suppliers_and_part_defaults(self):
         calls = []
 
@@ -1314,3 +1333,137 @@ class RelatedMasterCopyTests(WriteFlowCase):
 for _name in dir(WriteFlowCase):
     if _name.startswith("test_") and _name not in RelatedMasterCopyTests.__dict__:
         setattr(RelatedMasterCopyTests, _name, None)
+
+
+class CurrencyTaxPureTests(unittest.TestCase):
+    """v2026.11.04.7：開採購單幣別 / 課稅別（Andy 規則）。"""
+
+    def test_normalize_currency_and_tax(self):
+        self.assertEqual([ep.normalize_currency(v) for v in ("twd", "NT", "台幣", "usd", "美金", "", None)],
+                         ["NTD", "NTD", "NTD", "USD", "USD", None, None])
+        with self.assertRaises(ep.PoValidationError):
+            ep.normalize_currency("JPY")
+        self.assertEqual(ep.normalize_tax_mode("exempt"), ep.TAX_EXEMPT)
+        self.assertEqual(ep.normalize_tax_mode("taxable"), ep.TAX_TAXABLE)
+
+    def test_default_tax_only_foreign_vendor_exempt(self):
+        self.assertEqual(ep.default_tax_mode({"IsForeign": 1}), ep.TAX_EXEMPT)
+        self.assertEqual(ep.default_tax_mode({"IsForeign": 0}), ep.TAX_TAXABLE)
+        self.assertEqual(ep.default_tax_mode({}), ep.TAX_TAXABLE)
+        self.assertEqual(ep.default_tax_mode(None), ep.TAX_TAXABLE)
+
+    def test_exempt_tax_type_env(self):
+        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": ""}):
+            self.assertEqual(ep.exempt_tax_type(), 3)
+        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": "2"}):
+            self.assertEqual(ep.exempt_tax_type(), 2)
+        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": "9"}):
+            self.assertEqual(ep.exempt_tax_type(), 3)
+
+    def test_usd_money_three_decimals_and_local_amounts(self):
+        lines = [{"qty": Decimal("3"), "price": Decimal("1.2345")}, {"qty": Decimal("7"), "price": Decimal("0.111")}]
+        out, totals = ep.compute_money(lines, currency="USD", exch_rate=Decimal("30.385"), taxable=True, amount_digits=3)
+        self.assertEqual([l["amount"] for l in out], [Decimal("3.704"), Decimal("0.777")])
+        self.assertEqual(totals["sum_amount"], Decimal("4.481"))
+        self.assertEqual(totals["sum_tax"], sum((l["tax_amt"] for l in out), Decimal(0)))
+        # 本幣金額 = 外幣 × 匯率（整數），明細本幣加總 = 表頭本幣
+        self.assertEqual(totals["local_total"], sum((l["ml_amount"] for l in out), Decimal(0)))
+        self.assertAlmostEqual(float(totals["local_total"]), 4.481 * 30.385, delta=1)
+        self.assertEqual(totals["local_tax"], sum((l["ml_tax"] for l in out), Decimal(0)))
+
+    def test_exempt_money_has_zero_tax(self):
+        out, totals = ep.compute_money([{"qty": Decimal("10"), "price": Decimal("10")}], taxable=False)
+        self.assertEqual((out[0]["tax_amt"], totals["sum_tax"], totals["total"]), (Decimal(0), Decimal(0), Decimal("100.00")))
+
+    def test_ntd_money_unchanged(self):
+        out, totals = ep.compute_money([{"qty": Decimal("10"), "price": Decimal("10")}])
+        self.assertEqual((totals["sum_tax"], totals["total"], totals["local_total"]), (Decimal("5"), Decimal("105.00"), Decimal("100.00")))
+
+    def test_mixed_line_currency_rejected_in_request(self):
+        req = {**REQ, "currency": "USD", "lines": [{**REQ["lines"][0], "currency": "NTD"}]}
+        with self.assertRaises(ep.PoValidationError) as cm:
+            ep.normalize_request(req)
+        self.assertIn("幣別", str(cm.exception))
+
+
+class CurrencyTaxFlowTests(WriteFlowCase):
+    def test_usd_when_last_erp_po_was_usd(self):
+        self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
+        res = ep.create_po({**REQ, "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["CurrID"], main["TaxType"]), ("USD", 0))
+        self.assertEqual(main["SumBTaxAmt"], Decimal("100.000"))
+        hist = db.list_erp_purchase_orders()
+        self.assertEqual(json.loads(hist[0]["lines_json"])[0]["currency"], "USD")
+
+    def test_default_ntd_taxable_when_no_history(self):
+        ep.create_po({**REQ, "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["CurrID"], main["TaxType"], main["SumTax"]), ("NTD", 0, Decimal("5")))
+
+    def test_foreign_vendor_defaults_exempt(self):
+        self.src.vendor_row = {**CUSTOMER, "IsForeign": 1}
+        ep.create_po({**REQ, "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["TaxType"], main["SumTax"], main["SumAmtATax"]), (3, Decimal("0"), Decimal("100.00")))
+
+    def test_manual_tax_and_currency_override(self):
+        self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
+        ep.create_po({**REQ, "currency": "NTD", "tax_mode": "exempt", "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["CurrID"], main["TaxType"], main["SumTax"]), ("NTD", 3, Decimal("0")))
+
+    def test_usd_without_rate_refused(self):
+        self.src.currency_rates = {}
+        with self.assertRaises(ep.PoValidationError):
+            ep.create_po({**REQ, "currency": "USD", "confirm": True})
+        self.assertEqual(self.tgt.inserted, [])
+
+    def test_site_record_currency_fallback(self):
+        db.create_erp_purchase_order(bill_no="PO-OLD", target_db="CHIComp01", supplier_id="P0175", supplier_name="x",
+                                     remark="", lines=[{"part_number": "AC-40838B", "currency": "USD"}],
+                                     sum_qty=1, sum_amount=1, sum_tax=0, total=1, actor="web", client_ip="",
+                                     status="ok") if hasattr(db, "create_erp_purchase_order") else None
+        with db.get_conn() as conn:
+            if not conn.execute("SELECT 1 FROM erp_purchase_orders").fetchone():
+                conn.execute("INSERT INTO erp_purchase_orders (bill_no, target_db, supplier_id, supplier_name, remark, lines_json,"
+                             " sum_qty, sum_amount, sum_tax, total, actor, client_ip, created_at, status, error)"
+                             " VALUES ('PO-OLD','CHIComp01','P0175','x','',?,1,1,0,1,'web','','2026-10-01','ok','')",
+                             (json.dumps([{"part_number": "AC-40838B", "currency": "USD"}]),))
+        info = ep.last_po_currency(self.src.cursor(), "P0175", "AC-40838B")
+        self.assertEqual((info["currency"], info["source"]), ("USD", "site"))
+        info = ep.last_po_currency(self.src.cursor(), "P0175", "OTHER")
+        self.assertEqual((info["currency"], info["source"]), ("NTD", "default"))
+
+    def test_split_by_currency(self):
+        self.src.last_currency[("P0175", "USD-PART")] = ("USD", "PO-1", 20261001)
+        groups = [{"supplier_id": "P0175", "lines": [
+            {"part_number": "AC-40838B", "qty": 1}, {"part_number": "USD-PART", "qty": 2}, {"part_number": "X2", "qty": 3}]}]
+        out = ep.split_by_currency(groups)
+        self.assertEqual([(g["currency"], [l["part_number"] for l in g["lines"]]) for g in out],
+                         [("NTD", ["AC-40838B", "X2"]), ("USD", ["USD-PART"])])
+
+    def test_resolve_terms(self):
+        self.src.vendor_row = {**CUSTOMER, "IsForeign": 1}
+        self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
+        out = ep.resolve_terms("P0175", ["ac-40838b"])
+        self.assertEqual((out["tax_mode"], out["is_foreign"], out["currencies"]["AC-40838B"]["currency"]),
+                         (ep.TAX_EXEMPT, True, "USD"))
+
+
+class ShortageTargetTests(EnvCase):
+    """ITEM 5：缺料採購可用 ERP_SHORTAGE_PO_TARGET 指定寫入公司；沒設定時同開採購單。"""
+
+    def test_default_same_as_write_target(self):
+        self.assertEqual(ep.get_target("shortage"), "CHIComp01")
+        self.assertEqual(ep.get_config("shortage")["target"], "CHIComp01")
+
+    def test_override_only_affects_shortage(self):
+        with patch.dict(os.environ, {"ERP_SHORTAGE_PO_TARGET": "CHIComp13"}):
+            self.assertEqual(ep.get_target("shortage"), "CHIComp13")
+            self.assertEqual(ep.get_target(), "CHIComp01")
+
+    def test_bad_override_rejected(self):
+        with patch.dict(os.environ, {"ERP_SHORTAGE_PO_TARGET": "Comp3; DROP"}):
+            with self.assertRaises(ep.ErpNotConfigured):
+                ep.get_target("shortage")

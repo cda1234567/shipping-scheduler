@@ -48,6 +48,12 @@ def shortage_list(order_ids: str = ""):
     return shortage_purchase.build_shortage_list(ids)
 
 
+@router.get("/config")
+async def shortage_config():
+    """缺料採購的寫入目標（ERP_SHORTAGE_PO_TARGET，沒設定同開採購單）；不含帳密。"""
+    return await run_in_threadpool(erp_purchase.get_config, shortage_purchase.SHORTAGE_KIND)
+
+
 @router.get("/orders")
 async def shortage_orders():
     orders = await run_in_threadpool(db.list_dispatched_orders_for_purchase)
@@ -69,7 +75,9 @@ async def shortage_preview(req: ShortagePoRequest):
         groups = await run_in_threadpool(
             shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
-        results = await run_in_threadpool(erp_purchase.preview_many, groups)
+        # v2026.11.04.7：同供應商同時有美金 / 台幣料號 → 依幣別拆成多張
+        groups = await run_in_threadpool(erp_purchase.split_by_currency, groups)
+        results = await run_in_threadpool(erp_purchase.preview_many, groups, shortage_purchase.SHORTAGE_KIND)
         warning = await run_in_threadpool(postprocess.missing_postprocess_for_groups, groups)
     except ErpError as exc:
         raise _http_error(exc) from None
@@ -86,6 +94,8 @@ async def shortage_create(req: ShortagePoCreateRequest, request: Request):
         groups = await run_in_threadpool(
             shortage_purchase.prepare_groups, [g.dict() for g in req.groups], req.order_ids
         )
+        # v2026.11.04.7：同供應商同時有美金 / 台幣料號 → 依幣別拆成多張
+        groups = await run_in_threadpool(erp_purchase.split_by_currency, groups)
         if req.confirm_missing_postprocess is not True:
             missing = await run_in_threadpool(postprocess.missing_postprocess_for_groups, groups)
             if missing:  # 沒有寫入任何東西；前端確認後帶 confirm_missing_postprocess=true 重送

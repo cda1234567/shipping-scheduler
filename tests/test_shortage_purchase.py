@@ -140,11 +140,17 @@ class FakeErpCursor:
             self.rows = [r for r in self.d["last_po"] if r[0] in params]
         elif "FROM comCustomer" in s:
             self.rows = [r for r in self.d["suppliers"] if r[0] in params]
+        elif "m.CurrID" in s:  # 最近採購單幣別（測試資料沒有 → 走預設台幣）
+            self.description = [("CurrID",), ("BillNO",), ("BillDate",)]
+            self.rows = []
         else:
             raise AssertionError(s)
 
     def fetchall(self):
         return list(self.rows)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
 
 
 class FakeErpConn:
@@ -465,7 +471,7 @@ class ShortageListTests(Base):
     def test_create_many_never_warns_per_group_and_keeps_qty(self):
         seen = []
 
-        def fake_create(req, actor="web", client_ip=""):
+        def fake_create(req, actor="web", client_ip="", kind=""):
             seen.append(req["allow_duplicate"])
             return {"ok": True, "bill_no": "PO-1", "supplier": {"id": "S1"}, "totals": {}, "lines": []}
 
@@ -578,10 +584,10 @@ class AllocationFlowTests(ShortageListTests):
         client = TestClient(app)
         grp = {"supplier_id": "S2", "remark": "", "lines": [{"part_number": "EC-1", "qty": 80, "price": 1, "pre_in_date": "2026-10-26"}]}
         seen = {}
-        with patch.object(ep, "preview_many", lambda reqs: seen.setdefault("p", reqs) and [{"ok": True}]):
+        with patch.object(ep, "preview_many", lambda reqs, kind="": seen.setdefault("p", reqs) and [{"ok": True}]):
             client.post("/api/shortage-po/preview", json={"groups": [grp], "order_ids": [1, 2, 3]})
         self.assertEqual(seen["p"][0]["lines"][0]["pre_in_date"], "2026-10-29")
-        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="": seen.setdefault("c", req) and
+        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="", kind="": seen.setdefault("c", req) and
                           {"ok": True, "bill_no": "X", "supplier": {}, "totals": {}, "lines": []}):
             client.post("/api/shortage-po/create", json={"groups": [grp], "confirm": True})
         self.assertEqual(seen["c"]["lines"][0]["pre_in_date"], "2026-10-29")
@@ -592,12 +598,12 @@ class AllocationFlowTests(ShortageListTests):
         client = TestClient(app)
         grp = {"supplier_id": "S2", "remark": "", "lines": [{"part_number": "EC-1", "qty": 80, "price": 1, "pre_in_date": "2026-11-01"}]}
         seen = {}
-        with patch.object(ep, "preview_many", lambda reqs: seen.setdefault("p", reqs) and [{"ok": True}]):
+        with patch.object(ep, "preview_many", lambda reqs, kind="": seen.setdefault("p", reqs) and [{"ok": True}]):
             client.post("/api/shortage-po/preview", json={"groups": [grp], "order_ids": [1, 2, 3]})
         line = seen["p"][0]["lines"][0]
         self.assertEqual([(a["order_id"], a["qty"]) for a in line["allocations"]], [(1, 80.0)])  # ST 60 先抵訂單 2 的 40 與訂單 1 的 20
 
-        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="": seen.setdefault("c", req) and
+        with patch.object(ep, "create_po", lambda req, actor="web", client_ip="", kind="": seen.setdefault("c", req) and
                           {"ok": True, "bill_no": "X", "supplier": {}, "totals": {}, "lines": []}):
             client.post("/api/shortage-po/create", json={"groups": [grp], "order_ids": [1, 2, 3], "confirm": True})
         self.assertEqual(seen["c"]["alloc_source"], "shortage_po")
@@ -709,7 +715,7 @@ class CreateManyTests(Base):
     def test_continues_after_failure(self):
         calls = []
 
-        def fake_create(req, actor="web", client_ip=""):
+        def fake_create(req, actor="web", client_ip="", kind=""):
             calls.append((req["supplier_id"], req["confirm"], actor, client_ip))
             if req["supplier_id"] == "BAD":
                 raise ep.PoValidationError("正航找不到供應商 BAD")
@@ -734,7 +740,7 @@ class CreateManyTests(Base):
     def test_create_keeps_submitted_qty_below_moq(self):
         seen = []
 
-        def fake_create(req, actor="web", client_ip=""):
+        def fake_create(req, actor="web", client_ip="", kind=""):
             seen.append([l["qty"] for l in req["lines"]])
             return {"ok": True, "bill_no": "PO-1", "supplier": {"id": "S1"}, "totals": {}, "lines": []}
 
@@ -754,6 +760,10 @@ class RouterTests(Base):
         os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
         from main import app
         self.client = TestClient(app)
+        # 依幣別拆單會查正航；路由測試不連 ERP，原樣回傳
+        split = patch.object(ep, "split_by_currency", lambda groups: groups)
+        split.start()
+        self.addCleanup(split.stop)
 
     GROUP = {"supplier_id": "S1", "remark": "r",
              "lines": [{"part_number": "A", "qty": 1, "price": 1, "pre_in_date": "2026-11-01"}]}
@@ -786,7 +796,7 @@ class RouterTests(Base):
         with patch.object(sp, "create_many", lambda g, a, ip: [{"supplier_id": g[0]["supplier_id"], "ok": True, "bill_no": "X"}]):
             r = self.client.post("/api/shortage-po/create", json={"groups": [self.GROUP], "confirm": True})
         self.assertEqual((r.status_code, r.json()["results"][0]["bill_no"]), (200, "X"))
-        with patch.object(ep, "preview_many", lambda reqs: [{"ok": True, "n": len(reqs)}]):
+        with patch.object(ep, "preview_many", lambda reqs, kind="": [{"ok": True, "n": len(reqs)}]):
             r = self.client.post("/api/shortage-po/preview", json={"groups": [self.GROUP]})
         self.assertEqual(r.json()["results"], [{"ok": True, "n": 1}])
 

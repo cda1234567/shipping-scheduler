@@ -33,6 +33,8 @@ from .local_time import local_now
 
 logger = logging.getLogger(__name__)
 
+# 缺料採購的寫入目標：ERP_SHORTAGE_PO_TARGET（沒設定 = 同開採購單的 ERP_WRITE_TARGET）
+SHORTAGE_KIND = "shortage"
 MAX_GROUPS = 20
 IN_CHUNK = 200
 SMT_PREFIXES = ("EC", "IC", "UC", "PB")
@@ -648,7 +650,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
 def find_group_duplicates(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """各供應商組中，本站（同一寫入公司）已開過採購單的明細；不寫入任何東西。
     格式錯誤的組略過（寫入時 create_po 會各自回報錯誤）。"""
-    target = erp_purchase.get_target()
+    target = erp_purchase.get_target(SHORTAGE_KIND)
     found: List[Dict[str, Any]] = []
     for group in groups:
         try:
@@ -662,7 +664,7 @@ def find_group_duplicates(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _already_ordered(parts_out: List[Dict[str, Any]]) -> None:
     """替每個要買的料號加上 already_ordered（本站已開過的 PO，格式見 po_duplicates.find_matches）。"""
     try:
-        target = erp_purchase.get_target()
+        target = erp_purchase.get_target(SHORTAGE_KIND)
     except Exception:
         target = ""
     prior = po_duplicates.load_prior(target, [p["part_number"] for p in parts_out]) if target else {}
@@ -685,15 +687,19 @@ def create_many(groups: List[Dict[str, Any]], actor: str = "web", client_ip: str
         try:
             # 重複開單的確認已在 router 一次做完（整批要嘛全寫、要嘛都不寫），這裡不再逐張警告；防連點仍然有效
             r = erp_purchase.create_po(
-                {**group, "confirm": True, "allow_duplicate": True}, actor=actor, client_ip=client_ip
+                {**group, "confirm": True, "allow_duplicate": True}, actor=actor, client_ip=client_ip,
+                kind=SHORTAGE_KIND,
             )
             results.append({
                 "supplier_id": supplier_id, "ok": True, "bill_no": r["bill_no"],
                 "supplier": r["supplier"], "totals": r["totals"], "lines": r["lines"],
+                "currency": r.get("currency"), "tax_mode": r.get("tax_mode"), "tax_label": r.get("tax_label"),
             })
         except Exception as exc:
             results.append({
                 "supplier_id": supplier_id, "ok": False, "error": erp_purchase._safe_message(exc),
+                "currency": group.get("currency"),
+                "part_numbers": [str(l.get("part_number") or "").strip().upper() for l in group.get("lines") or []],
             })
     ok_count = sum(1 for r in results if r["ok"])
     try:

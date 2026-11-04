@@ -12,6 +12,11 @@ let _initialized = false;
 let _searchTimer = null;
 let _defaultDue = null; // /api/holidays/default-due：{ date, reason }（今天 + LEAD_DAYS 再套用假日規則）
 let _companions = []; // 後段加工（另開一張採購單）的明細
+let _taxManual = false; // 使用者手動改過課稅別後，換供應商不再自動覆蓋
+let _terms = null; // /api/erp/po/terms：{ supplier_id, is_foreign, tax_mode }
+
+export const CURRENCY_LABELS = { NTD: "台幣", USD: "美金" };
+const CURRENCY_SOURCE_TEXT = { erp: "正航最近採購單", site: "本站最近採購單", default: "查無紀錄，預設台幣", manual: "手動" };
 
 function pad(n) { return String(n).padStart(2, "0"); }
 
@@ -25,6 +30,7 @@ function newLine(part = "") {
   return {
     part, name: "", qty: "", price: "", date: _defaultDue?.date || defaultDate(), dateHint: _defaultDue?.reason || "",
     hint: null, qtyAuto: false, pp: [],
+    currency: "NTD", currencySrc: "", currencyBill: "", currencyManual: false,
   };
 }
 
@@ -153,6 +159,7 @@ function selectSupplier(id, name) {
   if (input) input.value = "";
   hideSupplierResults();
   renderSupplier();
+  void refreshTerms();
 }
 
 function hideSupplierResults() {
@@ -193,9 +200,49 @@ function renderLines() {
     <td><input type="number" data-field="qty" value="${esc(l.qty)}" min="0" step="any" class="num">${
       l.hint ? `<div class="erp-po-hint erp-po-moq-hint">${esc(moqHintText(l.hint.need, l.hint.moq, l.hint.moq_source, l.hint.receipt))}</div>` : ""}</td>
     <td><input type="number" data-field="price" value="${esc(l.price)}" min="0" step="any" class="num"></td>
+    <td><select data-field="currency">${Object.entries(CURRENCY_LABELS).map(([code, label]) =>
+      `<option value="${code}"${l.currency === code ? " selected" : ""}>${label} ${code}</option>`).join("")}</select>${
+      l.currencySrc ? `<div class="erp-po-hint">${esc(currencySourceText(l))}</div>` : ""}</td>
     <td><input type="date" data-field="date" value="${esc(l.date)}">${l.dateHint ? `<div class="erp-po-hint shortage-po-adjusted">${esc(l.dateHint)}</div>` : ""}</td>
     <td><button class="btn btn-danger btn-sm" data-act="remove" type="button">移除</button></td>
   </tr>`).join("");
+}
+
+export function currencySourceText(l) {
+  if (l.currencyManual) return "手動";
+  const base = CURRENCY_SOURCE_TEXT[l.currencySrc] || "";
+  return l.currencyBill ? `${base} ${l.currencyBill}` : base;
+}
+
+/** 依目前供應商查預設幣別（每料號）與課稅別；使用者手動改過的不覆蓋。 */
+async function refreshTerms(onlyIdx = null) {
+  if (!_supplier) return;
+  const sid = _supplier.id;
+  const targets = _lines.filter((l, i) => (onlyIdx === null || i === onlyIdx) && l.part.trim() && !l.currencyManual);
+  try {
+    const data = await apiPost("/api/erp/po/terms", { supplier_id: sid, parts: targets.map(l => l.part.trim()) });
+    if (!_supplier || _supplier.id !== sid) return;
+    _terms = data;
+    for (const l of targets) {
+      const t = (data.currencies || {})[l.part.trim().toUpperCase()];
+      if (t && !l.currencyManual) { l.currency = t.currency; l.currencySrc = t.source; l.currencyBill = t.bill_no || ""; }
+    }
+    if (!_taxManual) {
+      const sel = document.getElementById("erp-po-tax");
+      if (sel) sel.value = data.tax_mode || "taxable";
+    }
+    renderTaxHint();
+    renderLines();
+  } catch (_) { /* 查不到預設值不影響開單：沿用台幣 / 應稅，可手動改 */ }
+}
+
+function renderTaxHint() {
+  const el = document.getElementById("erp-po-tax-hint");
+  if (!el) return;
+  if (_taxManual) el.textContent = "手動選擇";
+  else if (_terms && _supplier && _terms.supplier_id === _supplier.id) {
+    el.textContent = _terms.is_foreign ? "正航標記為國外廠商 → 預設免稅" : "國內廠商 → 預設應稅";
+  } else el.textContent = "預設應稅；正航標記國外廠商預設免稅";
 }
 
 function receiptOf(d) {
@@ -226,7 +273,9 @@ async function fillDefaults(idx) {
     if (!d.found) line.hint = null;
     else if (!line.hint) line.hint = { need: null, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
     else line.hint = { ...line.hint, moq: d.moq, moq_source: d.moq_source, receipt: receiptOf(d) };
-    if (idx === 0 && !_supplier && d.supplier_id) _supplier = { id: d.supplier_id, name: d.supplier_name };
+    let supplierChanged = false;
+    if (idx === 0 && !_supplier && d.supplier_id) { _supplier = { id: d.supplier_id, name: d.supplier_name }; supplierChanged = true; }
+    void refreshTerms(supplierChanged ? null : idx);
     line.pp = [];
     try {
       const key = (d.part_number || part).toUpperCase();
@@ -245,6 +294,7 @@ function onLinesInput(event) {
   const tr = event.target.closest("tr[data-idx]");
   if (!field || !tr) return;
   const line = _lines[Number(tr.dataset.idx)];
+  if (field === "currency") return; // 由 change 事件處理
   line[field] = event.target.value;
   if (field === "qty") line.qtyAuto = false; // 使用者自行改量後不再自動調整
 }
@@ -254,6 +304,13 @@ function onLinesChange(event) {
   const tr = event.target.closest("tr[data-idx]");
   if (!tr) return;
   if (field === "date") { void hintLineDate(_lines[Number(tr.dataset.idx)]); return; }
+  if (field === "currency") {
+    const line = _lines[Number(tr.dataset.idx)];
+    line.currency = event.target.value;
+    line.currencyManual = true;
+    renderLines();
+    return;
+  }
   if (field === "part") void fillDefaults(Number(tr.dataset.idx));
 }
 
@@ -370,21 +427,36 @@ export function prefillPurchaseOrder(part, qty, meta = null) {
 }
 
 // ── 預覽 / 寫入 ─────────────────────────────────────────────────────────────
-function buildBody() {
+/** 依幣別把明細分組（順序依第一次出現）：同一張採購單只能有一種幣別，美金 / 台幣混在一起就拆成多張。 */
+export function splitLinesByCurrency(lines) {
+  const groups = new Map();
+  for (const l of lines) {
+    const curr = l.currency || "NTD";
+    if (!groups.has(curr)) groups.set(curr, []);
+    groups.get(curr).push(l);
+  }
+  return [...groups.entries()].map(([currency, items]) => ({ currency, lines: items }));
+}
+
+function buildBodies() {
   if (!_supplier) throw new Error("請先選擇供應商");
   const lines = _lines.filter(l => l.part.trim() || l.qty !== "" || l.price !== "");
   if (!lines.length) throw new Error("請至少輸入一行明細");
-  return {
+  const taxMode = document.getElementById("erp-po-tax")?.value || "taxable";
+  return splitLinesByCurrency(lines).map(g => ({
     supplier_id: _supplier.id,
     remark: document.getElementById("erp-po-remark")?.value.trim() || "",
     salesman: document.getElementById("erp-po-salesman")?.value.trim() || null,
-    lines: lines.map(l => ({
+    currency: g.currency,
+    tax_mode: taxMode,
+    lines: g.lines.map(l => ({
       part_number: l.part.trim(),
       qty: Number(l.qty),
       price: l.price === "" ? NaN : Number(l.price),
       pre_in_date: l.date,
+      currency: l.currency || "NTD",
     })),
-  };
+  }));
 }
 
 /** 後段加工明細 → 依供應商分組的採購單請求（每個供應商一張）。 */
@@ -425,6 +497,8 @@ function previewCard(p, withBadge) {
   return `
     ${withBadge ? `<div class="erp-po-badge ${p.is_test ? "is-test" : "is-prod"} erp-po-badge-small">寫入：${esc(p.target_label)}</div>` : ""}
     <div class="erp-po-preview-head">預計單號 <strong class="mono">${esc(p.bill_no)}</strong>（實際單號以寫入結果為準）　供應商 ${esc(p.supplier.id)} ${esc(p.supplier.name)}　採購員 ${esc(p.salesman)}</div>
+    <div class="erp-po-preview-head">幣別 <strong>${esc(CURRENCY_LABELS[p.currency] || p.currency || "台幣")} ${esc(p.currency || "NTD")}</strong>${
+      p.currency && p.currency !== "NTD" ? `（匯率 ${esc(p.exch_rate)}）` : ""}　課稅別 <strong>${esc(p.tax_label || "應稅（外加 5%）")}</strong></div>
     <div class="erp-po-hint">付款條件 / 地址取自範本單 ${esc(p.template_bill_no)}${p.remark ? `　備註：${esc(p.remark)}` : ""}</div>
     ${masters}
     <table class="erp-po-table">
@@ -433,7 +507,8 @@ function previewCard(p, withBadge) {
         <td class="num">${fmtMoney(l.qty)}</td><td class="num">${fmtMoney(l.price)}</td><td class="num">${fmtMoney(l.amount)}</td>
         <td class="num">${fmtMoney(l.tax_amt)}</td><td>${esc(l.pre_in_date)}</td></tr>`).join("")}</tbody>
     </table>
-    <div class="erp-po-totals">未稅 <strong>${fmtMoney(p.totals.sum_amount)}</strong>　稅額 <strong>${fmtMoney(p.totals.sum_tax)}</strong>　合計 <strong>${fmtMoney(p.totals.total)}</strong></div>`;
+    <div class="erp-po-totals">${p.currency && p.currency !== "NTD" ? `${esc(p.currency)} ` : ""}未稅 <strong>${fmtMoney(p.totals.sum_amount)}</strong>　稅額 <strong>${fmtMoney(p.totals.sum_tax)}</strong>　合計 <strong>${fmtMoney(p.totals.total)}</strong>${
+      p.currency && p.currency !== "NTD" ? `　（本幣未稅 NT$ ${fmtMoney(p.totals.local_total)}、稅 NT$ ${fmtMoney(p.totals.local_tax)}）` : ""}</div>`;
 }
 
 /** 後端 postprocess_warning（鈞洋件有後段加工對應但加工件不在同一批）轉成提示文字。 */
@@ -442,17 +517,22 @@ export function postprocessWarningText(items) {
   return `以下鈞洋件有後段加工對應，但加工件不在這批採購單中：\n${lines.join("\n")}`;
 }
 
-function renderPreview(p, companions = []) {
+function renderPreview(mains, companions = []) {
   const el = document.getElementById("erp-po-preview");
   if (!el) return;
+  const p = mains[0];
   const covered = new Set(_companions.map(c => c.part));
-  const missing = (p.postprocess_warning || []).filter(w => !covered.has(w.process_part));
+  const seen = new Set();
+  const missing = mains.flatMap(m => m.postprocess_warning || [])
+    .filter(w => !covered.has(w.process_part) && !seen.has(`${w.base_part}|${w.process_part}`) && seen.add(`${w.base_part}|${w.process_part}`));
+  const total = mains.length + companions.length;
   el.innerHTML = `
-    ${previewCard(p, true)}
+    ${mains.length > 1 ? `<div class="erp-po-warn">明細同時有美金與台幣，將依幣別分開開 ${mains.length} 張採購單。</div>` : ""}
+    ${mains.map((m, i) => `${i ? "<hr>" : ""}${previewCard(m, i === 0)}`).join("")}
     ${missing.length ? `<div class="erp-po-warn">${esc(postprocessWarningText(missing))}</div>` : ""}
     ${companions.map(c => `<hr>${previewCard(c, false)}`).join("")}
     <div class="erp-po-actions"><span class="spacer"></span>
-      <button class="btn btn-danger" id="btn-erp-po-create" type="button">確認寫入正航${companions.length ? `（共 ${1 + companions.length} 張）` : ""}</button></div>`;
+      <button class="btn btn-danger" id="btn-erp-po-create" type="button">確認寫入正航${total > 1 ? `（共 ${total} 張）` : ""}</button></div>`;
   el.hidden = false;
   el.dataset.target = p.target_label;
   document.getElementById("btn-erp-po-create")?.addEventListener("click", handleCreate);
@@ -461,18 +541,19 @@ function renderPreview(p, companions = []) {
 async function handlePreview() {
   if (_busy || !requireEdit()) return;
   hideResult();
-  let body;
-  try { body = buildBody(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
-  if (body.lines.some(l => !Number.isFinite(l.qty) || !Number.isFinite(l.price))) {
+  let bodies;
+  try { bodies = buildBodies(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
+  if (bodies.some(b => b.lines.some(l => !Number.isFinite(l.qty) || !Number.isFinite(l.price)))) {
     showToast("請填寫每一行的數量與單價", { tone: "error" });
     return;
   }
   setBusy(true);
   try {
-    const main = await apiPost("/api/erp/po/preview", body);
+    const mains = [];
+    for (const b of bodies) mains.push(await apiPost("/api/erp/po/preview", b));
     const companions = [];
     for (const c of buildCompanionBodies()) companions.push(await apiPost("/api/erp/po/preview", c));
-    renderPreview(main, companions);
+    renderPreview(mains, companions);
   } catch (error) {
     const el = document.getElementById("erp-po-preview");
     if (el) { el.hidden = true; el.innerHTML = ""; }
@@ -509,22 +590,22 @@ async function createOne(body, coveredParts) {
 async function handleCreate() {
   if (_busy || !requireEdit()) return;
   const label = document.getElementById("erp-po-preview")?.dataset.target || _config?.label || "";
-  let body;
+  let bodies;
   let companionBodies;
-  try { body = buildBody(); companionBodies = buildCompanionBodies(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
-  const count = 1 + companionBodies.length;
+  try { bodies = buildBodies(); companionBodies = buildCompanionBodies(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
+  const count = bodies.length + companionBodies.length;
   if (!window.confirm(`確定要在「${label}」建立${count > 1 ? ` ${count} 張` : "這張"}採購單嗎？\n寫入後無法從本系統修改或刪除。`)) return;
   setBusy(true);
   const result = document.getElementById("erp-po-result");
   const done = [];
   try {
     const covered = new Set(_companions.map(c => c.part));
-    done.push(await createOne(body, covered));
+    for (const b of bodies) done.push(await createOne(b, covered));
     for (const c of companionBodies) done.push(await createOne(c, new Set()));
     if (result) {
       result.className = "erp-po-result is-ok";
       result.innerHTML = done.map(r =>
-        `<div>✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}（${esc(r.supplier.id)}），含稅合計 ${fmtMoney(r.totals.total)}</div>`).join("");
+        `<div>✅ 已寫入 ${esc(r.target_label)}：採購單 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}（${esc(r.supplier.id)}），${r.tax_label ? `${esc(r.tax_label)}，` : ""}含稅合計 ${r.currency && r.currency !== "NTD" ? `${esc(r.currency)} ` : ""}${fmtMoney(r.totals.total)}</div>`).join("");
       result.hidden = false;
       void decoratePoMailBadges(result);
     }
@@ -532,6 +613,8 @@ async function handleCreate() {
     if (preview) { preview.hidden = true; preview.innerHTML = ""; }
     _lines = [newLine()];
     _companions = [];
+    _taxManual = false;
+    renderTaxHint();
     renderLines();
     renderCompanions();
     showToast(`已建立採購單 ${done.map(r => r.bill_no).join("、")}`, { tone: "success" });
@@ -645,6 +728,7 @@ export async function initErpPurchase() {
     renderLines();
   });
   document.getElementById("btn-erp-po-preview")?.addEventListener("click", handlePreview);
+  document.getElementById("erp-po-tax")?.addEventListener("change", () => { _taxManual = true; renderTaxHint(); });
   document.getElementById("btn-erp-po-mail-refresh")?.addEventListener("click", () => { void decorateHistoryMail(true); });
   document.getElementById("erp-po-supplier-input")?.addEventListener("input", () => {
     clearTimeout(_searchTimer);

@@ -85,6 +85,7 @@ export async function initSchedule(onRefreshMain) {
     document.getElementById("btn-completed-download-drafts")?.addEventListener("click", handleCompletedDownloadDrafts);
     document.getElementById("btn-completed-gen-dispatch")?.addEventListener("click", handleCompletedGenerateDispatch);
     document.getElementById("btn-completed-shortage-po")?.addEventListener("click", handleCompletedShortagePurchase);
+    document.getElementById("btn-completed-rollback-selected")?.addEventListener("click", event => { void handleRollbackSelected(event.currentTarget); });
     document.getElementById("completed-select-all")?.addEventListener("change", handleCompletedSelectAllChange);
     document.getElementById("schedule-scroll")?.addEventListener("click", handleDraftPanelToggleClick);
     document.querySelectorAll("[data-right-panel-tab]").forEach(btn => {
@@ -4365,6 +4366,7 @@ function updateCompletedToolbarState() {
   document.getElementById("btn-completed-download-drafts")?.toggleAttribute("disabled", count === 0);
   document.getElementById("btn-completed-gen-dispatch")?.toggleAttribute("disabled", count === 0);
   document.getElementById("btn-completed-shortage-po")?.toggleAttribute("disabled", count === 0);
+  document.getElementById("btn-completed-rollback-selected")?.toggleAttribute("disabled", count === 0);
 }
 
 function handleCompletedSelectAllChange(event) {
@@ -4781,6 +4783,76 @@ async function replayDefectivesAfterRollback(cutoff, expectedCount, actionButton
         onClick: (event) => replayDefectivesAfterRollback(cutoff, expectedCount, event.currentTarget),
       },
     });
+  }
+}
+
+// ── 退回選取的單（v2026.11.04.7）────────────────────────────────────────────
+function rollbackOrderLine(item, index) {
+  const name = [item.po_number, item.model, item.code].filter(Boolean).join(" ");
+  return `${index + 1}. ${name || `#${item.order_id}`}${item.dispatched_at ? `（發料 ${String(item.dispatched_at).replace("T", " ").slice(0, 16)}）` : ""}`;
+}
+
+export function buildRollbackSelectedConfirmText(plan) {
+  const orders = plan?.orders || [];
+  const precise = orders.filter(item => item.mode === "precise");
+  const full = orders.filter(item => item.mode !== "precise");
+  const lines = [`退回選取的單：共 ${orders.length} 筆，會依發料時間由新到舊逐筆退回。`];
+  lines.push("", `可精準退回（只撤銷該單的主檔欄位，其他資料保留）：${precise.length} 筆`);
+  precise.forEach((item, index) => lines.push(rollbackOrderLine(item, index)));
+  if (full.length) {
+    lines.push("", `⚠ 需整檔還原（無法精準退回）：${full.length} 筆——批次不會處理這些單，請之後逐筆用「退回已發料」處理：`);
+    full.forEach((item, index) => lines.push(`${rollbackOrderLine(item, index)}：${item.reason || "無法精準退回"}`));
+  }
+  lines.push("", "中途任何一筆失敗會立刻停止，剩下的不會動。確定執行嗎？");
+  return lines.join("\n");
+}
+
+export function formatRollbackSelectedResult(result) {
+  const done = result?.rolled_back || [];
+  const notDone = result?.not_rolled_back || [];
+  const lines = [result?.message || `已退回 ${done.length} 筆`];
+  if (done.length) {
+    lines.push("", "已退回：");
+    done.forEach((item, index) => lines.push(rollbackOrderLine(item, index)));
+  }
+  if (result?.failure) lines.push("", `失敗：${rollbackOrderLine(result.failure, 0).slice(3)}——${result.failure.error || ""}`);
+  if (notDone.length) {
+    lines.push("", "未退回：");
+    notDone.forEach((item, index) => lines.push(rollbackOrderLine(item, index)));
+  }
+  return lines.join("\n");
+}
+
+async function handleRollbackSelected(trigger) {
+  const orderIds = getCompletedCheckedOrderIds();
+  if (!orderIds.length) { showToast("請先勾選要退回的單"); return; }
+  const button = trigger || document.getElementById("btn-completed-rollback-selected");
+  const originalText = button?.textContent || "退回選取的單";
+  try {
+    if (button) { button.disabled = true; button.textContent = "試算中..."; }
+    const plan = await apiPost("/api/schedule/rollback-batch/plan", { order_ids: orderIds });
+    if (!(plan.orders || []).length) { showToast("沒有可退回的單"); return; }
+    if (plan.needs_full_restore && !plan.precise_count) {
+      alert(buildRollbackSelectedConfirmText(plan).replace(/確定執行嗎？$/, "").trim() + "\n\n全部都需要整檔還原，批次無法處理，已停止。");
+      return;
+    }
+    if (!confirm(buildRollbackSelectedConfirmText(plan))) return;
+    if (button) button.textContent = "退回中...";
+    const result = await apiPost("/api/schedule/rollback-batch/execute", {
+      order_ids: orderIds,
+      confirm: true,
+      acknowledge_full: Boolean(plan.needs_full_restore),
+    });
+    (result.rolled_back || []).forEach(item => _completedCheckedIds.delete(item.order_id));
+    const text = formatRollbackSelectedResult(result);
+    showToast(text, { sticky: true, tone: result.ok ? "success" : "error" });
+    if (!result.ok) alert(text);
+    await Promise.all([refresh(), refreshCompleted()]);
+    if (_onRefreshMain) await _onRefreshMain();
+  } catch (error) {
+    showToast("退回選取的單失敗：" + error.message, { tone: "error", sticky: true });
+  } finally {
+    if (button) { button.textContent = originalText; button.disabled = getCompletedCheckedOrderIds().length === 0; }
   }
 }
 

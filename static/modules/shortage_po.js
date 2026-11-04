@@ -57,7 +57,7 @@ function renderBadge() {
 
 async function loadConfig() {
   try {
-    _config = await apiJson("/api/erp/po/config");
+    _config = await apiJson("/api/shortage-po/config");
   } catch (_) {
     _config = null;
   }
@@ -661,6 +661,7 @@ function cardHtml(r) {
     : "";
   return `<div class="shortage-po-card">
     <div class="erp-po-preview-head">預估單號 <strong class="mono">${esc(r.bill_no)}</strong>（預估，實際以寫入結果為準）　供應商 ${esc(r.supplier.id)} ${esc(r.supplier.name)}</div>
+    <div class="erp-po-hint">幣別 <strong>${esc(r.currency || "NTD")}</strong>${r.currency && r.currency !== "NTD" ? `（匯率 ${esc(r.exch_rate)}）` : ""}　課稅別 <strong>${esc(r.tax_label || "應稅（外加 5%）")}</strong>（依最近採購單 / 正航供應商主檔自動判斷；要改請到「開採購單」）</div>
     ${r.remark ? `<div class="erp-po-hint">備註：${esc(r.remark)}</div>` : ""}
     ${masters}
     <table class="erp-po-table"><thead><tr><th>料號</th><th>品名</th><th class="num">數量</th><th class="num">單價</th><th class="num">未稅金額</th><th>預計進貨日</th></tr></thead>
@@ -668,7 +669,7 @@ function cardHtml(r) {
         <td class="num">${fmtQty(l.qty)}</td><td class="num">${fmtQty(l.price)}</td><td class="num">${fmtQty(l.amount)}</td>
         <td>${esc(l.pre_in_date)}</td></tr>
         <tr class="shortage-po-alloc"><td colspan="6" class="erp-po-hint">${esc(allocationText(l.allocations))}</td></tr>`).join("")}</tbody></table>
-    <div class="erp-po-totals">未稅 <strong>${fmtQty(r.totals.sum_amount)}</strong>　稅額 <strong>${fmtQty(r.totals.sum_tax)}</strong>　合計 <strong>${fmtQty(r.totals.total)}</strong></div>
+    <div class="erp-po-totals">${r.currency && r.currency !== "NTD" ? `${esc(r.currency)} ` : ""}未稅 <strong>${fmtQty(r.totals.sum_amount)}</strong>　稅額 <strong>${fmtQty(r.totals.sum_tax)}</strong>　合計 <strong>${fmtQty(r.totals.total)}</strong></div>
   </div>`;
 }
 
@@ -712,14 +713,29 @@ async function handlePreview() {
 
 function resultHtml(results) {
   return results.map(r => r.ok
-    ? `<div class="is-ok">✅ ${esc(r.supplier?.id || r.supplier_id)} ${esc(r.supplier?.name || "")}：成功 單號 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}，含稅合計 ${fmtQty(r.totals?.total)}</div>`
+    ? `<div class="is-ok">✅ ${esc(r.supplier?.id || r.supplier_id)} ${esc(r.supplier?.name || "")}${r.currency && r.currency !== "NTD" ? `（${esc(r.currency)}）` : ""}：成功 單號 <strong class="mono">${esc(r.bill_no)}</strong> ${poMailSlot(r.bill_no)}，含稅合計 ${fmtQty(r.totals?.total)}</div>`
     : `<div class="is-error">❌ ${esc(r.supplier_id)}：失敗 ${esc(r.error)}</div>`).join("");
+}
+
+/** 寫入結果 → 「供應商|料號」對單號（同供應商依幣別拆成多張時，每個料號對到它實際所在的那張）。 */
+export function billsBySupplierPart(results) {
+  const bills = new Map();
+  for (const r of results || []) {
+    if (!r.ok) continue;
+    for (const l of r.lines || []) {
+      bills.set(`${String(r.supplier_id).trim().toLowerCase()}|${String(l.part_number).trim().toUpperCase()}`, r.bill_no);
+    }
+  }
+  return bills;
 }
 
 async function handleCreate() {
   if (_busy || !requireEdit()) return;
   if (!previewIsCurrent()) { showToast("內容已修改，請重新預覽", { tone: "error" }); return; }
-  const okSuppliers = new Set((_previewResults || []).filter(r => r.ok).map(r => r.supplier_id.toLowerCase()));
+  // 同一供應商依幣別拆成多張時，任一張預覽失敗就整個供應商先不寫（避免只寫一半）
+  const failedSuppliers = new Set((_previewResults || []).filter(r => !r.ok).map(r => r.supplier_id.toLowerCase()));
+  const okSuppliers = new Set((_previewResults || []).filter(r => r.ok && !failedSuppliers.has(r.supplier_id.toLowerCase()))
+    .map(r => r.supplier_id.toLowerCase()));
   const groups = buildGroups().filter(g => okSuppliers.has(g.supplier_id.toLowerCase()));
   if (!groups.length) return;
   const label = _previewResults.find(r => r.ok)?.target_label || _config?.label || "";
@@ -763,9 +779,9 @@ async function handleCreate() {
     void decoratePoMailBadges(out);
     out.className = `shortage-po-result ${results.every(r => r.ok) ? "is-ok" : "is-error"}`;
     out.hidden = false;
-    const bills = new Map(results.filter(r => r.ok).map(r => [r.supplier_id, r.bill_no]));
+    const bills = billsBySupplierPart(results);
     for (const row of checkedRows()) {
-      const bill = bills.get(row.supplierId.trim());
+      const bill = bills.get(`${row.supplierId.trim().toLowerCase()}|${String(row.part).trim().toUpperCase()}`);
       if (bill) { row.doneBill = bill; row.checked = false; }
     }
     resetPreview();

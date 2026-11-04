@@ -177,6 +177,12 @@ class BatchDispatchRequest(BaseModel):
     reset_stored: bool = False
 
 
+class BatchRollbackRequest(BaseModel):
+    order_ids: list[int]
+    confirm: bool = False
+    acknowledge_full: bool = False  # 有需整檔還原的單時，使用者確認「略過那些單、其餘精準退回」
+
+
 class DecisionRequest(BaseModel):
     decisions: dict[str, str] = Field(default_factory=dict)
     supplements: dict[str, float] = Field(default_factory=dict)
@@ -380,6 +386,7 @@ class ErpPoLine(BaseModel):
     price: float
     pre_in_date: str  # YYYY-MM-DD
     allocations: Optional[list[ErpPoAllocation]] = None
+    currency: Optional[str] = None  # NTD / USD；空 = 依該料號 + 供應商最近一張採購單自動判斷
 
 
 class ErpPoRequest(BaseModel):
@@ -387,6 +394,13 @@ class ErpPoRequest(BaseModel):
     remark: str = ""
     salesman: Optional[str] = None
     lines: list[ErpPoLine]
+    currency: Optional[str] = None  # 整張單幣別（拆單後帶入）；空 = 依明細
+    tax_mode: Optional[str] = None  # taxable 應稅 / exempt 免稅；空 = 依正航供應商主檔（國外廠商免稅）
+
+
+class ErpPoTermsRequest(BaseModel):
+    supplier_id: str
+    parts: list[str] = []
 
 
 class ErpPoCreateRequest(ErpPoRequest):

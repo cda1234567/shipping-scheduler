@@ -218,6 +218,7 @@ class EnforcementApiTests(unittest.TestCase):
             patch.object(db, "get_conn", temp_conn),
             patch.object(sp, "find_group_duplicates", lambda groups: []),
             patch.object(sp, "prepare_groups", lambda groups, ids=None: groups),
+            patch("app.services.erp_purchase.split_by_currency", lambda groups: groups),
             patch.object(sp, "create_many", lambda groups, actor="", ip="": self.calls.append(groups) or [{"ok": True, "supplier_id": "P0372"}]),
             patch("app.services.erp_purchase.create_po", lambda raw, actor="", client_ip="": self.calls.append(raw) or {
                 "ok": True, "bill_no": "PO-1", "target_label": "t", "supplier": {"id": "P0372"}, "totals": {"total": 1}}),
