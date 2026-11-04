@@ -5304,6 +5304,8 @@ body.desktop-dark .frequent-zero-usage li span {
 .shortage-po-group-head { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #eef2f7; border-radius: 8px; font-size: 13px; }
 .shortage-po-remark { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #374151; }
 .shortage-po-remark input { padding: 3px 6px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; width: 240px; }
+.shortage-po-tax { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #374151; }
+.shortage-po-tax select { padding: 2px 4px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; }
 .shortage-po-table td { vertical-align: top; }
 .shortage-po-table select { padding: 3px 4px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; }
 .shortage-po-table input[data-act="supplier"] { min-width: 80px; }

@@ -395,7 +395,7 @@ class ErpPoRequest(BaseModel):
     salesman: Optional[str] = None
     lines: list[ErpPoLine]
     currency: Optional[str] = None  # 整張單幣別（拆單後帶入）；空 = 依明細
-    tax_mode: Optional[str] = None  # taxable 應稅 / exempt 免稅；空 = 依正航供應商主檔（國外廠商免稅）
+    tax_mode: Optional[str] = None  # taxable 應稅 / exempt 免稅；空 = 依正航供應商 comCustTrade.TaxKind（0 應稅，非 0 免稅）
 
 
 class ErpPoTermsRequest(BaseModel):

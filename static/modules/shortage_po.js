@@ -15,6 +15,9 @@ let _data = null; // /api/shortage-po/list 回應
 let _listOrderIds = []; // 產生目前缺料清單時勾選的訂單，預覽 / 寫入時送給伺服器重算訂單分配
 let _rows = [];
 let _remarks = {}; // supplierId → 使用者改過的備註
+let _taxModes = {}; // supplierId → 使用者手動選的課稅別（taxable / exempt）
+let _taxDefaults = {}; // supplierId → /api/erp/po/tax-defaults（正航供應商 TaxKind）
+let _taxLoading = new Set();
 let _showAll = false;
 let _busy = false;
 let _initialized = false;
@@ -118,6 +121,7 @@ function toRow(p) {
     lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "" },
     moqAdjusted: Boolean(p.moq_adjusted),
     price: String(p.price ?? 0),
+    currency: "", // 空 = 依該供應商 + 料號最近一張正航採購單自動判斷；NTD / USD = 手動
     date: p.pre_in_date || "",
     dates: p.pre_in_dates || {},
     originalDates: p.original_pre_in_dates || {},
@@ -152,6 +156,7 @@ async function buildList() {
     renderBadge();
     _rows = (_data.parts || []).map(toRow);
     _remarks = {};
+    _taxModes = {};
     _dismissedLinks = new Set();
     syncLinked();
     renderWarnings();
@@ -375,6 +380,36 @@ function adjustedNote(r) {
   return m && d ? `原推算 ${Number(m)}/${Number(d)} 已過，改今天` : "";
 }
 
+const CURRENCY_OPTIONS = [["", "自動"], ["NTD", "台幣"], ["USD", "美金"]];
+
+/** 供應商組目前的課稅別：手動優先，其次正航 TaxKind 預設（0 應稅，非 0 免稅）。 */
+export function groupTaxMode(sid, manual = _taxModes, defaults = _taxDefaults) {
+  if (manual[sid]) return manual[sid];
+  return defaults[sid]?.tax_mode || "taxable";
+}
+
+export function groupTaxHint(sid, manual = _taxModes, defaults = _taxDefaults) {
+  const d = defaults[sid];
+  const base = d ? (Number(d.tax_kind) ? `正航課稅別 ${d.tax_kind} → 預設免稅` : "正航課稅別 0 → 預設應稅") : "讀取正航課稅別…";
+  if (!manual[sid]) return base;
+  const code = manual[sid] === "exempt" ? (d?.exempt_tax_type ?? 4) : 0;
+  return `手動（寫入課稅別 ${code}）`;
+}
+
+async function loadTaxDefaults() {
+  const ids = [...new Set(_rows.map(r => r.supplierId.trim()).filter(Boolean))]
+    .filter(sid => !(sid in _taxDefaults) && !_taxLoading.has(sid));
+  if (!ids.length) return;
+  ids.forEach(sid => _taxLoading.add(sid));
+  try {
+    const data = await apiJson(`/api/erp/po/tax-defaults?supplier_ids=${encodeURIComponent(ids.join(","))}`);
+    Object.assign(_taxDefaults, data.suppliers || {});
+    for (const sid of ids) if (!(sid in _taxDefaults)) _taxDefaults[sid] = null;
+    renderGroups();
+  } catch (_) { /* 讀不到預設時不送 tax_mode，伺服器仍依正航 TaxKind 判斷 */ }
+  finally { ids.forEach(sid => _taxLoading.delete(sid)); }
+}
+
 function rowHtml(r) {
   const note = adjustedNote(r);
   const lnote = linkNote(r);
@@ -402,6 +437,9 @@ function rowHtml(r) {
     <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}>
       ${r.needQty || r.moqSource ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource, r.lastReceipt))}</div>` : ""}</td>
     <td><input type="number" data-act="price" class="num" min="0" step="any" value="${esc(r.price)}" ${r.doneBill ? "disabled" : ""}></td>
+    <td><select data-act="currency" ${r.doneBill ? "disabled" : ""}>
+      ${CURRENCY_OPTIONS.map(([v, label]) => `<option value="${v}" ${(r.currency || "") === v ? "selected" : ""}>${label}</option>`).join("")}
+    </select></td>
     <td><input type="date" data-act="date" value="${esc(r.date)}" ${r.doneBill ? "disabled" : ""}>
       ${note ? `<div class="erp-po-hint shortage-po-adjusted">${esc(note)}</div>` : ""}</td>
     <td title="${esc(tip)}">${esc(e.code)} ${esc(e.model)}<div class="erp-po-hint">出貨 ${esc(e.ship_date) || "—"}${r.orders.length > 1 ? `（共 ${r.orders.length} 張）` : ""}</div></td>
@@ -432,17 +470,22 @@ function renderGroups() {
         <span class="erp-po-hint">${list.length} 行</span>
         <span class="erp-po-hint">已勾小計（未稅）<strong data-role="subtotal">${fmtQty(subtotal(list))}</strong></span>
         <span class="spacer"></span>
+        ${sid ? `<label class="shortage-po-tax">課稅別 <select data-act="tax">
+          <option value="taxable" ${groupTaxMode(sid) === "taxable" ? "selected" : ""}>應稅（外加 5%）</option>
+          <option value="exempt" ${groupTaxMode(sid) === "exempt" ? "selected" : ""}>免稅</option>
+        </select> <span class="erp-po-hint">${esc(groupTaxHint(sid))}</span></label>` : ""}
         ${sid ? `<label class="shortage-po-remark">備註 <input type="text" data-act="remark" value="${esc(remarkFor(sid, list))}" autocomplete="off"></label>` : ""}
       </div>
       <div class="erp-po-table-wrap"><table class="erp-po-table shortage-po-table">
         <thead><tr><th></th><th>料號</th><th>品名</th><th>類別</th><th>供應商</th><th class="num">需求</th><th class="num">ST 現有</th>
-          <th class="num" title="僅供參考，不從缺料量扣除（缺 = 需求 − ST）">在途（僅參考）</th><th class="num">缺</th><th>數量</th><th>單價</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
+          <th class="num" title="僅供參考，不從缺料量扣除（缺 = 需求 − ST）">在途（僅參考）</th><th class="num">缺</th><th>數量</th><th>單價</th><th title="自動 = 依該供應商此料號最近一張正航採購單">幣別</th><th>預計進貨日</th><th>來源訂單</th></tr></thead>
         <tbody>${list.map(rowHtml).join("")}</tbody>
       </table></div>
     </div>`;
   }).join("");
   box.querySelectorAll('input[data-act="check-all"][data-partial]').forEach(cb => { cb.indeterminate = true; });
   void decoratePoMailBadges(box);
+  void loadTaxDefaults();
   updateButtons();
 }
 
@@ -568,8 +611,20 @@ function onGroupsChange(event) {
     renderGroups();
     return;
   }
+  if (act === "tax") {
+    const sid = event.target.closest(".shortage-po-group")?.dataset.supplier;
+    if (sid) _taxModes[sid] = event.target.value;
+    renderGroups();
+    recalcPreview();
+    return;
+  }
   const row = rowOf(event.target);
   if (!row) return;
+  if (act === "currency") {
+    row.currency = event.target.value;
+    recalcPreview();
+    return;
+  }
   if (act === "check") {
     row.checked = event.target.checked;
     if (row.linkedFrom?.length) row.ownChecked = null; // 使用者自己決定勾選，不再還原
@@ -614,13 +669,14 @@ function buildGroups() {
     groups.push({
       supplier_id: sid,
       remark,
+      ...(_taxModes[sid] ? { tax_mode: _taxModes[sid] } : {}), // 沒手動選 → 伺服器依正航 TaxKind
       lines: list.map(r => {
         const qty = Number(r.qty);
         const price = r.price === "" ? NaN : Number(r.price);
         if (!(qty > 0)) throw new Error(`${r.part}：請填大於 0 的數量`);
         if (!Number.isFinite(price) || price < 0) throw new Error(`${r.part}：請填單價`);
         if (!r.date) throw new Error(`${r.part}：請填預計進貨日`);
-        return { part_number: r.part, qty, price, pre_in_date: r.date };
+        return { part_number: r.part, qty, price, pre_in_date: r.date, ...(r.currency ? { currency: r.currency } : {}) };
       }),
     });
   }
@@ -645,6 +701,12 @@ function okPreviewCount() {
   return (_previewResults || []).filter(r => r.ok).length;
 }
 
+/** 課稅別 / 幣別改變：已有預覽就直接重新預覽（重算稅額）；沒有預覽只更新按鈕。 */
+function recalcPreview() {
+  if (_previewResults && !_busy) { void handlePreview(); return; }
+  invalidatePreview();
+}
+
 function invalidatePreview() {
   if (!_previewResults) { updateButtons(); return; }
   updateButtons();
@@ -661,7 +723,7 @@ function cardHtml(r) {
     : "";
   return `<div class="shortage-po-card">
     <div class="erp-po-preview-head">預估單號 <strong class="mono">${esc(r.bill_no)}</strong>（預估，實際以寫入結果為準）　供應商 ${esc(r.supplier.id)} ${esc(r.supplier.name)}</div>
-    <div class="erp-po-hint">幣別 <strong>${esc(r.currency || "NTD")}</strong>${r.currency && r.currency !== "NTD" ? `（匯率 ${esc(r.exch_rate)}）` : ""}　課稅別 <strong>${esc(r.tax_label || "應稅（外加 5%）")}</strong>（依最近採購單 / 正航供應商主檔自動判斷；要改請到「開採購單」）</div>
+    <div class="erp-po-hint">幣別 <strong>${esc(r.currency || "NTD")}</strong>${r.currency && r.currency !== "NTD" ? `（匯率 ${esc(r.exch_rate)}）` : ""}　課稅別 <strong>${esc(r.tax_label || "應稅（外加 5%）")}</strong>（幣別依最近採購單、課稅別依正航供應商課稅別；可在上方各供應商「課稅別」與每行「幣別」修改）</div>
     ${r.remark ? `<div class="erp-po-hint">備註：${esc(r.remark)}</div>` : ""}
     ${masters}
     <table class="erp-po-table"><thead><tr><th>料號</th><th>品名</th><th class="num">數量</th><th class="num">單價</th><th class="num">未稅金額</th><th>預計進貨日</th></tr></thead>

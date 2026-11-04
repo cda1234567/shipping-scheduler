@@ -450,6 +450,11 @@ class CredentialTests(EnvCase):
         with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03"}):
             cfg = ep.get_config()
             self.assertFalse(cfg["available"])
+            self.assertIn("未開放開採購單", cfg["reason"])
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1",
+                                     "ERP_ALLOW_PROD_PO_CHICOMP03": "1"}):
+            cfg = ep.get_config()
+            self.assertFalse(cfg["available"])
             self.assertFalse(cfg["is_test"])
             self.assertEqual(cfg["reason"], "無法使用（未設定寫入帳號）")
             with self.assertRaises(ErpNotConfigured):
@@ -750,7 +755,7 @@ class WriteFlowCase(EnvCase):
     def test_never_copy_into_comp03(self):
         self.tgt = make_target("CHIComp03")
         self.tgt.master_ids = {"comCustomer": set(), "comProduct": {"AC-40838B"}, "comWareHouse": {"001"}}
-        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03", "ERP_SQL_WRITE_USER_CHICOMP03": "w",
+        with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1", "ERP_ALLOW_PROD_PO_CHICOMP03": "1", "ERP_SQL_WRITE_USER_CHICOMP03": "w",
                                      "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "pw"}):
             with self.assertRaises(ep.PoValidationError) as cm:
                 ep.create_po({**REQ, "confirm": True})
@@ -1313,6 +1318,7 @@ class RelatedMasterCopyTests(WriteFlowCase):
 
     def test_production_never_copies_related(self):
         with patch.dict(os.environ, {"ERP_WRITE_TARGET": "CHIComp03",
+                "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1", "ERP_ALLOW_PROD_PO_CHICOMP03": "1",
                 "ERP_SQL_WRITE_USER_CHICOMP03": "w", "ERP_SQL_WRITE_PASSWORD_CHICOMP03": "pw"}):
             self.tgt = make_target("CHIComp03")
             self.tgt.master_ids["comCustomer"] = set()
@@ -1346,19 +1352,23 @@ class CurrencyTaxPureTests(unittest.TestCase):
         self.assertEqual(ep.normalize_tax_mode("exempt"), ep.TAX_EXEMPT)
         self.assertEqual(ep.normalize_tax_mode("taxable"), ep.TAX_TAXABLE)
 
-    def test_default_tax_only_foreign_vendor_exempt(self):
-        self.assertEqual(ep.default_tax_mode({"IsForeign": 1}), ep.TAX_EXEMPT)
-        self.assertEqual(ep.default_tax_mode({"IsForeign": 0}), ep.TAX_TAXABLE)
-        self.assertEqual(ep.default_tax_mode({}), ep.TAX_TAXABLE)
-        self.assertEqual(ep.default_tax_mode(None), ep.TAX_TAXABLE)
+    def test_default_tax_follows_vendor_tax_kind(self):
+        self.assertEqual(ep.default_tax_mode(0), ep.TAX_TAXABLE)
+        for kind in (1, 2, 3, 4):
+            self.assertEqual(ep.default_tax_mode(kind), ep.TAX_EXEMPT)
 
-    def test_exempt_tax_type_env(self):
-        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": ""}):
-            self.assertEqual(ep.exempt_tax_type(), 3)
-        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": "2"}):
-            self.assertEqual(ep.exempt_tax_type(), 2)
-        with patch.dict(os.environ, {"ERP_PO_EXEMPT_TAX_TYPE": "9"}):
-            self.assertEqual(ep.exempt_tax_type(), 3)
+    def test_tax_type_for(self):
+        self.assertEqual(ep.tax_type_for(ep.TAX_TAXABLE, 4), 0)       # 手動應稅 = 0
+        self.assertEqual(ep.tax_type_for(ep.TAX_EXEMPT, 4), 4)        # 免稅 = 供應商 TaxKind
+        self.assertEqual(ep.tax_type_for(ep.TAX_EXEMPT, 1), 1)
+        self.assertEqual(ep.tax_type_for(ep.TAX_EXEMPT, 0), ep.FALLBACK_EXEMPT_TAX_TYPE)
+        self.assertEqual(ep.FALLBACK_EXEMPT_TAX_TYPE, 4)
+        self.assertEqual(ep.tax_label(ep.TAX_EXEMPT, 4), "免稅（正航課稅別 4）")
+        self.assertEqual(ep.tax_label(ep.TAX_TAXABLE, 0), "應稅（外加 5%）")
+
+    def test_no_is_foreign_rule_or_env(self):
+        self.assertFalse(hasattr(ep, "supplier_is_foreign"))
+        self.assertFalse(hasattr(ep, "exempt_tax_type"))
 
     def test_usd_money_three_decimals_and_local_amounts(self):
         lines = [{"qty": Decimal("3"), "price": Decimal("1.2345")}, {"qty": Decimal("7"), "price": Decimal("0.111")}]
@@ -1401,17 +1411,55 @@ class CurrencyTaxFlowTests(WriteFlowCase):
         (_, main, _), = self.inserts("ordBillMain")
         self.assertEqual((main["CurrID"], main["TaxType"], main["SumTax"]), ("NTD", 0, Decimal("5")))
 
-    def test_foreign_vendor_defaults_exempt(self):
+    def _kind(self, kind):
+        # 來源與目標都有同一筆交易條件（正式環境來源 = 目標 = CHIComp03），不觸發關聯主檔複製
+        for conn in (self.src, self.tgt):
+            conn.related["comCustTrade"] = [{"Flag": 2, "ID": "P0175", "TaxKind": kind}]
+
+    def test_foreign_flag_ignored_tax_kind_zero_taxable(self):
         self.src.vendor_row = {**CUSTOMER, "IsForeign": 1}
         ep.create_po({**REQ, "confirm": True})
         (_, main, _), = self.inserts("ordBillMain")
-        self.assertEqual((main["TaxType"], main["SumTax"], main["SumAmtATax"]), (3, Decimal("0"), Decimal("100.00")))
+        self.assertEqual((main["TaxType"], main["SumTax"]), (0, Decimal("5")))
+
+    def test_vendor_tax_kind_4_defaults_exempt_type_4(self):
+        self._kind(4)
+        res = ep.create_po({**REQ, "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["TaxType"], main["SumTax"], main["SumAmtATax"], main["LocalTax"]),
+                         (4, Decimal("0"), Decimal("100.00"), Decimal("0")))
+        for _, sub, _ in self.inserts("ordBillSub"):
+            self.assertEqual((sub["TaxAmt"], sub["MLTaxAmt"], sub["TaxRate"]), (Decimal("0"), Decimal("0"), Decimal("0.05")))
+        self.assertEqual((res["tax_mode"], res["tax_type"], res["tax_label"]), (ep.TAX_EXEMPT, 4, "免稅（正航課稅別 4）"))
+
+    def test_vendor_tax_kind_1_defaults_exempt_type_1(self):
+        self._kind(1)
+        ep.create_po({**REQ, "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["TaxType"], main["SumTax"]), (1, Decimal("0")))
+
+    def test_manual_taxable_overrides_exempt_vendor(self):
+        self._kind(4)
+        ep.create_po({**REQ, "tax_mode": "taxable", "confirm": True})
+        (_, main, _), = self.inserts("ordBillMain")
+        self.assertEqual((main["TaxType"], main["SumTax"]), (0, Decimal("5")))
 
     def test_manual_tax_and_currency_override(self):
         self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
         ep.create_po({**REQ, "currency": "NTD", "tax_mode": "exempt", "confirm": True})
         (_, main, _), = self.inserts("ordBillMain")
-        self.assertEqual((main["CurrID"], main["TaxType"], main["SumTax"]), ("NTD", 3, Decimal("0")))
+        self.assertEqual((main["CurrID"], main["TaxType"], main["SumTax"]), ("NTD", 4, Decimal("0")))
+
+    def test_preview_many_includes_terms(self):
+        self._kind(4)
+        res, = ep.preview_many([REQ], "shortage")
+        self.assertEqual((res["ok"], res["tax_type"], res["tax_mode"], res["currency"]), (True, 4, ep.TAX_EXEMPT, "NTD"))
+
+    def test_resolve_terms_many(self):
+        self._kind(3)
+        out = ep.resolve_terms_many(["P0175", "", "P0175"])
+        self.assertEqual(list(out), ["P0175"])
+        self.assertEqual((out["P0175"]["tax_kind"], out["P0175"]["tax_mode"], out["P0175"]["tax_type"]), (3, ep.TAX_EXEMPT, 3))
 
     def test_usd_without_rate_refused(self):
         self.src.currency_rates = {}
@@ -1444,11 +1492,14 @@ class CurrencyTaxFlowTests(WriteFlowCase):
                          [("NTD", ["AC-40838B", "X2"]), ("USD", ["USD-PART"])])
 
     def test_resolve_terms(self):
-        self.src.vendor_row = {**CUSTOMER, "IsForeign": 1}
+        self.src.related["comCustTrade"] = [{"Flag": 2, "ID": "P0175", "TaxKind": 4}]
         self.src.last_currency[("P0175", "AC-40838B")] = ("USD", "PO-1", 20261001)
         out = ep.resolve_terms("P0175", ["ac-40838b"])
-        self.assertEqual((out["tax_mode"], out["is_foreign"], out["currencies"]["AC-40838B"]["currency"]),
-                         (ep.TAX_EXEMPT, True, "USD"))
+        self.assertEqual((out["tax_mode"], out["tax_kind"], out["tax_type"], out["currencies"]["AC-40838B"]["currency"]),
+                         (ep.TAX_EXEMPT, 4, 4, "USD"))
+        self.src.related["comCustTrade"] = []
+        out = ep.resolve_terms("P0175", [])
+        self.assertEqual((out["tax_mode"], out["tax_type"], out["exempt_tax_type"]), (ep.TAX_TAXABLE, 0, 4))
 
 
 class ShortageTargetTests(EnvCase):
@@ -1467,3 +1518,35 @@ class ShortageTargetTests(EnvCase):
         with patch.dict(os.environ, {"ERP_SHORTAGE_PO_TARGET": "Comp3; DROP"}):
             with self.assertRaises(ep.ErpNotConfigured):
                 ep.get_target("shortage")
+
+
+class ProductionPoGateTests(EnvCase):
+    """v2026.11.04.8：開採購單 / 缺料採購寫正式公司 CHIComp03 需兩把鑰匙。"""
+
+    def test_comp03_refused_without_flags(self):
+        for flags in ({}, {"ERP_ALLOW_PROD_WRITE_CHICOMP03": "1"}, {"ERP_ALLOW_PROD_PO_CHICOMP03": "1"}):
+            env = {"ERP_WRITE_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "0", "ERP_ALLOW_PROD_PO_CHICOMP03": "0", **flags}
+            if flags == {"ERP_ALLOW_PROD_WRITE_CHICOMP03": "1"}:
+                env["ERP_ALLOW_PROD_PO_CHICOMP03"] = "true"  # 只接受 '1'（同一次收料）
+            with patch.dict(os.environ, env):
+                with self.assertRaises(ep.ErpNotConfigured):
+                    ep.get_target()
+                with self.assertRaises(ep.ErpNotConfigured):
+                    ep.get_target("shortage")
+                cfg = ep.get_config()
+                self.assertFalse(cfg["available"])
+
+    def test_comp03_allowed_with_both_flags(self):
+        env = {"ERP_WRITE_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1", "ERP_ALLOW_PROD_PO_CHICOMP03": "1"}
+        with patch.dict(os.environ, env):
+            self.assertEqual(ep.get_target(), "CHIComp03")
+            self.assertEqual(ep.get_target("shortage"), "CHIComp03")
+            self.assertFalse(ep.is_test("CHIComp03"))
+            # 沒有 Comp03 專用寫入帳號 → 不可用（測試帳號只給測試公司）
+            self.assertIsNone(ep.write_credentials("CHIComp03"))
+
+    def test_shortage_override_to_comp03_also_gated(self):
+        with patch.dict(os.environ, {"ERP_SHORTAGE_PO_TARGET": "CHIComp03", "ERP_ALLOW_PROD_WRITE_CHICOMP03": "1"}):
+            with self.assertRaises(ep.ErpNotConfigured):
+                ep.get_target("shortage")
+            self.assertEqual(ep.get_target(), "CHIComp01")

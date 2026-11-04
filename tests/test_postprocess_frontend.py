@@ -24,6 +24,19 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("/api/shortage-po/config", sp)
         self.assertIn("export function billsBySupplierPart", sp)
 
+    def test_tax_dropdowns_in_both_tabs_v8(self):
+        """v2026.11.04.8：開採購單與缺料採購都有可改的應稅 / 免稅，預設依正航 TaxKind，改了就重算預覽。"""
+        js = read(MOD / "erp_purchase.js")
+        self.assertNotIn("is_foreign", js)
+        self.assertIn("export function taxHintText", js)
+        self.assertIn("void handlePreview()", js)
+        sp = read(MOD / "shortage_po.js")
+        for needle in ('data-act="tax"', 'data-act="currency"', "/api/erp/po/tax-defaults", "tax_mode: _taxModes[sid]",
+                       "function recalcPreview()", "export function groupTaxMode"):
+            self.assertIn(needle, sp)
+        self.assertNotIn("要改請到「開採購單」", sp)
+        self.assertNotIn("國外廠商", read(ROOT / "static" / "index.html"))
+
     def test_moq_hint_only_shows_moq_without_real_need(self):
         js = read(MOD / "erp_purchase.js")
         self.assertIn("const hasNeed = Number.isFinite(n) && n > 1;", js)

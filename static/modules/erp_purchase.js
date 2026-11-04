@@ -13,7 +13,7 @@ let _searchTimer = null;
 let _defaultDue = null; // /api/holidays/default-due：{ date, reason }（今天 + LEAD_DAYS 再套用假日規則）
 let _companions = []; // 後段加工（另開一張採購單）的明細
 let _taxManual = false; // 使用者手動改過課稅別後，換供應商不再自動覆蓋
-let _terms = null; // /api/erp/po/terms：{ supplier_id, is_foreign, tax_mode }
+let _terms = null; // /api/erp/po/terms：{ supplier_id, tax_kind, tax_mode, tax_type, exempt_tax_type }
 
 export const CURRENCY_LABELS = { NTD: "台幣", USD: "美金" };
 const CURRENCY_SOURCE_TEXT = { erp: "正航最近採購單", site: "本站最近採購單", default: "查無紀錄，預設台幣", manual: "手動" };
@@ -239,10 +239,18 @@ async function refreshTerms(onlyIdx = null) {
 function renderTaxHint() {
   const el = document.getElementById("erp-po-tax-hint");
   if (!el) return;
-  if (_taxManual) el.textContent = "手動選擇";
-  else if (_terms && _supplier && _terms.supplier_id === _supplier.id) {
-    el.textContent = _terms.is_foreign ? "正航標記為國外廠商 → 預設免稅" : "國內廠商 → 預設應稅";
-  } else el.textContent = "預設應稅；正航標記國外廠商預設免稅";
+  const known = _terms && _supplier && _terms.supplier_id === _supplier.id;
+  el.textContent = taxHintText(known ? _terms : null, _taxManual, document.getElementById("erp-po-tax")?.value);
+}
+
+/** 課稅別提示：依正航供應商 comCustTrade.TaxKind（0 應稅，非 0 免稅，免稅寫入課稅別代碼）。 */
+export function taxHintText(terms, manual, mode) {
+  if (!terms) return "依正航供應商課稅別（TaxKind）：0 應稅，其餘免稅";
+  const kind = Number(terms.tax_kind || 0);
+  const base = kind ? `正航供應商課稅別 ${kind} → 預設免稅` : "正航供應商課稅別 0 → 預設應稅";
+  if (!manual) return base;
+  const code = mode === "exempt" ? `，寫入課稅別 ${terms.exempt_tax_type ?? (kind || 4)}` : "，寫入課稅別 0";
+  return `手動選擇${code}（${base}）`;
 }
 
 function receiptOf(d) {
@@ -728,7 +736,13 @@ export async function initErpPurchase() {
     renderLines();
   });
   document.getElementById("btn-erp-po-preview")?.addEventListener("click", handlePreview);
-  document.getElementById("erp-po-tax")?.addEventListener("change", () => { _taxManual = true; renderTaxHint(); });
+  document.getElementById("erp-po-tax")?.addEventListener("change", () => {
+    _taxManual = true;
+    renderTaxHint();
+    // 已有預覽 → 依新課稅別重算稅額（寫入一律以畫面當下設定為準）
+    const preview = document.getElementById("erp-po-preview");
+    if (preview && !preview.hidden && !_busy) void handlePreview();
+  });
   document.getElementById("btn-erp-po-mail-refresh")?.addEventListener("click", () => { void decorateHistoryMail(true); });
   document.getElementById("erp-po-supplier-input")?.addEventListener("input", () => {
     clearTimeout(_searchTimer);

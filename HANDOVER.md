@@ -70,9 +70,10 @@
 - 目標公司：`ERP_WRITE_TARGET`（預設 `CHIComp02` 測試；正式為 `CHIComp03`）。頁面徽章會顯示目前寫入哪一家。
 - 測試公司由環境變數 `ERP_TEST_TARGETS`（逗號分隔，預設 `CHIComp01,CHIComp02,CHIComp13`，每次呼叫即時讀取；`erp_purchase.test_targets()` / `is_test()`）決定，目前 = 公司1、公司2、公司13（公司13 為正航範例公司，沒有我們的供應商 / 料號、倉庫只有 01-05、沒有人員 017，全靠補主檔）。項目須符合 `CHIComp\d\d`；**公司3（正式）與來源庫 `ERP_SQL_DATABASE` 即使列入也一律不算測試公司**（不給測試帳密、不複製主檔）。測試公司共用 `ERP_SQL_TEST_USER / ERP_SQL_TEST_PASSWORD / ERP_SQL_TEST_SERVER`；**資料庫一律是 `ERP_WRITE_TARGET`**，`ERP_SQL_TEST_DB` / `ERP_SQL_TEST_DB_ALT` 已不使用。測試帳號絕不會用在公司3（或任何非測試公司）。
 - 帳密查找順序：`ERP_SQL_WRITE_USER_/PASSWORD_/SERVER_<TARGET>`（例 `..._CHICOMP03`，server 格式 `host,port`）→ 僅測試公司才退回 `ERP_SQL_TEST_*`。公司3：另建 `D:/secrets/shipping-erp-comp03-write.env` 放公司3專用帳密。
-- **切換到公司3**：設 `ERP_WRITE_TARGET=CHIComp03` 後重建容器；先用預覽確認徽章為紅色「寫入：公司3（正式）」。寫入公司3時缺主檔不會自動複製（直接報錯）；寫入只新增、不改不刪，且本系統無法修改 / 刪除已開的單。
+- **切換到公司3**（v2026.11.04.8 起正式使用）：設 `ERP_WRITE_TARGET=CHIComp03`、`ERP_ALLOW_PROD_WRITE_CHICOMP03=1`、`ERP_ALLOW_PROD_PO_CHICOMP03=1`（兩把鑰匙，缺一即拒絕；只接受 `1`）後重建容器，缺料採購預設跟著 `ERP_WRITE_TARGET`；先用預覽確認徽章為紅色「寫入：公司3（正式）」。寫入公司3時缺主檔不會自動複製（直接報錯）；寫入只新增、不改不刪，且本系統無法修改 / 刪除已開的單。
 - **補主檔（只限測試公司，從公司3複製）**：依序 comCustomer（供應商）→ comProductClass（各料號的 ClassID）→ comProduct → comWareHouse（`ERP_ST_WARE_ID`，如 001）→ comDepartment（範本單 DepartID，以及人員自己的 DepartID，缺才補）→ comPerson（採購員 SalesMan、製單人 MakerID，如 017）。類別 / 部門來源也沒有就略過；供應商 / 料號 / 倉庫 / 人員來源沒有則報錯。只有目標庫會被寫入，來源連線唯讀，且每次寫入前都核對 `DB_NAME()`。預覽的 `masters_to_copy` 會列出將複製的主檔。INSERT 欄位取自目標庫 `sys.columns`。
 - 本機紀錄在 SQLite `erp_purchase_orders`；帳密一律不進 repo。
+- **課稅別（v2026.11.04.8）**：依正航供應商交易條件 `comCustTrade.TaxKind`（Flag=2）。TaxKind 0 → 應稅（TaxType 0，外加 5%）；非 0 → 免稅，TaxType 寫該 TaxKind（例 P0315/P0317=4、W0214=1）。開採購單與缺料採購（每個供應商組）都有「應稅 / 免稅」下拉可改：應稅 = 0；免稅 = 供應商 TaxKind（為 0 時用 4）。TaxType ≠ 0 時 SumTax / LocalTax / 明細 TaxAmt / MLTaxAmt = 0、明細 TaxRate 照舊 0.05（與公司3既有免稅單相同）。舊的 IsForeign 規則與 `ERP_PO_EXEMPT_TAX_TYPE` 已移除。
 
 ### 缺料採購（缺料採購頁籤）
 

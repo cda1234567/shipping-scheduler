@@ -107,7 +107,11 @@ def get_receive_target() -> str:
     """一次收料的寫入公司：ERP_RECEIVE_TARGET，沒設定時沿用開採購單的 ERP_WRITE_TARGET。"""
     raw = ep._env(RECEIVE_TARGET_ENV, "")
     if not raw:
-        return ep.get_target()
+        # 只取 ERP_WRITE_TARGET 的值，不套用開採購單的正式公司開關；一次收料自己的正式公司檢查在 ensure_writable_target
+        raw = ep._env("ERP_WRITE_TARGET", ep.DEFAULT_TARGET)
+        if not ep.TARGET_RE.match(raw):
+            raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp02）")
+        return raw
     if not ep.TARGET_RE.match(raw):
         raise ErpNotConfigured("ERP_RECEIVE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp13）")
     return raw

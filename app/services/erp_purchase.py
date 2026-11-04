@@ -40,8 +40,11 @@ UNAVAILABLE_REASON = "無法使用（未設定寫入帳號）"
 BILL_PREFIX = "PO-"
 # ── 幣別 / 課稅別（v2026.11.04.7）──────────────────────────────────────────────
 # 幣別：該料號 + 該供應商最近一張採購單是 USD → USD，否則（含查無）一律台幣 NTD；使用者可逐行改。
-# 課稅別：預設應稅（TaxType 0 外加 5%）；只有正航供應商主檔 comCustomer.IsForeign = 1（國外廠商）預設免稅。
-#   免稅寫入的 TaxType 預設 3（正航課稅別 3 = 免稅；可用 ERP_PO_EXEMPT_TAX_TYPE 改），稅額 0、明細 TaxRate 照舊 0.05（與正航手開免稅單相同）。
+# 課稅別（v2026.11.04.8，Andy 決定）：依正航供應商交易條件 comCustTrade.TaxKind（與手開採購單相同）：
+#   TaxKind 0 → 應稅（TaxType 0 外加 5%）；TaxKind 1~4 → 免稅，TaxType 直接寫該供應商的 TaxKind（例 P0315/P0317=4、W0214=1）。
+#   使用者一律可改：選「應稅」= TaxType 0；選「免稅」= 該供應商的 TaxKind（非 0 時），否則用 FALLBACK_EXEMPT_TAX_TYPE。
+#   正航 CHIComp03 既有採購單驗證（唯讀）：TaxType 1/2/3/4 的單 SumTax / LocalTax / 明細 TaxAmt / MLTaxAmt 全為 0，
+#   SumAmtATax = SumBTaxAmt，明細 TaxRate 照舊 0.05；只有 TaxType 0 計 5% 稅。
 # USD 金額規則（依 CHIComp03 2024 起 USD 採購單驗證）：Amount = round(數量 × 單價, comCurrencySys.AmountDeciDigits=3)；
 #   稅額（應稅）= Amount × 5%（不取整，存 4 位，例 PO-20260716001 4647.5 → 232.375）；ExchRate = comCurrencySys.BuyInRate；
 #   LocalTotal = round(未稅合計 × 匯率, 0)，明細 MlAmount = round(Amount × 匯率, 0) 尾差由第 1 行起 ±1 吸收（PO-20260812003 / PO-20260716001）；
@@ -52,8 +55,11 @@ _CURRENCY_ALIASES = {"NTD": "NTD", "TWD": "NTD", "NT": "NTD", "台幣": "NTD", "
 TAX_TAXABLE = "taxable"
 TAX_EXEMPT = "exempt"
 _TAX_ALIASES = {"taxable": TAX_TAXABLE, "應稅": TAX_TAXABLE, "0": TAX_TAXABLE, "exempt": TAX_EXEMPT, "免稅": TAX_EXEMPT}
-DEFAULT_EXEMPT_TAX_TYPE = 3
 TAX_MODE_LABELS = {TAX_TAXABLE: "應稅（外加 5%）", TAX_EXEMPT: "免稅"}
+# 供應商 TaxKind = 0 但使用者手動選免稅時用的課稅別：4（正航免稅供應商最常用的 TaxKind，12 家；Andy 手開免稅單也是 4）
+FALLBACK_EXEMPT_TAX_TYPE = 4
+PROD_WRITE_FLAG_ENV = "ERP_ALLOW_PROD_WRITE_CHICOMP03"
+PROD_PO_FLAG_ENV = "ERP_ALLOW_PROD_PO_CHICOMP03"
 CURRENCY_LABELS = {"NTD": "台幣", "USD": "美金"}
 
 _write_lock = threading.Lock()  # 同一程序內一次只寫一張，避免單號競爭
@@ -123,17 +129,33 @@ def target_label(target: str) -> str:
     return f"公司{int(m.group(1))}" + ("（測試）" if is_test(target) else "")
 
 
+def _flag_on(name: str) -> bool:
+    return _env(name, "0").strip() == "1"  # 同一次收料：只接受 '1'
+
+
+def prod_po_allowed() -> bool:
+    """採購單寫入正式公司 CHIComp03：需 ERP_ALLOW_PROD_WRITE_CHICOMP03=1 且 ERP_ALLOW_PROD_PO_CHICOMP03=1（兩把鑰匙）。"""
+    return _flag_on(PROD_WRITE_FLAG_ENV) and _flag_on(PROD_PO_FLAG_ENV)
+
+
 def get_target(kind: str = "") -> str:
-    """寫入目標公司。kind="shortage"（缺料採購）時若有設 ERP_SHORTAGE_PO_TARGET 就用它，否則同 ERP_WRITE_TARGET（開採購單）。"""
+    """寫入目標公司。kind="shortage"（缺料採購）時若有設 ERP_SHORTAGE_PO_TARGET 就用它，否則同 ERP_WRITE_TARGET（開採購單）。
+    目標是正式公司 CHIComp03 時，必須同時開 ERP_ALLOW_PROD_WRITE_CHICOMP03=1 與 ERP_ALLOW_PROD_PO_CHICOMP03=1，否則拒絕。"""
+    target = ""
     if kind == "shortage":
         override = _env("ERP_SHORTAGE_PO_TARGET", "")
         if override:
             if not TARGET_RE.match(override):
                 raise ErpNotConfigured("ERP_SHORTAGE_PO_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp03）")
-            return override
-    target = _env("ERP_WRITE_TARGET", DEFAULT_TARGET)
-    if not TARGET_RE.match(target):
-        raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp02）")
+            target = override
+    if not target:
+        target = _env("ERP_WRITE_TARGET", DEFAULT_TARGET)
+        if not TARGET_RE.match(target):
+            raise ErpNotConfigured("ERP_WRITE_TARGET 格式不正確（需為 CHIComp 加兩位數字，例如 CHIComp02）")
+    if target == PRODUCTION_TARGET and not prod_po_allowed():
+        raise ErpNotConfigured(
+            f"{target_label(target)} 未開放開採購單（需設定 {PROD_WRITE_FLAG_ENV}=1 與 {PROD_PO_FLAG_ENV}=1）"
+        )
     return target
 
 
@@ -728,25 +750,36 @@ def normalize_tax_mode(value: Any) -> Optional[str]:
     return mode
 
 
-def exempt_tax_type() -> int:
-    raw = _env("ERP_PO_EXEMPT_TAX_TYPE", str(DEFAULT_EXEMPT_TAX_TYPE))
+def vendor_tax_kind(cur, supplier_id: str) -> int:
+    """正航供應商交易條件 comCustTrade.TaxKind（唯讀）；查無 / 非數字 → 0（應稅）。"""
+    if not supplier_id:
+        return 0
+    cur.execute("SELECT TaxKind FROM comCustTrade WHERE Flag = 2 AND ID = %s", (supplier_id,))
+    row = _one(cur)
     try:
-        value = int(raw)
-    except ValueError:
-        value = DEFAULT_EXEMPT_TAX_TYPE
-    return value if value in (1, 2, 3, 4) else DEFAULT_EXEMPT_TAX_TYPE
-
-
-def supplier_is_foreign(supplier: Optional[Dict[str, Any]]) -> bool:
-    try:
-        return bool(int(_get(supplier or {}, "IsForeign", 0) or 0))
+        value = int(_get(row or {}, "TaxKind", 0) or 0)
     except (TypeError, ValueError):
-        return False
+        return 0
+    return value if 0 <= value <= 9 else 0
 
 
-def default_tax_mode(supplier: Optional[Dict[str, Any]]) -> str:
-    """Andy 規則：預設應稅；只有正航供應商主檔標記為國外廠商（comCustomer.IsForeign = 1）才預設免稅。"""
-    return TAX_EXEMPT if supplier_is_foreign(supplier) else TAX_TAXABLE
+def default_tax_mode(tax_kind: int) -> str:
+    """Andy 規則（v2026.11.04.8）：供應商 TaxKind 0 → 應稅；非 0 → 免稅（與正航手開採購單相同）。"""
+    return TAX_TAXABLE if int(tax_kind or 0) == 0 else TAX_EXEMPT
+
+
+def tax_type_for(tax_mode: str, tax_kind: int) -> int:
+    """寫入 ordBillMain.TaxType：應稅 0；免稅 = 供應商 TaxKind（非 0 時），否則 FALLBACK_EXEMPT_TAX_TYPE。"""
+    if tax_mode == TAX_TAXABLE:
+        return 0
+    kind = int(tax_kind or 0)
+    return kind if kind != 0 else FALLBACK_EXEMPT_TAX_TYPE
+
+
+def tax_label(tax_mode: str, tax_type: int) -> str:
+    if tax_mode == TAX_TAXABLE:
+        return TAX_MODE_LABELS[TAX_TAXABLE]
+    return f"免稅（正航課稅別 {int(tax_type)}）"
 
 
 def _ymd_text(value: Any) -> str:
@@ -807,8 +840,9 @@ def resolve_terms(supplier_id: str, parts: List[str]) -> Dict[str, Any]:
     """開採購單畫面用：供應商預設課稅別 + 每個料號的預設幣別（唯讀查正航）。"""
     supplier_id = _text(supplier_id)
     keys = list(dict.fromkeys(_text(p).upper() for p in parts or [] if _text(p)))
-    out: Dict[str, Any] = {"supplier_id": supplier_id, "found": False, "is_foreign": False,
-                           "tax_mode": TAX_TAXABLE, "currencies": {}}
+    out: Dict[str, Any] = {"supplier_id": supplier_id, "found": False, "tax_kind": 0,
+                           "tax_mode": TAX_TAXABLE, "tax_type": 0, "exempt_tax_type": FALLBACK_EXEMPT_TAX_TYPE,
+                           "currencies": {}}
     if not supplier_id:
         return out
     with _source_session() as src:
@@ -816,10 +850,29 @@ def resolve_terms(supplier_id: str, parts: List[str]) -> Dict[str, Any]:
         cur.execute("SELECT * FROM comCustomer WHERE Flag = 2 AND ID = %s", (supplier_id,))
         supplier = _one(cur)
         if supplier is not None:
-            out.update(found=True, supplier_id=_text(_get(supplier, "ID")), is_foreign=supplier_is_foreign(supplier),
-                       tax_mode=default_tax_mode(supplier))
+            sid = _text(_get(supplier, "ID"))
+            kind = vendor_tax_kind(cur, sid)
+            mode = default_tax_mode(kind)
+            out.update(found=True, supplier_id=sid, tax_kind=kind, tax_mode=mode, tax_type=tax_type_for(mode, kind),
+                       exempt_tax_type=tax_type_for(TAX_EXEMPT, kind))
         for part in keys:
             out["currencies"][part] = last_po_currency(cur, out["supplier_id"], part)
+    return out
+
+
+def resolve_terms_many(supplier_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """缺料採購畫面用：多個供應商的預設課稅別（唯讀查正航 comCustTrade.TaxKind）。"""
+    ids = list(dict.fromkeys(_text(s) for s in supplier_ids or [] if _text(s)))[:200]
+    out: Dict[str, Dict[str, Any]] = {}
+    if not ids:
+        return out
+    with _source_session() as src:
+        cur = src.cursor()
+        for sid in ids:
+            kind = vendor_tax_kind(cur, sid)
+            mode = default_tax_mode(kind)
+            out[sid] = {"tax_kind": kind, "tax_mode": mode, "tax_type": tax_type_for(mode, kind),
+                        "exempt_tax_type": tax_type_for(TAX_EXEMPT, kind), "tax_label": tax_label(mode, tax_type_for(mode, kind))}
     return out
 
 
@@ -1185,7 +1238,7 @@ def _plan(src, wcur, target: str, req: Dict[str, Any], today: int, lock: bool, b
     terms = _resolve_plan_terms(src, req, ctx["supplier"], supplier_id)
     lines, totals = compute_money(
         lines_in, currency=terms["currency"], exch_rate=terms["exch_rate"],
-        taxable=terms["tax_mode"] == TAX_TAXABLE, amount_digits=terms["amount_digits"],
+        taxable=terms["tax_type"] == 0, amount_digits=terms["amount_digits"],
     )
     for l in lines:
         l["currency"] = terms["currency"]
@@ -1250,15 +1303,17 @@ def _resolve_plan_terms(src, req: Dict[str, Any], supplier: Dict[str, Any], supp
         exch_rate = rate
         digits = _get(row, "AmountDeciDigits", None)
         amount_digits = int(digits) if digits is not None else 3
-    tax_mode = req.get("tax_mode") or default_tax_mode(supplier)
+    tax_kind = vendor_tax_kind(cur, supplier_id)
+    tax_mode = req.get("tax_mode") or default_tax_mode(tax_kind)
+    tax_type = tax_type_for(tax_mode, tax_kind)
     return {
         "currency": currency,
         "exch_rate": exch_rate,
         "amount_digits": amount_digits,
         "tax_mode": tax_mode,
         "tax_mode_source": "manual" if req.get("tax_mode") else "default",
-        "tax_type": 0 if tax_mode == TAX_TAXABLE else exempt_tax_type(),
-        "is_foreign": supplier_is_foreign(supplier),
+        "tax_type": tax_type,
+        "tax_kind": tax_kind,
         "currency_sources": sources,
     }
 
@@ -1327,8 +1382,8 @@ def _terms_summary(terms: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "tax_mode": mode,
         "tax_mode_source": t.get("tax_mode_source", "default"),
         "tax_type": int(t.get("tax_type") or 0),
-        "tax_label": TAX_MODE_LABELS.get(mode, mode),
-        "is_foreign": bool(t.get("is_foreign")),
+        "tax_label": tax_label(mode, int(t.get("tax_type") or 0)),
+        "tax_kind": int(t.get("tax_kind") or 0),
         "currency_sources": dict(t.get("currency_sources") or {}),
     }
 
@@ -1397,6 +1452,7 @@ def preview_many(raw_reqs: List[Dict[str, Any]], kind: str = "") -> List[Dict[st
                     "target": target,
                     "target_label": summary["target_label"],
                     "is_test": summary["is_test"],
+                    **_terms_summary(plan.get("terms")),
                 })
         finally:
             _close_quietly(wconn, rollback=True)

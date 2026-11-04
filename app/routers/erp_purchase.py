@@ -48,9 +48,19 @@ async def po_part_defaults(part: str = ""):
 
 @router.post("/terms")
 async def po_terms(req: ErpPoTermsRequest):
-    """預設幣別（每料號：最近一張該供應商採購單 USD → USD，否則台幣）與課稅別（國外廠商免稅，其餘應稅）。唯讀。"""
+    """預設幣別（每料號：最近一張該供應商採購單 USD → USD，否則台幣）與課稅別（正航供應商 TaxKind 0 應稅，非 0 免稅）。唯讀。"""
     try:
         return await run_in_threadpool(erp_purchase.resolve_terms, req.supplier_id, req.parts[:erp_purchase.MAX_LINES])
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.get("/tax-defaults")
+async def po_tax_defaults(supplier_ids: str = ""):
+    """多個供應商的預設課稅別（缺料採購畫面用；唯讀查正航 comCustTrade.TaxKind）。"""
+    try:
+        ids = [s for s in supplier_ids.split(",") if s.strip()]
+        return {"suppliers": await run_in_threadpool(erp_purchase.resolve_terms_many, ids)}
     except ErpError as exc:
         raise _http_error(exc) from None
 
