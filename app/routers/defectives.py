@@ -22,6 +22,7 @@ from ..services.defective_deduction import (
     deduct_defectives_from_main,
     replay_defectives_after,
     reverse_defectives_from_main,
+    locate_applied_batch_deduction,
 )
 from ..services.inventory_restore_guard import (
     ensure_defective_batch_delete_allowed, ensure_defective_replay_allowed,
@@ -853,7 +854,7 @@ def _delete_batch_with_history(batch_id: int):
     target_batch = next((b for b in batches if b["id"] == batch_id), None)
     if not target_batch:
         raise HTTPException(404, "找不到批次")
-    ensure_defective_batch_delete_allowed(target_batch)
+    guard = ensure_defective_batch_delete_allowed(target_batch) or {}
 
     decorated_batch = _decorate_batch(target_batch)
     batch_name = decorated_batch.get("filename", f"#{batch_id}")
@@ -881,8 +882,12 @@ def _delete_batch_with_history(batch_id: int):
         main_path = str(db.get_setting("main_file_path") or "").strip()
         if not main_path or not Path(main_path).exists():
             main_file_changed = True
-        elif batch_mtime > 0 and abs(current_mtime - batch_mtime) > 1:
-            # mtime 差距超過 1 秒 → 主檔已被更換
+        elif (
+            batch_mtime > 0 and abs(current_mtime - batch_mtime) > 1
+            and not guard.get("relaxed")
+            and locate_applied_batch_deduction(main_path, target_batch).get("status") != "applied"
+        ):
+            # mtime 不同，而且目前主檔找不到這批扣帳 → 主檔已被更換，只刪紀錄
             main_file_changed = True
         else:
             reverse_header = OVERRUN_REVERSE_HEADER if _detect_batch_type(target_batch) == "overrun" else "不良品回復"

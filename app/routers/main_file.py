@@ -693,6 +693,11 @@ async def edit_main_cell(req: EditCellRequest):
         col=req.col,
         value=cell.value,
     )
+    try:
+        from ..services.merge_to_main import PART_COL
+        edited_part = str(ws.cell(row=req.row, column=PART_COL).value or "").strip().upper()
+    except Exception:
+        edited_part = ""
     wb.close()
 
     part_number = str(recalc_result.get("part_number") or "").strip().upper()
@@ -716,7 +721,11 @@ async def edit_main_cell(req: EditCellRequest):
             rebuild_merge_drafts(active_order_ids)
             schedule_refresh_required = True
 
-    db.log_activity("主檔編輯", f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}")
+    db.log_activity(
+        "主檔編輯",
+        f"[{req.sheet or 'Sheet1'}] R{req.row}C{req.col}: {old_value} → {new_value}"
+        + (f"（料號 {edited_part}）" if edited_part else ""),
+    )
     return {
         "ok": True,
         "old_value": str(old_value or ""),

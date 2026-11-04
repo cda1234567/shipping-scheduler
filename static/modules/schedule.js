@@ -4735,6 +4735,23 @@ function buildWipedDefectivesWarning(wipedDefectives) {
   return `\n\n⚠ 這次退回會沖掉這些日期匯入的不良品/加工多打扣帳，共 ${rows.length} 筆：\n${lines.join("\n")}\n（退回後可用「補回」按鈕一鍵補回）`;
 }
 
+function buildOverwrittenMainEditsWarning(edits) {
+  const rows = Array.isArray(edits) ? edits : [];
+  if (!rows.length) return "";
+  const shown = rows.slice(0, 20).map((item) => {
+    const when = String(item.created_at || "").replace("T", " ").slice(0, 16) || "時間未知";
+    const cell = item.row && item.col ? `R${item.row}C${item.col}` : "";
+    const header = item.column_header ? `［${item.column_header}］` : "";
+    const part = item.part_number || cell || "料號未知";
+    const change = item.row
+      ? `${item.old_value || "空白"} → ${item.new_value || "空白"}`
+      : String(item.detail || "");
+    return `・${part}${header}：${change}（${when}${cell && item.part_number ? `，${cell}` : ""}）`;
+  });
+  const more = rows.length > shown.length ? `\n…另有 ${rows.length - shown.length} 筆` : "";
+  return `\n\n⚠ 這次強制退回也會蓋掉之後手動改過的主檔儲存格，共 ${rows.length} 筆（退回後需要自己重改）：\n${shown.join("\n")}${more}`;
+}
+
 async function replayDefectivesAfterRollback(cutoff, expectedCount, actionButton = null) {
   const originalText = actionButton?.textContent || "";
   if (actionButton) {
@@ -4791,8 +4808,9 @@ async function handleRollbackDispatch(orderId, trigger) {
         ? "\n\n這次強制退回會連同後面已發料的訂單一起退回。"
         : "";
       const wipedWarning = buildWipedDefectivesWarning(preview.wiped_defectives || []);
+      const editsWarning = buildOverwrittenMainEditsWarning(preview.overwritten_main_edits || []);
       const forcedConfirmed = confirm(
-        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要強制退回，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}${wipedWarning}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要強制退回嗎？`
+        `這筆目前被安全機制擋住，因為後面已有其他庫存異動。\n\n如果仍要強制退回，系統會直接用當時備份覆蓋目前主檔，後面新增的主檔異動也會一起被還原。${forceAffectedHint}${wipedWarning}${editsWarning}\n\n共 ${preview.count} 筆：\n${forceOrderLines}\n\n確定仍要強制退回嗎？`
       );
       if (!forcedConfirmed) return;
       forceDelete = true;

@@ -130,9 +130,12 @@ def deduct_defectives_from_main(
     items: list[dict],
     backup_dir: str | None = None,
     entry_header: str = "不良品扣帳",
+    batch_marker: str = "",
 ) -> dict:
     """
     在主檔新增 3 欄扣帳：補料/加回 + 使用/扣帳 + 扣帳後庫存。
+
+    batch_marker：有給時在扣帳表頭加註解（例 defective-batch:29），方便日後定位這批扣帳欄位。
 
     回傳 {"backup_path", "deducted_count", "skipped_parts", "results"}。
     """
@@ -156,6 +159,9 @@ def deduct_defectives_from_main(
     ts_label = local_now().strftime("%m/%d %H:%M")
     deduct_header = ws.cell(row=1, column=col_supply)
     deduct_header.value = str(entry_header or "不良品扣帳").strip() or "不良品扣帳"
+    if batch_marker:
+        from openpyxl.comments import Comment
+        deduct_header.comment = Comment(str(batch_marker), "shipping-scheduler")
     deduct_header.font = HEADER_FONT
     deduct_header.fill = HEADER_FILL
     deduct_header.alignment = CENTER_ALIGN
@@ -349,6 +355,7 @@ def replay_defectives_after(main_path: str, cutoff: str) -> dict:
     replayed_batches = 0
     replayed_records = 0
     skipped_parts: list[str] = []
+    replayed_batch_ids: list[int] = []
     for group in grouped:
         items = [
             {
@@ -371,14 +378,109 @@ def replay_defectives_after(main_path: str, cutoff: str) -> dict:
             items,
             backup_dir=None,
             entry_header=OVERRUN_DEDUCT_HEADER if is_overrun else DEFECTIVE_DEDUCT_HEADER,
+            batch_marker=f"{BATCH_MARKER_PREFIX}{group['batch_id']}" if group["batch_id"] > 0 else "",
         )
+        if group["batch_id"] > 0 and int(result.get("deducted_count") or 0) > 0:
+            replayed_batch_ids.append(group["batch_id"])
         replayed_batches += 1
         replayed_records += int(result.get("deducted_count") or 0)
         skipped_parts.extend(result.get("skipped_parts") or [])
 
+    if replayed_batch_ids:
+        # 補回後主檔已換成「退回備份 + 重新扣帳」，把批次的主檔時間戳記更新成補回後的主檔，
+        # 之後刪除批次時才會回寫庫存，不會誤判成「主檔已更換」。
+        db.update_defective_batches_main_file_mtime(replayed_batch_ids, Path(main_path).stat().st_mtime)
     refresh_snapshot_from_main(main_path)
     return {
         "replayed_batches": replayed_batches,
         "replayed_records": replayed_records,
         "skipped_parts": skipped_parts,
+        "replayed_batch_ids": replayed_batch_ids,
     }
+
+
+BATCH_MARKER_PREFIX = "defective-batch:"
+
+
+def _numeric(value) -> float | None:
+    if isinstance(value, bool) or value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def batch_expected_deductions(batch: dict) -> dict[str, float]:
+    expected: dict[str, float] = {}
+    for record in batch.get("items") or []:
+        qty = float(record.get("defective_qty") or 0)
+        part = str(record.get("part_number") or "").strip().upper()
+        if qty > 0 and part:
+            expected[part] = expected.get(part, 0.0) + qty
+    return {part: _round_away(qty) for part, qty in expected.items()}
+
+
+def locate_applied_batch_deduction(main_path: str, batch: dict) -> dict:
+    """在目前主檔找出這批不良品 / 加工多打扣帳是否仍在（唯讀）。
+
+    以內容比對：表頭為「…扣帳」的欄組，其「使用數量」欄的非空值（料號 → 數量）必須
+    和批次明細完全相同；之後若有一組「…回復」欄的加回值也完全相同，視為已回復。
+    回傳 {"status": "applied" | "missing" | "ambiguous", "columns": [...], "parts": n, "qty": total}；
+    columns 為扣帳欄組第一欄（1 起算）。只有「恰好一組扣帳仍有效」時才是 applied。
+    """
+    expected_all = batch_expected_deductions(batch)
+    result = {"status": "missing", "columns": [], "parts": 0, "qty": 0.0}
+    if not main_path or not Path(main_path).is_file() or not expected_all:
+        return result
+
+    wb = openpyxl.load_workbook(main_path, read_only=True, data_only=False)
+    try:
+        ws = _get_main_worksheet(wb)
+        rows = [tuple(values) for values in ws.iter_rows(min_row=1, values_only=True)]
+    finally:
+        wb.close()
+    if not rows:
+        return result
+
+    header = list(rows[0])
+    part_idx = PART_COL - 1
+    row_parts: list[str] = []
+    for values in rows[1:]:
+        raw = values[part_idx] if len(values) > part_idx else None
+        row_parts.append(str(raw or "").strip().upper())
+    present = set(row_parts)
+    expected = {part: qty for part, qty in expected_all.items() if part in present}
+    if not expected:
+        return result
+
+    def column_values(col_idx: int) -> dict[str, float]:
+        values_map: dict[str, float] = {}
+        for part, values in zip(row_parts, rows[1:]):
+            if not part or col_idx >= len(values):
+                continue
+            number = _numeric(values[col_idx])
+            if number is None or number == 0:
+                continue
+            values_map[part] = values_map.get(part, 0.0) + number
+        return values_map
+
+    def same(found: dict[str, float]) -> bool:
+        return set(found) == set(expected) and all(abs(found[p] - expected[p]) < 1e-6 for p in expected)
+
+    applied: list[int] = []
+    for idx, title in enumerate(header):
+        text = str(title or "").strip()
+        if text.endswith("扣帳") and same(column_values(idx + 1)):
+            applied.append(idx + 1)
+        elif text.endswith("回復") and applied and same(column_values(idx)):
+            applied.pop()
+
+    result["columns"] = applied
+    result["parts"] = len(expected)
+    result["qty"] = sum(expected.values())
+    if len(applied) == 1:
+        result["status"] = "applied"
+    elif len(applied) > 1:
+        result["status"] = "ambiguous"
+    return result

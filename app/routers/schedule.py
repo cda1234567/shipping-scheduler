@@ -195,6 +195,55 @@ def _build_wiped_defectives(cutoff: str) -> list[dict]:
     return wiped
 
 
+def _build_overwritten_main_edits(cutoff: str) -> list[dict]:
+    """強制退回會用備份覆蓋主檔：列出截止時間之後的手動「主檔編輯」（會被一起蓋掉）。"""
+    from ..services.inventory_restore_guard import parse_main_edit_detail
+
+    logs = db.get_activity_logs_after(cutoff, actions=("主檔編輯",), limit=100000) if cutoff else []
+    edits: list[dict] = []
+    for log in logs:
+        parsed = parse_main_edit_detail(log.get("detail") or "") or {}
+        edits.append({
+            "created_at": str(log.get("created_at") or ""),
+            "detail": str(log.get("detail") or ""),
+            "sheet": parsed.get("sheet", ""),
+            "row": parsed.get("row"),
+            "col": parsed.get("col"),
+            "part_number": parsed.get("part_number", ""),
+            "column_header": "",
+            "old_value": parsed.get("old_value", ""),
+            "new_value": parsed.get("new_value", ""),
+        })
+    if not edits:
+        return edits
+
+    main_path = str(db.get_setting("main_file_path") or "").strip()
+    if not main_path or not Path(main_path).is_file():
+        return edits
+    try:
+        import openpyxl
+        from ..services.merge_to_main import PART_COL
+
+        wb = openpyxl.load_workbook(main_path, read_only=True)
+        try:
+            for edit in edits:
+                if not edit.get("row") or not edit.get("col"):
+                    continue
+                ws = wb[edit["sheet"]] if edit.get("sheet") in wb.sheetnames else wb.worksheets[0]
+                if not edit["part_number"]:
+                    for values in ws.iter_rows(min_row=edit["row"], max_row=edit["row"],
+                                               min_col=PART_COL, max_col=PART_COL, values_only=True):
+                        edit["part_number"] = str(values[0] or "").strip().upper()
+                for values in ws.iter_rows(min_row=1, max_row=1, min_col=edit["col"], max_col=edit["col"],
+                                           values_only=True):
+                    edit["column_header"] = str(values[0] or "").strip()
+        finally:
+            wb.close()
+    except Exception as exc:  # 只是提示用，讀不到不影響退回
+        log.warning("讀取被覆蓋的主檔編輯料號失敗：%s", exc)
+    return edits
+
+
 def _build_rollback_preview(order_id: int, *, force: bool = False) -> tuple[dict, dict, list[dict], list[dict], str]:
     order = db.get_order(order_id)
     if not order:
@@ -1596,6 +1645,7 @@ async def rollback_order_preview(order_id: int, force: bool = False):
         "forced": force,
         "wiped_defectives": wiped_defectives,
         "replay_cutoff": cutoff if force and wiped_defectives else "",
+        "overwritten_main_edits": _build_overwritten_main_edits(cutoff) if force else [],
     }
 
 

@@ -4938,6 +4938,17 @@ def get_defective_records_after(created_after: str, *, include_count_absorbed: b
     return [dict(row) for row in rows if int(row['id']) not in absorbed_ids]
 
 
+def update_defective_batches_main_file_mtime(batch_ids, main_file_mtime: float) -> None:
+    ids = [int(batch_id) for batch_id in (batch_ids or []) if int(batch_id or 0) > 0]
+    if not ids:
+        return
+    with get_conn() as conn:
+        conn.executemany(
+            "UPDATE defective_batches SET main_file_mtime=? WHERE id=?",
+            [(float(main_file_mtime or 0), batch_id) for batch_id in ids],
+        )
+
+
 def get_defective_batch_summaries_after_id(batch_id: int) -> list[dict]:
     try:
         normalized_id = int(batch_id)
