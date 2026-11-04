@@ -4821,21 +4821,40 @@ async function handleRollbackDispatch(orderId, trigger) {
       ? "\n\n因為主檔是照順序連續扣帳，後面已發料的訂單也會一起退回。"
       : "";
 
-    if (!forceDelete) {
+    const preciseMode = !forceDelete && preview.mode === "precise";
+    if (preciseMode) {
+      const precise = preview.precise || {};
+      const anchoredHint = (precise.anchored_parts || []).length
+        ? `\n其中 ${(precise.anchored_parts || []).length} 個料號後面有盤點，盤點後的結餘維持盤點數。`
+        : "";
+      const columnHint = precise.column_mode === "removed"
+        ? "這筆的發料欄位在主檔最右邊，會直接刪除。"
+        : "這筆的發料欄位會歸零並標記「已退回」，後面的結餘自動重算。";
       const confirmed = confirm(
-        `這會把所選訂單從已發料退回，恢復可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。確定繼續嗎？`
+        `這會只把這一筆從已發料退回（精準退回），恢復可重扣狀態：\n${orderLines}\n\n${columnHint}${anchoredHint}\n之後的手動主檔編輯、收料、不良品 / 加工多打扣帳與其他訂單都會保留。確定繼續嗎？`
+      );
+      if (!confirmed) return;
+    } else if (!forceDelete) {
+      const preciseNote = preview.precise_unavailable_reason
+        ? `\n\n（無法只退這一筆：${preview.precise_unavailable_reason}）`
+        : "";
+      const confirmed = confirm(
+        `這會把所選訂單從已發料退回，恢復可重扣狀態，共 ${preview.count} 筆：\n${orderLines}${affectedHint}\n\n主檔也會一併還原到當時備份。${preciseNote}\n\n確定繼續嗎？`
       );
       if (!confirmed) return;
     }
 
     if (button) button.textContent = forceDelete ? "強制退回中..." : "退回中...";
-    const result = await apiPost(`/api/schedule/orders/${orderId}/rollback${forceDelete ? "?force=1" : ""}`);
+    const rollbackQuery = forceDelete ? "?force=1" : (preciseMode ? "?mode=precise" : "?mode=full");
+    const result = await apiPost(`/api/schedule/orders/${orderId}/rollback${rollbackQuery}`);
     const draftNote = Number(result.restored_draft_count || 0) > 0
       ? `\n已恢復 ${result.restored_draft_count} 筆副檔工作台，可直接接續修改。`
       : "";
     const actionLabel = result.forced ? "已強制退回" : "已退回";
     const replayRows = flattenWipedDefectives(result.wiped_defectives || []);
-    if (result.replay_cutoff) {
+    if (result.mode === "precise") {
+      showToast(`已精準退回 ${result.count} 筆已發料\n只撤銷這筆的主檔欄位，其他主檔資料都保留，可重新扣帳${draftNote}`, { sticky: Boolean(draftNote), tone: "success" });
+    } else if (result.replay_cutoff) {
       showToast(`${actionLabel} ${result.count} 筆已發料\n主檔已同步還原，可重新扣帳${draftNote}`, {
         sticky: true,
         tone: "success",

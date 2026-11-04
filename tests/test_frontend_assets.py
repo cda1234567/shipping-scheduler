@@ -243,7 +243,8 @@ class FrontendAssetTests(unittest.TestCase):
         self.assertIn("仍要強制退回", schedule_module)
         self.assertIn("force=1", schedule_module)
         self.assertIn("/rollback-preview", schedule_module)
-        self.assertIn('/rollback${forceDelete ? "?force=1" : ""}', schedule_module)
+        self.assertIn('const rollbackQuery = forceDelete ? "?force=1" : (preciseMode ? "?mode=precise" : "?mode=full");', schedule_module)
+        self.assertIn('/rollback${rollbackQuery}', schedule_module)
         self.assertIn("已退回", schedule_module)
 
     def test_completed_tab_exposes_batch_download_and_dispatch_actions(self):

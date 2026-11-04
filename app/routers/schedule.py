@@ -54,8 +54,11 @@ from ..services.dispatch_pipeline import (
     prepare_dispatch_context as _prepare_dispatch_context,
     require_existing_main_path as _require_existing_main_path,
     rollback_dispatch_sessions as _rollback_dispatch_sessions,
+    precise_rollback_dispatch_session as _precise_rollback_dispatch_session,
 )
 from ..services.inventory_restore_guard import ensure_dispatch_rollback_allowed
+from ..services.dispatch_precise_rollback import PRECISE_ROLLBACK_LOG_ACTION, evaluate_precise_rollback
+from ..services.main_event_rollback import PreciseRollbackUnavailable
 from ..services.merge_drafts import (
     rebuild_merge_drafts,
     delete_merge_draft_and_refresh,
@@ -1634,11 +1637,60 @@ def commit_schedule_draft(draft_id: int):
     }
 
 
+def _get_rollbackable_session(order_id: int) -> tuple[dict, dict]:
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(404, "找不到此訂單")
+    if order["status"] not in ("dispatched", "completed"):
+        raise HTTPException(400, "只能反悔已發料訂單")
+    session = db.get_active_dispatch_session(order_id)
+    if not session:
+        raise HTTPException(400, "找不到這筆訂單的發料歷史，無法反悔")
+    return order, session
+
+
+def _precise_order_summary(order: dict, session: dict) -> list[dict]:
+    return [{
+        "id": int(order["id"]),
+        "po_number": order.get("po_number", ""),
+        "model": order.get("model", ""),
+        "status": order.get("status", ""),
+        "restore_status": session.get("previous_status") or "merged",
+    }]
+
+
 @router.get("/schedule/orders/{order_id}/rollback-preview")
 async def rollback_order_preview(order_id: int, force: bool = False):
+    precise_reason = ""
+    if not force:
+        order, session = _get_rollbackable_session(order_id)
+        evaluation = await run_in_threadpool(evaluate_precise_rollback, session)
+        if evaluation.get("ok"):
+            return {
+                "ok": True,
+                "mode": "precise",
+                "count": 1,
+                "backup_path": session.get("backup_path", ""),
+                "orders": _precise_order_summary(order, session),
+                "forced": False,
+                "wiped_defectives": [],
+                "replay_cutoff": "",
+                "overwritten_main_edits": [],
+                "precise": {
+                    "column_mode": evaluation.get("mode"),
+                    "group_count": evaluation.get("group_count"),
+                    "part_count": len(evaluation.get("part_deltas") or {}),
+                    "anchored_parts": evaluation.get("anchored_parts") or [],
+                    "legacy": bool(evaluation.get("legacy")),
+                },
+            }
+        precise_reason = str(evaluation.get("reason") or "")
     _, session, affected_orders, wiped_defectives, cutoff = _build_rollback_preview(order_id, force=force)
+    _ensure_no_precise_rollback_crossing(cutoff)
     return {
         "ok": True,
+        "mode": "full",
+        "precise_unavailable_reason": precise_reason,
         "count": len(affected_orders),
         "backup_path": session.get("backup_path", ""),
         "orders": affected_orders,
@@ -1649,9 +1701,66 @@ async def rollback_order_preview(order_id: int, force: bool = False):
     }
 
 
+def _ensure_no_precise_rollback_crossing(cutoff: str) -> None:
+    crossing = db.get_precise_rollbacks_crossing(cutoff)
+    if crossing:
+        orders = []
+        for item in crossing:
+            target = db.get_order(int(item.get("order_id") or 0)) or {}
+            orders.append(str(target.get("po_number") or item.get("order_id")))
+        raise HTTPException(
+            409,
+            "這次發料之後有訂單已用「精準反悔」撤銷（" + "、".join(orders) + "），"
+            "整檔還原會把它們的發料欄位救回來，已停止。請改對要反悔的訂單逐筆精準反悔。",
+        )
+
+
 @router.post("/schedule/orders/{order_id}/rollback")
-async def rollback_order(order_id: int, force: bool = False):
+async def rollback_order(order_id: int, force: bool = False, mode: str = "auto"):
+    mode = str(mode or "auto").strip().lower()
+    if mode not in ("auto", "precise", "full"):
+        raise HTTPException(400, "mode 只能是 auto / precise / full")
+    precise_reason = ""
+    if not force and mode in ("auto", "precise"):
+        order, session = _get_rollbackable_session(order_id)
+        try:
+            result = await run_in_threadpool(_precise_rollback_dispatch_session, session, backup_dir=str(BACKUP_DIR))
+        except PreciseRollbackUnavailable as exc:
+            if mode == "precise":
+                raise HTTPException(409, f"無法精準反悔：{exc.reason}。請重新整理後再試。") from exc
+            precise_reason = exc.reason
+        else:
+            precise = result.get("precise") or {}
+            db.log_activity(
+                PRECISE_ROLLBACK_LOG_ACTION,
+                (
+                    f"訂單 {order['po_number']} ({order['model']}) 精準反悔：只撤銷這筆的發料欄位"
+                    f"（{'刪除尾端欄位' if precise.get('mode') == 'removed' else '歸零並重算後續結餘'}，"
+                    f"{len(precise.get('part_deltas') or {})} 個料號），其他主檔資料保留"
+                ),
+            )
+            try:
+                from .main_file import invalidate_main_data_cache
+                invalidate_main_data_cache()
+            except Exception:
+                pass
+            try:
+                active_order_ids = [int(item["order_id"]) for item in db.get_active_merge_drafts()
+                                    if item.get("order_id") is not None]
+                if active_order_ids:
+                    rebuild_merge_drafts(active_order_ids)
+            except Exception as exc:
+                log.warning("精準反悔後更新待發料草稿失敗：%s", exc)
+            return {
+                "ok": True,
+                "forced": False,
+                "wiped_defectives": [],
+                "replay_cutoff": "",
+                **result,
+            }
+
     order, session, affected_orders, wiped_defectives, cutoff = _build_rollback_preview(order_id, force=force)
+    _ensure_no_precise_rollback_crossing(cutoff)
     tail_sessions = db.get_dispatch_session_tail(int(session["id"]))
     result = _rollback_dispatch_sessions(tail_sessions)
     db.log_activity(
@@ -1664,6 +1773,8 @@ async def rollback_order(order_id: int, force: bool = False):
     replay_cutoff = cutoff if force and wiped_defectives else ""
     return {
         "ok": True,
+        "mode": "full",
+        "precise_unavailable_reason": precise_reason,
         "forced": force,
         "wiped_defectives": wiped_defectives,
         "replay_cutoff": replay_cutoff,

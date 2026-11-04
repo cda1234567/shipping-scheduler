@@ -22,6 +22,7 @@ from ..services.defective_deduction import (
     deduct_defectives_from_main,
     replay_defectives_after,
     reverse_defectives_from_main,
+    remove_batch_deduction_from_main,
     locate_applied_batch_deduction,
 )
 from ..services.inventory_restore_guard import (
@@ -30,6 +31,7 @@ from ..services.inventory_restore_guard import (
 )
 from ..services.merge_to_main import backup_main_file
 from ..services.main_file_lock import serialized_main_file_write
+from ..services.main_event_rollback import PreciseRollbackUnavailable
 from ..services.st_reconcile import _restore_main_from_backup
 from ..services.merge_drafts import rebuild_merge_drafts
 from ..services.overrun_deduction import (
@@ -877,6 +879,7 @@ def _delete_batch_with_history(batch_id: int):
     current_mtime = _get_main_file_mtime()
     backup_path = ''
     snapshot_state = None
+    removal_mode = ""
 
     if reverse_items:
         main_path = str(db.get_setting("main_file_path") or "").strip()
@@ -894,12 +897,19 @@ def _delete_batch_with_history(batch_id: int):
             backup_path = backup_main_file(main_path, str(BACKUP_DIR))
             snapshot_state = db.capture_inventory_snapshot_state()
             try:
-                result = reverse_defectives_from_main(
-                    main_path,
-                    reverse_items,
-                    entry_header=reverse_header,
-                    reversal_id=reversal_id,
-                )
+                try:
+                    # 優先直接撤掉這批自己的扣帳欄（尾端刪欄 / 中間歸零重算），不留回復欄。
+                    result = remove_batch_deduction_from_main(main_path, target_batch)
+                    removal_mode = result["mode"]
+                except PreciseRollbackUnavailable as exc:
+                    log.info("批次 %s 無法直接撤掉扣帳欄，改加回復欄：%s", batch_id, exc.reason)
+                    result = reverse_defectives_from_main(
+                        main_path,
+                        reverse_items,
+                        entry_header=reverse_header,
+                        reversal_id=reversal_id,
+                    )
+                    removal_mode = "reversal_block"
                 reversed_count = result["reversed_count"]
                 reversed_parts = {str(item['part_number']).strip().upper() for item in result.get('results', [])}
                 refresh_snapshot_from_main(main_path)
@@ -926,7 +936,12 @@ def _delete_batch_with_history(batch_id: int):
     if main_file_changed:
         detail = f"{batch_name}：主檔已更換，僅刪除紀錄（未回寫庫存）"
     else:
-        detail = f"{batch_name}：已回復 {reversed_count} 筆庫存"
+        how = {
+            "removed": "，已刪除這批扣帳欄位",
+            "zeroed": "，這批扣帳欄位已歸零並重算後續結餘",
+            "reversal_block": "，已新增回復欄",
+        }.get(removal_mode, "")
+        detail = f"{batch_name}：已回復 {reversed_count} 筆庫存{how}"
     try:
         db.log_activity(f"刪除{batch_label}", detail)
     except Exception:
@@ -936,4 +951,5 @@ def _delete_batch_with_history(batch_id: int):
         "ok": True,
         "reversed_count": reversed_count,
         "main_file_changed": main_file_changed,
+        "removal_mode": removal_mode,
     }

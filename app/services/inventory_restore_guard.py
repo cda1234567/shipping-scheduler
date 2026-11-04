@@ -70,6 +70,9 @@ _ROLLBACK_BLOCKING_LOG_ACTIONS = (
 )
 
 _BATCH_DELETE_BLOCKING_LOG_ACTIONS = _ROLLBACK_BLOCKING_LOG_ACTIONS + ("order_rollback",)
+# 精準反悔只改那一筆的發料欄位：之後的整檔還原會把它救回來，所以要擋；
+# 但不良品 / 加工多打扣帳欄位保持原樣，不擋刪除批次。
+_ROLLBACK_BLOCKING_LOG_ACTIONS = _ROLLBACK_BLOCKING_LOG_ACTIONS + ("order_rollback_precise",)
 _REPLAY_LOG_ACTION = "補回退回不良品扣帳"
 _ORDER_ROLLBACK_LOG_ACTION = "order_rollback"
 _MAIN_EDIT_LOG_ACTION = "主檔編輯"

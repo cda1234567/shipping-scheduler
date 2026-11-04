@@ -855,6 +855,16 @@ def finalize_dispatch_context(
                 "decision": comp.get("decision") or item.decisions.get(part_number.strip().upper(), "None"),
             })
         db.save_dispatch_records(item.order_id, dispatch_records)
+        try:
+            from .dispatch_precise_rollback import build_dispatch_column_record
+            db.save_dispatch_column_record(int(session["id"]), item.order_id, build_dispatch_column_record(
+                list(result.get("plan_rows") or []),
+                insert_before_code=str(item.order.get("insert_before_code") or ""),
+                code_shifts=result.get("code_shifts"),
+            ))
+        except Exception:
+            # 只影響之後能不能精準反悔（沒有紀錄會改用標頭比對 / 整檔還原），不擋發料。
+            pass
         db.update_order(item.order_id, status="dispatched")
         if result.get("code_shifts"):
             code_changes = db.apply_dispatch_code_shifts(result["code_shifts"], exclude_order_ids or [item.order_id])
@@ -948,6 +958,14 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
     if current_main_path and session_main_path and Path(current_main_path) != Path(session_main_path):
         raise HTTPException(400, "目前主檔已更換，請確認後再反悔")
 
+    crossing = db.get_precise_rollbacks_crossing(str(first_session.get("dispatched_at") or ""))
+    if crossing:
+        raise HTTPException(
+            409,
+            "這次發料之後有訂單已用「精準反悔」撤銷，整檔還原會把它們的發料欄位救回來，已停止。"
+            "請改對要反悔的訂單逐筆精準反悔。",
+        )
+
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
     code_change_batches = []
     seen_references = set()
@@ -1003,6 +1021,91 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
         "orders": restored_orders,
         "restored_draft_order_ids": restored_draft_orders,
         "restored_draft_count": len(restored_draft_orders),
+        **st_restore_result,
+    }
+
+
+@serialized_main_file_write
+def precise_rollback_dispatch_session(session: dict, *, backup_dir: str) -> dict:
+    """只撤銷這一筆發料的主檔欄位（尾端刪欄，否則歸零 + 重算後續結餘），其他資料全部保留。
+
+    無法安全執行時 raise PreciseRollbackUnavailable（主檔與資料庫都不會變動）。
+    """
+    from .dispatch_precise_rollback import (
+        ensure_precise_preconditions,
+        plan_and_apply,
+        _load,
+    )
+    from .main_event_rollback import PreciseRollbackUnavailable
+    from .merge_to_main import backup_main_file, _save_workbook_atomically, ensure_main_header_wrap
+
+    session = dict(session or {})
+    order_id = int(session.get("order_id") or 0)
+    order = db.get_order(order_id) if order_id else None
+    current = db.get_active_dispatch_session(order_id) if order_id else None
+    if not current or int(current["id"]) != int(session.get("id") or 0):
+        raise PreciseRollbackUnavailable("這筆發料已不是有效的發料紀錄，請重新整理")
+    main_path = ensure_precise_preconditions(session, order)
+
+    try:
+        workbook = _load(main_path)
+    except Exception as exc:
+        raise PreciseRollbackUnavailable(f"無法讀取主檔：{exc}") from exc
+    try:
+        try:
+            summary = plan_and_apply(workbook.active, session, order)
+        except PreciseRollbackUnavailable:
+            raise
+        except Exception as exc:  # 試算失敗時主檔還沒動，改走整檔還原
+            raise PreciseRollbackUnavailable(f"無法試算精準反悔：{exc}") from exc
+        ensure_main_header_wrap(workbook.active)
+        main_backup = backup_main_file(main_path, backup_dir)
+        _save_workbook_atomically(workbook, main_path)
+    finally:
+        workbook.close()
+
+    try:
+        refresh_snapshot_from_main(main_path)
+        session_ids = [int(session["id"])]
+        db.delete_dispatch_records_for_orders([order_id])
+        st_restore_result = restore_st_package_consumptions(session_ids, [order_id])
+        db.mark_dispatch_sessions_rolled_back(session_ids)
+        restore_status = session.get("previous_status") or "merged"
+        db.update_order(order_id, status=restore_status, folder="")
+        restored_draft_orders = restore_recent_committed_merge_drafts([order_id])
+        precise = db.save_dispatch_precise_rollback(session, {
+            "order_id": order_id,
+            "main_backup_path": main_backup,
+            **{key: value for key, value in summary.items() if key != "part_deltas"},
+            "part_deltas": {part: float(delta) for part, delta in summary["part_deltas"].items()},
+        })
+    except Exception:
+        # 主檔已改但資料庫失敗：把主檔還原回撤銷前，避免兩邊不一致。
+        try:
+            import shutil
+            shutil.copy2(main_backup, main_path)
+            refresh_snapshot_from_main(main_path)
+        except Exception:
+            pass
+        raise
+
+    return {
+        "mode": "precise",
+        "count": 1,
+        "main_backup_path": main_backup,
+        "main_file_path": main_path,
+        "precise": summary,
+        "rolled_back_at": precise.get("rolled_back_at", ""),
+        "orders": [{
+            "id": order_id,
+            "po_number": order.get("po_number", ""),
+            "model": order.get("model", ""),
+            "status": order.get("status", ""),
+            "restore_status": restore_status,
+        }],
+        "restored_draft_order_ids": restored_draft_orders,
+        "restored_draft_count": len(restored_draft_orders),
+        "replayed_order_count": 0,
         **st_restore_result,
     }
 

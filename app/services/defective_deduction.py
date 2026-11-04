@@ -484,3 +484,71 @@ def locate_applied_batch_deduction(main_path: str, batch: dict) -> dict:
     elif len(applied) > 1:
         result["status"] = "ambiguous"
     return result
+
+
+DELETED_BATCH_MARKER_PREFIX = "defective-batch-deleted:"
+
+
+def remove_batch_deduction_from_main(main_path: str, batch: dict) -> dict:
+    """刪除批次時直接撤掉這批自己的扣帳欄組（不再加一組「…回復」欄）。
+
+    - 欄組在主檔最右邊 → 整組刪除，不留殘欄。
+    - 在中間 → 使用數量歸零、清掉該組結存、表頭改成「已刪除批次 #id」，並重算後續結餘（遇盤點錨定）。
+    找不到唯一的扣帳欄組、結餘鏈不一致等情況 raise PreciseRollbackUnavailable，由呼叫端改用舊的回復欄。
+    呼叫端負責先備份主檔。回傳 {"mode", "reversed_count", "results", "column"}。
+    """
+    from .main_event_rollback import PreciseRollbackUnavailable, neutralize_or_remove_block, number, part_rows
+
+    located = locate_applied_batch_deduction(main_path, batch)
+    if located.get("status") != "applied" or len(located.get("columns") or []) != 1:
+        raise PreciseRollbackUnavailable("主檔找不到唯一的這批扣帳欄位")
+    start = int(located["columns"][0])
+    expected = batch_expected_deductions(batch)
+
+    is_xlsm = Path(main_path).suffix.lower() == ".xlsm"
+    wb = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
+    try:
+        ws = _get_main_worksheet(wb)
+        header = str(ws.cell(1, start).value or "").strip()
+        marker = ws.cell(1, start).comment.text if ws.cell(1, start).comment else ""
+        batch_id = int(batch.get("id") or 0)
+        if not header.endswith("扣帳"):
+            raise PreciseRollbackUnavailable("扣帳欄位表頭不符")
+        if str(ws.cell(1, start + 1).value or "").strip() != "使用數量":
+            raise PreciseRollbackUnavailable("舊版兩欄扣帳格式，改用回復欄")
+        if marker.startswith(BATCH_MARKER_PREFIX) and marker.split(":", 1)[1].strip().split()[0] != str(batch_id):
+            raise PreciseRollbackUnavailable("扣帳欄位屬於其他批次")
+        rows_by_part = part_rows(ws, PART_COL)
+        row_deltas: dict[int, float] = {}
+        results = []
+        for part in expected:
+            rows = rows_by_part.get(part) or []
+            if not rows:
+                continue
+            if len(rows) != 1:
+                raise PreciseRollbackUnavailable(f"主檔找不到唯一的料號 {part} 列")
+            row = rows[0]
+            usage = number(ws.cell(row, start + 1).value) or 0.0
+            supply = number(ws.cell(row, start).value) or 0.0
+            row_deltas[row] = usage - supply
+            results.append({"part_number": part, "qty": usage - supply})
+        result = neutralize_or_remove_block(
+            ws,
+            start_col=start,
+            width=3,
+            row_deltas=row_deltas,
+            zero_cols=[start + 1],
+            clear_cols=[start, start + 2],
+            marked_header=f"已刪除批次 #{batch_id}",
+            marker_comment=f"{DELETED_BATCH_MARKER_PREFIX}{batch_id} 原表頭：{header}",
+        )
+        ensure_main_header_wrap(ws)
+        _save_workbook_atomically(wb, main_path)
+    finally:
+        wb.close()
+    return {
+        "mode": result["mode"],
+        "reversed_count": len(results),
+        "results": results,
+        "column": start,
+    }

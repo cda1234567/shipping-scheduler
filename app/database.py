@@ -289,6 +289,22 @@ CREATE TABLE IF NOT EXISTS dispatch_sessions (
     main_period_id  INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS dispatch_column_records (
+    session_id      INTEGER PRIMARY KEY,
+    order_id        INTEGER NOT NULL DEFAULT 0,
+    payload_json    TEXT    NOT NULL DEFAULT '{}',
+    created_at      TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_precise_rollbacks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL DEFAULT 0,
+    order_id        INTEGER NOT NULL DEFAULT 0,
+    dispatched_at   TEXT    NOT NULL DEFAULT '',
+    rolled_back_at  TEXT    NOT NULL DEFAULT '',
+    detail_json     TEXT    NOT NULL DEFAULT '{}'
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id     INTEGER NOT NULL REFERENCES orders(id),
@@ -3173,6 +3189,55 @@ def save_dispatch_session(
         "rolled_back_at": "",
         "main_period_id": main_period_id,
     }
+
+
+def save_dispatch_column_record(session_id: int, order_id: int, payload: dict) -> None:
+    """記錄這次發料在主檔寫入的三欄組與每個料號數量，供精準反悔定位。"""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO dispatch_column_records(session_id, order_id, payload_json, created_at) "
+            "VALUES(?,?,?,?)",
+            (int(session_id), int(order_id), json.dumps(payload or {}, ensure_ascii=False), _now()),
+        )
+
+
+def get_dispatch_column_record(session_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM dispatch_column_records WHERE session_id=?", (int(session_id),),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def save_dispatch_precise_rollback(session: dict, detail: dict) -> dict:
+    now = _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO dispatch_precise_rollbacks(session_id, order_id, dispatched_at, rolled_back_at, detail_json) "
+            "VALUES(?,?,?,?,?)",
+            (int(session["id"]), int(session["order_id"]), str(session.get("dispatched_at") or ""), now,
+             json.dumps(detail or {}, ensure_ascii=False)),
+        )
+    return {"session_id": int(session["id"]), "rolled_back_at": now}
+
+
+def get_precise_rollbacks_crossing(cutoff: str) -> list[dict]:
+    """在 cutoff 之前發料、cutoff 之後才精準反悔的紀錄；整檔還原會讓它們復活。"""
+    normalized = str(cutoff or "").strip()
+    if not normalized:
+        return []
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM dispatch_precise_rollbacks WHERE dispatched_at<? AND rolled_back_at>? ORDER BY id",
+            (normalized, normalized),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_active_dispatch_session(order_id: int) -> dict | None:
