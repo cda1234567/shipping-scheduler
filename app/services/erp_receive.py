@@ -596,7 +596,7 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         raise ReceiveValidationError("一次收料只能選同一家廠商的採購單明細")
     currs = {ep._text(ep._get(p["main"], "CurrID")) for p in pos.values()}
     if len(currs) != 1:
-        raise ReceiveValidationError("一次收料的採購單幣別必須相同")
+        raise ReceiveValidationError("一次收料的採購單幣別必須相同（" + "、".join(sorted(c or LOCAL_CURRENCY for c in currs)) + "）：請依幣別分開收料，各開一張進貨單")
     tax_types = {int(ep._get(p["main"], "TaxType", 0) or 0) for p in pos.values()}
     if len(tax_types) != 1:
         raise ReceiveValidationError("一次收料的採購單課稅別必須相同（應稅 / 免稅不可混在同一張進貨單）："
@@ -763,12 +763,11 @@ def build_plan(
     else:
         cur_row = ctx.get("currency_row") or {}
         sys_rate = _dec(ep._get(cur_row, "BuyInRate", 0)) or _dec(ep._get(cur_row, "FixedRate", 0))
+        # v2026.11.04.2：匯率一律用發票上的匯率（使用者手動輸入），不自動帶幣別檔 / 採購單匯率
         if ctx.get("req_exch_rate"):
             rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
-        elif sys_rate > 0:
-            rate, rate_source = sys_rate, "currency"
         else:
-            rate, rate_source = po_exch, "po"
+            rate, rate_source = Decimal(0), "missing"
         exch = rate if mode == "foreign" else Decimal(1)
     amount_digits = 0
     if mode == "foreign":
@@ -835,7 +834,11 @@ def build_plan(
         warnings.append({"code": "terms_mismatch", "needs_confirm": False,
                          "message": "各採購單付款條件不同，進貨單以第一張採購單的條件為準"})
 
-    rate_text = {"manual": "手動輸入", "currency": "正航幣別檔", "po": "採購單"}.get(rate_source, "")
+    rate_text = {"manual": "發票匯率"}.get(rate_source, "")
+    rate_missing = rate_source == "missing"
+    if rate_missing:
+        warnings.append({"code": "rate_required", "needs_confirm": False,
+                         "message": f"採購單為 {po_curr}：請輸入發票上的匯率（發票匯率）後才能寫入；目前金額以匯率 0 試算"})
     if tax_type != 0:
         warnings.append({"code": "tax_free", "needs_confirm": False,
                          "message": f"採購單課稅別 {tax_type}：{tax_type_label(tax_type)}，進貨單照採購單不加營業稅"})
@@ -1014,7 +1017,9 @@ def build_plan(
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
         "po_currency": po_curr, "mode": mode, "exch_rate": exch if mode == "foreign" else rate,
-        "rate_source": rate_source, "tax_type": tax_type, "tax_label": tax_type_label(tax_type),
+        "rate_source": rate_source, "rate_required": rate_missing,
+        "rate_hint": None if mode == "local" else {"po": _jsonable(po_exch), "currency": _jsonable(sys_rate) if sys_rate > 0 else None},
+        "tax_type": tax_type, "tax_label": tax_type_label(tax_type),
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
         "cost_params": cost_params, "bill_params": ctx["bill_params"], "update_cost": update_cost,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
@@ -1138,7 +1143,8 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
         **plan["numbers"], "numbers": dict(plan["numbers"]), "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
         "vendor": plan["vendor"], "currency": plan["currency"], "warehouse": plan["warehouse"],
         "po_currency": plan.get("po_currency"), "mode": plan.get("mode"), "exch_rate": _jsonable(plan.get("exch_rate")),
-        "rate_source": plan.get("rate_source"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
+        "rate_source": plan.get("rate_source"), "rate_required": bool(plan.get("rate_required")),
+        "rate_hint": plan.get("rate_hint"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
         "lines": _jsonable([
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
                                "price", "src_price", "po_price", "tax_rate", "amount", "tax", "ml_price", "ml_amount")}
@@ -1211,6 +1217,9 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
             for attempt in range(1, MAX_NUMBER_ATTEMPTS + 1):
                 try:
                     plan = _plan(wcur, target, req, lock=True, client_ip=client_ip, actor=actor)
+                    if plan.get("rate_required"):
+                        raise ReceiveValidationError(
+                            f"採購單幣別 {plan.get('po_currency')}：請輸入發票匯率（大於 0）後再寫入")
                     if plan["needs_confirm"] and not req["confirm"]:
                         raise OverReceiveWarning(plan["over_receive"])  # 尚未寫入任何東西
                     taken = existing_numbers(wcur, plan["numbers"], lock=True)
@@ -1287,7 +1296,9 @@ def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str =
             **base, "im_no": result["im_no"], "qm_no": result["qm_no"], "rm_no": result["rm_no"],
             "rm_date": result["rm_date"], "vendor_id": result["vendor"]["id"], "vendor_name": result["vendor"]["name"],
             "lines_json": json.dumps(result["lines"], ensure_ascii=False), "sum_qty": t["sum_qty"],
-            "sum_amount": t["sum_amount"], "sum_tax": t["sum_tax"], "total": t["total"], "status": "ok"})
+            "sum_amount": t["sum_amount"], "sum_tax": t["sum_tax"], "total": t["total"], "status": "ok",
+            "exch_rate": result.get("exch_rate") if result.get("mode") not in (None, "local") else None,
+            "currency": result.get("po_currency") or result.get("currency") or ""})
         db.log_activity(
             "erp_receive_created",
             f"{ep.target_label(target)} 收料 {result['im_no']} / 驗收 {result['qm_no']} / 進貨 {result['rm_no']}，"

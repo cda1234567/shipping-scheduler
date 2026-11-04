@@ -1355,13 +1355,46 @@ class TaxCurrencyTests(ErpCase):
         ntd = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "NTD")
         self.assertEqual(ntd["CurReceivable"], Decimal(2520))
 
-    def test_usd_default_rate_from_currency_table(self):
-        self.usd_setup(1, rate="31")
+    def test_usd_rate_not_prefilled_and_write_blocked(self):
+        # 匯率照發票上（v2026.11.04.2）：不自動帶幣別檔 / 採購單匯率，只當參考
+        for tax_type in (1, 0):
+            with self.subTest(tax_type=tax_type):
+                self.erp.table("comCurrencySys").clear()
+                self.usd_setup(tax_type, rate="31")
+                r = er.preview_receive(self.req())
+                self.assertTrue(r["rate_required"])
+                self.assertEqual((r["exch_rate"], r["rate_source"]), (0.0, "missing"))
+                self.assertEqual(r["rate_hint"], {"po": 30.385, "currency": 31.0})
+                self.assertTrue(any(w["code"] == "rate_required" for w in r["warnings"]))
+                before = len(self.rows("stkBillMain"))
+                with self.assertRaises(er.ReceiveValidationError) as cm:
+                    er.create_receive(self.req(), "t", "1.2.3.4")
+                self.assertIn("發票匯率", str(cm.exception))
+                self.assertEqual(len(self.rows("stkBillMain")), before)
+
+    def test_entered_rate_used_and_stored(self):
+        from app import database as db
+        self.usd_setup(0, price="19.3")
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.505")
+        r = er.preview_receive(req)
+        self.assertFalse(r["rate_required"])
+        self.assertEqual((r["exch_rate"], r["rate_source"], r["lines"][0]["price"]), (32.505, "manual", 627.3465))
+        er.create_receive(req, "t", "1.2.3.4")
+        rec = db.list_erp_receipts(1)[0]
+        self.assertEqual((rec["status"], rec["currency"], rec["exch_rate"]), ("ok", "USD", 32.505))
+
+    def test_ntd_po_has_no_rate(self):
+        from app import database as db
         r = er.preview_receive(self.req())
-        self.assertEqual((r["exch_rate"], r["rate_source"]), (31.0, "currency"))
-        self.erp.table("comCurrencySys").clear()
-        r = er.preview_receive(self.req())
-        self.assertEqual((r["exch_rate"], r["rate_source"]), (30.385, "po"))
+        self.assertEqual((r["mode"], r["rate_required"], r["rate_hint"]), ("local", False, None))
+        er.create_receive(self.req(), "t", "1.2.3.4")
+        self.assertIsNone(db.list_erp_receipts(1)[0]["exch_rate"])
+
+    def test_mixed_currency_message_says_split(self):
+        self.rows("ordBillMain")[1].update(CurrID="USD")
+        with self.assertRaises(er.ReceiveValidationError) as cm:
+            er.preview_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1}, {"po_no": "PO-2", "row_no": 1, "qty": 1}]))
+        self.assertIn("分開收料", str(cm.exception))
 
     def test_usd_taxed_po_becomes_ntd_bill_like_rm_20261016002(self):
         # RM-20261016002（P0304）：19.3 USD × 32.45 = 626.285 NTD、稅 5%、單據台幣
