@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY requirements-server.txt /app/requirements-server.txt
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libreoffice-calc tzdata \
+    && apt-get install -y --no-install-recommends libreoffice-calc tzdata fonts-arphic-uming fonts-liberation \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r /app/requirements-server.txt
 

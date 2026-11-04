@@ -60,3 +60,66 @@ async def receive_create(req: ErpReceiveRequest, request: Request):
 @router.get("/history")
 async def receive_history(limit: int = 50):
     return {"receipts": await run_in_threadpool(erp_receive.list_history, max(1, min(int(limit), 200)))}
+
+
+# ── 進貨單列印（正航進貨憑單版面）──────────────────────────────────────────
+# GET 只讀（唯讀帳號讀回正航 RM 單，不寫入）；POST /print 送到主機列印小幫手（RM_PRINT_HELPER_ENABLED，預設關閉）。
+
+def _print_payload(receipt_id: int):
+    from ..services import rm_print, rm_print_data
+
+    try:
+        data = rm_print_data.load_print_data(receipt_id)
+    except rm_print_data.ReceiptNotPrintable as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        pdf, info = rm_print.render_pdf(data)
+    except RuntimeError as exc:  # 缺字型
+        raise HTTPException(500, str(exc)) from None
+    return data, pdf, info
+
+
+def _print_info(receipt_id: int, data, info):
+    from ..services import rm_print_dispatch
+
+    helper = rm_print_dispatch.helper_config()
+    return {
+        "receipt_id": receipt_id, "rm_no": data.get("rm_no"), "source": data.get("source"),
+        "warning": data.get("warning", ""), **info, "helper_enabled": helper["enabled"],
+        "pdf_url": f"/api/erp-receive/receipts/{receipt_id}/print.pdf",
+    }
+
+
+@router.get("/receipts/{receipt_id}/print.pdf")
+async def receipt_print_pdf(receipt_id: int):
+    from fastapi.responses import Response
+    from urllib.parse import quote
+
+    data, pdf, info = await run_in_threadpool(_print_payload, receipt_id)
+    name = f"{data.get('rm_no') or 'RM'}.pdf"
+    return Response(pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}",
+        "X-RM-Fits-Half-Page": "1" if info["fits_half_page"] else "0",
+        "Cache-Control": "no-store",
+    })
+
+
+@router.get("/receipts/{receipt_id}/print-info")
+async def receipt_print_info(receipt_id: int):
+    data, _pdf, info = await run_in_threadpool(_print_payload, receipt_id)
+    return _print_info(receipt_id, data, info)
+
+
+@router.post("/receipts/{receipt_id}/print")
+async def receipt_print(receipt_id: int):
+    from ..services import rm_print_dispatch
+
+    data, pdf, info = await run_in_threadpool(_print_payload, receipt_id)
+    out = _print_info(receipt_id, data, info)
+    if not out["helper_enabled"]:
+        return {**out, "ok": False, "sent": False, "message": f"未啟用自動送印：請開 PDF 自行列印到「{info['printer']}」"}
+    try:
+        res = await run_in_threadpool(rm_print_dispatch.send_pdf, pdf, info["printer"], data.get("rm_no") or "RM")
+    except rm_print_dispatch.PrintHelperError as exc:
+        raise HTTPException(502, str(exc)) from None
+    return {**out, **res, "sent": True}

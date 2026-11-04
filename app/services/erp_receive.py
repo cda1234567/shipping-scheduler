@@ -1292,7 +1292,7 @@ def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str =
             db.log_activity("erp_receive_failed", f"{ep.target_label(target)}：{message}")
             raise
         t = result["totals"]
-        _safe_log(db, {
+        receipt_id = _safe_log(db, {
             **base, "im_no": result["im_no"], "qm_no": result["qm_no"], "rm_no": result["rm_no"],
             "rm_date": result["rm_date"], "vendor_id": result["vendor"]["id"], "vendor_name": result["vendor"]["name"],
             "lines_json": json.dumps(result["lines"], ensure_ascii=False), "sum_qty": t["sum_qty"],
@@ -1304,16 +1304,16 @@ def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str =
             f"{ep.target_label(target)} 收料 {result['im_no']} / 驗收 {result['qm_no']} / 進貨 {result['rm_no']}，"
             f"廠商 {result['vendor']['id']}，{len(result['lines'])} 行，含稅合計 {t['total']:.0f}"
             + ("" if result["update_cost"] else "（未更新平均成本）"))
-        return {"ok": True, **result}
+        return {"ok": True, **result, "receipt_id": receipt_id}  # receipt_id：列印進貨單用
     finally:
         po_duplicates.release("rcv:" + fp)
 
 
-def _safe_log(db, rec: Dict[str, Any]) -> None:
+def _safe_log(db, rec: Dict[str, Any]) -> Optional[int]:
     try:
-        db.add_erp_receipt(rec)
+        return db.add_erp_receipt(rec)
     except Exception:
-        pass  # 本機紀錄失敗不可蓋掉已完成的 ERP 結果
+        return None  # 本機紀錄失敗不可蓋掉已完成的 ERP 結果
 
 
 def list_history(limit: int = 50) -> List[Dict[str, Any]]:

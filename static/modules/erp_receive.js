@@ -218,7 +218,7 @@ async function handleCreate() {
       r = await apiPost("/api/erp-receive/create", { ...body, confirm: true });
     }
     result.className = "erp-po-result is-ok";
-    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>，合計 ${esc(r.currency || "NTD")} ${fmt(r.totals.total)}${r.closed_pos?.length ? `　已結案採購單：${esc(r.closed_pos.join("、"))}` : ""}`;
+    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>，合計 ${esc(r.currency || "NTD")} ${fmt(r.totals.total)}${r.closed_pos?.length ? `　已結案採購單：${esc(r.closed_pos.join("、"))}` : ""}${r.receipt_id ? `　<button type="button" class="btn btn-sm" data-rm-print="${esc(r.receipt_id)}">🖨 列印進貨單</button>` : ""}`;
     result.hidden = false;
     hidePreview();
     _picker.clear();
@@ -245,10 +245,47 @@ async function refreshHistory() {
       return `<tr class="${ok ? "" : "erp-po-row-error"}"><td>${esc(String(o.created_at).slice(0, 16).replace("T", " "))}</td>
         <td class="mono">${ok ? `${esc(o.im_no)} / ${esc(o.qm_no)} / ${esc(o.rm_no)}` : "—"}</td><td>${esc(o.target_db)}</td>
         <td>${esc(o.vendor_id)} ${esc(o.vendor_name)}</td><td class="num">${ok ? fmt(o.total) : "—"}</td>
-        <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td></tr>`;
-    }).join("") : '<tr><td colspan="6" class="erp-po-hint">尚無紀錄</td></tr>';
+        <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td>
+        <td>${ok && o.rm_no ? `<button type="button" class="btn btn-sm" data-rm-print="${esc(o.id)}" title="列印進貨單 ${esc(o.rm_no)}">🖨 列印</button>` : ""}</td></tr>`;
+    }).join("") : '<tr><td colspan="7" class="erp-po-hint">尚無紀錄</td></tr>';
   } catch (error) {
-    body.innerHTML = `<tr><td colspan="6" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="7" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
+  }
+}
+
+// 列印進貨單（正航進貨憑單版面 PDF）。自動送印已啟用就直接送到選定的印表機；
+// 否則（預設）開 PDF 分頁，並提示要選哪台印表機（半張 → M111w 半張紙；超過 → M652 A4）。
+async function printReceipt(id, btn) {
+  if (btn) btn.disabled = true;
+  // 先同步開分頁（避免被瀏覽器擋彈出視窗），之後再決定內容
+  const win = window.open("", "_blank");
+  try {
+    const info = await apiJson(`/api/erp-receive/receipts/${encodeURIComponent(id)}/print-info`);
+    const where = `${info.fits_half_page ? "半張（上半頁）" : `A4${info.page_count > 1 ? ` ${info.page_count} 頁` : ""}`} → 印表機「${info.printer}」`;
+    if (info.warning) showToast(info.warning, { tone: "warning" });
+    if (info.helper_enabled) {
+      if (win) win.close();
+      if (!isEditAuthenticated()) { openEditAuthModal(); return; }
+      const r = await apiPost(`/api/erp-receive/receipts/${encodeURIComponent(id)}/print`, {});
+      showToast(r.sent ? `已送印 ${info.rm_no}：${where}` : (r.message || "未送印"), { tone: r.sent ? "success" : "warning" });
+      return;
+    }
+    if (win) win.location.href = info.pdf_url; else window.open(info.pdf_url, "_blank");
+    showToast(`進貨單 ${info.rm_no}：${where}（自動送印未啟用，請在 PDF 視窗列印時選這台；縮放選「實際大小」）`, { tone: "info", duration: 12000 });
+  } catch (error) {
+    if (win) win.close();
+    showToast(`列印失敗：${error.message}`, { tone: "error" });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function bindPrintButtons() {
+  for (const id of ["erp-receive-history", "erp-receive-result"]) {
+    el(id)?.addEventListener("click", event => {
+      const btn = event.target.closest?.("[data-rm-print]");
+      if (btn) void printReceipt(btn.dataset.rmPrint, btn);
+    });
   }
 }
 
@@ -292,6 +329,7 @@ export async function initErpReceive() {
     onChange: () => hidePreview(),
   });
   el("btn-erp-receive-preview").addEventListener("click", handlePreview);
+  bindPrintButtons();
   el("erp-receive-date").addEventListener("change", () => { void handleDateChange(); });
   el("erp-receive-update-cost")?.addEventListener("change", () => { _costTouched = true; void handleDateChange(); });
   await loadConfig();

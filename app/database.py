@@ -4044,6 +4044,12 @@ def list_erp_receipts(limit: int = 50) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_erp_receipt(receipt_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM erp_receipts WHERE id = ?", (int(receipt_id),)).fetchone()
+        return dict(row) if row else None
+
+
 def find_erp_receipt_by_token(token: str) -> dict | None:
     if not token:
         return None
