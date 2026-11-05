@@ -223,6 +223,52 @@ class ShortageListTests(Base):
         res = sp.build_shortage_list([1, 2, 3])
         return res, {p["part_number"]: p for p in res["parts"]}
 
+    def test_dispatch_item_order_within_supplier(self):
+        self.groups = [group(1, "6-1", "2026-12-10", [item("OC-1", 2), item("AC-1", 3)])]
+        res, _ = self.parts()
+        self.assertEqual([p["part_number"] for p in res["parts"]], ["OC-1", "AC-1"])
+        self.assertEqual([p["dispatch_seq"] for p in res["parts"]], [0, 1])
+
+    def test_dispatch_batch_order_and_first_occurrence(self):
+        self.groups = [
+            group(1, "6-1", "2026-12-28", [item("OC-1", 2)]),
+            group(2, "6-2", "2026-12-10", [item("AC-1", 3), item("OC-1", 4)]),
+        ]
+        res, parts = self.parts()
+        self.assertEqual([p["part_number"] for p in res["parts"]], ["OC-1", "AC-1"])
+        self.assertEqual(parts["OC-1"]["dispatch_seq"], 0)
+        self.assertEqual(parts["OC-1"]["need"], 6)
+
+    def test_dispatch_conversion_uses_first_source_or_target(self):
+        for order in (("OLD", "AC-1", "OC-1"), ("OC-1", "AC-1", "OLD")):
+            with self.subTest(order=order):
+                self.groups = [group(1, "6-1", "2026-12-10", [item(p, 2) for p in order])]
+                with patch.object(sp.part_conversion, "active_map", return_value={"OLD": "OC-1"}):
+                    res, parts = self.parts()
+                self.assertEqual([p["part_number"] for p in res["parts"]], ["OC-1", "AC-1"])
+                self.assertEqual(parts["OC-1"]["dispatch_seq"], 0)
+                self.assertEqual(parts["OC-1"]["need"], 4)
+
+    def test_dispatch_order_preserves_supplier_grouping(self):
+        self.groups = [group(1, "6-1", "2026-12-10", [
+            item("PK-1", 1), item("OC-1", 2), item("EC-1", 3), item("AC-1", 4)])]
+        res, _ = self.parts()
+        self.assertEqual([p["supplier_id"] for p in res["parts"]], ["S1", "S2", "S2", "S3"])
+        self.assertEqual([p["part_number"] for p in res["parts"]], ["EC-1", "OC-1", "AC-1", "PK-1"])
+
+    def test_dispatch_positions_skip_empty_and_nonpositive_need(self):
+        groups = [group(1, "6-1", "", [
+            item("", 1), item("AC-1", 0), item("OC-1", -1),
+            item(" old ", 2), item("AC-1", 3), item("OC-1", 4)])]
+        self.assertEqual(sp._dispatch_positions(groups, {"OLD": "OC-1"}), {"OC-1": 0, "AC-1": 1})
+
+    def test_dispatch_missing_positions_sort_last_alphabetically(self):
+        self.groups = [group(1, "6-1", "2026-12-10", [item("OC-1", 2), item("AC-1", 3)])]
+        with patch.object(sp, "_dispatch_positions", return_value={}):
+            res, _ = self.parts()
+        self.assertEqual([p["part_number"] for p in res["parts"]], ["AC-1", "OC-1"])
+        self.assertTrue(all(p["dispatch_seq"] is None for p in res["parts"]))
+
     def test_need_sums_and_earliest_order(self):
         res, p = self.parts()
         self.assertEqual(p["EC-1"]["need"], 140)
@@ -321,10 +367,10 @@ class ShortageListTests(Base):
         self.assertEqual((p["OC-1"]["category"], p["OC-1"]["category_source"]), ("smt", "manual"))
         self.assertEqual((p["OC-1"]["pre_in_date"], p["OC-1"]["original_pre_in_date"]), ("2026-10-29", "2026-10-26"))
 
-    def test_sorted_by_supplier_then_part_and_metadata(self):
+    def test_sorted_by_supplier_then_dispatch_and_metadata(self):
         res, _ = self.parts()
         keys = [(x["supplier_id"], x["part_number"]) for x in res["parts"]]
-        self.assertEqual(keys, sorted(keys))
+        self.assertEqual(keys, [("S1", "EC-1"), ("S2", "OC-1"), ("S2", "AC-1"), ("S3", "PK-1")])
         self.assertEqual(res["today"], "2026-10-29")
         self.assertEqual(res["config"]["label"], "公司2（測試）")
         self.assertEqual([o["code"] for o in res["orders"]], ["6-2", "6-1", "6-3"])
@@ -956,6 +1002,14 @@ class CustomerSuppliedListTests(Base):
     def build(self):
         res = sp.build_shortage_list([1])
         return res, {p["part_number"]: p for p in res["parts"]}, {c["part_number"]: c for c in res["customer_supplied"]}
+
+    def test_customer_supplied_dispatch_order(self):
+        self.groups = [group(1, "1-1", "2026-12-10", [
+            item("CS-2-TAB", 8), item("CS-1-TAB", 50), item("CS-2-TAB", 2)])]
+        res, _, _ = self.build()
+        self.assertEqual([p["part_number"] for p in res["customer_supplied"]], ["CS-2-TAB", "CS-1-TAB"])
+        self.assertEqual([p["dispatch_seq"] for p in res["customer_supplied"]], [0, 1])
+        self.assertEqual(res["customer_supplied"][0]["need"], 10)
 
     def test_classification(self):
         self.assertEqual(ep.customer_supplied_reason("X-TAB"), "suffix")

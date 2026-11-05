@@ -519,6 +519,22 @@ def _aggregate(
     return parts
 
 
+def _dispatch_positions(
+    groups: List[Dict[str, Any]], conversions: Dict[str, str]
+) -> Dict[str, int]:
+    """依發料單順序記錄轉換後料號第一次出現的位置。"""
+    positions: Dict[str, int] = {}
+    for group in groups:
+        for item in group.get("items") or []:
+            key = part_conversion.resolve(str(item.get("part") or ""), conversions)
+            qty = float(item.get("need_qty") or 0)
+            if not key or qty <= 0:
+                continue
+            if key not in positions:
+                positions[key] = len(positions)
+    return positions
+
+
 def _customer_supplied_item(
     key: str, entry: Dict[str, Any], product: Dict[str, Any], reason: str, lookups: Dict[str, Any]
 ) -> Dict[str, Any]:
@@ -548,6 +564,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     conversions = part_conversion.active_map()
     sources = part_conversion.sources_by_target(conversions)
     aggregated = _aggregate(groups, conversions)
+    positions = _dispatch_positions(groups, conversions)
     keys = sorted(aggregated)
 
     st_stock = {
@@ -568,7 +585,10 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         product = lookups["products"].get(key, {})
         reason = erp_purchase.customer_supplied_reason(key)
         if reason:
-            customer_supplied.append(_customer_supplied_item(key, entry, product, reason, lookups))
+            customer_supplied.append({
+                **_customer_supplied_item(key, entry, product, reason, lookups),
+                "dispatch_seq": positions.get(key),
+            })
             continue
         last = lookups["last_po"].get(key, {})
         supplier_id, source = resolve_supplier(
@@ -604,6 +624,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         suggested = qty_fields["suggested_qty"]
         parts_out.append({
             "part_number": key,
+            "dispatch_seq": positions.get(key),
             "description": description,
             "category": category,
             "category_source": category_source,
@@ -639,7 +660,12 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "earliest_order": {k: entry["earliest"][k] for k in ("order_id", "code", "model", "po_number", "ship_date")},
             "orders": entry["orders"],
         })
-    parts_out.sort(key=lambda p: (p["supplier_id"], p["part_number"]))
+    def position_key(p: Dict[str, Any]) -> tuple:
+        seq = p["dispatch_seq"]
+        return (0 if seq is not None else 1, seq or 0, p["part_number"])
+
+    parts_out.sort(key=lambda p: (p["supplier_id"], *position_key(p)))
+    customer_supplied.sort(key=position_key)
     _already_ordered(parts_out)
 
     orders = [o for o in (db.get_order(int(i)) for i in dict.fromkeys(order_ids)) if o]
