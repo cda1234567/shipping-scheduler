@@ -40,7 +40,7 @@ class FrontendWiringTests(unittest.TestCase):
     def test_moq_hint_only_shows_moq_without_real_need(self):
         js = read(MOD / "erp_purchase.js")
         self.assertIn("const hasNeed = Number.isFinite(n) && n > 1;", js)
-        self.assertIn("上次進貨 ${fmtMoney(m)}", js)
+        self.assertIn("進貨最大公因數 ${fmtMoney(m)}", js)
         self.assertIn("無 MOQ 資料", js)
         self.assertIn("（正航最小採購量）", js)
 

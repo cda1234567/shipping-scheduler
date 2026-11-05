@@ -70,7 +70,7 @@ class QueryTests(ReceiptBase):
         self.rec("EC-80012A", "RM-20260721002", 20260721, 2000)
         out, failed = moq.last_receipts(["ec-30033a", "EC-80012A", "NONE-1"])
         self.assertFalse(failed)
-        self.assertEqual(out["EC-30033A"], {"qty": 6000.0, "date": "2026-09-15", "bill": "RM-20260915002"})
+        self.assertEqual(out["EC-30033A"], {"qty": 6000.0, "date": "2026-09-15", "bill": "RM-20260915002", "qtys": [6000.0, 3000.0]})
         self.assertEqual(out["EC-80012A"]["date"], "2026-07-21")
         self.assertNotIn("NONE-1", out)
 
@@ -114,7 +114,7 @@ class QueryTests(ReceiptBase):
         moq.last_receipts(["A-1", "B-1"])  # 含「沒有紀錄」也快取
         self.assertEqual(len(self.log), 1)
         moq.last_receipts(["A-1", "C-1"])  # 只查沒快取的
-        self.assertEqual(self.log[-1][1][-1:], ("C-1",))
+        self.assertEqual(self.log[-1][1][-2:-1], ("C-1",))
         self.assertEqual(len(self.log), 2)
         self.clock[0] += moq.RECEIPT_TTL_SECONDS + 1
         moq.last_receipts(["A-1"])
@@ -129,7 +129,46 @@ class QueryTests(ReceiptBase):
         self.clock[0] += moq.RECEIPT_FAIL_RETRY_SECONDS + 1
         self.down = False
         self.rec("A-1", "RM-1", 20260101, 10)
-        self.assertEqual(moq.last_receipts(["A-1"]), ({"A-1": {"qty": 10.0, "date": "2026-01-01", "bill": "RM-1"}}, False))
+        self.assertEqual(moq.last_receipts(["A-1"]), ({"A-1": {"qty": 10.0, "date": "2026-01-01", "bill": "RM-1", "qtys": [10.0]}}, False))
+
+
+class GcdTests(ReceiptBase):
+    def test_gcd_of_recent_receipts(self):
+        self.rec("A-1", "RM-1", 20260801, 60000)
+        self.rec("A-1", "RM-2", 20260901, 70000)
+        i = moq.lookup_moq(["A-1"])["A-1"]
+        self.assertEqual((i["moq"], i["moq_source"], i["receipt_gcd"], i["receipt_count"], i["receipt_qtys"], i["moq_floor_applied"]),
+                         (10000, "last_receipt", 10000, 2, [70000.0, 60000.0], False))
+
+    def test_floor_from_site_master(self):
+        self.rec("A-1", "RM-1", 20260801, 2000)
+        self.rec("A-1", "RM-2", 20260901, 2005)
+        self.site = {"A-1": 2000.0}
+        i = moq.lookup_moq(["A-1"])["A-1"]
+        self.assertEqual((i["moq"], i["moq_source"], i["receipt_gcd"], i["moq_floor_applied"]), (2000.0, "site_master", 5, True))
+
+    def test_floor_from_minpurch_when_no_master(self):
+        self.rec("A-1", "RM-1", 20260801, 2000)
+        self.rec("A-1", "RM-2", 20260901, 2005)
+        self.minpurch = {"A-1": 1000.0}
+        i = moq.lookup_moq(["A-1"])["A-1"]
+        self.assertEqual((i["moq"], i["moq_source"], i["moq_floor_applied"]), (1000.0, "erp_minpurch", True))
+
+    def test_no_receipts_uses_master(self):
+        self.site = {"A-1": 800.0}
+        self.minpurch = {"A-1": 50.0}
+        i = moq.lookup_moq(["A-1"])["A-1"]
+        self.assertEqual((i["moq"], i["moq_source"], i["receipt_gcd"], i["receipt_count"], i["moq_floor_applied"]),
+                         (800.0, "site_master", None, 0, False))
+
+    def test_only_latest_ten_bills(self):
+        for n in range(1, 13):  # 12 張；最舊兩張 (7、11) 不該被納入
+            self.rec("A-1", f"RM-{n:02d}", 20260100 + n, 7 if n == 1 else 11 if n == 2 else 1000 * n)
+        i = moq.lookup_moq(["A-1"])["A-1"]
+        self.assertEqual(i["receipt_count"], 10)
+        self.assertEqual(i["receipt_qtys"][0], 12000.0)
+        self.assertEqual((i["receipt_gcd"], i["moq"]), (1000, 1000))  # 7、11 若被納入 GCD 會是 1
+        self.assertEqual(self.log[-1][1][-1], moq.RECEIPT_GCD_BILLS)
 
 
 class FallbackChainTests(ReceiptBase):
@@ -139,7 +178,8 @@ class FallbackChainTests(ReceiptBase):
         self.site = {"R-1": 1000.0, "S-1": 800.0, "Z-1": 700.0}
         self.minpurch = {"R-1": 50.0, "S-1": 50.0, "M-1": 300.0}
         info = moq.lookup_moq(["R-1", "S-1", "M-1", "N-1", "Z-1"])
-        self.assertEqual((info["R-1"]["moq"], info["R-1"]["moq_source"], info["R-1"]["last_receipt_date"]), (6000.0, "last_receipt", "2026-09-15"))
+        # R-1 進貨 GCD 6000 >= 主檔 1000 → 用進貨 GCD
+        self.assertEqual((info["R-1"]["moq"], info["R-1"]["moq_source"], info["R-1"]["last_receipt_date"]), (6000, "last_receipt", "2026-09-15"))
         self.assertEqual((info["S-1"]["moq"], info["S-1"]["moq_source"]), (800.0, "site_master"))
         self.assertEqual((info["M-1"]["moq"], info["M-1"]["moq_source"]), (300.0, "erp_minpurch"))
         self.assertEqual((info["N-1"]["moq"], info["N-1"]["moq_source"], info["N-1"]["last_receipt_qty"]), (0, "none", None))
@@ -163,6 +203,7 @@ class FallbackChainTests(ReceiptBase):
         f = moq.moq_fields(80, moq.lookup_moq(["R-1"])["R-1"])
         self.assertEqual((f["suggested_qty"], f["moq_source"], f["last_receipt_qty"], f["last_receipt_date"], f["last_receipt_bill"], f["moq_adjusted"]),
                          (6000, "last_receipt", 6000.0, "2026-09-15", "RM-1", True))
+        self.assertEqual((f["receipt_gcd"], f["receipt_count"], f["receipt_qtys"], f["moq_floor_applied"]), (6000, 1, [6000.0], False))
         f = moq.moq_fields(9000, moq.lookup_moq(["R-1"])["R-1"])
         self.assertEqual((f["suggested_qty"], f["moq_adjusted"]), (9000, False))  # 需求 > 上次進貨量
         f = moq.moq_fields(80, moq.lookup_moq(["N-1"])["N-1"])
@@ -227,15 +268,18 @@ class HintTextTests(unittest.TestCase):
         return json.loads(out.stdout)
 
     def test_hint_texts(self):
-        got = self.run_js('[[1234,6000,"last_receipt",{date:"2026-09-15"}],[null,2000,"last_receipt",{date:"2026-07-21"}],'
-                          '[1,2000,"last_receipt",{date:"2026-07-21"}],[300,1000,"site_master"],[300,500,"erp_minpurch"],'
+        got = self.run_js('[[1234,6000,"last_receipt",{count:10}],[null,2000,"last_receipt",{count:3}],'
+                          '[1,2000,"last_receipt",{count:3}],[300,1000,"site_master"],[300,500,"erp_minpurch"],'
+                          '[300,2000,"site_master",{gcd:5,count:2,floor:true}],[300,1000,"erp_minpurch",{gcd:5,count:2,floor:true}],'
                           '[300,0,"none"],[null,0,"none"],[300,0,""],[null,0,""]]')
         self.assertEqual(got, [
-            "需 1,234，上次進貨 6,000（2026/09/15）",
-            "上次進貨 2,000（2026/07/21）",
-            "上次進貨 2,000（2026/07/21）",
+            "需 1,234，近10次進貨最大公因數 6,000",
+            "近3次進貨最大公因數 2,000",
+            "近3次進貨最大公因數 2,000",
             "需 300，MOQ 1,000（主檔）",
             "需 300，MOQ 500（正航最小採購量）",
+            "需 300，近2次進貨最大公因數 5，低於主檔MOQ，用主檔 2,000",
+            "需 300，近2次進貨最大公因數 5，低於正航最小採購量，用 1,000",
             "需 300，無 MOQ 資料",
             "無 MOQ 資料",
             "需 300",

@@ -175,7 +175,7 @@ function toRow(p) {
     needQty: p.need_qty || 0,
     moq: p.moq || 0,
     moqSource: p.moq_source || "",
-    lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "" },
+    lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "", gcd: p.receipt_gcd, count: p.receipt_count, floor: p.moq_floor_applied },
     moqAdjusted: Boolean(p.moq_adjusted),
     price: String(p.price ?? 0),
     currency: "", // 空 = 依該供應商 + 料號最近一張正航採購單自動判斷；NTD / USD = 手動

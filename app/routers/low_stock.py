@@ -66,6 +66,10 @@ async def get_low_stock_alerts():
                 "last_receipt_qty": a.get("last_receipt_qty"),
                 "last_receipt_date": a.get("last_receipt_date", ""),
                 "last_receipt_bill": a.get("last_receipt_bill", ""),
+                "receipt_gcd": a.get("receipt_gcd"),
+                "receipt_count": a.get("receipt_count", 0),
+                "receipt_qtys": a.get("receipt_qtys", []),
+                "moq_floor_applied": a.get("moq_floor_applied", False),
                 "suggested_po_qty": a["suggested_po_qty"],
             }
             for a in alerts

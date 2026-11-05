@@ -218,7 +218,7 @@ async function onTableClick(event) {
     document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
     prefillPurchaseOrder(part, qty, {
       need: gap, moq, moq_source: row.moq_source || "",
-      receipt: { qty: row.last_receipt_qty, date: row.last_receipt_date },
+      receipt: { qty: row.last_receipt_qty, date: row.last_receipt_date, gcd: row.receipt_gcd, count: row.receipt_count, floor: row.moq_floor_applied },
     });
     return;
   }

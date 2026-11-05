@@ -920,9 +920,9 @@ def suggested_po_gap(row: dict) -> int:
 
 
 def with_moq(views: List[dict]) -> List[dict]:
-    """替每列加上 moq / moq_source / last_receipt_* / suggested_po_qty（= max(缺口, 估算 MOQ)）。
+    """替每列加上 moq / moq_source / last_receipt_* / receipt_gcd / receipt_count / receipt_qtys / moq_floor_applied / suggested_po_qty（= max(缺口, 估算 MOQ)）。
 
-    MOQ 以最近一次進貨量估算（見 moq.lookup_moq，批次查詢 + 快取）；正航連不上時退回本站 MOQ。"""
+    MOQ 以近 10 次進貨量的最大公因數估算（不低於主檔 / 正航最小採購量）（見 moq.lookup_moq，批次查詢 + 快取）；正航連不上時退回本站 MOQ。"""
     from . import moq as moq_service
 
     info = moq_service.lookup_moq([v["part_number"] for v in views])
@@ -934,6 +934,10 @@ def with_moq(views: List[dict]) -> List[dict]:
         v["last_receipt_qty"] = i.get("last_receipt_qty")
         v["last_receipt_date"] = i.get("last_receipt_date") or ""
         v["last_receipt_bill"] = i.get("last_receipt_bill") or ""
+        v["receipt_gcd"] = i.get("receipt_gcd")
+        v["receipt_count"] = i.get("receipt_count") or 0
+        v["receipt_qtys"] = i.get("receipt_qtys") or []
+        v["moq_floor_applied"] = bool(i.get("moq_floor_applied"))
         v["suggested_po_qty"] = moq_service.adjust_qty(suggested_po_gap(v), value)
     return views
 

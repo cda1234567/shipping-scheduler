@@ -1710,6 +1710,7 @@ def part_defaults(part: str) -> Dict[str, Any]:
         "last_bill_no": "", "last_bill_date": "", "suggested_qty": None,
         "need_qty": None, "moq": 0, "moq_source": "none", "moq_adjusted": False,
         "last_receipt_qty": None, "last_receipt_date": "", "last_receipt_bill": "",
+        "receipt_gcd": None, "receipt_count": 0, "receipt_qtys": [], "moq_floor_applied": False,
     }
     if not key:
         return result

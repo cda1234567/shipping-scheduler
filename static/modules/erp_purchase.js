@@ -74,24 +74,23 @@ export function linkedQty(qty, ratio) {
   return Number.isFinite(v) && v > 0 ? Math.ceil(Math.round(v * 1e6) / 1e6) : 0;
 }
 
-/** 'YYYY-MM-DD' → 'YYYY/MM/DD'。 */
-function slashDate(text) {
-  return /^\d{4}-\d{2}-\d{2}/.test(String(text || "")) ? String(text).slice(0, 10).replaceAll("-", "/") : "";
-}
-
-/** 數量欄下方的提示（MOQ 以「最近一次進貨量」估算）：
- *  「需 1,234，上次進貨 6,000（2026/09/15）」；改用其他來源時註明：「需 X，MOQ Y（主檔）」/「（正航最小採購量）」；
+/** 數量欄下方的提示（MOQ 以「近 N 次進貨量的最大公因數」估算）：
+ *  「需 1,234，近10次進貨最大公因數 6,000」；低於主檔 / 正航最小採購量時註明「…最大公因數 X，低於主檔MOQ，用主檔 Y」；改用其他來源時註明：「需 X，MOQ Y（主檔）」/「（正航最小採購量）」；
  *  手動行沒有缺料需求（需求缺漏或 ≤ 1 的佔位值）就不顯示「需」；完全沒有資料顯示「無 MOQ 資料」。
- *  source 為空字串 = 沒有查過 MOQ，不顯示 MOQ 部分。receipt = { qty, date }。 */
+ *  source 為空字串 = 沒有查過 MOQ，不顯示 MOQ 部分。receipt = { qty, date, gcd, count, floor }。 */
 export function moqHintText(need, moq, source, receipt = null) {
   const n = Number(need);
   const hasNeed = Number.isFinite(n) && n > 1;
   const m = Number(moq);
   const hasMoq = Number.isFinite(m) && m > 0;
   let part = "";
+  const floored = hasMoq && receipt?.floor && receipt?.gcd;
   if (hasMoq && source === "last_receipt") {
-    const d = slashDate(receipt?.date);
-    part = `上次進貨 ${fmtMoney(m)}${d ? `（${d}）` : ""}`;
+    part = `近${receipt?.count}次進貨最大公因數 ${fmtMoney(m)}`;
+  } else if (floored && source === "erp_minpurch") {
+    part = `近${receipt.count}次進貨最大公因數 ${fmtMoney(receipt.gcd)}，低於正航最小採購量，用 ${fmtMoney(m)}`;
+  } else if (floored && source === "site_master") {
+    part = `近${receipt.count}次進貨最大公因數 ${fmtMoney(receipt.gcd)}，低於主檔MOQ，用主檔 ${fmtMoney(m)}`;
   } else if (hasMoq && source === "erp_minpurch") {
     part = `MOQ ${fmtMoney(m)}（正航最小採購量）`;
   } else if (hasMoq && source === "site_master") {
@@ -254,7 +253,7 @@ export function taxHintText(terms, manual, mode) {
 }
 
 function receiptOf(d) {
-  return { qty: d.last_receipt_qty, date: d.last_receipt_date };
+  return { qty: d.last_receipt_qty, date: d.last_receipt_date, gcd: d.receipt_gcd, count: d.receipt_count, floor: d.moq_floor_applied };
 }
 
 async function fillDefaults(idx) {
