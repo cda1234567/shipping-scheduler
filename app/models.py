@@ -512,3 +512,9 @@ class PostprocessLinkUpdate(BaseModel):
 
 class PostprocessSuggestRequest(BaseModel):
     use_erp: bool = True
+
+
+class ErpTransferCreateRequest(BaseModel):
+    batches: List[str]
+    client_token: str
+    preview_token: str

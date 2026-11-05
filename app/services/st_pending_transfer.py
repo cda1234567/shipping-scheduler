@@ -329,3 +329,74 @@ def compute(exclude_order_ids: Iterable[int] = (), conversions: Optional[Dict[st
     for key in set(deducted) | set(transfers):
         result["parts"][key] = net_pending(deducted.get(key, 0.0), transfers.get(key, 0.0))
     return result
+
+
+def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
+                     website: List[Dict[str, Any]], conversions: Dict[str, str]) -> List[Dict[str, Any]]:
+    """正航量 FIFO；正式網站單已包含於正航量，先移除再按原批次扣除，避免重扣。"""
+    import json
+    from . import erp_purchase as ep
+    remaining: Dict[str, float] = {}
+    for part, qty in transfers.items():
+        key = part_conversion.resolve(part, conversions)
+        remaining[key] = remaining.get(key, 0) + qty
+    own: Dict[str, Dict[str, float]] = {}
+    batch_keys = {b['key'] for b in batches}
+    for rec in website:
+        for line in json.loads(rec['lines_json']):
+            part = part_conversion.resolve(line['part'], conversions)
+            qty = float(line['qty'])
+            own.setdefault(rec['batch_key'], {})
+            own[rec['batch_key']][part] = own[rec['batch_key']].get(part, 0) + qty
+            if rec['target_db'] == 'CHIComp03' and rec.get('_in_source', True) and rec['batch_key'] in batch_keys:
+                remaining[part] = remaining.get(part, 0) - qty
+    out = []
+    for batch in batches:
+        deducted: Dict[str, float] = {}
+        for part, qty in batch['deductions']:
+            key = part_conversion.resolve(part, conversions)
+            if ep.customer_supplied_reason(part) or ep.customer_supplied_reason(key):
+                continue
+            deducted[key] = deducted.get(key, 0) + qty
+        rows = []
+        for part, qty in sorted(deducted.items()):
+            qty = max(0, qty - own.get(batch['key'], {}).get(part, 0))
+            # 淨退回量為負時，先補回最早批次的待調撥，與 compute 的淨量一致。
+            if remaining.get(part, 0) < 0:
+                qty -= remaining[part]
+                remaining[part] = 0
+            used = min(qty, max(0, remaining.get(part, 0)))
+            remaining[part] = remaining.get(part, 0) - used
+            if qty > used:
+                rows.append({'part': part, 'pending': qty - used})
+        out.append({k: v for k, v in batch.items() if k != 'deductions'} | {'rows': rows})
+    return out
+
+
+def batch_breakdown(target: str) -> Dict[str, Any]:
+    """一鍵調撥使用，失敗即拒絕預覽；不改既有 compute 結果。"""
+    conversions = part_conversion.active_map()
+    batches = list_batches()
+    cutoff = resolve_cutoff(get_cutoff_setting(), batches)
+    if not cutoff:
+        raise ValueError('找不到調撥截止批次，請重新選擇')
+    loaded = str(db.get_setting('st_inventory_loaded_at', '') or '')
+    start = _parse_dt(cutoff['first_dispatched_at'])
+    if not start:
+        raise ValueError('截止批次缺少首次發料日期')
+    parts = sorted({p for p, _ in _consumptions(cutoff['order_ids'], '')})
+    warnings = []
+    with low_stock._erp_session() as conn:
+        settle = detect_settle_date(conn, parts, start, '001', '015') if parts else None
+        if not settle:
+            settle = start
+            warnings.append('找不到截止批次的調撥日，改從首次發料日之後起算')
+        transfers = query_transfers(conn, settle, '001', '015')
+    after = [{**b, 'deductions': _consumptions(b['order_ids'], loaded)} for b in batches[batches.index(cutoff)+1:]]
+    website = db.successful_erp_transfers(target)
+    if target != 'CHIComp03':
+        website += db.successful_erp_transfers('CHIComp03')
+    for rec in website:
+        rec['_in_source'] = int(rec.get('move_date') or 0) > _yyyymmdd(settle)
+    # 正式紀錄只用於消除 FIFO 重扣；測試公司只扣自身紀錄。
+    return {'batches': allocate_batches(after, transfers, website, conversions), 'warnings': warnings}

@@ -73,6 +73,19 @@ LOW_STOCK_MIGRATION_COLUMNS = (
 )
 
 _CREATE_SQL = LOW_STOCK_WATCH_SQL + """
+CREATE TABLE IF NOT EXISTS erp_transfers (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ batch_key TEXT NOT NULL DEFAULT '', batch_code TEXT NOT NULL DEFAULT '',
+ target_db TEXT NOT NULL DEFAULT '', move_no TEXT NOT NULL DEFAULT '', move_date INTEGER NOT NULL DEFAULT 0,
+ status TEXT NOT NULL DEFAULT 'error', sum_qty REAL NOT NULL DEFAULT 0,
+ lines_json TEXT NOT NULL DEFAULT '[]', client_token TEXT NOT NULL DEFAULT '',
+ actor TEXT NOT NULL DEFAULT '', client_ip TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS erp_transfer_token ON erp_transfers(target_db,batch_key,client_token)
+ WHERE status='ok' AND client_token<>'';
+CREATE UNIQUE INDEX IF NOT EXISTS erp_transfer_batch ON erp_transfers(target_db,batch_key) WHERE status='ok';
+
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -5328,3 +5341,40 @@ def get_dispatch_history(group_by: str = "model") -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]
+
+
+def list_erp_transfers(target: str = "", limit: int = 200) -> list[dict]:
+    with get_conn() as conn:
+        sql = "SELECT * FROM erp_transfers"
+        args = []
+        if target:
+            sql += " WHERE target_db=?"
+            args.append(target)
+        return [dict(r) for r in conn.execute(sql + " ORDER BY id DESC LIMIT ?", (*args, limit))]
+
+
+def add_erp_transfer(rec: dict) -> int:
+    fields = ("batch_key", "batch_code", "target_db", "move_no", "move_date", "status", "sum_qty",
+              "lines_json", "client_token", "actor", "client_ip", "error")
+    values = [rec.get(k, 0 if k in ("move_date", "sum_qty") else "") for k in fields]
+    with get_conn() as conn:
+        cur = conn.execute("INSERT INTO erp_transfers (" + ",".join(fields) + ",created_at,updated_at) VALUES ("
+                           + ",".join("?" for _ in range(len(fields)+2)) + ")", (*values, _now(), _now()))
+        return int(cur.lastrowid)
+
+
+def get_erp_transfer(record_id: int) -> dict:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM erp_transfers WHERE id=?", (record_id,)).fetchone()
+        return dict(row) if row else {}
+
+
+def mark_erp_transfer_deleted(record_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("UPDATE erp_transfers SET status='deleted',updated_at=? WHERE id=? AND status='ok'",
+                     (_now(), record_id))
+
+
+def successful_erp_transfers(target: str) -> list[dict]:
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("SELECT * FROM erp_transfers WHERE target_db=? AND status='ok' ORDER BY id", (target,))]
