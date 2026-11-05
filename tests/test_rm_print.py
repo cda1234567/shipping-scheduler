@@ -84,6 +84,15 @@ class RmPrintPureTest(unittest.TestCase):
         d.pop("sum_amount"), d.pop("sum_tax")
         self.assertEqual(rm_print.totals(d)["total"], Decimal(13860))  # 沒有表頭合計時用明細加總
 
+    def test_all_payments(self):
+        d = dict(sum_amount=1000, sum_tax=50, sum_amtatax=1100, cash_pay=100, visa_pay=200,
+                 other_pay=50, offset=40, discount=30, dist_offset=10)
+        t = rm_print.totals(d)
+        self.assertEqual((t["total"], t["paid"], t["offset"], t["unpaid"]), (1050, 350, 40, 690))
+        d["sum_amtatax"] = None
+        self.assertEqual(rm_print.totals(d)["unpaid"], 640)
+        self.assertEqual(rm_print.totals({})["unpaid"], 0)
+
     def test_printer_choice_and_env(self):
         with clean_env():
             self.assertEqual(rm_print.choose_printer(True), "NPI975BEF (HP LaserJet M111w)")
@@ -98,9 +107,9 @@ class RmPrintPureTest(unittest.TestCase):
                 "TaxType": 0, "PrepayDay": 20261230, "EncashDay": 20261028, "DeptID": "001", "Salesman": "005",
                 "PriceOfTax": True, "AddrID": "001", "CustAddress": "", "ContactPhone": "06-2535069",
                 "FaxNo": "06-2535027", "Maker": "Andy", "InvoiceNo": "EC43707713", "InvoBillNO": "EC43707713-2705",
-                "Discount": 0, "CashPay": 0, "Remark": ""}
+                "Discount": 0, "CashPay": 1, "VisaPay": 2, "OtherPay": 3, "OffSet": 4, "Remark": ""}
         main = {"GatherStyle": 1, "GatherDelay": 60, "CheckStyle": 3, "CheckOther": "90天,月底票",
-                "InvAddress": "", "InvoAddr": "", "TaxNo": "", "PriceofTax": False}
+                "InvAddress": "", "InvoAddr": "", "TaxNo": "", "PriceofTax": False, "SumAmtATax": 105}
         recs = [{"RowNO": 1, "ProdID": "A", "ProdName": "品名", "Quantity": 2, "Price": 50, "Amount": 100,
                  "TaxAmt": 5, "WareID": "001"}]
         vendor = {"FullName": "萬晉興業有限公司", "TaxNo": "86934557", "Telephone1": "06-253-8069", "FaxNo": "06-2535027"}
@@ -109,7 +118,9 @@ class RmPrintPureTest(unittest.TestCase):
         invoice = {"InvoiceNO": "EC43707713", "InvoiceDate": 20261028, "InvoBillNo": "EC43707713-2705"}
         addresses = {"001": {"AddrID": "001", "Address": "台南市永康區正南一街57巷31號"}}
         d = rm_print_data.build_from_erp(acct, main, recs, vendor, {"PersonName": "楊子瑩"}, {"DepartName": "業務部"},
-                                         {"A": ""}, {"001": "ST"}, local, invoice=invoice, addresses=addresses)
+                                         {"A": ""}, {"001": "ST"}, local, invoice=invoice, addresses=addresses, terms_text="\r\n條款")
+        self.assertEqual([d[k] for k in ("cash_pay", "visa_pay", "other_pay", "offset", "dist_offset", "sum_amtatax", "terms_text")],
+                         [1, 2, 3, 4, 0, 105, "\r\n條款"])
         self.assertEqual(d["vendor_name"], "萬晉興業有限公司")
         self.assertEqual(d["tax_no"], "86934557")
         self.assertEqual(d["vendor_phone"], "06-253-8069")
@@ -134,12 +145,32 @@ class RmPrintPureTest(unittest.TestCase):
         self.assertIsNone(d["invoice_date"])  # 沒有發票號碼就不印發票日期
         self.assertEqual(d["invoice_address"], "發票地址")  # InvoAddr 是地址代號，不直接印
 
+    def test_load_terms_preserves_raw_text(self):
+        rec = {"rm_no": "RM-1", "lines_json": "[]"}
+        conn = mock.Mock()
+        for raw in ("\r\n\r\n條款  ", "", None):
+            for row in ({"TermsContext": raw}, None):
+                def optional(cur, sql, params):
+                    return row if "FROM comTerms " in sql else None
+                with mock.patch.object(rm_print_data.erp_stock, "get_settings", return_value={}), \
+                        mock.patch.object(rm_print_data.erp_stock, "_connect", return_value=conn), \
+                        mock.patch.object(rm_print_data, "_one", return_value={"FundBillNo": "RM-1"}), \
+                        mock.patch.object(rm_print_data, "_all", return_value=[]), \
+                        mock.patch.object(rm_print_data, "_optional_all", return_value=[]), \
+                        mock.patch.object(rm_print_data, "_optional", side_effect=optional) as query, \
+                        mock.patch.dict(os.environ, {"RM_PRINT_TERMS_ID": "CUSTOM"}):
+                    d = rm_print_data.load_from_erp(rec)
+                    self.assertEqual(d["terms_text"], raw if row else None)
+                    query.assert_any_call(conn.cursor(), "SELECT TermsContext FROM comTerms WHERE TermsID = %s", ("CUSTOM",))
+        self.assertTrue(conn.close.called)
+
     def test_from_local(self):
         rec = {"rm_no": "RM-9", "rm_date": 20261104, "vendor_id": "V", "vendor_name": "N", "currency": "NTD",
                "sum_amount": 10, "sum_tax": 0.5,
                "lines_json": json.dumps([{"row_no": 1, "prod_id": "A", "prod_name": "B", "unit": "PCS", "qty": 1,
                                           "price": 10, "amount": 10, "tax": 0.5}])}
         d = rm_print_data.from_local(rec)
+        self.assertIsNone(d["terms_text"])
         self.assertEqual(d["rm_no"], "RM-9")
         self.assertEqual(d["lines"][0]["prod_id"], "A")
         self.assertNotIn("price_of_tax", d)  # 本機紀錄不知道含稅/未稅 → 留白
@@ -209,11 +240,70 @@ class RmPrintLayoutTest(unittest.TestCase):
         self.assertEqual(len(re.findall(rb"/Type /Page\b", pdf)), info["page_count"])
         self.assertEqual(len(re.findall(rb"/Type /Page\b", pdf1)), 1)
         self.assertEqual(rm_print.page_label(1, 1), "1")
-        self.assertEqual(rm_print.page_label(2, 3), "2/3")
+        self.assertEqual(rm_print.page_label(2, 3), "2")
 
     def test_wrap_long_name(self):
         lines = [l.rstrip() for l in rm_print.wrap_text("CRYSTAL,25.000MHZ (+/-50ppm OR BETTER) FUNDAMENTAL,HC-49/S", 36.40)]
-        self.assertEqual(lines, ["CRYSTAL,25.000MHZ", "(+/-50ppm OR BETTER)", "FUNDAMENTAL,HC-49/", "S"])
+        self.assertEqual(lines, ["CRYSTAL,25.000MHZ", "(+/-50ppm OR BETTER)", "FUNDAMENTAL,HC-", "49/S"])
+
+    def test_fr2_breaks(self):
+        fonts = rm_print.resolve_fonts()
+        for sep in ("-", ".", ",", " "):
+            first = "AB" + sep
+            width = rm_print.text_width(first, fonts=fonts) + 0.01
+            self.assertEqual(rm_print.wrap_text(first + "CD", width, fonts=fonts), [first, "CD"])
+        width = rm_print.text_width("AA", fonts=fonts) + 0.01
+        self.assertEqual(rm_print.wrap_text("AAAAAA", width, fonts=fonts), ["AA"] * 3)
+        self.assertEqual(rm_print.wrap_text("中中中", 7.1, fonts=fonts), ["中中", "中"])
+        self.assertEqual(rm_print.wrap_text("A\r\nB\nC", 10, fonts=fonts), ["A", "B", "C"])
+
+    def test_detail_wrap(self):
+        for key, value in (("prod_id", "ABCD-EFGH-IJKL-MNOP-QRST"),
+                           ("ware", "倉庫名稱超過五個字的測試"), ("row_no", "12345678901234567890")):
+            d = bill(1)
+            d["lines"][0][key] = value
+            row = rm_print.layout(d)["pages"][0]["rows"][0]
+            n = len(row["cells"][key])
+            self.assertGreaterEqual(n, 2)
+            self.assertEqual(row["height"], rm_print.row_height(n))
+
+    def test_header_wrap(self):
+        d = bill(60)
+        d.update(vendor_name="廠商" * 70, vendor_address="地址" * 70, invoice_address="發票" * 70)
+        fonts = rm_print.resolve_fonts()
+        k = sum(len(v) - 1 for v in rm_print._header_lines(d, fonts).values())
+        self.assertGreater(k, 0)
+        lay = rm_print.layout(d, fonts)
+        self.assertAlmostEqual(lay["header_extra"], k * 4.06)
+        for page in lay["pages"]:
+            if page["rows"]:
+                self.assertAlmostEqual(page["rows"][0]["top"], rm_print.DETAIL_TOP + k * 4.06)
+
+    def test_terms_height_and_printers(self):
+        self.assertAlmostEqual(rm_print.footer_height({}), rm_print.SIGN_OFFSET + rm_print.DESCENT_MM)
+        self.assertLess(rm_print.footer_height({"terms_text": ""}), rm_print.footer_height({}))
+        avail = 148.5 - 75.40 - (39.29 + 0.70)
+        n = int(avail // rm_print.row_height(1))
+        self.assertEqual(rm_print.max_single_line_rows_in_half_page(), n)
+        for count, printer in ((n, "NPI975BEF (HP LaserJet M111w)"), (n + 1, "HP Color LaserJet M652 [7D2006]")):
+            lay = rm_print.layout(bill(count))
+            self.assertEqual(rm_print.choose_printer(lay["fits_half_page"]), printer)
+
+    def test_exact_terms_positions(self):
+        path = os.environ.get("RM_TEST_MINGLIU")
+        if not path or not Path(path).is_file():
+            self.skipTest("未設定 RM_TEST_MINGLIU 字型")
+        old_cache = dict(rm_print._FONT_CACHE)
+        self.addCleanup(lambda: (rm_print._FONT_CACHE.clear(), rm_print._FONT_CACHE.update(old_cache)))
+        with mock.patch.dict(os.environ, {"RM_PRINT_FONT_PATH": path}):
+            rm_print._FONT_CACHE.clear()
+            fonts = rm_print.resolve_fonts()
+            self.assertEqual(fonts["mode"], "exact")
+            lines = rm_print.terms_positions(rm_print.DEFAULT_TERMS_TEXT, fonts)
+            self.assertEqual(len(lines), 6)
+            for label, expected in (("審核", 90.01), ("製單", 172.37)):
+                x = next(x for x, run in lines[-1] if run == label)
+                self.assertAlmostEqual(x, expected, delta=0.15)
 
     def test_print_endpoints(self):
         try:

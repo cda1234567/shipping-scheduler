@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from . import erp_stock
@@ -46,6 +47,7 @@ def from_local(rec: Dict[str, Any]) -> Dict[str, Any]:
         "rm_no": rec.get("rm_no") or "", "rm_date": rec.get("rm_date") or 0,
         "print_date": int(local_now().strftime("%Y%m%d")),
         "vendor_id": rec.get("vendor_id") or "", "vendor_name": rec.get("vendor_name") or "",
+        "terms_text": None,
         "currency": rec.get("currency") or "NTD",
         "sum_amount": rec.get("sum_amount"), "sum_tax": rec.get("sum_tax"), "amount_digits": 0,
         "lines": [{
@@ -89,7 +91,7 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
                    vendor: Optional[Dict[str, Any]], buyer: Optional[Dict[str, Any]], dept: Optional[Dict[str, Any]],
                    units: Dict[str, str], wares: Dict[str, str], local: Dict[str, Any],
                    amount_digits: int = 0, invoice: Optional[Dict[str, Any]] = None,
-                   addresses: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+                   addresses: Optional[Dict[str, Dict[str, Any]]] = None, terms_text: Optional[str] = None) -> Dict[str, Any]:
     """把正航讀回的列組成列印資料（純函式，方便測試）。"""
     from . import rm_print
 
@@ -147,6 +149,10 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
         "invoice_style": "",
         "discount": _pick(acct, "Discount", default=0) or 0,
         "cash_pay": _pick(acct, "CashPay", default=0) or 0,
+        "visa_pay": _pick(acct, "VisaPay", default=0), "other_pay": _pick(acct, "OtherPay", default=0),
+        "offset": _pick(acct, "OffSet", default=0),
+        "dist_offset": 0,  # comBillAccounts 未找到 DistOffset 欄位
+        "sum_amtatax": _pick(main, "SumAmtATax"), "terms_text": terms_text,
         "remark": _text(_pick(acct, "Remark")),
         "sum_amount": _pick(acct, "Total", default=local.get("sum_amount")),
         "sum_tax": _pick(acct, "Tax", default=local.get("sum_tax")),
@@ -192,6 +198,11 @@ def load_from_erp(rec: Dict[str, Any]) -> Dict[str, Any]:
             if invoice is None:
                 invoice = _optional(cur, "SELECT * FROM comInvoice WHERE InvoiceNO = %s AND SrcBillNO = %s",
                                     (_text(_pick(acct, "InvoiceNo")), rm_no))
+        from .rm_print import DEFAULT_TERMS_ID
+        terms_id = os.environ.get("RM_PRINT_TERMS_ID") or DEFAULT_TERMS_ID
+        terms = _optional(cur, "SELECT TermsContext FROM comTerms WHERE TermsID = %s", (terms_id,))
+        # 保留條款開頭 CRLF 與空白，不能經過 _pick。
+        terms_text = next((v for k, v in (terms or {}).items() if k.lower() == "termscontext"), None)
         digits = 0
         curr = _text(_pick(acct, "CurrID"))
         if curr and curr.upper() != "NTD":
@@ -199,7 +210,7 @@ def load_from_erp(rec: Dict[str, Any]) -> Dict[str, Any]:
             raw = _pick(row, "AmountDeciDigits")
             digits = int(raw) if raw is not None else 2
         return build_from_erp(acct, main, recs, vendor, buyer, dept, units, wares, local, digits,
-                              invoice=invoice, addresses=addresses)
+                              invoice=invoice, addresses=addresses, terms_text=terms_text)
     except ErpError:
         raise
     except Exception as exc:

@@ -17,7 +17,7 @@ import io
 import os
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 PAGE_W = 210.0
 PAGE_H = 297.0
@@ -62,8 +62,8 @@ COLUMNS = (
     ("amount_tax", "含稅金額", 162.98, 183.73, "R", 183.06),
     ("remark", "分錄備註", 184.23, 200.07, "L", 184.91),
 )
-WRAP_WIDTH = {"prod_name": 36.40, "remark": 15.10}
-CLIP_WIDTH = {"row_no": 8.9, "prod_id": 19.5, "ware": 18.0, "unit": 8.8}
+WRAP_WIDTH = {"row_no": 9.56, "prod_id": 19.39, "ware": 17.47, "prod_name": 36.40, "remark": 15.10}
+CLIP_WIDTH = {"unit": 8.8}
 
 # 頁尾（相對於頁尾頂線 ftop）
 FOOT_BASES = (3.64, 8.55, 13.50)
@@ -75,9 +75,10 @@ FOOT_LEFT_X = (6.69, 45.42, 73.58)
 FOOT_MID_X, FOOT_MID_RIGHT = 122.13, 161.72
 FOOT_RIGHT_X, FOOT_RIGHT_RIGHT = 163.91, 200.24
 SIGN_OFFSET = 39.29
-SIGN_PARTS = ((6.69, "簽核 "), (90.01, "審核 "), (172.37, "製單 "))
-SIGN_UNDERSCORES = 18
-FOOTER_HEIGHT = SIGN_OFFSET + DESCENT_MM  # 頁尾頂線 → 簽核列下緣
+DEFAULT_TERMS_ID = "ST"
+DEFAULT_TERMS_TEXT = "\r\n"*5 + "簽核 " + "_"*18 + " "*49 + "審核 " + "_"*18 + " "*48 + "製單 " + "_"*18
+TERMS_WRAP_PX = round(194.92 / 0.2730) - 4  # Memo6 寬 714px − 2×InternalGapX
+TERMS_FIRST_BASE = SIGN_OFFSET - 5 * ROW_LINE_PITCH
 
 # PMingLiU 英數字寬（1/1024 em），量自正航 PDF 內嵌字型；表上沒有的字 ≈ Times × 0.94
 PMINGLIU_LATIN = {
@@ -241,6 +242,11 @@ def _runs(text: str) -> List[Tuple[bool, str]]:
 def wrap_text(text: str, width: float, size: float = SIZE, fonts: Optional[Dict[str, Any]] = None) -> List[str]:
     """正航（FastReport）式折行：英文以字為單位、行尾空白保留不計寬；單字超寬就逐字切；中文每字可斷。"""
     fonts = fonts or resolve_fonts()
+    return _wrap_text(text, width, lambda t: text_width(t, size, fonts))
+
+
+def _wrap_text(text: str, width: float, measure: Callable[[str], float]) -> List[str]:
+    """FR2：空白、點、逗號、連字號後可斷，斷字保留行尾。"""
     lines: List[str] = []
     for para in str(text or "").replace("\r\n", "\n").split("\n"):
         tokens: List[str] = []
@@ -249,27 +255,66 @@ def wrap_text(text: str, width: float, size: float = SIZE, fonts: Optional[Dict[
                 tokens.append(ch)
             elif ch == " " and tokens:
                 tokens[-1] += ch
-            elif tokens and _is_latin(tokens[-1][-1]) and not tokens[-1].endswith(" "):
+            elif tokens and _is_latin(tokens[-1][-1]) and tokens[-1][-1] not in " .,-":
                 tokens[-1] += ch
             else:
                 tokens.append(ch)
         line = ""
         for tok in tokens:
-            if text_width((line + tok).rstrip(" "), size, fonts) <= width:
+            if measure((line + tok).rstrip(" ")) <= width:
                 line += tok
                 continue
             if line:
                 lines.append(line)
                 line = ""
-            while text_width(tok.rstrip(" "), size, fonts) > width and len(tok.rstrip(" ")) > 1:
+            while measure(tok.rstrip(" ")) > width and len(tok.rstrip(" ")) > 1:
                 cut = 1
-                while cut < len(tok) and text_width(tok[:cut + 1], size, fonts) <= width:
+                while cut < len(tok) and measure(tok[:cut + 1].rstrip(" ")) <= width:
                     cut += 1
                 lines.append(tok[:cut])
                 tok = tok[cut:]
             line = tok
         lines.append(line)
     return lines or [""]
+
+
+def terms_positions(text: str, fonts: Optional[Dict[str, Any]] = None) -> List[List[Tuple[float, str]]]:
+    """條款以印表機 DC 整數字寬推進；空白只移位，不畫字。"""
+    fonts = fonts or resolve_fonts()
+    def advance(ch: str) -> float:
+        return round(_char_em(ch, fonts) * 83) / 600 * 25.4
+    def screen_px(t: str) -> int:
+        return sum(round(_char_em(ch, fonts) * 13) for ch in t)
+    # FR2 折行用螢幕字寬（96dpi、10pt = 13px）判斷、列印時用印表機字寬推進：
+    # ST 簽核列螢幕寬 702px < 710px 不折行，但印出來會超出 memo 寬（同正航實印）。
+    lines = _wrap_text(text, TERMS_WRAP_PX, screen_px) if text else []
+    out = []
+    for line in lines:
+        x, runs = HEAD_X[0], []
+        for word in line.split(" "):
+            if word:
+                runs.append((x, word))
+            x += sum(advance(ch) for ch in word) + advance(" ")
+        out.append(runs)
+    return out
+
+
+def _terms_text(data: Dict[str, Any]) -> str:
+    text = data.get("terms_text")
+    return DEFAULT_TERMS_TEXT if text is None else text
+
+
+def footer_height(data: Dict[str, Any], fonts: Optional[Dict[str, Any]] = None) -> float:
+    text = _terms_text(data)
+    n = len(terms_positions(text, fonts)) if text else 0
+    return (TERMS_FIRST_BASE + (n - 1) * ROW_LINE_PITCH if n else FOOT_BOTTOM) + DESCENT_MM
+
+
+def _header_lines(data: Dict[str, Any], fonts: Dict[str, Any]) -> Dict[int, List[str]]:
+    vendor = f"{data.get('vendor_id') or ''}   {data.get('vendor_name') or ''}".strip()
+    return {2: wrap_text(vendor, 104.83, fonts=fonts),
+            5: wrap_text(f"廠商地址: {data.get('vendor_address') or ''}", 123.40, fonts=fonts),
+            6: wrap_text(f"發票地址: {data.get('invoice_address') or ''}", 192.19, fonts=fonts)}
 
 
 def clip_text(text: str, width: float, size: float = SIZE, fonts: Optional[Dict[str, Any]] = None) -> str:
@@ -321,34 +366,40 @@ def totals(data: Dict[str, Any]) -> Dict[str, Decimal]:
     total = sum_amount + sum_tax
     discount = _dec(data.get("discount"))
     cash = _dec(data.get("cash_pay"))
+    paid = cash + _dec(data.get("visa_pay")) + _dec(data.get("other_pay"))
+    offset = _dec(data.get("offset"))
+    amtatax = _dec(data["sum_amtatax"]) if data.get("sum_amtatax") is not None else total
     return {"sum_amount": sum_amount, "sum_tax": sum_tax, "total": total, "discount": discount,
-            "cash_pay": cash, "unpaid": total - discount - cash}
+            "cash_pay": cash, "paid": paid, "offset": offset,
+            "unpaid": amtatax - paid - offset - (discount - _dec(data.get("dist_offset")))}
 
 
 def layout(data: Dict[str, Any], fonts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """分頁：每頁重複表頭；明細放不下換頁；頁尾（合計 + 簽核）只在最後一頁。"""
     fonts = fonts or resolve_fonts()
     digits = int(data.get("amount_digits") or 0)
+    header_extra = sum(len(v) - 1 for v in _header_lines(data, fonts).values()) * ROW_LINE_PITCH
+    fh = footer_height(data, fonts)
     rows = []
     for line in data.get("lines") or []:
         cells = _line_cells(line, digits, fonts)
         n = max(len(v) for v in cells.values())
         rows.append({"cells": cells, "height": row_height(n), "lines": n})
     pages: List[Dict[str, Any]] = [{"rows": [], "footer_top": None}]
-    y = DETAIL_TOP
+    y = DETAIL_TOP + header_extra
     for r in rows:
         if pages[-1]["rows"] and y + r["height"] > PAGE_BOTTOM_MM:
             pages.append({"rows": [], "footer_top": None})
-            y = DETAIL_TOP
+            y = DETAIL_TOP + header_extra
         pages[-1]["rows"].append({**r, "top": y})
         y += r["height"]
-    if y + FOOTER_HEIGHT > PAGE_BOTTOM_MM:
+    if y + fh > PAGE_BOTTOM_MM:
         pages.append({"rows": [], "footer_top": None})
-        y = DETAIL_TOP
+        y = DETAIL_TOP + header_extra
     pages[-1]["footer_top"] = y
-    bottom = y + FOOTER_HEIGHT
+    bottom = y + fh
     return {"pages": pages, "page_count": len(pages), "bottom_mm": round(bottom, 2),
-            "fits_half_page": len(pages) == 1 and bottom <= half_page_limit(), "fonts": fonts}
+            "fits_half_page": len(pages) == 1 and bottom <= half_page_limit(), "fonts": fonts, "header_extra": header_extra}
 
 
 def half_page_limit() -> float:
@@ -359,7 +410,7 @@ def half_page_limit() -> float:
 
 
 def max_single_line_rows_in_half_page() -> int:
-    avail = half_page_limit() - DETAIL_TOP - FOOTER_HEIGHT
+    avail = half_page_limit() - DETAIL_TOP - footer_height({})
     n = 0
     while row_height(1) * (n + 1) <= avail + 1e-9:
         n += 1
@@ -430,24 +481,31 @@ class _Painter:
 
 
 def page_label(page_no: int, page_count: int) -> str:
-    """頁碼：單頁印「1」（同正航樣張），多頁印「n/m」。"""
-    return str(page_no) if page_count == 1 else f"{page_no}/{page_count}"
+    """正航 [MyPage]：每張單據從 1 起算。"""
+    return str(page_no)
 
 
-def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int) -> None:
+def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int, header_extra: float = 0) -> None:
     f = p.fonts
     p.text_center(TITLE_CX, TITLE_BASE, data.get("company_name") or DEFAULT_COMPANY, TITLE_SIZE)
     x0, x1 = p.text_center(SUB_CX, SUB_BASE, "進貨憑單", SUBTITLE_SIZE)
     for y in SUB_UL:
         p.hline(x0 - SUB_UL_PAD, x1 + SUB_UL_PAD, y)
     page_text = page_label(page_no, page_count)
-    b = HEAD_BASE
+    wrapped = _header_lines(data, f)
+    b, extra = [], 0.0
+    for row, base in enumerate(HEAD_BASE):
+        b.append(base + extra)
+        extra += (len(wrapped.get(row, [""])) - 1) * ROW_LINE_PITCH
+
+    def memo(row, x):
+        for i, text in enumerate(wrapped[row]):
+            p.text(x, b[row] + i * ROW_LINE_PITCH, text)
     p.text(HEAD_X[0], b[0], f"列印日期: {roc_date(data.get('print_date') or date.today())}")
     p.text(PAGE_NO_X, b[0], f"頁碼: {page_text}")
     p.hline(*RULE_X, RULE_TOP)
     w2 = HEAD_X[1] - HEAD_X[0] - 1.0   # 左欄可用寬
     w3 = HEAD_X[2] - HEAD_X[1] - 1.0
-    wl = HEAD_X[2] - HEAD_X[0] - 1.0   # 左欄跨到第三欄前
     wr = RULE_X[1] - HEAD_X[2]
 
     def cell(col: int, row: int, text: str, width: float) -> None:
@@ -457,8 +515,7 @@ def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int) ->
     cell(1, 1, f"進貨單號: {data.get('rm_no') or ''}", w3)
     cell(2, 1, f"公司電話: {data.get('vendor_phone') or ''}", wr)
     p.text(HEAD_X[0], b[2], "廠商名稱: ")
-    vendor = f"{data.get('vendor_id') or ''}   {data.get('vendor_name') or ''}".strip()
-    p.text(VENDOR_VALUE_X, b[2], clip_text(vendor, HEAD_X[2] - VENDOR_VALUE_X - 1.0, SIZE, f))
+    memo(2, VENDOR_VALUE_X)
     cell(2, 2, f"統一編號: {data.get('tax_no') or ''}", wr)
     cell(0, 3, f"聯絡電話: {data.get('contact_phone') or ''}", w2)
     cell(1, 3, f"傳真號碼: {data.get('fax') or ''}", w3)
@@ -466,20 +523,20 @@ def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int) ->
     cell(0, 4, f"幣別編號: {data.get('currency') or 'NTD'}", w2)
     cell(1, 4, f"採購人員: {data.get('buyer') or ''}", w3)
     cell(2, 4, f"所屬部門: {data.get('dept') or ''}", wr)
-    cell(0, 5, f"廠商地址: {data.get('vendor_address') or ''}", wl)
+    memo(5, HEAD_X[0])
     cell(2, 5, f"製單人員: {data.get('maker') or ''}", wr)
-    cell(0, 6, f"發票地址: {data.get('invoice_address') or ''}", RULE_X[1] - HEAD_X[0])
+    memo(6, HEAD_X[0])
     cell(0, 7, f"付款條件: {data.get('pay_terms') or ''}", w2)
     cell(1, 7, f"預付日期: {roc_date(data.get('prepay_date'))}", w3)
     cell(2, 7, f"預兌日期: {roc_date(data.get('encash_date'))}", wr)
-    p.hline(*RULE_X, RULE_COLS)
+    p.hline(*RULE_X, RULE_COLS + header_extra)
     for key, title, u0, u1, align, tx in COLUMNS:
         if align == "R":
-            p.text_right(tx, COL_HEAD_BASE, title)
+            p.text_right(tx, COL_HEAD_BASE + header_extra, title)
         else:
-            p.text(tx, COL_HEAD_BASE, title)
+            p.text(tx, COL_HEAD_BASE + header_extra, title)
         for y in COL_UL:
-            p.hline(u0, u1, y)
+            p.hline(u0, u1, y + header_extra)
 
 
 def _rows(p: _Painter, rows: List[Dict[str, Any]]) -> None:
@@ -504,7 +561,7 @@ def _footer(p: _Painter, data: Dict[str, Any], ftop: float) -> None:
     p.text(FOOT_LEFT_X[2], b[0], clip_text(f"發票號碼: {data.get('invoice_no') or ''}", FOOT_VLINES_X[0] - FOOT_LEFT_X[2] - 0.5, SIZE, f))
     p.text(FOOT_LEFT_X[0], b[1], f"發票聯式: {data.get('invoice_style') or ''}")
     p.text(FOOT_LEFT_X[0], b[2], clip_text(f"備註: {data.get('remark') or ''}", FOOT_VLINES_X[0] - FOOT_LEFT_X[0] - 0.5, SIZE, f))
-    for i, (label, key) in enumerate((("折讓: ", "discount"), ("現付: ", "cash_pay"), ("未付款: ", "unpaid"))):
+    for i, (label, key) in enumerate((("折讓: ", "discount"), ("現付: ", "paid"), ("未付款: ", "unpaid"))):
         p.text(FOOT_MID_X, b[i], label)
         p.text_right(FOOT_MID_RIGHT, b[i], fmt_num(t[key], digits))
     for i, (label, key) in enumerate((("合計: ", "sum_amount"), ("稅金: ", "sum_tax"), ("總計: ", "total"))):
@@ -513,8 +570,9 @@ def _footer(p: _Painter, data: Dict[str, Any], ftop: float) -> None:
     for x in FOOT_VLINES_X:
         p.vline(x, ftop + FOOT_VLINE_SPAN[0], ftop + FOOT_VLINE_SPAN[1])
     p.hline(*FOOT_BOTTOM_X, ftop + FOOT_BOTTOM)
-    for x, label in SIGN_PARTS:
-        p.text(x, ftop + SIGN_OFFSET, label + "_" * SIGN_UNDERSCORES)
+    for i, runs in enumerate(terms_positions(_terms_text(data), f)):
+        for x, run in runs:
+            p.text(x, ftop + TERMS_FIRST_BASE + i * ROW_LINE_PITCH, run)
 
 
 def render_pdf(data: Dict[str, Any]) -> Tuple[bytes, Dict[str, Any]]:
@@ -533,7 +591,7 @@ def render_pdf(data: Dict[str, Any]) -> Tuple[bytes, Dict[str, Any]]:
         c.setLineWidth(LINE_W)
         c.setStrokeColorRGB(0, 0, 0)
         c.setFillColorRGB(0, 0, 0)
-        _header(p, data, i, lay["page_count"])
+        _header(p, data, i, lay["page_count"], lay["header_extra"])
         _rows(p, page["rows"])
         if page["footer_top"] is not None:
             _footer(p, data, page["footer_top"])

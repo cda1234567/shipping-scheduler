@@ -57,6 +57,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      # 主機新細明體唯讀掛載、不提交字型；rm_print 自動選用精確字型
+      - ${RM_PRINT_FONT_HOST_PATH:-C:/Windows/Fonts/mingliu.ttc}:/usr/share/fonts/truetype/mingliu/mingliu.ttc:ro
       - scheduler-data:/app/data
       - D:/Download/excel:/app/user_downloads
     labels:
