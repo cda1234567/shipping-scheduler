@@ -91,7 +91,8 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
                    vendor: Optional[Dict[str, Any]], buyer: Optional[Dict[str, Any]], dept: Optional[Dict[str, Any]],
                    units: Dict[str, str], wares: Dict[str, str], local: Dict[str, Any],
                    amount_digits: int = 0, invoice: Optional[Dict[str, Any]] = None,
-                   addresses: Optional[Dict[str, Dict[str, Any]]] = None, terms_text: Optional[str] = None) -> Dict[str, Any]:
+                   addresses: Optional[Dict[str, Dict[str, Any]]] = None, terms_text: Optional[str] = None,
+                   cust_desc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """把正航讀回的列組成列印資料（純函式，方便測試）。"""
     from . import rm_print
 
@@ -102,8 +103,10 @@ def build_from_erp(acct: Dict[str, Any], main: Optional[Dict[str, Any]], recs: L
 
     # 廠商地址：單據上的地址 → 單據地址代號（comCustAddress）
     cust_addr = _text(_pick(acct, "CustAddress")) or addr_of(_pick(acct, "AddrID"))
-    # 發票地址：stkBillMain.InvAddress（文字）→ InvoAddr 是地址「代號」要查 comCustAddress → 發票主檔地址 → 廠商地址
+    # 發票地址優先單據，其次廠商資料，再退回發票主檔及廠商地址。
+    # 樣張的 DeliverAddrID 與 AddrID 相同，此處假設使用 AddrID。
     inv_addr = (_text(_pick(main, "InvAddress")) or addr_of(_pick(main, "InvoAddr"))
+                or _text(_pick(cust_desc, "AddrOfInvo")) or addr_of(_pick(cust_desc, "AddrID"))
                 or _text(_pick(invoice, "Address")) or cust_addr)
     tax_type = int(_pick(acct, "TaxType", default=0) or 0)
     lines = []
@@ -176,6 +179,7 @@ def load_from_erp(rec: Dict[str, Any]) -> Dict[str, Any]:
         main = _optional(cur, "SELECT * FROM stkBillMain WHERE Flag = 100 AND BillNO = %s", (rm_no,))
         recs = _all(cur, "SELECT * FROM comProdRec WHERE Flag = 100 AND BillNO = %s ORDER BY RowNO", (rm_no,))
         vendor = _optional(cur, "SELECT * FROM comCustomer WHERE Flag = 2 AND ID = %s", (_text(_pick(acct, "CustID")),))
+        cust_desc = _optional(cur, "SELECT * FROM comCustDesc WHERE Flag = 2 AND ID = %s", (_text(_pick(acct, "CustID")),))
         buyer = _optional(cur, "SELECT * FROM comPerson WHERE PersonID = %s", (_text(_pick(acct, "Salesman")),))
         dept = _optional(cur, "SELECT * FROM comDepartment WHERE DepartID = %s", (_text(_pick(acct, "DeptID")),))
         units: Dict[str, str] = {}
@@ -210,7 +214,7 @@ def load_from_erp(rec: Dict[str, Any]) -> Dict[str, Any]:
             raw = _pick(row, "AmountDeciDigits")
             digits = int(raw) if raw is not None else 2
         return build_from_erp(acct, main, recs, vendor, buyer, dept, units, wares, local, digits,
-                              invoice=invoice, addresses=addresses, terms_text=terms_text)
+                              invoice=invoice, addresses=addresses, terms_text=terms_text, cust_desc=cust_desc)
     except ErpError:
         raise
     except Exception as exc:

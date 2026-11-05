@@ -45,8 +45,10 @@ COL_HEAD_BASE = 73.70
 COL_UL = (74.85, 75.40)
 DETAIL_TOP = 75.40
 ROW_BASE_OFFSET = 3.64   # 列頂 → 第一行基線
-ROW_LINE_PITCH = 4.06    # 折行行距
-ROW_PAD = 1.79           # 列高 = 行數 × 行距 + ROW_PAD
+ROW_LINE_PITCH = 4.064   # 折行行距（600dpi 的 96px）
+ROW_STRETCH_PAD = 1.856  # 多行列伸展留白
+MEMO_STRETCH_GAP = 0.916
+MEMO_DY = 4.91
 ROW_MIN_H = 5.85
 
 # 明細欄位：(key, 標題, 底線 x0, 底線 x1, 對齊, 文字 x)
@@ -62,7 +64,7 @@ COLUMNS = (
     ("amount_tax", "含稅金額", 162.98, 183.73, "R", 183.06),
     ("remark", "分錄備註", 184.23, 200.07, "L", 184.91),
 )
-WRAP_WIDTH = {"row_no": 9.56, "prod_id": 19.39, "ware": 17.47, "prod_name": 36.40, "remark": 15.10}
+WRAP_PX = {"row_no": 35, "prod_id": 71, "prod_name": 132, "ware": 64, "remark": 53}
 CLIP_WIDTH = {"unit": 8.8}
 
 # 頁尾（相對於頁尾頂線 ftop）
@@ -72,7 +74,8 @@ FOOT_VLINE_SPAN = (0.55, 15.32)
 FOOT_BOTTOM = 15.58
 FOOT_BOTTOM_X = (6.01, 200.07)
 FOOT_LEFT_X = (6.69, 45.42, 73.58)
-FOOT_MID_X, FOOT_MID_RIGHT = 122.13, 161.72
+FOOT_MID_X = 122.13
+FOOT_MID_RIGHTS = (161.48, 161.48, 161.76)
 FOOT_RIGHT_X, FOOT_RIGHT_RIGHT = 163.91, 200.24
 SIGN_OFFSET = 39.29
 DEFAULT_TERMS_ID = "ST"
@@ -141,16 +144,17 @@ def roc_date(value: Any) -> str:
     return f"{y - 1911}/{m:02d}/{d:02d}"
 
 
+GATHER_STYLE_NAMES = {1: "次月", 2: "月結"}
+
+
 def pay_terms_text(gather_style: Any, gather_delay: Any, other: str = "") -> str:
-    """付款條件文字。GatherStyle 1 = 次月 N 天（對過正航實單）；其他種類不自行編文字，
-    只印正航單上的文字（stkBillMain.GatherOther），沒有就留白。"""
+    """付款條件依正航收款方式與延遲天數顯示。"""
     try:
         style, delay = int(gather_style or 0), int(gather_delay or 0)
     except (TypeError, ValueError):
         style, delay = 0, 0
-    if style == 1:
-        return f"次月 {delay} 天"
-    return (other or "").strip()
+    name = GATHER_STYLE_NAMES.get(style)
+    return f"{name} {delay} 天" if name else (other or "").strip()
 
 
 # ── 字型 ──────────────────────────────────────────────────────────────────
@@ -225,6 +229,8 @@ PT_MM = 25.4 / 72
 def text_width(text: str, size: float = SIZE, fonts: Optional[Dict[str, Any]] = None) -> float:
     """文字寬度（mm），依新細明體字寬。"""
     fonts = fonts or resolve_fonts()
+    if size == SIZE:
+        return sum(_printer_advance(ch, fonts) for ch in text)
     return sum(_char_em(ch, fonts) for ch in text) * size * PT_MM
 
 
@@ -239,62 +245,58 @@ def _runs(text: str) -> List[Tuple[bool, str]]:
     return out
 
 
-def wrap_text(text: str, width: float, size: float = SIZE, fonts: Optional[Dict[str, Any]] = None) -> List[str]:
-    """正航（FastReport）式折行：英文以字為單位、行尾空白保留不計寬；單字超寬就逐字切；中文每字可斷。"""
+def _printer_advance(ch: str, fonts: Dict[str, Any]) -> float:
+    """正航印表機 DC：600dpi、10pt 的整數字寬。"""
+    return round(_char_em(ch, fonts) * 83) / 600 * 25.4
+
+
+def screen_px(text: str, fonts: Dict[str, Any]) -> int:
+    """FR2 折行使用螢幕 DC 的整數字寬。"""
+    return sum(round(_char_em(ch, fonts) * 13) for ch in text)
+
+
+def wrap_text(text: str, limit_px: float, fonts: Optional[Dict[str, Any]] = None) -> List[str]:
+    """依 FR2 WrapLine，以螢幕像素限制折行。"""
     fonts = fonts or resolve_fonts()
-    return _wrap_text(text, width, lambda t: text_width(t, size, fonts))
+    return _wrap_text(text, limit_px, lambda t: screen_px(t, fonts))
 
 
-def _wrap_text(text: str, width: float, measure: Callable[[str], float]) -> List[str]:
-    """FR2：空白、點、逗號、連字號後可斷，斷字保留行尾。"""
+def _wrap_text(text: str, limit_px: float, measure: Callable[[str], float]) -> List[str]:
+    """僅空格可斷行；行首單字超寬時填滿後硬切，保留其餘原始文字。"""
     lines: List[str] = []
     for para in str(text or "").replace("\r\n", "\n").split("\n"):
-        tokens: List[str] = []
-        for ch in para:
-            if not _is_latin(ch):
-                tokens.append(ch)
-            elif ch == " " and tokens:
-                tokens[-1] += ch
-            elif tokens and _is_latin(tokens[-1][-1]) and tokens[-1][-1] not in " .,-":
-                tokens[-1] += ch
-            else:
-                tokens.append(ch)
-        line = ""
-        for tok in tokens:
-            if measure((line + tok).rstrip(" ")) <= width:
-                line += tok
-                continue
-            if line:
-                lines.append(line)
-                line = ""
-            while measure(tok.rstrip(" ")) > width and len(tok.rstrip(" ")) > 1:
-                cut = 1
-                while cut < len(tok) and measure(tok[:cut + 1].rstrip(" ")) <= width:
-                    cut += 1
-                lines.append(tok[:cut])
-                tok = tok[cut:]
-            line = tok
-        lines.append(line)
+        if measure(para) <= limit_px:
+            lines.append(para)
+            continue
+        beg = last = 0
+        for cur in range(len(para)):
+            if para[cur] != " " and measure(para[beg:cur + 1]) > limit_px:
+                if last == beg:
+                    last = cur
+                lines.append(para[beg:last])
+                while last < len(para) - 1 and para[last] == " ":
+                    last += 1
+                beg = last
+            if para[cur] == " ":
+                last = cur
+        if beg < len(para):
+            lines.append(para[beg:])
     return lines or [""]
 
 
 def terms_positions(text: str, fonts: Optional[Dict[str, Any]] = None) -> List[List[Tuple[float, str]]]:
     """條款以印表機 DC 整數字寬推進；空白只移位，不畫字。"""
     fonts = fonts or resolve_fonts()
-    def advance(ch: str) -> float:
-        return round(_char_em(ch, fonts) * 83) / 600 * 25.4
-    def screen_px(t: str) -> int:
-        return sum(round(_char_em(ch, fonts) * 13) for ch in t)
     # FR2 折行用螢幕字寬（96dpi、10pt = 13px）判斷、列印時用印表機字寬推進：
     # ST 簽核列螢幕寬 702px < 710px 不折行，但印出來會超出 memo 寬（同正航實印）。
-    lines = _wrap_text(text, TERMS_WRAP_PX, screen_px) if text else []
+    lines = wrap_text(text, TERMS_WRAP_PX, fonts) if text else []
     out = []
     for line in lines:
         x, runs = HEAD_X[0], []
         for word in line.split(" "):
             if word:
                 runs.append((x, word))
-            x += sum(advance(ch) for ch in word) + advance(" ")
+            x += sum(_printer_advance(ch, fonts) for ch in word) + _printer_advance(" ", fonts)
         out.append(runs)
     return out
 
@@ -311,10 +313,10 @@ def footer_height(data: Dict[str, Any], fonts: Optional[Dict[str, Any]] = None) 
 
 
 def _header_lines(data: Dict[str, Any], fonts: Dict[str, Any]) -> Dict[int, List[str]]:
-    vendor = f"{data.get('vendor_id') or ''}   {data.get('vendor_name') or ''}".strip()
-    return {2: wrap_text(vendor, 104.83, fonts=fonts),
-            5: wrap_text(f"廠商地址: {data.get('vendor_address') or ''}", 123.40, fonts=fonts),
-            6: wrap_text(f"發票地址: {data.get('invoice_address') or ''}", 192.19, fonts=fonts)}
+    vendor = f"{data.get('vendor_id') or ''}   {data.get('vendor_name') or ''}"
+    return {2: wrap_text(vendor, 384, fonts=fonts),
+            5: wrap_text(f"廠商地址: {data.get('vendor_address') or ''}", 452, fonts=fonts),
+            6: wrap_text(f"發票地址: {data.get('invoice_address') or ''}", 704, fonts=fonts)}
 
 
 def clip_text(text: str, width: float, size: float = SIZE, fonts: Optional[Dict[str, Any]] = None) -> str:
@@ -344,8 +346,8 @@ def _line_cells(line: Dict[str, Any], digits: int, fonts) -> Dict[str, List[str]
     }
     cells: Dict[str, List[str]] = {}
     for key, text in raw.items():
-        if key in WRAP_WIDTH:
-            cells[key] = wrap_text(text, WRAP_WIDTH[key], SIZE, fonts)
+        if key in WRAP_PX:
+            cells[key] = wrap_text(text, WRAP_PX[key], fonts)
         elif key in CLIP_WIDTH:
             cells[key] = [clip_text(text, CLIP_WIDTH[key], SIZE, fonts)]
         else:
@@ -354,7 +356,12 @@ def _line_cells(line: Dict[str, Any], digits: int, fonts) -> Dict[str, List[str]
 
 
 def row_height(n_lines: int) -> float:
-    return max(ROW_MIN_H, ROW_PAD + ROW_LINE_PITCH * max(1, n_lines))
+    return ROW_MIN_H if n_lines <= 1 else ROW_STRETCH_PAD + ROW_LINE_PITCH * n_lines
+
+
+def memo_extra(n_lines: int) -> float:
+    """表頭多行 Memo 依 FR2 伸展高度下推後續列。"""
+    return MEMO_STRETCH_GAP + n_lines * ROW_LINE_PITCH - MEMO_DY if n_lines >= 2 else 0.0
 
 
 def totals(data: Dict[str, Any]) -> Dict[str, Decimal]:
@@ -378,7 +385,7 @@ def layout(data: Dict[str, Any], fonts: Optional[Dict[str, Any]] = None) -> Dict
     """分頁：每頁重複表頭；明細放不下換頁；頁尾（合計 + 簽核）只在最後一頁。"""
     fonts = fonts or resolve_fonts()
     digits = int(data.get("amount_digits") or 0)
-    header_extra = sum(len(v) - 1 for v in _header_lines(data, fonts).values()) * ROW_LINE_PITCH
+    header_extra = sum(memo_extra(len(v)) for v in _header_lines(data, fonts).values())
     fh = footer_height(data, fonts)
     rows = []
     for line in data.get("lines") or []:
@@ -449,13 +456,25 @@ class _Painter:
         c, f = self.c, self.fonts
         y = (PAGE_H - base) / PT_MM
         cx = x
+        if size == SIZE and f["mode"] == "exact":
+            for ch in s:
+                if ch != " ":
+                    t = c.beginText()
+                    t.setFont(f["cjk"], size)
+                    t.setHorizScale(100.0)
+                    t.setTextOrigin(cx / PT_MM, y)
+                    t.textOut(ch)
+                    c.drawText(t)
+                cx += _printer_advance(ch, f)
+            return
         for lat, run in _runs(s):
             w_mm = text_width(run, size, f)
             # 水平縮放（Tz）屬於圖形狀態，會延續到下一段文字，所以每段都明確設定
             t = c.beginText()
-            if f["mode"] == "subst" and lat:
-                natural = stringWidth(run, f["latin"], size) * PT_MM
-                t.setFont(f["latin"], size)
+            if f["mode"] == "subst":
+                font = f["latin"] if lat else f["cjk"]
+                natural = stringWidth(run, font, size) * PT_MM
+                t.setFont(font, size)
                 t.setHorizScale(100.0 * w_mm / natural if natural else 100.0)
             else:
                 t.setFont(f["cjk"], size)
@@ -496,7 +515,7 @@ def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int, he
     b, extra = [], 0.0
     for row, base in enumerate(HEAD_BASE):
         b.append(base + extra)
-        extra += (len(wrapped.get(row, [""])) - 1) * ROW_LINE_PITCH
+        extra += memo_extra(len(wrapped.get(row, [""])))
 
     def memo(row, x):
         for i, text in enumerate(wrapped[row]):
@@ -563,7 +582,7 @@ def _footer(p: _Painter, data: Dict[str, Any], ftop: float) -> None:
     p.text(FOOT_LEFT_X[0], b[2], clip_text(f"備註: {data.get('remark') or ''}", FOOT_VLINES_X[0] - FOOT_LEFT_X[0] - 0.5, SIZE, f))
     for i, (label, key) in enumerate((("折讓: ", "discount"), ("現付: ", "paid"), ("未付款: ", "unpaid"))):
         p.text(FOOT_MID_X, b[i], label)
-        p.text_right(FOOT_MID_RIGHT, b[i], fmt_num(t[key], digits))
+        p.text_right(FOOT_MID_RIGHTS[i], b[i], fmt_num(t[key], digits))
     for i, (label, key) in enumerate((("合計: ", "sum_amount"), ("稅金: ", "sum_tax"), ("總計: ", "total"))):
         p.text(FOOT_RIGHT_X, b[i], label)
         p.text_right(FOOT_RIGHT_RIGHT, b[i], fmt_num(t[key], digits))

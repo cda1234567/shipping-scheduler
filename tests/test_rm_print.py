@@ -56,9 +56,90 @@ class RmPrintPureTest(unittest.TestCase):
 
     def test_pay_terms(self):
         self.assertEqual(rm_print.pay_terms_text(1, 30), "次月 30 天")
-        self.assertEqual(rm_print.pay_terms_text(2, 30), "")  # 其他種類不猜文字
-        self.assertEqual(rm_print.pay_terms_text(2, 30, "貨到付現"), "貨到付現")  # 有正航文字就照印
+        self.assertEqual(rm_print.pay_terms_text(2, 30), "月結 30 天")
+        self.assertEqual(rm_print.pay_terms_text(3, 30, " 貨到付現 "), "貨到付現")
+        self.assertEqual(rm_print.pay_terms_text(99, 30, " 其他 "), "其他")
         self.assertEqual(rm_print.pay_terms_text(0, 0), "")
+
+    def test_fr2_breaks(self):
+        for text, limit, expected in (
+                ("AA BB CC", 5, ["AA BB", "CC"]),
+                ("A AB-CD", 5, ["A", "AB-CD"]),
+                ("A AB.CD", 5, ["A", "AB.CD"]),
+                ("A AB,CD", 5, ["A", "AB,CD"]),
+                ("ABCDEFG", 4, ["ABCD", "EFG"]),
+                ("AA ABCDEFG", 4, ["AA", "ABCD", "EFG"]),
+                ("中文字測試", 3, ["中文字", "測試"]),
+                ("A\r\nB\n", 4, ["A", "B", ""]),
+                (" A  ", 10, [" A  "]),
+                ("", 4, [""])):
+            with self.subTest(text=text):
+                self.assertEqual(rm_print._wrap_text(text, limit, len), expected)
+
+    def test_fr2_geometry(self):
+        self.assertEqual(rm_print.WRAP_PX, {"row_no": 35, "prod_id": 71, "prod_name": 132, "ware": 64, "remark": 53})
+        self.assertEqual(rm_print.row_height(1), 5.85)
+        self.assertAlmostEqual(rm_print.row_height(6), 26.24)
+        self.assertEqual(rm_print.memo_extra(1), 0)
+        self.assertAlmostEqual(rm_print.memo_extra(3), 0.916 + 3 * 4.064 - 4.91)
+        self.assertEqual(rm_print.FOOT_MID_RIGHTS, (161.48, 161.48, 161.76))
+        self.assertEqual(rm_print.FOOT_RIGHT_RIGHT, 200.24)
+        with mock.patch.object(rm_print, "wrap_text", return_value=[""]) as wrap:
+            rm_print._header_lines({}, {})
+            self.assertEqual([c.args[1] for c in wrap.call_args_list], [384, 452, 704])
+        with mock.patch.object(rm_print, "_char_em", return_value=0.51):
+            self.assertEqual(rm_print.screen_px("AB", {}), 14)
+        with mock.patch.object(rm_print, "_char_em", return_value=1):
+            self.assertAlmostEqual(rm_print.text_width("中", fonts={"mode": "subst"}), 83 / 600 * 25.4)
+            self.assertAlmostEqual(rm_print.text_width("中", 18, {"mode": "subst"}), 18 * rm_print.PT_MM)
+
+    def test_header_memo_push_down(self):
+        painter = mock.Mock(fonts={"mode": "subst"})
+        painter.text_center.return_value = (10, 20)
+        wrapped = {2: ["廠商一", "廠商二"], 5: ["地址一", "地址二", "地址三"], 6: ["發票地址"]}
+        extra = rm_print.memo_extra(2) + rm_print.memo_extra(3)
+        with mock.patch.object(rm_print, "_header_lines", return_value=wrapped), \
+                mock.patch.object(rm_print, "clip_text", side_effect=lambda text, *args: text), \
+                mock.patch.object(rm_print, "text_width", return_value=10):
+            rm_print._header(painter, {}, 1, 1, extra)
+        calls = painter.text.call_args_list
+        def baseline(text):
+            return next(c.args[1] for c in calls if c.args[2] == text)
+        self.assertAlmostEqual(baseline("廠商二") - baseline("廠商一"), 4.064)
+        self.assertAlmostEqual(baseline("地址一"), rm_print.HEAD_BASE[5] + rm_print.memo_extra(2))
+        self.assertAlmostEqual(baseline("發票地址"), rm_print.HEAD_BASE[6] + extra)
+
+    def test_exact_glyph_advances(self):
+        canvas = mock.Mock()
+        fonts = {"mode": "exact", "cjk": "測試字型"}
+        with mock.patch.object(rm_print, "_char_em", return_value=1):
+            rm_print._Painter(canvas, fonts).text(10, 20, "中 文")
+        self.assertEqual(canvas.drawText.call_count, 2)
+        origins = canvas.beginText.return_value.setTextOrigin.call_args_list
+        self.assertAlmostEqual(origins[0].args[0], 10 / rm_print.PT_MM)
+        self.assertAlmostEqual(origins[1].args[0], (10 + 2 * 83 / 600 * 25.4) / rm_print.PT_MM)
+        self.assertEqual([c.args[0] for c in canvas.beginText.return_value.textOut.call_args_list], ["中", "文"])
+
+    def test_footer_right_positions(self):
+        painter = mock.Mock(fonts={"mode": "subst"})
+        with mock.patch.object(rm_print, "clip_text", side_effect=lambda text, *args: text):
+            rm_print._footer(painter, {"terms_text": ""}, 100)
+        self.assertEqual([c.args[0] for c in painter.text_right.call_args_list],
+                         [161.48, 161.48, 161.76, 200.24, 200.24, 200.24])
+
+    def test_invoice_address_priority(self):
+        main = {"InvAddress": "單據文字", "InvoAddr": "M"}
+        desc = {"AddrOfInvo": "廠商發票文字", "AddrID": "D"}
+        invoice = {"Address": "發票主檔"}
+        addresses = {"M": {"Address": "單據代號"}, "D": {"Address": "廠商代號"}}
+        local = dict(rm_no="RM", rm_date=20261104, print_date=20261105, vendor_id="V", vendor_name="廠商", lines=[])
+        for expected, source, key in (("單據文字", main, "InvAddress"), ("單據代號", main, "InvoAddr"),
+                                      ("廠商發票文字", desc, "AddrOfInvo"), ("廠商代號", desc, "AddrID"),
+                                      ("發票主檔", invoice, "Address"), ("廠商地址", {}, "")):
+            data = rm_print_data.build_from_erp({"CustAddress": "廠商地址"}, main, [], None, None, None,
+                                               {}, {}, local, invoice=invoice, addresses=addresses, cust_desc=desc)
+            self.assertEqual(data["invoice_address"], expected)
+            source.pop(key, None)
 
     def test_tax_type_text(self):
         self.assertEqual(rm_print.tax_type_text(0), "應稅")
@@ -154,13 +235,14 @@ class RmPrintPureTest(unittest.TestCase):
                     return row if "FROM comTerms " in sql else None
                 with mock.patch.object(rm_print_data.erp_stock, "get_settings", return_value={}), \
                         mock.patch.object(rm_print_data.erp_stock, "_connect", return_value=conn), \
-                        mock.patch.object(rm_print_data, "_one", return_value={"FundBillNo": "RM-1"}), \
+                        mock.patch.object(rm_print_data, "_one", return_value={"FundBillNo": "RM-1", "CustID": "V"}), \
                         mock.patch.object(rm_print_data, "_all", return_value=[]), \
                         mock.patch.object(rm_print_data, "_optional_all", return_value=[]), \
                         mock.patch.object(rm_print_data, "_optional", side_effect=optional) as query, \
                         mock.patch.dict(os.environ, {"RM_PRINT_TERMS_ID": "CUSTOM"}):
                     d = rm_print_data.load_from_erp(rec)
                     self.assertEqual(d["terms_text"], raw if row else None)
+                    query.assert_any_call(conn.cursor(), "SELECT * FROM comCustDesc WHERE Flag = 2 AND ID = %s", ("V",))
                     query.assert_any_call(conn.cursor(), "SELECT TermsContext FROM comTerms WHERE TermsID = %s", ("CUSTOM",))
         self.assertTrue(conn.close.called)
 
@@ -204,7 +286,7 @@ class RmPrintLayoutTest(unittest.TestCase):
         lay = rm_print.layout(sample())
         self.assertEqual(lay["page_count"], 1)
         self.assertIs(lay["fits_half_page"], True)
-        self.assertLess(abs(lay["bottom_mm"] - 133.42), 0.05)  # 與正航樣張的簽核列位置一致
+        self.assertLess(abs(lay["bottom_mm"] - 133.50), 0.05)  # 與正航樣張的簽核列位置一致
         self.assertEqual(lay["pages"][0]["rows"][0]["lines"], 4)  # 品名規格折成 4 行（同樣張）
 
     def test_half_page_threshold(self):
@@ -243,19 +325,8 @@ class RmPrintLayoutTest(unittest.TestCase):
         self.assertEqual(rm_print.page_label(2, 3), "2")
 
     def test_wrap_long_name(self):
-        lines = [l.rstrip() for l in rm_print.wrap_text("CRYSTAL,25.000MHZ (+/-50ppm OR BETTER) FUNDAMENTAL,HC-49/S", 36.40)]
-        self.assertEqual(lines, ["CRYSTAL,25.000MHZ", "(+/-50ppm OR BETTER)", "FUNDAMENTAL,HC-", "49/S"])
-
-    def test_fr2_breaks(self):
-        fonts = rm_print.resolve_fonts()
-        for sep in ("-", ".", ",", " "):
-            first = "AB" + sep
-            width = rm_print.text_width(first, fonts=fonts) + 0.01
-            self.assertEqual(rm_print.wrap_text(first + "CD", width, fonts=fonts), [first, "CD"])
-        width = rm_print.text_width("AA", fonts=fonts) + 0.01
-        self.assertEqual(rm_print.wrap_text("AAAAAA", width, fonts=fonts), ["AA"] * 3)
-        self.assertEqual(rm_print.wrap_text("中中中", 7.1, fonts=fonts), ["中中", "中"])
-        self.assertEqual(rm_print.wrap_text("A\r\nB\nC", 10, fonts=fonts), ["A", "B", "C"])
+        lines = [l.rstrip() for l in rm_print.wrap_text("CRYSTAL,25.000MHZ (+/-50ppm OR BETTER) FUNDAMENTAL,HC-49/S", 132)]
+        self.assertEqual(lines, ["CRYSTAL,25.000MHZ", "(+/-50ppm OR BETTER)", "FUNDAMENTAL,HC-49/", "S"])
 
     def test_detail_wrap(self):
         for key, value in (("prod_id", "ABCD-EFGH-IJKL-MNOP-QRST"),
@@ -271,13 +342,13 @@ class RmPrintLayoutTest(unittest.TestCase):
         d = bill(60)
         d.update(vendor_name="廠商" * 70, vendor_address="地址" * 70, invoice_address="發票" * 70)
         fonts = rm_print.resolve_fonts()
-        k = sum(len(v) - 1 for v in rm_print._header_lines(d, fonts).values())
+        k = sum(rm_print.memo_extra(len(v)) for v in rm_print._header_lines(d, fonts).values())
         self.assertGreater(k, 0)
         lay = rm_print.layout(d, fonts)
-        self.assertAlmostEqual(lay["header_extra"], k * 4.06)
+        self.assertAlmostEqual(lay["header_extra"], k)
         for page in lay["pages"]:
             if page["rows"]:
-                self.assertAlmostEqual(page["rows"][0]["top"], rm_print.DETAIL_TOP + k * 4.06)
+                self.assertAlmostEqual(page["rows"][0]["top"], rm_print.DETAIL_TOP + k)
 
     def test_terms_height_and_printers(self):
         self.assertAlmostEqual(rm_print.footer_height({}), rm_print.SIGN_OFFSET + rm_print.DESCENT_MM)
@@ -299,6 +370,10 @@ class RmPrintLayoutTest(unittest.TestCase):
             rm_print._FONT_CACHE.clear()
             fonts = rm_print.resolve_fonts()
             self.assertEqual(fonts["mode"], "exact")
+            self.assertEqual(rm_print.wrap_text("IC-LM393DGKRG4", 71, fonts), ["IC-LM393DG", "KRG4"])
+            self.assertEqual(rm_print.wrap_text(
+                "IC, DUAL DIFFERENTIAL COMPARATOR, VSSOP- 8 (3mm x 5mm), TI LM393DGKRG4 OR EQUIV.", 132, fonts),
+                ["IC, DUAL", "DIFFERENTIAL", "COMPARATOR,", "VSSOP- 8 (3mm x 5mm),", "TI LM393DGKRG4 OR", "EQUIV."])
             lines = rm_print.terms_positions(rm_print.DEFAULT_TERMS_TEXT, fonts)
             self.assertEqual(len(lines), 6)
             for label, expected in (("審核", 90.01), ("製單", 172.37)):
