@@ -237,7 +237,7 @@ def prepare_groups(
                 "pre_in_date": _clamp_date_text(line.get("pre_in_date"), today),
                 "allocations": allocations,
             })
-        out.append({**group, "lines": lines, "alloc_source": "shortage_po"})
+        out.append({**group, "remark": "", "lines": lines, "alloc_source": "shortage_po"})
     return out
 
 
@@ -266,7 +266,7 @@ def group_lines(
     return [
         {
             "supplier_id": supplier_id,
-            "remark": (remarks or {}).get(supplier_id, ""),
+            "remark": "",
             "salesman": salesman,
             "lines": group,
         }

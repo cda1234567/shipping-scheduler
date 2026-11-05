@@ -525,6 +525,17 @@ class ShortageListTests(Base):
             sp.create_many([{"supplier_id": "S1", "lines": []}])
         self.assertEqual(seen, [True])
 
+    def test_prepare_groups_forces_blank_remark(self):
+        out = sp.prepare_groups([{"supplier_id": "S1", "remark": "abc", "lines": []}])
+        self.assertEqual(out[0]["remark"], "")
+
+    def test_frontend_sends_blank_remark_without_default_text(self):
+        from pathlib import Path
+        js = (Path(__file__).resolve().parents[1] / "static" / "modules" / "shortage_po.js").read_text(encoding="utf-8")
+        self.assertIn('remark: ""', js)
+        self.assertNotIn("缺料採購：${", js)
+        self.assertNotIn('data-act="remark"', js)
+
     def test_prepare_groups_keeps_submitted_qty(self):
         groups = [{"supplier_id": "S1", "lines": [
             {"part_number": "EC-1", "qty": 5, "price": 1, "pre_in_date": "2026-12-01"}]}]
@@ -749,7 +760,7 @@ class GroupLinesTests(unittest.TestCase):
         out = sp.group_lines(lines, remarks={"S2": "缺料採購：6-1"}, salesman="017")
         self.assertEqual([g["supplier_id"] for g in out], ["S2", "S1"])
         self.assertEqual([l["part_number"] for l in out[0]["lines"]], ["A", "C"])
-        self.assertEqual((out[0]["remark"], out[1]["remark"], out[0]["salesman"]), ("缺料採購：6-1", "", "017"))
+        self.assertEqual((out[0]["remark"], out[1]["remark"], out[0]["salesman"]), ("", "", "017"))
         self.assertNotIn("supplier_id", out[0]["lines"][0])
 
     def test_missing_supplier_refused(self):

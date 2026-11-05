@@ -1,4 +1,4 @@
-"""001→015 調撥；每批獨立交易，正式公司由調撥專用開關控制。"""
+"""001／002→015 調撥；每批獨立交易，正式公司由調撥專用開關控制。"""
 from __future__ import annotations
 
 import hashlib
@@ -87,7 +87,7 @@ def build_rows(move_no: str, today: int, rows: list[dict]) -> dict[str, list[dic
     for i, r in enumerate(rows, 1):
         subs.append(row('stkMoveSub', Flag=400, MoveNO=move_no, RowNo=i, SerNo=i, MoveDate=today, Cost=r['cost']))
         recs.append(row('comProdRec', Flag=400, BillNO=move_no, RowNO=i, SerNO=i, BillDate=today,
-                        ProdID=r['part'], ProdName=r['name'], WareOut='001', WareID='015',
+                        ProdID=r['part'], ProdName=r['name'], WareOut=r.get('ware_out', '001'), WareID='015',
                         Quantity=r['transfer'], EQuantity=r['transfer'], CostAvg=r['avg'], CostAvgOut=r['avg_out'],
                         MLPrice=r['cost'], MLAmount=r['amount'], QtyRemain=1, SQuantity=1, UnitRelation=1,
                         EUnitRelation=0, NeedUpdate=True, HasCheck=True, IsOdd=True))
@@ -114,40 +114,63 @@ def source_names(target: str, batches: list[dict]) -> dict[str, str]:
     return _NAME_CACHE[key]
 
 
+def source_stock(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], float]:
+    """公司3唯讀庫存，依來源倉分批查詢；缺少或負庫存視為0。"""
+    stock = {(p.strip().upper(), w): 0.0 for p, w in pairs}
+    with low_stock._erp_session() as source:
+        cur = source.cursor()
+        cur.execute('SELECT DB_NAME()')
+        if cur.fetchone()[0] != 'CHIComp03':
+            raise ep.PoValidationError('庫存來源不是公司3，已中止')
+        for ware in sorted({w for _, w in stock}):
+            parts = sorted(p for p, w in stock if w == ware)
+            for i in range(0, len(parts), 500):
+                chunk = parts[i:i+500]
+                cur.execute('SELECT ProdID, WareID, Quantity FROM comWareAmount WITH (NOLOCK) '
+                            'WHERE WareID=%s AND ProdID IN (' + ','.join(['%s']*len(chunk)) + ')', (ware, *chunk))
+                for part, w, qty in cur.fetchall():
+                    stock[(str(part or '').strip().upper(), str(w).strip())] = max(0, float(qty or 0))
+    return stock
+
+
 def plan(cur: Any, target: str, lock: bool = False) -> dict[str, Any]:
     info = pending.batch_breakdown(target)
     params = er.load_cost_params(cur, target)
     hint = ' WITH (UPDLOCK, HOLDLOCK)' if lock else ''
-    stock, states = {}, {}
+    stock = source_stock([(r['part'], r.get('ware_out', '001')) for b in info['batches'] for r in b['rows']])
+    states = {}
     prior = {r['batch_key']: r for r in db.successful_erp_transfers(target)}
     for b in info['batches']:
         b['already'] = prior.get(b['key'])
         for r in b['rows']:
             p = r['part']
-            if p not in states:
+            ware = r.get('ware_out', '001')
+            key = (p, ware)
+            skey = (str(p).strip().upper(), ware)
+            stock.setdefault(skey, 0.0)
+            if key not in states:
                 product = one(cur, f'SELECT * FROM comProduct{hint} WHERE ProdID=%s', (p,))
                 if not product:
                     if not ep.is_test(target):
                         raise ep.PoValidationError(f'目標公司找不到料號 {p}')
-                    # 測試公司沒有此料號 = 001 沒有庫存，本次調撥 0；品名改讀來源（一次讀完）。
+                    # 測試公司缺料號時，品名改讀來源，成本視為0。
                     product = {'ProdID': p, 'ProdName': source_names(target, info['batches']).get(p, ''), 'CAvgCost': 0}
-                outgoing = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, '001')) or {}
+                outgoing = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, ware)) or {}
                 incoming = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, '015')) or {}
-                states[p] = (product, outgoing, incoming)
-                stock[p] = max(0, float(ep._get(outgoing, 'Quantity') or 0))
-            product, outgoing, incoming = states[p]
-            qty = 0 if b['already'] else min(r['pending'], stock[p])
-            r.update(name=ep._get(product, 'ProdName') or '', stock_001=stock[p], transfer=qty, short=r['pending']-qty,
+                states[key] = (product, outgoing, incoming)
+            product, outgoing, incoming = states[key]
+            qty = 0 if b['already'] else min(r['pending'], stock[skey])
+            r.update(name=ep._get(product, 'ProdName') or '', ware_out=ware, stock_src=stock[skey], stock_target=float(ep._get(outgoing, 'Quantity') or 0), transfer=qty, short=r['pending']-qty,
                      **cost_values(product, outgoing, incoming, qty, params))
-            stock[p] -= qty
+            stock[skey] -= qty
             # 同一次預覽後續批次的 015 平均成本必須包含前批次。
             if qty:
                 incoming = dict(incoming)
                 incoming.update(Quantity=float(ep._get(incoming, 'Quantity') or 0)+qty,
                                 TotalCost=float(ep._get(incoming, 'TotalCost') or 0)+r['amount'])
-                states[p] = (product, outgoing, incoming)
+                states[key] = (product, outgoing, incoming)
         b['totals'] = {k: sum(r[k] for r in b['rows']) for k in ('pending', 'transfer', 'short')}
-    return {**info, 'target': target, 'date': int(local_now().strftime('%Y%m%d'))}
+    return {**info, 'target': target, 'stock_source': 'CHIComp03', 'stock_label': '公司3', 'date': int(local_now().strftime('%Y%m%d'))}
 
 
 def preview() -> dict[str, Any]:
@@ -196,8 +219,11 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
     rows = [dict(r) for r in rows]
     for r in rows:
         product = one(cur, 'SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s', (r['part'],))
-        outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], '001')) or {}
+        outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], r.get('ware_out', '001'))) or {}
         incoming = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], '015')) or {}
+        ware, part, qty = r.get('ware_out', '001'), r['part'], r['transfer']
+        if float(ep._get(outgoing, 'Quantity') or 0) < qty:
+            raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
         actual = cost_values(product, outgoing, incoming, r['transfer'], params)
         if actual['cost'] != r['cost']:
             raise ep.PoValidationError('資料已變動，請重新預覽')
@@ -208,12 +234,13 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
             insert(cur, table, record)
     expected = []
     for r in rows:
-        for ware, sign in [('001', -1), ('015', 1)]:
+        for ware, sign in [(r.get('ware_out', '001'), -1), ('015', 1)]:
             where = (r['part'], ware)
             old = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', where)
             quantity = float(ep._get(old or {}, 'Quantity') or 0) + sign*r['transfer']
             if quantity < 0:
-                raise ep.PoValidationError('資料已變動，請重新預覽')
+                part, qty = r['part'], r['transfer']
+                raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
             values = {'Quantity': quantity}
             if params['cost_by_ware']:
                 values['TotalCost'] = float(ep._get(old or {}, 'TotalCost') or 0)+sign*r['amount']
@@ -246,7 +273,7 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
         if not ep._same(cur.fetchone()[0], qty):
             raise ep.PoValidationError('庫存回讀不符，已中止')
     return dict(move_no=number, move_date=today, sum_qty=sum(r['transfer'] for r in rows),
-                lines_json=json.dumps([dict(part=r['part'], qty=r['transfer'], cost=r['cost']) for r in rows], ensure_ascii=False))
+                lines_json=json.dumps([dict(part=r['part'], qty=r['transfer'], cost=r['cost'], ware_out=r.get('ware_out', '001')) for r in rows], ensure_ascii=False))
 
 
 _PREVIEWS: dict[str, tuple[float, dict]] = {}

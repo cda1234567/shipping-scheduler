@@ -14,7 +14,6 @@ let _ordersLoaded = false;
 let _data = null; // /api/shortage-po/list 回應
 let _listOrderIds = []; // 產生目前缺料清單時勾選的訂單，預覽 / 寫入時送給伺服器重算訂單分配
 let _rows = [];
-let _remarks = {}; // supplierId → 使用者改過的備註
 let _taxModes = {}; // supplierId → 使用者手動選的課稅別（taxable / exempt）
 let _taxDefaults = {}; // supplierId → /api/erp/po/tax-defaults（正航供應商 TaxKind）
 let _taxLoading = new Set();
@@ -213,7 +212,6 @@ async function buildList() {
     _config = _data.config || _config;
     renderBadge();
     _rows = (_data.parts || []).map(toRow);
-    _remarks = {};
     _taxModes = {};
     _dismissedLinks = new Set();
     syncLinked();
@@ -409,18 +407,6 @@ function groupBySupplier(rows) {
   return [...map.entries()].sort(([a], [b]) => (a === "" ? 1 : b === "" ? -1 : a.localeCompare(b)));
 }
 
-function defaultRemark(rows) {
-  const picked = rows.filter(r => r.checked && !r.doneBill);
-  const source = picked.length ? picked : rows;
-  const ordered = [...source].sort((a, b) => String(a.earliest?.ship_date || "9999").localeCompare(String(b.earliest?.ship_date || "9999")));
-  const codes = [...new Set(ordered.map(r => r.earliest?.code).filter(Boolean))].slice(0, 3);
-  return `缺料採購：${codes.join("、")}`;
-}
-
-function remarkFor(supplierId, rows) {
-  return supplierId in _remarks ? _remarks[supplierId] : defaultRemark(rows);
-}
-
 function subtotal(rows) {
   return rows.filter(r => r.checked && !r.doneBill).reduce((sum, r) => {
     const q = Number(r.qty);
@@ -541,7 +527,6 @@ function renderGroups() {
           <option value="taxable" ${groupTaxMode(sid) === "taxable" ? "selected" : ""}>應稅（外加 5%）</option>
           <option value="exempt" ${groupTaxMode(sid) === "exempt" ? "selected" : ""}>免稅</option>
         </select> <span class="erp-po-hint">${esc(groupTaxHint(sid))}</span></label>` : ""}
-        ${sid ? `<label class="shortage-po-remark">備註 <input type="text" data-act="remark" value="${esc(remarkFor(sid, list))}" autocomplete="off"></label>` : ""}
       </div>
       <div class="erp-po-table-wrap"><table class="erp-po-table shortage-po-table">
         <thead><tr><th></th><th>料號</th><th>品名</th><th>類別</th><th>供應商</th><th class="num">需求</th><th class="num" title="截止批次之後網站已扣 ST、正航還沒調撥到庚霖的量（扣量 − 調撥量）；調撥比扣量多時顯示「超轉」，只供參考">待調撥</th><th class="num">ST 現有</th>
@@ -617,12 +602,6 @@ async function setSupplier(row, text) {
 
 function onGroupsInput(event) {
   const act = event.target.dataset?.act;
-  if (act === "remark") {
-    const sid = event.target.closest(".shortage-po-group")?.dataset.supplier;
-    if (sid !== undefined) _remarks[sid] = event.target.value;
-    invalidatePreview();
-    return;
-  }
   const row = rowOf(event.target);
   if (!row) return;
   if (act === "qty") { row.qty = event.target.value; row.qtyEdited = true; }
@@ -732,10 +711,9 @@ function buildGroups() {
   const groups = [];
   for (const [sid, list] of groupBySupplier(picked)) {
     if (!sid) throw new Error("有勾選的料尚未指定供應商");
-    const remark = (remarkFor(sid, visibleRows().filter(r => r.supplierId.trim() === sid)) || "").trim();
     groups.push({
       supplier_id: sid,
-      remark,
+      remark: "",
       ...(_taxModes[sid] ? { tax_mode: _taxModes[sid] } : {}), // 沒手動選 → 伺服器依正航 TaxKind
       lines: list.map(r => {
         const qty = Number(r.qty);
@@ -959,7 +937,7 @@ export async function initShortagePurchase() {
   el("btn-shortage-transfer")?.addEventListener("click", () => { void openTransfer(); });
   apiJson("/api/shortage-po/transfer/config").then(config => {
     const button = el("btn-shortage-transfer");
-    if (button) { button.textContent = `一鍵調撥 · ${config.label}`; button.title = config.reason || "001 → 015"; }
+    if (button) { button.textContent = `一鍵調撥 · ${config.label}`; button.title = config.reason || "001／002 → 015"; }
   }).catch(() => {});
   el("shortage-po-orders")?.addEventListener("change", event => {
     const id = Number(event.target.dataset?.order);
@@ -999,13 +977,14 @@ async function openTransfer() {
     if (!config.available) throw new Error(config.reason);
     const data = await apiPost(`${prefix}/preview`);
     dialog.innerHTML = `<h2>一鍵調撥 — ${esc(config.label)}</h2>
-      <p>001 → 015；每批一張單，依批次順序分配庫存。待調撥只讀公司3（正式）的調撥，測試公司調撥不會減少待調撥；網站成功紀錄會阻擋重複調撥。</p>
+      <p>001（一般料）／002（客供料 -TAB）→ 015；每批一張單（一般料與客供料同一張），依批次順序分配庫存。庫存：公司3（正式，唯讀）；寫入：${esc(config.label)}。待調撥只讀公司3（正式）的調撥，測試公司調撥不會減少待調撥；網站成功紀錄會阻擋重複調撥。</p>
       <p>撤銷請至正航刪除調撥單，再按「重新檢查」，網站不執行反向寫入。</p>
       ${data.warnings.map(w => `<p>${esc(w)}</p>`).join("")}
       ${data.batches.map(b => `<section><h3><label><input type="checkbox" data-transfer-batch="${esc(b.key)}" ${b.already || !b.totals.transfer ? "disabled" : "checked"}> ${esc(b.label)}</label>
         ${b.already ? `已調撥 ${esc(b.already.move_no)}` : ""}</h3>
-        <table><thead><tr>${["料號", "品名", "待調撥", "001現有", "本次調撥", "短少", "成本"].map(v => `<th>${v}</th>`).join("")}</tr></thead>
-        <tbody>${b.rows.map(r => `<tr><td>${esc(r.part)}</td><td>${esc(r.name)}</td>${[r.pending, r.stock_001, r.transfer, r.short].map(v => `<td>${fmtQty(v)}</td>`).join("")}<td>${Number(r.cost).toLocaleString("zh-TW", { maximumFractionDigits: 10 })}</td></tr>`).join("")}</tbody></table>
+        <table><thead><tr>${["料號", "品名", "來源倉", "待調撥", "庫存（公司3）", "寫入公司庫存", "本次調撥", "短少", "成本"].map(v => `<th>${v}</th>`).join("")}</tr></thead>
+        <tbody>${b.rows.map(r => `<tr><td>${esc(r.part)}</td><td>${esc(r.name)}</td><td>${esc(r.ware_out)}</td>${[r.pending, r.stock_src, r.stock_target, r.transfer, r.short].map(v => `<td>${fmtQty(v)}</td>`).join("")}<td>${Number(r.cost).toLocaleString("zh-TW", { maximumFractionDigits: 10 })}</td></tr>`).join("")}</tbody></table>
+        <p>一般料 ${b.rows.filter(r => r.ware_out === "001").length} 行／客供料 ${b.rows.filter(r => r.ware_out === "002").length} 行</p>
         <p>合計：待調撥 ${fmtQty(b.totals.pending)}／本次 ${fmtQty(b.totals.transfer)}／短少 ${fmtQty(b.totals.short)}</p></section>`).join("")}
       <button type="button" data-confirm>確認寫入 ${esc(config.label)}</button>
       <button type="button" data-close>關閉</button><div data-result role="status"></div><h3>調撥紀錄</h3><div data-history></div>`;

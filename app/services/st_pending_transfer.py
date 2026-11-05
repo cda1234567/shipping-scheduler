@@ -18,6 +18,7 @@
 - 轉換料：扣量與調撥的料號都先轉成最終料號（part_conversion.resolve）再加總。
 - 批次排序：批次代碼「月-序」，年份由該批首次發料時間（沒有則建立時間）推估：
   取離那個時間最近的「該月」所在年份（例：3 月建立的 12-1 → 前一年 12 月；10 月發料的 1-2 → 隔年 1 月）。
+一鍵調撥另依一般料 001／客供料 -TAB 002 → 015 分配，兩種料沿用相同 FIFO 與網站紀錄規則。
 不會寫入正航，只用唯讀帳號查 comProdRec。
 """
 from __future__ import annotations
@@ -332,14 +333,21 @@ def compute(exclude_order_ids: Iterable[int] = (), conversions: Optional[Dict[st
 
 
 def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
-                     website: List[Dict[str, Any]], conversions: Dict[str, str]) -> List[Dict[str, Any]]:
+                     website: List[Dict[str, Any]], conversions: Dict[str, str], *,
+                     tab_transfers: Dict[str, float] | None = None) -> List[Dict[str, Any]]:
     """正航量 FIFO；正式網站單已包含於正航量，先移除再按原批次扣除，避免重扣。"""
     import json
     from . import erp_purchase as ep
     remaining: Dict[str, float] = {}
-    for part, qty in transfers.items():
-        key = part_conversion.resolve(part, conversions)
-        remaining[key] = remaining.get(key, 0) + qty
+    tab_parts = set()
+    for source, is_tab in ((transfers, False), (tab_transfers or {}, True)):
+        for part, qty in source.items():
+            key = part_conversion.resolve(part, conversions)
+            if bool(ep.customer_supplied_reason(part) or ep.customer_supplied_reason(key)) != is_tab:
+                continue
+            if is_tab:
+                tab_parts.add(key)
+            remaining[key] = remaining.get(key, 0) + qty
     own: Dict[str, Dict[str, float]] = {}
     batch_keys = {b['key'] for b in batches}
     for rec in website:
@@ -356,7 +364,7 @@ def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
         for part, qty in batch['deductions']:
             key = part_conversion.resolve(part, conversions)
             if ep.customer_supplied_reason(part) or ep.customer_supplied_reason(key):
-                continue
+                tab_parts.add(key)
             deducted[key] = deducted.get(key, 0) + qty
         rows = []
         for part, qty in sorted(deducted.items()):
@@ -368,7 +376,7 @@ def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
             used = min(qty, max(0, remaining.get(part, 0)))
             remaining[part] = remaining.get(part, 0) - used
             if qty > used:
-                rows.append({'part': part, 'pending': qty - used})
+                rows.append({'part': part, 'pending': qty - used, 'ware_out': '002' if part in tab_parts else '001'})
         out.append({k: v for k, v in batch.items() if k != 'deductions'} | {'rows': rows})
     return out
 
@@ -392,6 +400,7 @@ def batch_breakdown(target: str) -> Dict[str, Any]:
             settle = start
             warnings.append('找不到截止批次的調撥日，改從首次發料日之後起算')
         transfers = query_transfers(conn, settle, '001', '015')
+        tab_transfers = query_transfers(conn, settle, '002', '015')
     after = [{**b, 'deductions': _consumptions(b['order_ids'], loaded)} for b in batches[batches.index(cutoff)+1:]]
     website = db.successful_erp_transfers(target)
     if target != 'CHIComp03':
@@ -399,4 +408,4 @@ def batch_breakdown(target: str) -> Dict[str, Any]:
     for rec in website:
         rec['_in_source'] = int(rec.get('move_date') or 0) > _yyyymmdd(settle)
     # 正式紀錄只用於消除 FIFO 重扣；測試公司只扣自身紀錄。
-    return {'batches': allocate_batches(after, transfers, website, conversions), 'warnings': warnings}
+    return {'batches': allocate_batches(after, transfers, website, conversions, tab_transfers=tab_transfers), 'warnings': warnings}
