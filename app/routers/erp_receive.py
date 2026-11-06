@@ -119,7 +119,7 @@ async def receipt_print(receipt_id: int):
     if not out["helper_enabled"]:
         return {**out, "ok": False, "sent": False, "message": f"未啟用自動送印：請開 PDF 自行列印到「{info['printer']}」"}
     try:
-        res = await run_in_threadpool(rm_print_dispatch.send_pdf, pdf, info["printer"], data.get("rm_no") or "RM")
+        res = await run_in_threadpool(rm_print_dispatch.send_pdf_with_auto_restart, pdf, info["printer"], data.get("rm_no") or "RM")
     except rm_print_dispatch.PrintHelperError as exc:
         raise HTTPException(502, str(exc)) from None
     return {**out, **res, "sent": True}

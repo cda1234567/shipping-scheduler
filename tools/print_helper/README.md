@@ -37,3 +37,11 @@
 - 來源限制：`PRINT_HELPER_ALLOW`（預設 `127.0.0.0/8,::1/128,192.168.65.0/24,172.16.0.0/12`），其他來源回 403。
   Docker Desktop 會把容器連到 `host.docker.internal` 的流量從本機 127.0.0.1 轉入，所以可設 `PRINT_HELPER_BIND=127.0.0.1`，區網其他電腦連不到。
 - 開機自動啟動：用工作排程器「登入時」執行 `py -3 print_helper.py`（環境變數由啟動用的 .cmd 設定，token 不要寫進 git）。
+
+## 按需重啟（restart_listener.py）
+
+- 埠 `8767`，只聽 `127.0.0.1`
+- `GET /health`、`POST /restart`（需 `X-Print-Token`）
+- **沒有定時輪詢**；網站按列印連不到小幫手時才呼叫
+- 主機排程：`ShippingScheduler-PrintHelper-RestartListener`（登入觸發）
+- 啟動腳本：`run_restart_listener.ps1`（主機 `D:\tools\print_helper\`）

@@ -11,7 +11,8 @@ from app.services import rm_print, rm_print_data, rm_print_dispatch
 FIXTURE = Path(__file__).parent / "fixtures" / "rm_20261103001.json"
 
 ENV_KEYS = ("RM_PRINT_HALF_PAGE_MM", "RM_PRINT_PRINTER_HALF", "RM_PRINT_PRINTER_FULL",
-            "RM_PRINT_HELPER_ENABLED", "RM_PRINT_HELPER_TOKEN")
+            "RM_PRINT_HELPER_ENABLED", "RM_PRINT_HELPER_TOKEN", "RM_PRINT_HELPER_URL",
+            "RM_PRINT_HELPER_RESTART_URL")
 
 
 def sample():
@@ -415,6 +416,77 @@ class RmPrintLayoutTest(unittest.TestCase):
             self.assertTrue(r.content.startswith(b"%PDF"))
             self.assertEqual(r.headers["content-type"], "application/pdf")
             self.assertEqual(c.get("/api/erp-receive/receipts/8/print-info").status_code, 404)
+
+
+class PrintAutoRestartTest(unittest.TestCase):
+    def test_connection_failure_restarts_then_prints_once(self):
+        error = rm_print_dispatch.PrintHelperError("連不到列印小幫手")
+        with mock.patch.object(rm_print_dispatch, "send_pdf", side_effect=[error, {"ok": True}]) as send, \
+                mock.patch.object(rm_print_dispatch, "restart_helper", return_value={"ok": True}) as restart, \
+                mock.patch.object(rm_print_dispatch, "helper_reachable", side_effect=[False, True]), \
+                mock.patch.object(rm_print_dispatch.time, "sleep"):
+            self.assertEqual(rm_print_dispatch.send_pdf_with_auto_restart(b"pdf", "printer", "job"), {"ok": True})
+            restart.assert_called_once_with()
+            self.assertEqual(send.call_count, 2)
+            self.assertEqual(send.call_args_list[0], send.call_args_list[1])
+
+    def test_restart_failure_is_clear(self):
+        with mock.patch.object(rm_print_dispatch, "send_pdf", side_effect=rm_print_dispatch.PrintHelperError("連不到列印小幫手")) as send, \
+                mock.patch.object(rm_print_dispatch, "restart_helper", side_effect=rm_print_dispatch.PrintHelperError("連不到列印重啟服務")), \
+                mock.patch.object(rm_print_dispatch, "helper_reachable") as health:
+            with self.assertRaisesRegex(rm_print_dispatch.PrintHelperError, "自動重啟失敗：連不到列印重啟服務"):
+                rm_print_dispatch.send_pdf_with_auto_restart(b"pdf", "printer", "job")
+            self.assertEqual(send.call_count, 1)
+            health.assert_not_called()
+
+    def test_application_errors_do_not_restart(self):
+        for message in ("列印小幫手回應 400：不允許的印表機", "列印小幫手回應 401：token 錯誤",
+                        "列印失敗：Sumatra timeout", "尚未啟用自動送印"):
+            with self.subTest(message=message), \
+                    mock.patch.object(rm_print_dispatch, "send_pdf", side_effect=rm_print_dispatch.PrintHelperError(message)), \
+                    mock.patch.object(rm_print_dispatch, "restart_helper") as restart:
+                with self.assertRaises(rm_print_dispatch.PrintHelperError):
+                    rm_print_dispatch.send_pdf_with_auto_restart(b"pdf", "printer", "job")
+                restart.assert_not_called()
+
+    def test_health_timeout_and_retry_failure(self):
+        error = rm_print_dispatch.PrintHelperError("連不到列印小幫手")
+        with mock.patch.object(rm_print_dispatch, "restart_helper"), \
+                mock.patch.object(rm_print_dispatch, "send_pdf", side_effect=error) as send, \
+                mock.patch.object(rm_print_dispatch, "helper_reachable", return_value=True):
+            with self.assertRaisesRegex(rm_print_dispatch.PrintHelperError, "仍連不到"):
+                rm_print_dispatch.send_pdf_with_auto_restart(b"pdf", "p", "j", health_timeout=0)
+            self.assertEqual(send.call_count, 1)
+            with self.assertRaisesRegex(rm_print_dispatch.PrintHelperError, "再次列印仍失敗"):
+                rm_print_dispatch.send_pdf_with_auto_restart(b"pdf", "p", "j")
+            self.assertEqual(send.call_count, 3)
+
+    def test_restart_request_and_response(self):
+        with clean_env(RM_PRINT_HELPER_TOKEN="test-only", RM_PRINT_HELPER_RESTART_URL="http://restart.invalid:8767/"), \
+                mock.patch.object(rm_print_dispatch.urllib.request, "urlopen") as urlopen:
+            response = urlopen.return_value.__enter__.return_value
+            response.read.return_value = b'{"ok":true}'
+            self.assertEqual(rm_print_dispatch.restart_helper(), {"ok": True})
+            request = urlopen.call_args.args[0]
+            self.assertEqual(request.full_url, "http://restart.invalid:8767/restart")
+            self.assertEqual(request.method, "POST")
+            self.assertTrue(request.has_header("X-print-token"))
+            response.read.return_value = b'{"ok":false}'
+            with self.assertRaisesRegex(rm_print_dispatch.PrintHelperError, "未成功"):
+                rm_print_dispatch.restart_helper()
+            urlopen.side_effect = rm_print_dispatch.urllib.error.URLError("offline")
+            with self.assertRaisesRegex(rm_print_dispatch.PrintHelperError, "連不到列印重啟服務"):
+                rm_print_dispatch.restart_helper()
+
+    def test_health_request(self):
+        with clean_env(RM_PRINT_HELPER_URL="http://helper.invalid:8766"), \
+                mock.patch.object(rm_print_dispatch.urllib.request, "urlopen") as urlopen:
+            urlopen.return_value.__enter__.return_value.read.return_value = b'{"ok":true}'
+            self.assertTrue(rm_print_dispatch.helper_reachable())
+            self.assertEqual(urlopen.call_args.args[0].full_url, "http://helper.invalid:8766/health")
+            self.assertLessEqual(urlopen.call_args.kwargs["timeout"], 1)
+            urlopen.side_effect = TimeoutError()
+            self.assertFalse(rm_print_dispatch.helper_reachable())
 
 
 if __name__ == "__main__":

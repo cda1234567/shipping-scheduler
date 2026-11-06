@@ -51,6 +51,7 @@ services:
       # 一次收料進貨單自動送印（主機端 tools/print_helper，SumatraPDF）；TOKEN 只放 .env.localserver，不可提交到 git
       RM_PRINT_HELPER_ENABLED: ${RM_PRINT_HELPER_ENABLED:-0}
       RM_PRINT_HELPER_URL: ${RM_PRINT_HELPER_URL:-http://host.docker.internal:8766}
+      RM_PRINT_HELPER_RESTART_URL: ${RM_PRINT_HELPER_RESTART_URL:-http://host.docker.internal:8767}
       RM_PRINT_HELPER_TOKEN: ${RM_PRINT_HELPER_TOKEN:-}
       RM_PRINT_PRINTER_HALF: ${RM_PRINT_PRINTER_HALF:-NPI975BEF (HP LaserJet M111w)}
       RM_PRINT_PRINTER_FULL: ${RM_PRINT_PRINTER_FULL:-HP Color LaserJet M652 [7D2006]}

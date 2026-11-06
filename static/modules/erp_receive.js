@@ -274,7 +274,7 @@ async function printReceipt(id, btn) {
     showToast(`進貨單 ${info.rm_no}：${where}（自動送印未啟用，請在 PDF 視窗列印時選這台；縮放選「實際大小」）`, { tone: "info", duration: 12000 });
   } catch (error) {
     if (win) win.close();
-    showToast(`列印失敗：${error.message}`, { tone: "error" });
+    showToast(`列印失敗：${error.message}`, { tone: "error", duration: 10000 });
   } finally {
     if (btn) btn.disabled = false;
   }
