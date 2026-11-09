@@ -19,6 +19,8 @@
 - 批次排序：批次代碼「月-序」，年份由該批首次發料時間（沒有則建立時間）推估：
   取離那個時間最近的「該月」所在年份（例：3 月建立的 12-1 → 前一年 12 月；10 月發料的 1-2 → 隔年 1 月）。
 一鍵調撥另依一般料 001／客供料 -TAB 002 → 015 分配，兩種料沿用相同 FIFO 與網站紀錄規則。
+一鍵調撥的各批需求改用最新主檔該批中間欄用量（同批次多組三欄加總），料號範圍仍為發料扣過 ST 的料；
+compute() 的待調撥維持用網站扣 ST 量。
 不會寫入正航，只用唯讀帳號查 comProdRec。
 """
 from __future__ import annotations
@@ -381,6 +383,27 @@ def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
     return out
 
 
+def _main_batch_usage() -> Dict[str, Dict[str, float]]:
+    """一鍵調撥用：最新主檔各批次中間欄用量；讀不到主檔就拒絕預覽。"""
+    from pathlib import Path
+    from .main_reader import read_batch_usage
+    path = str(db.get_setting('main_file_path') or '').strip()
+    if not path or not Path(path).is_file():
+        raise ValueError('找不到主檔，無法依主檔用量計算調撥')
+    return read_batch_usage(path)
+
+
+def main_usage_deductions(consumed: List[Tuple[str, float]], usage: Dict[str, float],
+                          conversions: Dict[str, str]) -> List[Tuple[str, float]]:
+    """純函式：料號範圍沿用發料扣過 ST 的料，數量改用主檔該批用量（不用整包扣量）。
+
+    以最終料號比對；主檔該批沒有用量的料不撥，主檔有用量但沒扣過 ST 的料也不加進來。
+    """
+    keys = {part_conversion.resolve(p, conversions) for p, qty in consumed if qty > 1e-9}
+    return [(part, qty) for part, qty in sorted(usage.items())
+            if qty > 1e-9 and part_conversion.resolve(part, conversions) in keys]
+
+
 def batch_breakdown(target: str) -> Dict[str, Any]:
     """一鍵調撥使用，失敗即拒絕預覽；不改既有 compute 結果。"""
     conversions = part_conversion.active_map()
@@ -394,6 +417,7 @@ def batch_breakdown(target: str) -> Dict[str, Any]:
         raise ValueError('截止批次缺少首次發料日期')
     parts = sorted({p for p, _ in _consumptions(cutoff['order_ids'], '')})
     warnings = []
+    usage = _main_batch_usage()
     with low_stock._erp_session() as conn:
         settle = detect_settle_date(conn, parts, start, '001', '015') if parts else None
         if not settle:
@@ -401,7 +425,9 @@ def batch_breakdown(target: str) -> Dict[str, Any]:
             warnings.append('找不到截止批次的調撥日，改從首次發料日之後起算')
         transfers = query_transfers(conn, settle, '001', '015')
         tab_transfers = query_transfers(conn, settle, '002', '015')
-    after = [{**b, 'deductions': _consumptions(b['order_ids'], loaded)} for b in batches[batches.index(cutoff)+1:]]
+    after = [{**b, 'deductions': main_usage_deductions(_consumptions(b['order_ids'], loaded),
+                                                     usage.get(b['code'], {}), conversions)}
+             for b in batches[batches.index(cutoff)+1:]]
     website = db.successful_erp_transfers(target)
     if target != 'CHIComp03':
         website += db.successful_erp_transfers('CHIComp03')

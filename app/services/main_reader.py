@@ -230,6 +230,51 @@ def read_batch_stock(path: str, batch_code: str) -> dict[str, dict[str, float]]:
         wb.close()
 
 
+def _norm_batch_code(code) -> str:
+    match = re.fullmatch(r"\s*(\d+)-(\d+)\s*", str(code or ""))
+    return f"{int(match.group(1))}-{int(match.group(2))}" if match else ""
+
+
+def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
+    """唯讀各批次用量：{批次碼: {料號: 用量}}。
+
+    只讀三欄組的中間欄（PO 下方）；左邊批次碼欄（發料整包扣量）與右邊型號欄（結存）不算。
+    同一批次碼有多組三欄（如 Main / Conn）時加總；空白或 0 不列。
+    """
+    wb = open_workbook_any(path, read_only=True, data_only=False)
+    try:
+        rows = list(wb.worksheets[0].iter_rows(values_only=True))
+        _, batches = main_balance_columns(rows[0] if rows else ())
+        read_raw = lambda row, col: rows[row][col] if 0 <= row < len(rows) and 0 <= col < len(rows[row]) else None
+        resolver = create_main_cell_resolver(read_raw)
+        usage_cols: dict[str, list[int]] = {}
+        for code, ends in batches.items():
+            usage_cols.setdefault(_norm_batch_code(code), []).extend(end - 1 for end in ends)
+        result: dict[str, dict[str, float]] = {}
+        pc = _part_col()
+        for code, cols in usage_cols.items():
+            parts: dict[str, float] = {}
+            for row_idx, row in enumerate(rows[1:], start=1):
+                part = str(row[pc] or "").strip().upper() if len(row) > pc else ""
+                if not part:
+                    continue
+                total = 0.0
+                for col in cols:
+                    raw = read_raw(row_idx, col)
+                    if raw is None or str(raw).strip() == "":
+                        continue
+                    number = resolver(row_idx, col)
+                    if number is None:
+                        raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 用量無法讀取，請確認公式或數值")
+                    total += number
+                if abs(total) > 1e-9:
+                    parts[part] = parts.get(part, 0.0) + total
+            result[code] = parts
+        return result
+    finally:
+        wb.close()
+
+
 def read_vendors(path: str) -> dict[str, str]:
     """讀取主檔 B 欄廠商，以料號為 key。"""
     wb = open_workbook_any(path, read_only=True, data_only=True)
