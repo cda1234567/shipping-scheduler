@@ -1,4 +1,4 @@
-"""一鍵調撥需求改用最新主檔該批中間欄用量；不連線 ERP。"""
+"""一鍵調撥需求改用最新主檔該批批次碼欄（左欄，實際扣帳量）；不連線 ERP。"""
 from __future__ import annotations
 
 import tempfile
@@ -29,11 +29,11 @@ def _save(path: Path, rows: list[list]) -> None:
 
 
 ROWS = [
-    # 批次碼欄是發料整包扣量、型號欄是結存；只有中間欄是用量。
-    ["EC-20117A", "V", 10000, "", None, None, None, 20000, 10000, 1811, 10000, None, None, None, None, None, None],
-    ["UC-20033B-TAB", "V", 0, "", None, None, None, 500, None, None, None, 140, 100, 360, None, "=40+60", 260],
-    ["MAIN-ONLY", "V", 0, "", None, None, None, 500, None, 50, 450, None, None, None, None, None, None],
-    ["NO-USAGE", "V", 0, "", None, None, None, 500, 30, None, 470, None, None, None, None, None, None],
+    # 批次碼欄（左）是實際扣帳量；中間 PO 欄是機種用量、型號欄是結存，都不算。
+    ["EC-20117A", "V", 10000, "", None, None, None, 20000, 1811, 10000, 18189, None, None, None, None, None, None],
+    ["UC-20033B-TAB", "V", 0, "", None, None, None, 500, None, None, None, 100, 140, 400, "=40+60", 77, 300],
+    ["MAIN-ONLY", "V", 0, "", None, None, None, 500, 50, 999, 450, None, None, None, None, None, None],
+    ["NO-USAGE", "V", 0, "", None, None, None, 500, None, 30, 500, None, None, None, None, None, None],
 ]
 
 
@@ -51,14 +51,14 @@ class MainBatchUsageTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_reads_middle_column_and_sums_same_batch_groups(self):
+    def test_reads_batch_code_column_and_sums_same_batch_groups(self):
         usage = read_batch_usage(str(self.path))
         self.assertEqual(usage["10-5"], {"EC-20117A": 1811, "MAIN-ONLY": 50})
         self.assertEqual(usage["10-6"], {"UC-20033B-TAB": 200})
 
     def test_unreadable_usage_formula_raises(self):
         rows = [list(ROWS[0])]
-        rows[0][9] = "=SUM(Z1:Z9)"
+        rows[0][8] = "=SUM(Z1:Z9)"
         _save(self.path, rows)
         with self.assertRaises(ValueError):
             read_batch_usage(str(self.path))

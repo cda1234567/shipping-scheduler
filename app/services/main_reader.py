@@ -236,10 +236,11 @@ def _norm_batch_code(code) -> str:
 
 
 def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
-    """唯讀各批次用量：{批次碼: {料號: 用量}}。
+    """唯讀各批次調撥量：{批次碼: {料號: 數量}}。
 
-    只讀三欄組的中間欄（PO 下方）；左邊批次碼欄（發料整包扣量）與右邊型號欄（結存）不算。
-    同一批次碼有多組三欄（如 Main / Conn）時加總；空白或 0 不列。
+    只讀三欄組的左邊批次碼欄（標頭為批次碼，實際從 ST 扣的量，可手動修改）；
+    中間 PO 欄（機種用量）與右邊型號欄（結存）不算。
+    同一批次碼有多組三欄（如 Main / Conn）時加總；空白或 0 不列（視為不調撥）。
     """
     wb = open_workbook_any(path, read_only=True, data_only=False)
     try:
@@ -249,7 +250,7 @@ def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
         resolver = create_main_cell_resolver(read_raw)
         usage_cols: dict[str, list[int]] = {}
         for code, ends in batches.items():
-            usage_cols.setdefault(_norm_batch_code(code), []).extend(end - 1 for end in ends)
+            usage_cols.setdefault(_norm_batch_code(code), []).extend(end - 2 for end in ends)
         result: dict[str, dict[str, float]] = {}
         pc = _part_col()
         for code, cols in usage_cols.items():
@@ -265,7 +266,7 @@ def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
                         continue
                     number = resolver(row_idx, col)
                     if number is None:
-                        raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 用量無法讀取，請確認公式或數值")
+                        raise ValueError(f"主檔料號 {part} 的 {get_column_letter(col + 1)}{row_idx + 1} 批次欄數量無法讀取，請確認公式或數值")
                     total += number
                 if abs(total) > 1e-9:
                     parts[part] = parts.get(part, 0.0) + total

@@ -19,7 +19,7 @@
 - 批次排序：批次代碼「月-序」，年份由該批首次發料時間（沒有則建立時間）推估：
   取離那個時間最近的「該月」所在年份（例：3 月建立的 12-1 → 前一年 12 月；10 月發料的 1-2 → 隔年 1 月）。
 一鍵調撥另依一般料 001／客供料 -TAB 002 → 015 分配，兩種料沿用相同 FIFO 與網站紀錄規則。
-一鍵調撥的各批需求改用最新主檔該批中間欄用量（同批次多組三欄加總），料號範圍仍為發料扣過 ST 的料；
+一鍵調撥的各批需求改用最新主檔該批批次碼欄數量（實際扣帳量，同批次多組三欄加總），料號範圍仍為發料扣過 ST 的料；
 compute() 的待調撥維持用網站扣 ST 量。
 不會寫入正航，只用唯讀帳號查 comProdRec。
 """
@@ -384,7 +384,7 @@ def allocate_batches(batches: List[Dict[str, Any]], transfers: Dict[str, float],
 
 
 def _main_batch_usage() -> Dict[str, Dict[str, float]]:
-    """一鍵調撥用：最新主檔各批次中間欄用量；讀不到主檔就拒絕預覽。"""
+    """一鍵調撥用：最新主檔各批次批次碼欄數量（實際扣帳量）；讀不到主檔就拒絕預覽。"""
     from pathlib import Path
     from .main_reader import read_batch_usage
     path = str(db.get_setting('main_file_path') or '').strip()
