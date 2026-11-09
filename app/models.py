@@ -4,7 +4,7 @@ Pydantic 資料模型 — 用於 API request/response 和資料驗證。
 from __future__ import annotations
 from enum import Enum
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field, validator
 import math
 import re
@@ -518,3 +518,6 @@ class ErpTransferCreateRequest(BaseModel):
     batches: List[str]
     client_token: str
     preview_token: str
+
+
+ErpTransferCreateRequest.update_forward_refs()

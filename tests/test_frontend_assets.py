@@ -9,9 +9,10 @@ from pathlib import Path
 
 
 class TabBarOrderTests(unittest.TestCase):
-    VISIBLE = ["schedule", "calc-workspace", "main-preview-v2", "completed", "low-stock-tab", "erp-po-tab",
-               "erp-receive-tab", "shortage-po-tab", "bom", "part-conversion-tab", "po-pullin-tab", "backups-tab", "analytics-tab",
-               "defectives-tab"]
+    VISIBLE = ["schedule", "completed", "main-preview-v2", "calc-workspace",
+               "shortage-po-tab", "erp-po-tab", "low-stock-tab", "po-pullin-tab",
+               "erp-receive-tab", "transfer-tab",
+               "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab"]
     HIDDEN = {"alerts-tab", "logs-tab", "st-inventory"}
 
     def setUp(self):
@@ -36,6 +37,9 @@ class TabBarOrderTests(unittest.TestCase):
         self.assertIn("refreshAlerts()", self.html)
         self.assertIn("refreshLogs()", self.html)
         self.assertIn(".tab-btn[hidden] { display: none !important; }", self.css)
+        self.assertIn('id="tab-groups"', self.html)
+        self.assertIn('id="tab-transfer-tab"', self.html)
+        self.assertIn("setActiveTabGroup", self.html)
 
     def test_css_order_matches_dom_order(self):
         import re

@@ -673,37 +673,51 @@ body.edit-auth-readonly #bom-upload-area {
 /* ── Main content ───────────────────────── */
 #main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 
-/* Tabs */
+/* Tabs：四大組 + 組內小分頁 */
+#tab-groups {
+  display: flex; gap: 0; border-bottom: 1px solid #e5e5ea;
+  background: #f5f5f7; padding: 0 20px; flex-shrink: 0;
+}
+.tab-group-btn {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 10px 16px; font-size: 15px; font-weight: 600;
+  cursor: pointer; color: #8e8e93; transition: color .15s, border-color .15s;
+}
+.tab-group-btn.active { color: #1c1c1e; border-bottom-color: #1c1c1e; }
 #tabs {
   display: flex; gap: 0; border-bottom: 1px solid #e5e5ea;
   background: #fff; padding: 0 20px; flex-shrink: 0;
 }
 .tab-btn[hidden] { display: none !important; }
+.tab-btn { display: none; }
+.tab-btn.tab-in-group { display: inline-flex; align-items: center; }
+.tab-btn.tab-in-group[hidden] { display: none !important; }
 .tab-btn {
   background: none; border: none; border-bottom: 2px solid transparent;
-  padding: 12px 18px; font-size: 14px; font-weight: 500;
+  padding: 10px 16px; font-size: 14px; font-weight: 500;
   cursor: pointer; color: #8e8e93; transition: color .15s, border-color .15s;
 }
-/* 分頁順序（flex order 優先於 DOM 順序，兩邊要一致）；提醒 / 紀錄 / ST 庫存的按鈕隱藏，面板與程式照舊可由程式切換 */
+/* 分頁順序（與 DOM 一致；組切換只顯示該組） */
 .tab-btn[data-tab="schedule"] { order: 0; }
-.tab-btn[data-tab="calc-workspace"] { order: 1; }
+.tab-btn[data-tab="completed"] { order: 1; }
 .tab-btn[data-tab="main-preview-v2"] { order: 2; }
-.tab-btn[data-tab="completed"] { order: 3; }
-.tab-btn[data-tab="low-stock-tab"] { order: 4; }
+.tab-btn[data-tab="calc-workspace"] { order: 3; }
+.tab-btn[data-tab="shortage-po-tab"] { order: 4; }
 .tab-btn[data-tab="erp-po-tab"] { order: 5; }
-.tab-btn[data-tab="erp-receive-tab"] { order: 6; }
-.tab-btn[data-tab="shortage-po-tab"] { order: 7; }
-.tab-btn[data-tab="bom"] { order: 8; }
-.tab-btn[data-tab="st-packages-tab"] { order: 9; }
-.tab-btn[data-tab="part-conversion-tab"] { order: 10; }
-.tab-btn[data-tab="po-pullin-tab"] { order: 11; }
-.tab-btn[data-tab="backups-tab"] { order: 12; }
-.tab-btn[data-tab="analytics-tab"] { order: 13; }
-.tab-btn[data-tab="defectives-tab"] { order: 14; }
-.tab-btn[data-tab="sea-freight-tab"] { order: 15; }
-.tab-btn[data-tab="st-inventory"] { order: 16; }
-.tab-btn[data-tab="alerts-tab"] { order: 17; }
-.tab-btn[data-tab="logs-tab"] { order: 18; }
+.tab-btn[data-tab="low-stock-tab"] { order: 6; }
+.tab-btn[data-tab="po-pullin-tab"] { order: 7; }
+.tab-btn[data-tab="erp-receive-tab"] { order: 8; }
+.tab-btn[data-tab="transfer-tab"] { order: 9; }
+.tab-btn[data-tab="bom"] { order: 10; }
+.tab-btn[data-tab="part-conversion-tab"] { order: 11; }
+.tab-btn[data-tab="defectives-tab"] { order: 12; }
+.tab-btn[data-tab="backups-tab"] { order: 13; }
+.tab-btn[data-tab="analytics-tab"] { order: 14; }
+.tab-btn[data-tab="st-packages-tab"] { order: 15; }
+.tab-btn[data-tab="sea-freight-tab"] { order: 16; }
+.tab-btn[data-tab="st-inventory"] { order: 17; }
+.tab-btn[data-tab="alerts-tab"] { order: 18; }
+.tab-btn[data-tab="logs-tab"] { order: 19; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }
@@ -2943,6 +2957,9 @@ body.desktop-dark .modal-search-input:focus {
   border-color: #60a5fa;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
 }
+body.desktop-dark .tab-group-btn { color: #98989d; }
+body.desktop-dark .tab-group-btn.active { color: #f5f5f7; border-bottom-color: #f5f5f7; }
+body.desktop-dark #tab-groups { background: #2c2c2e; border-bottom-color: #3a3a3c; }
 body.desktop-dark .tab-btn {
   color: #94a3b8;
 }

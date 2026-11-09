@@ -106,26 +106,33 @@
   <!-- Main content -->
   <div id="main-content">
 
+    <div id="tab-groups">
+      <button type="button" class="tab-group-btn active" data-group="schedule">排程</button>
+      <button type="button" class="tab-group-btn" data-group="purchase">採購</button>
+      <button type="button" class="tab-group-btn" data-group="warehouse">倉庫</button>
+      <button type="button" class="tab-group-btn" data-group="data">資料</button>
+    </div>
     <div id="tabs">
-      <button class="tab-btn active" data-tab="schedule">出貨排程</button>
-      <button class="tab-btn" data-tab="calc-workspace">算料工作區</button>
-      <button class="tab-btn" data-tab="main-preview-v2">主檔預覽</button>
-      <button class="tab-btn" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
-      <button class="tab-btn" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
-      <button class="tab-btn" data-tab="erp-po-tab">開採購單</button>
-      <button class="tab-btn" data-tab="erp-receive-tab">一次收料</button>
-      <button class="tab-btn" data-tab="shortage-po-tab">缺料採購</button>
-      <button class="tab-btn" data-tab="bom">BOM 管理</button>
-      <button class="tab-btn" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
-      <button class="tab-btn" data-tab="part-conversion-tab">轉換料</button>
-      <button class="tab-btn" data-tab="po-pullin-tab">提前清單 <span id="po-pullin-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
-      <button class="tab-btn" data-tab="backups-tab">備份</button>
-      <button class="tab-btn" data-tab="analytics-tab">分析</button>
-      <button class="tab-btn" data-tab="defectives-tab">不良品</button>
-      <button class="tab-btn" data-tab="sea-freight-tab" hidden>海運出貨</button>
-      <button class="tab-btn" hidden data-tab="st-inventory">ST 庫存</button>
-      <button class="tab-btn" hidden data-tab="alerts-tab">提醒</button>
-      <button class="tab-btn" hidden data-tab="logs-tab">紀錄</button>
+      <button class="tab-btn active" data-group="schedule" data-tab="schedule">出貨排程</button>
+      <button class="tab-btn" data-group="schedule" data-tab="completed">已發料 <span id="completed-count" class="tab-badge" style="display:none"></span></button>
+      <button class="tab-btn" data-group="schedule" data-tab="main-preview-v2">主檔預覽</button>
+      <button class="tab-btn" data-group="schedule" data-tab="calc-workspace">算料工作區</button>
+      <button class="tab-btn" data-group="purchase" data-tab="shortage-po-tab">缺料採購</button>
+      <button class="tab-btn" data-group="purchase" data-tab="erp-po-tab">開採購單</button>
+      <button class="tab-btn" data-group="purchase" data-tab="low-stock-tab">低庫存提醒 <span id="low-stock-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
+      <button class="tab-btn" data-group="purchase" data-tab="po-pullin-tab">提前清單 <span id="po-pullin-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
+      <button class="tab-btn" data-group="warehouse" data-tab="erp-receive-tab">一次收料</button>
+      <button class="tab-btn" data-group="warehouse" data-tab="transfer-tab">一鍵調撥</button>
+      <button class="tab-btn" data-group="data" data-tab="bom">BOM 管理</button>
+      <button class="tab-btn" data-group="data" data-tab="part-conversion-tab">轉換料</button>
+      <button class="tab-btn" data-group="data" data-tab="defectives-tab">不良品</button>
+      <button class="tab-btn" data-group="data" data-tab="backups-tab">備份</button>
+      <button class="tab-btn" data-group="data" data-tab="analytics-tab">分析</button>
+      <button class="tab-btn" data-group="schedule" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
+      <button class="tab-btn" data-group="warehouse" data-tab="sea-freight-tab" hidden>海運出貨</button>
+      <button class="tab-btn" data-group="warehouse" hidden data-tab="st-inventory">ST 庫存</button>
+      <button class="tab-btn" data-group="data" hidden data-tab="alerts-tab">提醒</button>
+      <button class="tab-btn" data-group="data" hidden data-tab="logs-tab">紀錄</button>
     </div>
 
     <!-- ── Tab: 排程 ── -->
@@ -483,6 +490,15 @@
           <span class="erp-po-hint">保存後才會產生提醒徽章；未勾選「同時更新訂單出貨日」不會改動訂單。</span>
         </div>
         <div id="pp-result" class="pp-result" hidden></div>
+      </div>
+    </div>
+
+    <div id="tab-transfer-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div class="erp-po-actions" style="gap:12px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-primary" id="btn-warehouse-transfer" type="button">開啟一鍵調撥</button>
+          <span class="erp-po-hint">一個批次開一張調撥單；一般料從一般倉撥到庚霖倉，客供料從客供倉撥到庚霖倉。刪單請到正航刪。</span>
+        </div>
       </div>
     </div>
 
@@ -1119,32 +1135,58 @@ import { initPostprocessLinks } from "/static/modules/postprocess_links.js";
 import { initPartConversion, onPartConversionTabActivated } from "/static/modules/part_conversion.js";
 import { initPoPullin, onPoPullinTabActivated } from "/static/modules/po_pullin.js";
 
-// ── Tab switching ────────────────────────────────────────────────────────
-document.querySelectorAll(".tab-btn").forEach(btn => {
+// ── Tab switching（四大組 + 組內小分頁）──────────────────────────────────
+function setActiveTabGroup(group) {
+  document.querySelectorAll(".tab-group-btn").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.group === group);
+  });
+  document.querySelectorAll(".tab-btn[data-group]").forEach(btn => {
+    btn.classList.toggle("tab-in-group", btn.dataset.group === group);
+  });
+}
+
+function activateTabButton(btn) {
+  if (!btn) return;
+  const group = btn.dataset.group;
+  if (group) setActiveTabGroup(group);
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+  btn.classList.add("active");
+  document.getElementById("tab-" + btn.dataset.tab)?.classList.add("active");
+  document.getElementById("sidebar")?.classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2" || btn.dataset.tab === "completed");
+  if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
+  if (btn.dataset.tab === "st-inventory") refreshStInventoryInMain();
+  if (btn.dataset.tab === "completed") refreshCompleted();
+  if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
+  if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
+  if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
+  if (btn.dataset.tab === "erp-receive-tab") void onErpReceiveTabActivated();
+  if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
+  if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
+  if (btn.dataset.tab === "po-pullin-tab") void onPoPullinTabActivated();
+  if (btn.dataset.tab === "alerts-tab") refreshAlerts();
+  if (btn.dataset.tab === "logs-tab") refreshLogs();
+  if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
+  if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
+  if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();
+  if (btn.dataset.tab === "sea-freight-tab") refreshSeaFreight();
+}
+
+document.querySelectorAll(".tab-group-btn").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-    document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
-    btn.classList.add("active");
-    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
-    document.getElementById("sidebar").classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2" || btn.dataset.tab === "completed");
-    if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
-    if (btn.dataset.tab === "st-inventory") refreshStInventoryInMain();
-    if (btn.dataset.tab === "completed") refreshCompleted();
-    if (btn.dataset.tab === "st-packages-tab") refreshStPackages();
-    if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
-    if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
-    if (btn.dataset.tab === "erp-receive-tab") void onErpReceiveTabActivated();
-    if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
-    if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
-    if (btn.dataset.tab === "po-pullin-tab") void onPoPullinTabActivated();
-    if (btn.dataset.tab === "alerts-tab") refreshAlerts();
-    if (btn.dataset.tab === "logs-tab") refreshLogs();
-    if (btn.dataset.tab === "backups-tab") { refreshDbBackupPanel(); void loadStCountUndoItems(); }
-    if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
-    if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();
-    if (btn.dataset.tab === "sea-freight-tab") refreshSeaFreight();
+    const group = btn.dataset.group;
+    setActiveTabGroup(group);
+    const current = document.querySelector(`.tab-btn.active[data-group="${group}"]`);
+    const first = current || document.querySelector(`.tab-btn[data-group="${group}"]:not([hidden])`);
+    activateTabButton(first);
   });
 });
+
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => activateTabButton(btn));
+});
+
+setActiveTabGroup(document.querySelector(".tab-group-btn.active")?.dataset.group || "schedule");
 
 // ── Header buttons ──────────────────────────────────────────────────────
 function getActiveTabName() {

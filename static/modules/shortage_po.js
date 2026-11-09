@@ -935,6 +935,7 @@ export async function initShortagePurchase() {
   if (_initialized) return;
   _initialized = true;
   el("btn-shortage-transfer")?.addEventListener("click", () => { void openTransfer(); });
+  el("btn-warehouse-transfer")?.addEventListener("click", () => { void openTransfer(); });
   apiJson("/api/shortage-po/transfer/config").then(config => {
     const button = el("btn-shortage-transfer");
     if (button) { button.textContent = `一鍵調撥 · ${config.label}`; button.title = config.reason || "001／002 → 015"; }
@@ -960,7 +961,7 @@ export async function initShortagePurchase() {
 }
 
 // 一鍵調撥：目標只由伺服器環境設定，瀏覽器不傳 target。
-async function openTransfer() {
+export async function openTransfer() {
   if (!requireEdit()) return;
   const dialog = document.createElement("dialog");
   dialog.className = "transfer-dialog";
@@ -977,15 +978,15 @@ async function openTransfer() {
     if (!config.available) throw new Error(config.reason);
     const data = await apiPost(`${prefix}/preview`);
     dialog.innerHTML = `<h2>一鍵調撥 — ${esc(config.label)}</h2>
-      <p>001（一般料）／002（客供料 -TAB）→ 015；每批一張單（一般料與客供料同一張），依批次順序分配庫存。庫存：公司3（正式，唯讀）；寫入：${esc(config.label)}。待調撥只讀公司3（正式）的調撥，測試公司調撥不會減少待調撥；網站成功紀錄會阻擋重複調撥。</p>
-      <p>撤銷請至正航刪除調撥單，再按「重新檢查」，網站不執行反向寫入。</p>
+      <p>一個批次開一張調撥單。一般料從一般倉撥到庚霖倉，客供料從客供倉撥到庚霖倉。</p>
+      <p>刪單請到正航刪；再按「重新檢查」。網站不會反向寫入。</p>
       ${data.warnings.map(w => `<p>${esc(w)}</p>`).join("")}
-      ${data.batches.map(b => `<section><h3><label><input type="checkbox" data-transfer-batch="${esc(b.key)}" ${b.already || !b.totals.transfer ? "disabled" : "checked"}> ${esc(b.label)}</label>
+      ${data.batches.map(b => `<section><h3><label><input type="checkbox" data-transfer-batch="${esc(b.key)}" ${b.already || !b.totals.transfer ? "disabled" : "checked"}> ${esc(b.code)} · 一張調撥單</label>
         ${b.already ? `已調撥 ${esc(b.already.move_no)}` : ""}</h3>
-        <table><thead><tr>${["料號", "品名", "來源倉", "待調撥", "庫存（公司3）", "寫入公司庫存", "本次調撥", "短少", "成本"].map(v => `<th>${v}</th>`).join("")}</tr></thead>
-        <tbody>${b.rows.map(r => `<tr><td>${esc(r.part)}</td><td>${esc(r.name)}</td><td>${esc(r.ware_out)}</td>${[r.pending, r.stock_src, r.stock_target, r.transfer, r.short].map(v => `<td>${fmtQty(v)}</td>`).join("")}<td>${Number(r.cost).toLocaleString("zh-TW", { maximumFractionDigits: 10 })}</td></tr>`).join("")}</tbody></table>
+        <table><thead><tr>${["料號", "品名", "從哪倉", "要撥", "公司倉現有", "本次撥", "短少", "成本"].map(v => `<th>${v}</th>`).join("")}</tr></thead>
+        <tbody>${b.rows.map(r => `<tr><td>${esc(r.part)}</td><td>${esc(r.name)}</td><td>${esc(r.ware_out)}</td>${[r.pending, r.stock_src, r.transfer, r.short].map(v => `<td>${fmtQty(v)}</td>`).join("")}<td>${Number(r.cost).toLocaleString("zh-TW", { maximumFractionDigits: 10 })}</td></tr>`).join("")}</tbody></table>
         <p>一般料 ${b.rows.filter(r => r.ware_out === "001").length} 行／客供料 ${b.rows.filter(r => r.ware_out === "002").length} 行</p>
-        <p>合計：待調撥 ${fmtQty(b.totals.pending)}／本次 ${fmtQty(b.totals.transfer)}／短少 ${fmtQty(b.totals.short)}</p></section>`).join("")}
+        <p>合計：要撥 ${fmtQty(b.totals.pending)}／本次 ${fmtQty(b.totals.transfer)}／短少 ${fmtQty(b.totals.short)}</p></section>`).join("")}
       <button type="button" data-confirm>確認寫入 ${esc(config.label)}</button>
       <button type="button" data-close>關閉</button><div data-result role="status"></div><h3>調撥紀錄</h3><div data-history></div>`;
     const confirm = dialog.querySelector("[data-confirm]");
