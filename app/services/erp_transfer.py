@@ -189,7 +189,10 @@ def preview() -> dict[str, Any]:
         if len(_PREVIEWS) >= 100:
             _PREVIEWS.pop(next(iter(_PREVIEWS)))
         _PREVIEWS[token] = (time.monotonic(), json.loads(json.dumps(result)))
-        return {**result, 'preview_token': token}
+        # 機種名稱只供畫面顯示，不進預覽比對與 token。
+        models = pending.main_batch_models()
+        batches = [{**b, 'models': models.get(b['code'], [])} for b in result['batches']]
+        return {**result, 'batches': batches, 'preview_token': token}
     except Exception as exc:
         raise ep.PoValidationError(ep._safe_message(exc, creds)) from None
     finally:

@@ -393,6 +393,17 @@ def _main_batch_usage() -> Dict[str, Dict[str, float]]:
     return read_batch_usage(path)
 
 
+def main_batch_models() -> Dict[str, List[str]]:
+    """一鍵調撥顯示用：最新主檔各批次機種名稱；讀不到就回空，不影響預覽。"""
+    try:
+        from pathlib import Path
+        from .main_reader import read_batch_models
+        path = str(db.get_setting('main_file_path') or '').strip()
+        return read_batch_models(path) if path and Path(path).is_file() else {}
+    except Exception:
+        return {}
+
+
 def main_usage_deductions(consumed: List[Tuple[str, float]], usage: Dict[str, float],
                           conversions: Dict[str, str]) -> List[Tuple[str, float]]:
     """純函式：料號範圍沿用發料扣過 ST 的料，數量改用主檔該批用量（不用整包扣量）。

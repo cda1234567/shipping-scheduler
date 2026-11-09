@@ -31,6 +31,12 @@ function batchNote(batch) {
   return `${batch.rows.filter(r => r.transfer > 0).length} 項，撥 ${fmtQty(batch.totals.transfer)}`;
 }
 
+/** 機種名稱（主檔型號欄），多個以 " / " 串接；沒有就不畫。 */
+export function modelsLine(batch, cls = "transfer-models") {
+  const models = (batch.models || []).filter(Boolean);
+  return models.length ? `<span class="${cls}">${esc(models.join(" / "))}</span>` : "";
+}
+
 /** 右邊清單：還沒開的可勾（沒貨的不能勾），已開過的另外一區、沒有 checkbox。 */
 export function renderPicker(data, checked = new Set()) {
   if (!data.batches.length) return `<p class="transfer-empty">目前沒有要調撥的批次。</p>`;
@@ -43,11 +49,11 @@ export function renderPicker(data, checked = new Set()) {
       : `<input type="checkbox" disabled title="公司倉沒貨，不能開">`;
     return `<label class="transfer-pick transfer-pick-${state}">${input}
       <span class="transfer-pick-code">${esc(b.code)}</span>
-      <span class="transfer-pick-note">${batchNote(b)}</span></label>`;
+      <span class="transfer-pick-note">${batchNote(b)}</span>${modelsLine(b)}</label>`;
   }).join("") : `<p class="transfer-empty">沒有還沒開的批次。</p>`;
   const doneHtml = done.length ? `<div class="transfer-side-group transfer-side-done">
       <h3>已開過（${done.length}）</h3>
-      <ul>${done.map(b => `<li><span class="transfer-pick-code">${esc(b.code)}</span><span class="transfer-done-no">${esc(b.already.move_no)}</span></li>`).join("")}</ul>
+      <ul>${done.map(b => `<li><span class="transfer-pick-code">${esc(b.code)}</span><span class="transfer-done-no">${esc(b.already.move_no)}</span>${modelsLine(b)}</li>`).join("")}</ul>
     </div>` : "";
   return `<div class="transfer-side-group transfer-side-open"><h3>還沒開（${open.length}）</h3>${openHtml}</div>${doneHtml}`;
 }
@@ -59,7 +65,7 @@ export function renderDetails(data, checked = new Set()) {
   return picked.map(b => `<section class="transfer-batch" data-batch-key="${esc(b.key)}">
     <div class="transfer-batch-head">
       <span class="transfer-batch-title">${esc(b.code)} · 一張調撥單</span>
-      <span class="transfer-batch-note">${batchNote(b)}</span>
+      <span class="transfer-batch-note">${batchNote(b)}</span>${modelsLine(b)}
     </div>
     <table class="transfer-detail-table">
       <colgroup><col class="transfer-col-part"><col><col class="transfer-col-qty"></colgroup>

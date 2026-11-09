@@ -276,6 +276,24 @@ def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
         wb.close()
 
 
+def read_batch_models(path: str) -> dict[str, list[str]]:
+    """唯讀各批次機種名稱：{批次碼: [型號欄標頭]}，依欄位順序、去重、略過空白。"""
+    wb = open_workbook_any(path, read_only=True, data_only=False)
+    try:
+        headers = next(wb.worksheets[0].iter_rows(max_row=1, values_only=True), ())
+        _, batches = main_balance_columns(headers)
+        result: dict[str, list[str]] = {}
+        for code, ends in batches.items():
+            models = result.setdefault(_norm_batch_code(code), [])
+            for end in ends:
+                name = str(headers[end] or "").strip() if end < len(headers) else ""
+                if name and name not in models:
+                    models.append(name)
+        return result
+    finally:
+        wb.close()
+
+
 def read_vendors(path: str) -> dict[str, str]:
     """讀取主檔 B 欄廠商，以料號為 key。"""
     wb = open_workbook_any(path, read_only=True, data_only=True)

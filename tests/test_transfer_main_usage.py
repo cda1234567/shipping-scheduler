@@ -10,7 +10,7 @@ from unittest.mock import patch
 from openpyxl import Workbook
 
 from app.services import st_pending_transfer as st
-from app.services.main_reader import read_batch_usage
+from app.services.main_reader import read_batch_models, read_batch_usage
 
 HEADERS = ["料號", "廠商", "MOQ", "說明", None, None, None, "期初庫存",
            "10-5", "PO-1", "EC-MODEL",
@@ -55,6 +55,28 @@ class MainBatchUsageTests(unittest.TestCase):
         usage = read_batch_usage(str(self.path))
         self.assertEqual(usage["10-5"], {"EC-20117A": 1811, "MAIN-ONLY": 50})
         self.assertEqual(usage["10-6"], {"UC-20033B-TAB": 200})
+
+    def test_reads_batch_models_in_column_order(self):
+        self.assertEqual(read_batch_models(str(self.path)), {"10-5": ["EC-MODEL"], "10-6": ["TX2-S1 Main", "TX2-S1 Conn"]})
+
+    def test_batch_models_dedupes_skips_blank_and_normalizes_code(self):
+        global HEADERS
+        old = HEADERS
+        HEADERS = old[:8] + ["10-07", "PO-1", "TD4-REV-1.1", "10-7", "PO-2", None, "10-7", "PO-3", "TD4-REV-1.1"]
+        try:
+            _save(self.path, [])
+        finally:
+            HEADERS = old
+        self.assertEqual(read_batch_models(str(self.path)), {"10-7": ["TD4-REV-1.1"]})
+
+    def test_main_batch_models_never_raises(self):
+        with patch.object(st.db, "get_setting", return_value=str(self.path)):
+            self.assertEqual(st.main_batch_models()["10-6"], ["TX2-S1 Main", "TX2-S1 Conn"])
+        with patch.object(st.db, "get_setting", return_value="/nope/main.xlsx"):
+            self.assertEqual(st.main_batch_models(), {})
+        with patch("app.services.main_reader.read_batch_models", side_effect=RuntimeError("壞檔")), \
+                patch.object(st.db, "get_setting", return_value=str(self.path)):
+            self.assertEqual(st.main_batch_models(), {})
 
     def test_unreadable_usage_formula_raises(self):
         rows = [list(ROWS[0])]

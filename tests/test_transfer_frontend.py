@@ -80,6 +80,21 @@ const res = resultHtml({ results: [{ batch_key: '2026/11-1', ok: true, move_no: 
 assert.ok(res.includes('11-1 → RM-1') && res.includes('11-2 沒開成：庫存&lt;不足&gt;') && res.includes('11-3'));
 assert.ok(renderHistory([{ id: 3, batch_code: '11-1', move_no: 'RM-1', target_db: 'CHIComp03', status: 'ok', error: '', created_at: 'x' }]).includes('data-recheck="3"'));
 assert.equal(wareLabel('015'), '015 庚霖倉');
+
+// 機種名稱：右邊卡片（可開／沒貨／已開過）與左邊明細標題都顯示，多個以 " / " 串接、要跳脫
+const withModels = { batches: [
+  { ...ready, models: ['TX1(TD4)-Power-REV-1.0', 'TD4-REV-1.1'] },
+  { ...done, models: ['DONE<M>'] },
+  { ...empty, models: ['EMPTY-M'] },
+  { ...ready2, models: [] }] };
+const mp = renderPicker(withModels);
+assert.ok(mp.includes('<span class="transfer-models">TX1(TD4)-Power-REV-1.0 / TD4-REV-1.1</span>'));
+assert.ok(mp.includes('EMPTY-M'));
+assert.ok(mp.split('transfer-side-done')[1].includes('DONE&lt;M&gt;'));
+assert.equal((mp.match(/transfer-models/g) || []).length, 3, '沒有機種不畫空行');
+assert.ok(!renderPicker(data).includes('transfer-models'), '舊資料沒有 models 也能畫');
+const md = renderDetails(withModels, new Set(['2026/11-1']));
+assert.ok(md.includes('TX1(TD4)-Power-REV-1.0 / TD4-REV-1.1'));
 """
         completed = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT,
                                    capture_output=True, text=True, encoding="utf-8")
@@ -124,6 +139,11 @@ class TransferWiringTests(unittest.TestCase):
         detail_rule = re.search(r"\.transfer-detail-table th, \.transfer-detail-table td \{([^}]*)\}", css).group(1)
         self.assertNotIn("nowrap", detail_rule)
         self.assertIn("body.desktop-dark .transfer-detail-table", css)
+        models_rule = re.search(r"\.transfer-models \{([^}]*)\}", css).group(1)
+        self.assertIn("flex-basis: 100%", models_rule)
+        self.assertIn("overflow-wrap: anywhere", models_rule)
+        self.assertNotIn("nowrap", models_rule)
+        self.assertIn("body.desktop-dark .transfer-models", css)
 
     def test_module_sends_only_checked_ready_batches(self):
         self.assertIn("_checked = new Set()", self.module)
