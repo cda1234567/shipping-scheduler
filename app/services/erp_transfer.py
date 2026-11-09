@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import socket
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -215,13 +216,12 @@ def upsert_year_month_avg(cur: Any, ym: int, part: str, ware: str, delta: float 
 
 
 def sync_company_avg(cur: Any, ym: int, product: dict, part: str) -> None:
-    """CostByWare=0（公司3）：當月與上月以全公司庫存合計、comProduct 成本同步 stkYearMonthAvg。"""
+    """CostByWare=0（公司3）：只同步當月 stkYearMonthAvg（WareID=''）；正航手開調撥不動上月。"""
     cur.execute('SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s', (part,))
     total = float(cur.fetchone()[0] or 0)
-    for month in (ym, prev_year_month(ym)):
-        upsert_year_month_avg(cur, month, part, '', AtLastQuan=total,
-                              MonthCost=float(ep._get(product, 'CAvgCost') or 0),
-                              AtLastCost=float(ep._get(product, 'CTotalCost') or 0))
+    upsert_year_month_avg(cur, ym, part, '', AtLastQuan=total,
+                          MonthCost=float(ep._get(product, 'CAvgCost') or 0),
+                          AtLastCost=float(ep._get(product, 'CTotalCost') or 0))
 
 
 def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
@@ -237,7 +237,7 @@ def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
             ep._copy_masters(source.cursor(), cur, missing, target)
 
 
-def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, Any]:
+def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
     rows = [r for r in batch['rows'] if r['transfer'] > 0]
     if not rows:
         raise ep.PoValidationError('此批次沒有可調撥數量')
@@ -296,6 +296,13 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
             # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動，只同步月成本檔。
             sync_company_avg(cur, today // 100, products[r['part']], r['part'])
         cur.execute('UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s', (today, today, r['part']))
+    # 正航手開調撥會寫 comChangeLog（ChiStock.Move / Action=1）；UserName 與單頭 MakerID 相同。
+    maker_id = ep._env('ERP_PO_MAKER_ID', ep.DEFAULT_MAKER_ID)
+    insert(cur, 'comChangeLog', er._row(
+        'comChangeLog', ProgID='ChiStock.Move', ChangeTime=er._ole_date(local_now()),
+        IPAddr=(client_ip or '')[:15], UserName=maker_id, PKValue=number, Action=1,
+        ComputerName=socket.gethostname()[:20], WinUser=(actor or 'web')[:20],
+        Flag=0, OldValue='', WinLang=1, IsChiDataSet=False, ActionName=''))
     for table, col, count in [('stkMoveMain', 'MoveNO', 1), ('stkMoveSub', 'MoveNO', len(rows)), ('comProdRec', 'BillNO', len(rows))]:
         cur.execute(f'SELECT COUNT(*) FROM {table} WHERE Flag=400 AND {col}=%s', (number,))
         if int(cur.fetchone()[0]) != count:
@@ -321,7 +328,7 @@ def _safe_log(rec: dict) -> int | None:
         return None
 
 
-def _write(target: str, creds: dict, key: str, expected: dict, check_full: bool = False) -> dict[str, Any]:
+def _write(target: str, creds: dict, key: str, expected: dict, check_full: bool = False, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
     conn = ep._connect_write(creds)
     committed = False
     try:
@@ -337,7 +344,7 @@ def _write(target: str, creds: dict, key: str, expected: dict, check_full: bool 
                     or (check_full and digest(current) != digest(expected))):
                 raise ep.PoValidationError('資料已變動，請重新預覽')
             try:
-                result = execute_bill(cur, target, batch, current['date'])
+                result = execute_bill(cur, target, batch, current['date'], actor=actor, client_ip=client_ip)
                 ep._check_db_name(cur, target)
                 break
             except Exception as exc:
@@ -386,7 +393,7 @@ def create(req: dict, actor: str = 'web', client_ip: str = '') -> dict[str, Any]
             base = dict(batch_key=key, batch_code=batch['code'], target_db=target, client_token=token,
                         actor=actor, client_ip=client_ip)
             try:
-                result = _write(target, creds, key, expected, check_full=i == 0)
+                result = _write(target, creds, key, expected, check_full=i == 0, actor=actor, client_ip=client_ip)
                 record_id = _safe_log({**base, **result, 'status': 'ok'})
                 results.append(dict(batch_key=key, ok=True, id=record_id, **result))
                 if record_id is None:
