@@ -502,11 +502,17 @@
           <button class="btn btn-sm" id="btn-transfer-refresh" type="button">重新整理</button>
         </div>
         <p id="transfer-intro" class="transfer-intro"></p>
-        <div id="transfer-batches"></div>
-        <div class="transfer-actions">
-          <button class="btn btn-primary" id="btn-transfer-submit" type="button" disabled>請勾選要開的批次</button>
-        </div>
+        <div id="transfer-warnings"></div>
         <div id="transfer-result" class="transfer-result" role="status" hidden></div>
+        <div class="transfer-layout">
+          <div id="transfer-detail" class="transfer-detail"></div>
+          <aside class="transfer-side">
+            <div class="transfer-actions">
+              <button class="btn btn-primary" id="btn-transfer-submit" type="button" disabled>請勾選要開的批次</button>
+            </div>
+            <div id="transfer-batches"></div>
+          </aside>
+        </div>
         <details class="transfer-history-box">
           <summary>調撥紀錄</summary>
           <p class="erp-po-hint">開錯了請到正航刪單，再按「重新檢查」；網站不會反向寫入正航。</p>

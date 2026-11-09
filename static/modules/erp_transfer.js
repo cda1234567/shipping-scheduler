@@ -1,7 +1,7 @@
 // 一鍵調撥分頁（倉庫 → 一鍵調撥）。寫入公司只由伺服器環境設定決定，瀏覽器不傳 target。
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
-import { INTRO, confirmText, renderBatches, renderHistory, resultHtml, submitLabel } from "/static/modules/transfer_view.js";
+import { INTRO, batchState, confirmText, renderDetails, renderHistory, renderPicker, resultHtml, submitLabel } from "/static/modules/transfer_view.js";
 
 const PREFIX = "/api/shortage-po/transfer";
 
@@ -9,6 +9,7 @@ let _initialized = false;
 let _config = null;
 let _data = null; // 最近一次預覽
 let _clientToken = "";
+let _checked = new Set(); // 右邊勾到的批次 key；預設不勾
 let _loading = false;
 let _posting = false;
 
@@ -18,8 +19,15 @@ function newToken() {
   return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 }
 
+/** 只送右邊勾到、且還可開的批次（照預覽順序）。 */
 function checkedKeys() {
-  return [...document.querySelectorAll("#transfer-batches [data-transfer-batch]:checked")].map(input => input.dataset.transferBatch);
+  if (!_data) return [];
+  return _data.batches.filter(b => _checked.has(b.key) && batchState(b) === "ready").map(b => b.key);
+}
+
+function renderDetail() {
+  const box = el("transfer-detail");
+  if (box && _data) box.innerHTML = renderDetails(_data, _checked);
 }
 
 function codeOf(key) {
@@ -34,9 +42,14 @@ function updateSubmit() {
   button.disabled = _posting || _loading || !count || !_config?.available;
 }
 
-function setBusy(text) {
-  const box = el("transfer-batches");
-  if (box) box.innerHTML = `<p class="transfer-empty">${text}</p>`;
+/** 狀態訊息放左邊明細區，右邊清單與警告清空。 */
+function setBusy(html) {
+  const detail = el("transfer-detail");
+  if (detail) detail.innerHTML = `<p class="transfer-empty">${html}</p>`;
+  for (const id of ["transfer-batches", "transfer-warnings"]) {
+    const box = el(id);
+    if (box) box.innerHTML = "";
+  }
 }
 
 async function loadConfig() {
@@ -67,13 +80,14 @@ export async function refreshTransfer() {
   if (_loading || _posting) return;
   if (!isEditAuthenticated()) {
     _data = null;
-    el("transfer-batches").innerHTML = `<p class="transfer-empty">開調撥單要先登入編輯。 <button type="button" class="btn btn-sm" id="btn-transfer-login">登入編輯</button></p>`;
+    setBusy(`開調撥單要先登入編輯。 <button type="button" class="btn btn-sm" id="btn-transfer-login">登入編輯</button>`);
     el("btn-transfer-login").onclick = () => openEditAuthModal();
     updateSubmit();
     return;
   }
   _loading = true;
   _data = null;
+  _checked = new Set();
   updateSubmit();
   setBusy("正在整理調撥單…");
   try {
@@ -81,10 +95,11 @@ export async function refreshTransfer() {
     if (!_config.available) throw new Error(_config.reason);
     _data = await apiPost(`${PREFIX}/preview`);
     _clientToken = newToken();
-    const warnings = (_data.warnings || []).map(w => `<p class="transfer-warning">${esc(w)}</p>`).join("");
-    el("transfer-batches").innerHTML = warnings + renderBatches(_data);
+    el("transfer-warnings").innerHTML = (_data.warnings || []).map(w => `<p class="transfer-warning">${esc(w)}</p>`).join("");
+    el("transfer-batches").innerHTML = renderPicker(_data, _checked);
+    renderDetail();
   } catch (error) {
-    setBusy(`讀不到調撥資料：${error.message}`);
+    setBusy(`讀不到調撥資料：${esc(error.message)}`);
   } finally {
     _loading = false;
     updateSubmit();
@@ -139,7 +154,12 @@ export function initTransfer() {
   el("btn-transfer-refresh")?.addEventListener("click", () => { void refreshTransfer(); });
   el("btn-transfer-submit")?.addEventListener("click", () => { void submit(); });
   el("transfer-batches")?.addEventListener("change", event => {
-    if (event.target.matches("[data-transfer-batch]")) updateSubmit();
+    const input = event.target.closest("[data-transfer-batch]");
+    if (!input) return;
+    if (input.checked) _checked.add(input.dataset.transferBatch);
+    else _checked.delete(input.dataset.transferBatch);
+    renderDetail();
+    updateSubmit();
   });
   el("transfer-history")?.addEventListener("click", event => {
     const button = event.target.closest("[data-recheck]");

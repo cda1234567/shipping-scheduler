@@ -5408,29 +5408,69 @@ body.desktop-dark .po-mail-replied { background: #1e3a8a; color: #bfdbfe; }
 
 /* 一鍵調撥預覽 */
 /* 一鍵調撥分頁 */
-.transfer-shell { max-width: 1200px; }
+/* 一鍵調撥：左邊明細（只列料號／品名／本次撥）、右邊勾批次清單；用滿主內容區 */
 .transfer-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .transfer-top h2 { margin: 0; font-size: 18px; }
 .transfer-top .spacer { flex: 1; }
 .transfer-target-prod { background: #fff4e5; color: #9a4b00; border-color: #f2c48d; }
-.transfer-intro { margin: 10px 0 16px; color: #475569; line-height: 1.6; }
-.transfer-empty { color: #64748b; padding: 16px 0; }
+.transfer-intro { margin: 4px 0 0; color: #475569; line-height: 1.6; }
+.transfer-empty { color: #64748b; padding: 16px 0; margin: 0; }
 .transfer-warning { color: #9a4b00; margin: 4px 0; }
-.transfer-batch { border: 1px solid #d5dde7; border-radius: 10px; margin: 12px 0; background: #fff; overflow-x: auto; }
-.transfer-batch-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; cursor: pointer; background: #f6f8fb; }
+.transfer-layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(280px, 26vw, 360px); gap: 16px; align-items: stretch; }
+.transfer-detail { min-width: 0; }
+.transfer-detail-empty { border: 1px dashed #cbd5e1; border-radius: 10px; padding: 32px 16px; text-align: center; }
+.transfer-side { min-width: 0; border-left: 1px solid #e2e8f0; padding-left: 16px; }
+/* 「開 N 張調撥單」黏在右欄頂端，長表格往下捲也看得到 */
+.transfer-actions { position: sticky; top: -14px; z-index: 2; background: #f2f2f7; padding: 8px 0 10px; border-bottom: 1px solid #e2e8f0; }
+.transfer-actions .btn { width: 100%; }
+.transfer-side-group { margin-top: 12px; }
+.transfer-side-group h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: #64748b; }
+.transfer-pick { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; padding: 8px 10px; border: 1px solid #d5dde7; border-radius: 8px; margin-bottom: 6px; cursor: pointer; background: #fff; }
+.transfer-pick:has(input:checked) { border-color: #3b82f6; background: #eff6ff; }
+.transfer-pick input { align-self: center; margin: 0; }
+.transfer-pick-code { font-weight: 600; }
+.transfer-pick-note { color: #475569; font-size: 12px; }
+.transfer-pick-empty { cursor: not-allowed; background: #f8fafc; color: #94a3b8; }
+.transfer-pick-empty .transfer-pick-note { color: #b91c1c; }
+.transfer-side-done ul { list-style: none; margin: 0; padding: 0; }
+.transfer-side-done li { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; font-size: 13px; color: #64748b; border-bottom: 1px solid #eef1f5; }
+.transfer-done-no { color: #15803d; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.transfer-batch { border: 1px solid #d5dde7; border-radius: 10px; margin: 0 0 12px; background: #fff; overflow: hidden; }
+.transfer-batch-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; padding: 10px 14px; background: #f6f8fb; }
 .transfer-batch-title { font-weight: 600; font-size: 15px; }
 .transfer-batch-note { color: #475569; font-size: 13px; }
-.transfer-batch-done .transfer-batch-head, .transfer-batch-empty .transfer-batch-head { cursor: default; color: #64748b; }
-.transfer-batch-done .transfer-batch-note { color: #15803d; }
+.transfer-detail-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+.transfer-detail-table .transfer-col-part { width: 32%; }
+.transfer-detail-table .transfer-col-qty { width: 110px; }
+.transfer-detail-table th, .transfer-detail-table td { padding: 6px 10px; border-bottom: 1px solid #eef1f5; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.transfer-detail-table th { color: #64748b; font-weight: 500; }
+.transfer-detail-table .num { text-align: right; white-space: nowrap; }
 .transfer-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .transfer-table th, .transfer-table td { padding: 6px 10px; border-bottom: 1px solid #eef1f5; text-align: left; white-space: nowrap; }
 .transfer-table th { color: #64748b; font-weight: 500; }
-.transfer-table .num { text-align: right; }
-.transfer-row-skip td { color: #94a3b8; }
-.transfer-short { color: #b91c1c; font-weight: 600; }
-.transfer-actions { display: flex; justify-content: flex-end; margin: 16px 0; }
-.transfer-result { border: 1px solid #d5dde7; border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; white-space: pre-wrap; }
+.transfer-result { border: 1px solid #d5dde7; border-radius: 10px; padding: 10px 14px; white-space: pre-wrap; }
 .transfer-result ul { margin: 0; padding-left: 18px; }
 .transfer-ok { color: #15803d; }
 .transfer-fail { color: #b91c1c; }
 .transfer-history-box summary { cursor: pointer; font-weight: 600; margin: 8px 0; }
+@media (max-width: 900px) {
+  .transfer-layout { grid-template-columns: 1fr; }
+  .transfer-side { order: -1; border-left: 0; padding-left: 0; }
+}
+body.desktop-dark .transfer-intro, body.desktop-dark .transfer-batch-note, body.desktop-dark .transfer-pick-note { color: #cbd5e1; }
+body.desktop-dark .transfer-empty, body.desktop-dark .transfer-side-group h3, body.desktop-dark .transfer-side-done li,
+body.desktop-dark .transfer-detail-table th, body.desktop-dark .transfer-table th { color: #94a3b8; }
+body.desktop-dark .transfer-detail-empty { border-color: #334155; }
+body.desktop-dark .transfer-side { border-left-color: #243041; }
+body.desktop-dark .transfer-actions { background: #0b1220; border-bottom-color: #243041; }
+body.desktop-dark .transfer-pick, body.desktop-dark .transfer-batch { background: #111827; border-color: #243041; color: #e5e7eb; }
+body.desktop-dark .transfer-pick:has(input:checked) { background: #172554; border-color: #3b82f6; }
+body.desktop-dark .transfer-pick-empty { background: #0f172a; color: #64748b; }
+body.desktop-dark .transfer-pick-empty .transfer-pick-note, body.desktop-dark .transfer-fail { color: #f87171; }
+body.desktop-dark .transfer-done-no, body.desktop-dark .transfer-ok { color: #4ade80; }
+body.desktop-dark .transfer-batch-head { background: #1e293b; }
+body.desktop-dark .transfer-detail-table th, body.desktop-dark .transfer-detail-table td,
+body.desktop-dark .transfer-table th, body.desktop-dark .transfer-table td, body.desktop-dark .transfer-side-done li { border-bottom-color: #243041; }
+body.desktop-dark .transfer-detail-table td, body.desktop-dark .transfer-table td { color: #e5e7eb; }
+body.desktop-dark .transfer-result { border-color: #243041; }
+body.desktop-dark .transfer-warning { color: #fbbf24; }
