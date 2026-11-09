@@ -934,12 +934,6 @@ export async function openShortagePurchase(orderIds) {
 export async function initShortagePurchase() {
   if (_initialized) return;
   _initialized = true;
-  el("btn-shortage-transfer")?.addEventListener("click", () => { void openTransfer(); });
-  el("btn-warehouse-transfer")?.addEventListener("click", () => { void openTransfer(); });
-  apiJson("/api/shortage-po/transfer/config").then(config => {
-    const button = el("btn-shortage-transfer");
-    if (button) { button.textContent = `一鍵調撥 · ${config.label}`; button.title = config.reason || "001／002 → 015"; }
-  }).catch(() => {});
   el("shortage-po-orders")?.addEventListener("change", event => {
     const id = Number(event.target.dataset?.order);
     if (!Number.isInteger(id)) return;
@@ -958,75 +952,4 @@ export async function initShortagePurchase() {
   groups?.addEventListener("change", onGroupsChange);
   renderOrders();
   await loadConfig();
-}
-
-// 一鍵調撥：目標只由伺服器環境設定，瀏覽器不傳 target。
-export async function openTransfer() {
-  if (!requireEdit()) return;
-  const dialog = document.createElement("dialog");
-  dialog.className = "transfer-dialog";
-  document.body.appendChild(dialog);
-  const clientToken = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
-  let posting = false;
-  dialog.addEventListener("cancel", event => { if (posting) event.preventDefault(); });
-  dialog.addEventListener("close", () => dialog.remove());
-  dialog.innerHTML = "<p>正在讀取調撥預覽…</p>";
-  dialog.showModal();
-  const prefix = "/api/shortage-po/transfer";
-  try {
-    const config = await apiJson(`${prefix}/config`);
-    if (!config.available) throw new Error(config.reason);
-    const data = await apiPost(`${prefix}/preview`);
-    dialog.innerHTML = `<h2>一鍵調撥 — ${esc(config.label)}</h2>
-      <p>一個批次開一張調撥單。一般料從一般倉撥到庚霖倉，客供料從客供倉撥到庚霖倉。</p>
-      <p>刪單請到正航刪；再按「重新檢查」。網站不會反向寫入。</p>
-      ${data.warnings.map(w => `<p>${esc(w)}</p>`).join("")}
-      ${data.batches.map(b => `<section><h3><label><input type="checkbox" data-transfer-batch="${esc(b.key)}" ${b.already || !b.totals.transfer ? "disabled" : "checked"}> ${esc(b.code)} · 一張調撥單</label>
-        ${b.already ? `已調撥 ${esc(b.already.move_no)}` : ""}</h3>
-        <table><thead><tr>${["料號", "品名", "從哪倉", "要撥", "公司倉現有", "本次撥", "短少", "成本"].map(v => `<th>${v}</th>`).join("")}</tr></thead>
-        <tbody>${b.rows.map(r => `<tr><td>${esc(r.part)}</td><td>${esc(r.name)}</td><td>${esc(r.ware_out)}</td>${[r.pending, r.stock_src, r.transfer, r.short].map(v => `<td>${fmtQty(v)}</td>`).join("")}<td>${Number(r.cost).toLocaleString("zh-TW", { maximumFractionDigits: 10 })}</td></tr>`).join("")}</tbody></table>
-        <p>一般料 ${b.rows.filter(r => r.ware_out === "001").length} 行／客供料 ${b.rows.filter(r => r.ware_out === "002").length} 行</p>
-        <p>合計：要撥 ${fmtQty(b.totals.pending)}／本次 ${fmtQty(b.totals.transfer)}／短少 ${fmtQty(b.totals.short)}</p></section>`).join("")}
-      <button type="button" data-confirm>確認寫入 ${esc(config.label)}</button>
-      <button type="button" data-close>關閉</button><div data-result role="status"></div><h3>調撥紀錄</h3><div data-history></div>`;
-    const confirm = dialog.querySelector("[data-confirm]");
-    const close = dialog.querySelector("[data-close]");
-    close.onclick = () => dialog.close();
-    const result = dialog.querySelector("[data-result]");
-    async function history() {
-      const records = await apiJson(`${prefix}/history`);
-      const box = dialog.querySelector("[data-history]");
-      const status = { ok: "成功", error: "失敗", deleted: "正航已刪除" };
-      box.innerHTML = records.records.map(r => `<p>${esc(r.batch_code)} · ${esc(r.target_db)} · ${esc(r.move_no)} · ${esc(status[r.status] || r.status)} ${esc(r.error)}
-        ${r.status === "ok" ? `<button type="button" data-recheck="${r.id}">重新檢查</button>` : ""}</p>`).join("") || "尚無紀錄";
-      box.querySelectorAll("[data-recheck]").forEach(btn => { btn.onclick = async () => {
-        btn.disabled = true;
-        try {
-          const checked = await apiPost(`${prefix}/recheck/${btn.dataset.recheck}`);
-          result.textContent = checked.status === "deleted" ? "正航單據已刪除，請關閉後重新預覽。" : "正航單據仍存在。";
-          await history();
-        } catch (error) { result.textContent = error.message; btn.disabled = false; }
-      }; });
-    }
-    confirm.onclick = async () => {
-      const batches = [...dialog.querySelectorAll("[data-transfer-batch]:checked")].map(input => input.dataset.transferBatch);
-      if (!batches.length) { result.textContent = "請選擇可調撥的批次。"; return; }
-      posting = true;
-      confirm.disabled = true;
-      close.disabled = true;
-      dialog.querySelectorAll("input, [data-recheck]").forEach(input => { input.disabled = true; });
-      result.textContent = "正在寫入，請勿關閉視窗…";
-      try {
-        const response = await apiPost(`${prefix}/create`, { batches, client_token: clientToken, preview_token: data.preview_token });
-        result.textContent = response.results.map(r => `${r.batch_key}：${r.ok ? r.move_no : r.error}${r.warning ? `；${r.warning}` : ""}`).join("\n")
-          + (response.stopped.length ? `\n未處理：${response.stopped.join("、")}` : "");
-        await history();
-      } catch (error) { result.textContent = `${error.message}；請關閉後重新預覽。`; }
-      finally { posting = false; close.disabled = false; }
-    };
-    await history();
-  } catch (error) {
-    dialog.innerHTML = `<p>${esc(error.message)}</p><button type="button">關閉</button>`;
-    dialog.querySelector("button").onclick = () => dialog.close();
-  }
 }

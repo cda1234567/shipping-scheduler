@@ -14,6 +14,9 @@ from .erp_stock import ErpUnavailable
 from .local_time import local_now
 from .erp_transfer_schema import DEFAULTS
 
+SOURCE_WARE = '001'  # 一般料來源倉；客供料（-TAB）由 st_pending_transfer 標成 002
+TARGET_WARE = '015'  # 庚霖倉
+
 
 def resolve_target() -> tuple[str, dict[str, Any]]:
     target = ep._env('ERP_TRANSFER_TARGET', 'CHIComp13')
@@ -88,7 +91,7 @@ def build_rows(move_no: str, today: int, rows: list[dict]) -> dict[str, list[dic
     for i, r in enumerate(rows, 1):
         subs.append(row('stkMoveSub', Flag=400, MoveNO=move_no, RowNo=i, SerNo=i, MoveDate=today, Cost=r['cost']))
         recs.append(row('comProdRec', Flag=400, BillNO=move_no, RowNO=i, SerNO=i, BillDate=today,
-                        ProdID=r['part'], ProdName=r['name'], WareOut=r.get('ware_out', '001'), WareID='015',
+                        ProdID=r['part'], ProdName=r['name'], WareOut=r.get('ware_out', SOURCE_WARE), WareID=TARGET_WARE,
                         Quantity=r['transfer'], EQuantity=r['transfer'], CostAvg=r['avg'], CostAvgOut=r['avg_out'],
                         MLPrice=r['cost'], MLAmount=r['amount'], QtyRemain=1, SQuantity=1, UnitRelation=1,
                         EUnitRelation=0, NeedUpdate=True, HasCheck=True, IsOdd=True))
@@ -138,14 +141,14 @@ def plan(cur: Any, target: str, lock: bool = False) -> dict[str, Any]:
     info = pending.batch_breakdown(target)
     params = er.load_cost_params(cur, target)
     hint = ' WITH (UPDLOCK, HOLDLOCK)' if lock else ''
-    stock = source_stock([(r['part'], r.get('ware_out', '001')) for b in info['batches'] for r in b['rows']])
+    stock = source_stock([(r['part'], r.get('ware_out', SOURCE_WARE)) for b in info['batches'] for r in b['rows']])
     states = {}
     prior = {r['batch_key']: r for r in db.successful_erp_transfers(target)}
     for b in info['batches']:
         b['already'] = prior.get(b['key'])
         for r in b['rows']:
             p = r['part']
-            ware = r.get('ware_out', '001')
+            ware = r.get('ware_out', SOURCE_WARE)
             key = (p, ware)
             skey = (str(p).strip().upper(), ware)
             stock.setdefault(skey, 0.0)
@@ -157,10 +160,11 @@ def plan(cur: Any, target: str, lock: bool = False) -> dict[str, Any]:
                     # 測試公司缺料號時，品名改讀來源，成本視為0。
                     product = {'ProdID': p, 'ProdName': source_names(target, info['batches']).get(p, ''), 'CAvgCost': 0}
                 outgoing = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, ware)) or {}
-                incoming = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, '015')) or {}
+                incoming = one(cur, f'SELECT * FROM comWareAmount{hint} WHERE ProdID=%s AND WareID=%s', (p, TARGET_WARE)) or {}
                 states[key] = (product, outgoing, incoming)
             product, outgoing, incoming = states[key]
             qty = 0 if b['already'] else min(r['pending'], stock[skey])
+            # stock_src＝公司3來源倉現有；stock_target＝寫入公司同一個來源倉現有（不是015庚霖倉）。
             r.update(name=ep._get(product, 'ProdName') or '', ware_out=ware, stock_src=stock[skey], stock_target=float(ep._get(outgoing, 'Quantity') or 0), transfer=qty, short=r['pending']-qty,
                      **cost_values(product, outgoing, incoming, qty, params))
             stock[skey] -= qty
@@ -226,7 +230,7 @@ def sync_company_avg(cur: Any, ym: int, product: dict, part: str) -> None:
 
 def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
     missing = []
-    for spec in ep._master_specs('', parts, '015'):
+    for spec in ep._master_specs('', parts, TARGET_WARE):
         cur.execute(f"SELECT 1 FROM {spec['table']} WITH (UPDLOCK, HOLDLOCK) WHERE {spec['where']}", spec['params'])
         if not cur.fetchone():
             missing.append(spec)
@@ -237,72 +241,65 @@ def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
             ep._copy_masters(source.cursor(), cur, missing, target)
 
 
-def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
-    rows = [r for r in batch['rows'] if r['transfer'] > 0]
-    if not rows:
-        raise ep.PoValidationError('此批次沒有可調撥數量')
-    ensure_masters(cur, target, [r['part'] for r in rows])
-    params = er.load_cost_params(cur, target)
-    # 未勾選的前批次不會真的改變015成本；以此交易實際鎖定的庫存算入庫平均。
-    rows = [dict(r) for r in rows]
+def _lock_rows(cur: Any, rows: list[dict], params: dict) -> dict[str, dict]:
+    """鎖定料號與兩倉庫存，確認來源倉夠撥，並以實際鎖定的庫存重算成本（成本變了就要求重新預覽）。"""
     products: dict[str, dict] = {}
     for r in rows:
-        product = one(cur, 'SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s', (r['part'],))
-        products[r['part']] = product or {}
-        outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], r.get('ware_out', '001'))) or {}
-        incoming = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], '015')) or {}
-        ware, part, qty = r.get('ware_out', '001'), r['part'], r['transfer']
+        part, ware, qty = r['part'], r.get('ware_out', SOURCE_WARE), r['transfer']
+        product = one(cur, 'SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s', (part,))
+        products[part] = product or {}
+        outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (part, ware)) or {}
+        incoming = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (part, TARGET_WARE)) or {}
         if float(ep._get(outgoing, 'Quantity') or 0) < qty:
             raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
-        actual = cost_values(product, outgoing, incoming, r['transfer'], params)
+        actual = cost_values(product, outgoing, incoming, qty, params)
         if actual['cost'] != r['cost']:
             raise ep.PoValidationError('資料已變動，請重新預覽')
         r.update(actual)
-    number = next_number(cur, today)
-    for table, records in build_rows(number, today, rows).items():
-        for record in records:
-            insert(cur, table, record)
-    expected = []
-    for r in rows:
-        for ware, sign in [(r.get('ware_out', '001'), -1), ('015', 1)]:
-            where = (r['part'], ware)
-            old = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', where)
-            quantity = float(ep._get(old or {}, 'Quantity') or 0) + sign*r['transfer']
-            if quantity < 0:
-                part, qty = r['part'], r['transfer']
-                raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
-            values = {'Quantity': quantity, 'BCQty': quantity}
-            if params['cost_by_ware']:
-                values['TotalCost'] = float(ep._get(old or {}, 'TotalCost') or 0)+sign*r['amount']
-                if ware == '015':
-                    values['Cost'] = r['avg']
-            if old:
-                sql, args = er.build_update('comWareAmount', values, dict(ProdID=r['part'], WareID=ware))
-                cur.execute(sql, args)
-            else:
-                insert(cur, 'comWareAmount', er._row('comWareAmount', ProdID=r['part'], WareID=ware, **values))
-            expected.append((r['part'], ware, quantity))
-            ym = today // 100  # 沿用 erp_receive：西元 YYYYMM。
-            roll = one(cur, 'SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s', (ym, *where))
-            qty = float(ep._get(roll or {}, 'Quantity') or 0)+sign*r['transfer']
-            if roll:
-                sql, args = er.build_update('StkYearMonthQty', {'Quantity': qty}, dict(YearMonth=ym, ProdID=r['part'], WareID=ware))
-                cur.execute(sql, args)
-            else:
-                insert(cur, 'StkYearMonthQty', er._row('StkYearMonthQty', YearMonth=ym, ProdID=r['part'], WareID=ware, Quantity=qty))
-            if params['cost_by_ware']:
-                upsert_year_month_avg(cur, ym, r['part'], ware, delta=sign*r['transfer'])
-        if not params['cost_by_ware']:
-            # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動，只同步月成本檔。
-            sync_company_avg(cur, today // 100, products[r['part']], r['part'])
-        cur.execute('UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s', (today, today, r['part']))
-    # 正航手開調撥會寫 comChangeLog（ChiStock.Move / Action=1）；UserName 與單頭 MakerID 相同。
-    maker_id = ep._env('ERP_PO_MAKER_ID', ep.DEFAULT_MAKER_ID)
+    return products
+
+
+def _move_ware(cur: Any, r: dict, ware: str, sign: int, ym: int, params: dict) -> float:
+    """單一倉的庫存加減：comWareAmount（BCQty 與 Quantity 同步）、StkYearMonthQty；依倉成本時另加減 stkYearMonthAvg。"""
+    part, qty = r['part'], r['transfer']
+    where = (part, ware)
+    old = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', where)
+    quantity = float(ep._get(old or {}, 'Quantity') or 0) + sign*qty
+    if quantity < 0:
+        raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
+    values = {'Quantity': quantity, 'BCQty': quantity}
+    if params['cost_by_ware']:
+        values['TotalCost'] = float(ep._get(old or {}, 'TotalCost') or 0)+sign*r['amount']
+        if ware == TARGET_WARE:
+            values['Cost'] = r['avg']
+    if old:
+        sql, args = er.build_update('comWareAmount', values, dict(ProdID=part, WareID=ware))
+        cur.execute(sql, args)
+    else:
+        insert(cur, 'comWareAmount', er._row('comWareAmount', ProdID=part, WareID=ware, **values))
+    roll = one(cur, 'SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s', (ym, *where))
+    month_qty = float(ep._get(roll or {}, 'Quantity') or 0)+sign*qty
+    if roll:
+        sql, args = er.build_update('StkYearMonthQty', {'Quantity': month_qty}, dict(YearMonth=ym, ProdID=part, WareID=ware))
+        cur.execute(sql, args)
+    else:
+        insert(cur, 'StkYearMonthQty', er._row('StkYearMonthQty', YearMonth=ym, ProdID=part, WareID=ware, Quantity=month_qty))
+    if params['cost_by_ware']:
+        upsert_year_month_avg(cur, ym, part, ware, delta=sign*qty)
+    return quantity
+
+
+def _write_change_log(cur: Any, number: str, actor: str, client_ip: str) -> None:
+    """正航手開調撥會寫 comChangeLog（ChiStock.Move / Action=1）；UserName 與單頭 MakerID 相同。"""
     insert(cur, 'comChangeLog', er._row(
         'comChangeLog', ProgID='ChiStock.Move', ChangeTime=er._ole_date(local_now()),
-        IPAddr=(client_ip or '')[:15], UserName=maker_id, PKValue=number, Action=1,
+        IPAddr=(client_ip or '')[:15], UserName=ep._env('ERP_PO_MAKER_ID', ep.DEFAULT_MAKER_ID), PKValue=number, Action=1,
         ComputerName=socket.gethostname()[:20], WinUser=(actor or 'web')[:20],
         Flag=0, OldValue='', WinLang=1, IsChiDataSet=False, ActionName=''))
+
+
+def _verify_bill(cur: Any, number: str, rows: list[dict], expected: list[tuple[str, str, float]]) -> None:
+    """同一交易內回讀單據筆數、總量與庫存，不符就中止（整筆 rollback）。"""
     for table, col, count in [('stkMoveMain', 'MoveNO', 1), ('stkMoveSub', 'MoveNO', len(rows)), ('comProdRec', 'BillNO', len(rows))]:
         cur.execute(f'SELECT COUNT(*) FROM {table} WHERE Flag=400 AND {col}=%s', (number,))
         if int(cur.fetchone()[0]) != count:
@@ -310,12 +307,42 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'w
     cur.execute('SELECT SumQty FROM stkMoveMain WHERE Flag=400 AND MoveNO=%s', (number,))
     if not ep._same(cur.fetchone()[0], sum(r['transfer'] for r in rows)):
         raise ep.PoValidationError('調撥單回讀總量不符，已中止')
-    for p, ware, qty in expected:
-        cur.execute('SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s', (p, ware))
+    for part, ware, qty in expected:
+        cur.execute('SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s', (part, ware))
         if not ep._same(cur.fetchone()[0], qty):
             raise ep.PoValidationError('庫存回讀不符，已中止')
+
+
+def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
+    """一個批次開一張調撥單（同一交易，由呼叫端 commit）。
+
+    寫入順序：鎖定重算 → 單頭／單身／異動明細 → 每行來源倉減、015 加 → 月成本檔 → LatestIndate/OutDate
+    → comChangeLog → 回讀檢查。不寫 CAvgCost／CTotalCost；CostByWare=0 時不改各倉 Cost／TotalCost。
+    """
+    # 未勾選的前批次不會真的改變015成本；以此交易實際鎖定的庫存算入庫平均。
+    rows = [dict(r) for r in batch['rows'] if r['transfer'] > 0]
+    if not rows:
+        raise ep.PoValidationError('此批次沒有可調撥數量')
+    ensure_masters(cur, target, [r['part'] for r in rows])
+    params = er.load_cost_params(cur, target)
+    products = _lock_rows(cur, rows, params)
+    number = next_number(cur, today)
+    for table, records in build_rows(number, today, rows).items():
+        for record in records:
+            insert(cur, table, record)
+    ym = today // 100  # 沿用 erp_receive：西元 YYYYMM，只動當月。
+    expected = []
+    for r in rows:
+        for ware, sign in [(r.get('ware_out', SOURCE_WARE), -1), (TARGET_WARE, 1)]:
+            expected.append((r['part'], ware, _move_ware(cur, r, ware, sign, ym, params)))
+        if not params['cost_by_ware']:
+            # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動，只同步月成本檔。
+            sync_company_avg(cur, ym, products[r['part']], r['part'])
+        cur.execute('UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s', (today, today, r['part']))
+    _write_change_log(cur, number, actor, client_ip)
+    _verify_bill(cur, number, rows, expected)
     return dict(move_no=number, move_date=today, sum_qty=sum(r['transfer'] for r in rows),
-                lines_json=json.dumps([dict(part=r['part'], qty=r['transfer'], cost=r['cost'], ware_out=r.get('ware_out', '001')) for r in rows], ensure_ascii=False))
+                lines_json=json.dumps([dict(part=r['part'], qty=r['transfer'], cost=r['cost'], ware_out=r.get('ware_out', SOURCE_WARE)) for r in rows], ensure_ascii=False))
 
 
 _PREVIEWS: dict[str, tuple[float, dict]] = {}

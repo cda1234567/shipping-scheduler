@@ -1,0 +1,2436 @@
+{
+ "company_cost": {
+  "result": {
+   "move_no": "RM-20261109001",
+   "move_date": 20261109,
+   "sum_qty": 1703,
+   "lines_json": "[{\"part\": \"P\", \"qty\": 1500, \"cost\": 21.0, \"ware_out\": \"001\"}, {\"part\": \"Q-TAB\", \"qty\": 80, \"cost\": 0.0, \"ware_out\": \"002\"}, {\"part\": \"R\", \"qty\": 123, \"cost\": 0.5, \"ware_out\": \"001\"}]"
+  },
+  "trace": [
+   [
+    "one",
+    "SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s",
+    [
+     "P"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s",
+    [
+     "Q-TAB"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s",
+    [
+     "R"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "stkMoveMain",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "MoveDate": 20261109,
+     "Maker": "Andy",
+     "Permitter": "",
+     "SumQty": 1703,
+     "Remark": "",
+     "MergeOutState": 0,
+     "MakerID": "017",
+     "PermitterID": "",
+     "DataVer": 1,
+     "UDef1": "",
+     "UDef2": "",
+     "HasCheck": true,
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0,
+     "UserDef1": "",
+     "UserDef2": ""
+    }
+   ],
+   [
+    "insert",
+    "stkMoveSub",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "RowNo": 1,
+     "SerNo": 1,
+     "MoveDate": 20261109,
+     "Unit": "",
+     "Cost": 21.0,
+     "HaveBatch": false,
+     "ChangeSerno": 0
+    }
+   ],
+   [
+    "insert",
+    "stkMoveSub",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "RowNo": 2,
+     "SerNo": 2,
+     "MoveDate": 20261109,
+     "Unit": "",
+     "Cost": 0.0,
+     "HaveBatch": false,
+     "ChangeSerno": 0
+    }
+   ],
+   [
+    "insert",
+    "stkMoveSub",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "RowNo": 3,
+     "SerNo": 3,
+     "MoveDate": 20261109,
+     "Unit": "",
+     "Cost": 0.5,
+     "HaveBatch": false,
+     "ChangeSerno": 0
+    }
+   ],
+   [
+    "insert",
+    "comProdRec",
+    {
+     "Flag": 400,
+     "BillNO": "RM-20261109001",
+     "RowNO": 1,
+     "SerNO": 1,
+     "BillDate": 20261109,
+     "ProdID": "P",
+     "ProdName": "面板",
+     "CostAvg": 21.0,
+     "Quantity": 1500,
+     "QuanComb": 0,
+     "MLPrice": 21.0,
+     "MLAmount": 31500.0,
+     "AdjustStyle": 0,
+     "WareID": "015",
+     "WareOut": "001",
+     "MLDist": 0,
+     "QtyRemain": 1,
+     "TranType": 0,
+     "FromNO": "",
+     "FromRow": 0,
+     "ParentRowNO": 0,
+     "TaxRate": 0,
+     "TaxAmt": 0,
+     "HaveBatch": false,
+     "NeedUpdate": true,
+     "CostForAcc": 0,
+     "Weight": 0,
+     "CostAvgOut": 21.0,
+     "HasCheck": true,
+     "Price": 0,
+     "DisCount": 0,
+     "Amount": 0,
+     "ItemRemark": "",
+     "SUnitID": "",
+     "SPrice": 0,
+     "SQuantity": 1,
+     "UnitRelation": 1,
+     "EQuantity": 1500,
+     "EUnitID": "",
+     "EUnitRelation": 0,
+     "MLTaxAmt": 0,
+     "StdCost": 0,
+     "YearCompressType": 0,
+     "IsOdd": true,
+     "BoxID": "",
+     "BoxQty": 0,
+     "HasBox": false,
+     "HasCharacter": false,
+     "HasPic": false,
+     "MatchNO": "",
+     "ConfigNO": "",
+     "Detail": "",
+     "CurVersion": "",
+     "MainConfigNo": "",
+     "HasSerial": false,
+     "Udef1": "",
+     "Udef2": "",
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0
+    }
+   ],
+   [
+    "insert",
+    "comProdRec",
+    {
+     "Flag": 400,
+     "BillNO": "RM-20261109001",
+     "RowNO": 2,
+     "SerNO": 2,
+     "BillDate": 20261109,
+     "ProdID": "Q-TAB",
+     "ProdName": "客供",
+     "CostAvg": 0.0,
+     "Quantity": 80,
+     "QuanComb": 0,
+     "MLPrice": 0.0,
+     "MLAmount": 0.0,
+     "AdjustStyle": 0,
+     "WareID": "015",
+     "WareOut": "002",
+     "MLDist": 0,
+     "QtyRemain": 1,
+     "TranType": 0,
+     "FromNO": "",
+     "FromRow": 0,
+     "ParentRowNO": 0,
+     "TaxRate": 0,
+     "TaxAmt": 0,
+     "HaveBatch": false,
+     "NeedUpdate": true,
+     "CostForAcc": 0,
+     "Weight": 0,
+     "CostAvgOut": 0.0,
+     "HasCheck": true,
+     "Price": 0,
+     "DisCount": 0,
+     "Amount": 0,
+     "ItemRemark": "",
+     "SUnitID": "",
+     "SPrice": 0,
+     "SQuantity": 1,
+     "UnitRelation": 1,
+     "EQuantity": 80,
+     "EUnitID": "",
+     "EUnitRelation": 0,
+     "MLTaxAmt": 0,
+     "StdCost": 0,
+     "YearCompressType": 0,
+     "IsOdd": true,
+     "BoxID": "",
+     "BoxQty": 0,
+     "HasBox": false,
+     "HasCharacter": false,
+     "HasPic": false,
+     "MatchNO": "",
+     "ConfigNO": "",
+     "Detail": "",
+     "CurVersion": "",
+     "MainConfigNo": "",
+     "HasSerial": false,
+     "Udef1": "",
+     "Udef2": "",
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0
+    }
+   ],
+   [
+    "insert",
+    "comProdRec",
+    {
+     "Flag": 400,
+     "BillNO": "RM-20261109001",
+     "RowNO": 3,
+     "SerNO": 3,
+     "BillDate": 20261109,
+     "ProdID": "R",
+     "ProdName": "電阻",
+     "CostAvg": 0.5,
+     "Quantity": 123,
+     "QuanComb": 0,
+     "MLPrice": 0.5,
+     "MLAmount": 62.0,
+     "AdjustStyle": 0,
+     "WareID": "015",
+     "WareOut": "001",
+     "MLDist": 0,
+     "QtyRemain": 1,
+     "TranType": 0,
+     "FromNO": "",
+     "FromRow": 0,
+     "ParentRowNO": 0,
+     "TaxRate": 0,
+     "TaxAmt": 0,
+     "HaveBatch": false,
+     "NeedUpdate": true,
+     "CostForAcc": 0,
+     "Weight": 0,
+     "CostAvgOut": 0.5,
+     "HasCheck": true,
+     "Price": 0,
+     "DisCount": 0,
+     "Amount": 0,
+     "ItemRemark": "",
+     "SUnitID": "",
+     "SPrice": 0,
+     "SQuantity": 1,
+     "UnitRelation": 1,
+     "EQuantity": 123,
+     "EUnitID": "",
+     "EUnitRelation": 0,
+     "MLTaxAmt": 0,
+     "StdCost": 0,
+     "YearCompressType": 0,
+     "IsOdd": true,
+     "BoxID": "",
+     "BoxQty": 0,
+     "HasBox": false,
+     "HasCharacter": false,
+     "HasPic": false,
+     "MatchNO": "",
+     "ConfigNO": "",
+     "Detail": "",
+     "CurVersion": "",
+     "MainConfigNo": "",
+     "HasSerial": false,
+     "Udef1": "",
+     "Udef2": "",
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 500.0,
+     "BCQty": 500.0
+    },
+    {
+     "ProdID": "P",
+     "WareID": "001"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     500.0,
+     500.0,
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "update",
+    "StkYearMonthQty",
+    {
+     "Quantity": 500.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "001"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE StkYearMonthQty",
+    [
+     500.0,
+     202611,
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 2500.0,
+     "BCQty": 2500.0
+    },
+    {
+     "ProdID": "P",
+     "WareID": "015"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     2500.0,
+     2500.0,
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "015",
+     "Quantity": 1500.0
+    }
+   ],
+   [
+    "execute",
+    "SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s",
+    [
+     "P"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "P",
+     "",
+     ""
+    ]
+   ],
+   [
+    "update",
+    "stkYearMonthAvg",
+    {
+     "AtLastQuan": 3000.0,
+     "MonthCost": 21.0,
+     "AtLastCost": 63000.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "",
+     "BatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE stkYearMonthAvg",
+    [
+     3000.0,
+     21.0,
+     63000.0,
+     202611,
+     "P",
+     "",
+     ""
+    ]
+   ],
+   [
+    "execute",
+    "UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s",
+    [
+     20261109,
+     20261109,
+     "P"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 0.0,
+     "BCQty": 0.0
+    },
+    {
+     "ProdID": "Q-TAB",
+     "WareID": "002"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     0.0,
+     0.0,
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "update",
+    "StkYearMonthQty",
+    {
+     "Quantity": 0.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "002"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE StkYearMonthQty",
+    [
+     0.0,
+     202611,
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "comWareAmount",
+    {
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 0,
+     "Quantity": 80.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 80.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "Quantity": 80.0
+    }
+   ],
+   [
+    "execute",
+    "SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s",
+    [
+     "Q-TAB"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "",
+     ""
+    ]
+   ],
+   [
+    "insert",
+    "stkYearMonthAvg",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 80.0,
+     "MonthCost": 0.0,
+     "OnlyCost": false,
+     "AtLastCost": 0.0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s",
+    [
+     20261109,
+     20261109,
+     "Q-TAB"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "001"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 377.0,
+     "BCQty": 377.0
+    },
+    {
+     "ProdID": "R",
+     "WareID": "001"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     377.0,
+     377.0,
+     "R",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "R",
+     "001"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "001",
+     "Quantity": -123.0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "comWareAmount",
+    {
+     "ProdID": "R",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 0,
+     "Quantity": 123.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 123.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "R",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "015",
+     "Quantity": 123.0
+    }
+   ],
+   [
+    "execute",
+    "SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s",
+    [
+     "R"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "R",
+     "",
+     ""
+    ]
+   ],
+   [
+    "insert",
+    "stkYearMonthAvg",
+    {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 500.0,
+     "MonthCost": 0.5,
+     "OnlyCost": false,
+     "AtLastCost": 250.0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s",
+    [
+     20261109,
+     20261109,
+     "R"
+    ]
+   ],
+   [
+    "insert",
+    "comChangeLog",
+    {
+     "ProgID": "ChiStock.Move",
+     "ChangeTime": 46335.4375,
+     "IPAddr": "10.0.0.5",
+     "UserName": "017",
+     "PKValue": "RM-20261109001",
+     "Action": 1,
+     "Datas": null,
+     "ComputerName": "HOST",
+     "WinUser": "web",
+     "Flag": 0,
+     "OldValue": "",
+     "WinLang": 1,
+     "IsChiDataSet": false,
+     "ActionName": ""
+    }
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM stkMoveMain WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM stkMoveSub WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM comProdRec WHERE Flag=400 AND BillNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT SumQty FROM stkMoveMain WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "R",
+     "015"
+    ]
+   ]
+  ],
+  "state": {
+   "stocks": {
+    "P|001": {
+     "Quantity": 500.0,
+     "BCQty": 500.0,
+     "Cost": 21,
+     "TotalCost": 42000
+    },
+    "P|015": {
+     "Quantity": 2500.0,
+     "BCQty": 2500.0,
+     "Cost": 0,
+     "TotalCost": 0
+    },
+    "Q-TAB|002": {
+     "Quantity": 0.0,
+     "BCQty": 0.0,
+     "Cost": 0,
+     "TotalCost": 0
+    },
+    "Q-TAB|015": {
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 0,
+     "Quantity": 80.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 80.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    },
+    "R|001": {
+     "Quantity": 377.0,
+     "BCQty": 377.0,
+     "Cost": 0.5,
+     "TotalCost": 250.0
+    },
+    "R|015": {
+     "ProdID": "R",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 0,
+     "Quantity": 123.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 123.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    }
+   },
+   "rolls": {
+    "202611|P|001": {
+     "Quantity": 500.0
+    },
+    "202611|P|015": {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "015",
+     "Quantity": 1500.0
+    },
+    "202611|Q-TAB|002": {
+     "Quantity": 0.0
+    },
+    "202611|Q-TAB|015": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "Quantity": 80.0
+    },
+    "202611|R|001": {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "001",
+     "Quantity": -123.0
+    },
+    "202611|R|015": {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "015",
+     "Quantity": 123.0
+    }
+   },
+   "avgs": {
+    "202610|P|": {
+     "AtLastQuan": 999,
+     "MonthCost": 9,
+     "AtLastCost": 9
+    },
+    "202611|P|": {
+     "AtLastQuan": 3000.0,
+     "MonthCost": 21.0,
+     "AtLastCost": 63000.0
+    },
+    "202611|Q-TAB|": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 80.0,
+     "MonthCost": 0.0,
+     "OnlyCost": false,
+     "AtLastCost": 0.0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    },
+    "202611|R|": {
+     "YearMonth": 202611,
+     "ProdID": "R",
+     "WareID": "",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 500.0,
+     "MonthCost": 0.5,
+     "OnlyCost": false,
+     "AtLastCost": 250.0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   },
+   "products": {
+    "P": {
+     "ProdID": "P",
+     "ProdName": "面板",
+     "CAvgCost": 21,
+     "CTotalCost": 63000,
+     "LatestIndate": 20261109,
+     "LatestOutDate": 20261109
+    },
+    "Q-TAB": {
+     "ProdID": "Q-TAB",
+     "ProdName": "客供",
+     "CAvgCost": 0,
+     "CTotalCost": 0,
+     "LatestIndate": 20261109,
+     "LatestOutDate": 20261109
+    },
+    "R": {
+     "ProdID": "R",
+     "ProdName": "電阻",
+     "CAvgCost": 0.5,
+     "CTotalCost": 250,
+     "LatestIndate": 20261109,
+     "LatestOutDate": 20261109
+    }
+   }
+  }
+ },
+ "ware_cost": {
+  "result": {
+   "move_no": "RM-20261109001",
+   "move_date": 20261109,
+   "sum_qty": 740,
+   "lines_json": "[{\"part\": \"P\", \"qty\": 700, \"cost\": 20.5, \"ware_out\": \"001\"}, {\"part\": \"Q-TAB\", \"qty\": 40, \"cost\": 3.0, \"ware_out\": \"002\"}]"
+  },
+  "trace": [
+   [
+    "one",
+    "SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s",
+    [
+     "P"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s",
+    [
+     "Q-TAB"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "stkMoveMain",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "MoveDate": 20261109,
+     "Maker": "Andy",
+     "Permitter": "",
+     "SumQty": 740,
+     "Remark": "",
+     "MergeOutState": 0,
+     "MakerID": "017",
+     "PermitterID": "",
+     "DataVer": 1,
+     "UDef1": "",
+     "UDef2": "",
+     "HasCheck": true,
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0,
+     "UserDef1": "",
+     "UserDef2": ""
+    }
+   ],
+   [
+    "insert",
+    "stkMoveSub",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "RowNo": 1,
+     "SerNo": 1,
+     "MoveDate": 20261109,
+     "Unit": "",
+     "Cost": 20.5,
+     "HaveBatch": false,
+     "ChangeSerno": 0
+    }
+   ],
+   [
+    "insert",
+    "stkMoveSub",
+    {
+     "Flag": 400,
+     "MoveNO": "RM-20261109001",
+     "RowNo": 2,
+     "SerNo": 2,
+     "MoveDate": 20261109,
+     "Unit": "",
+     "Cost": 3.0,
+     "HaveBatch": false,
+     "ChangeSerno": 0
+    }
+   ],
+   [
+    "insert",
+    "comProdRec",
+    {
+     "Flag": 400,
+     "BillNO": "RM-20261109001",
+     "RowNO": 1,
+     "SerNO": 1,
+     "BillDate": 20261109,
+     "ProdID": "P",
+     "ProdName": "面板",
+     "CostAvg": 21.688,
+     "Quantity": 700,
+     "QuanComb": 0,
+     "MLPrice": 20.5,
+     "MLAmount": 14350.0,
+     "AdjustStyle": 0,
+     "WareID": "015",
+     "WareOut": "001",
+     "MLDist": 0,
+     "QtyRemain": 1,
+     "TranType": 0,
+     "FromNO": "",
+     "FromRow": 0,
+     "ParentRowNO": 0,
+     "TaxRate": 0,
+     "TaxAmt": 0,
+     "HaveBatch": false,
+     "NeedUpdate": true,
+     "CostForAcc": 0,
+     "Weight": 0,
+     "CostAvgOut": 20.5,
+     "HasCheck": true,
+     "Price": 0,
+     "DisCount": 0,
+     "Amount": 0,
+     "ItemRemark": "",
+     "SUnitID": "",
+     "SPrice": 0,
+     "SQuantity": 1,
+     "UnitRelation": 1,
+     "EQuantity": 700,
+     "EUnitID": "",
+     "EUnitRelation": 0,
+     "MLTaxAmt": 0,
+     "StdCost": 0,
+     "YearCompressType": 0,
+     "IsOdd": true,
+     "BoxID": "",
+     "BoxQty": 0,
+     "HasBox": false,
+     "HasCharacter": false,
+     "HasPic": false,
+     "MatchNO": "",
+     "ConfigNO": "",
+     "Detail": "",
+     "CurVersion": "",
+     "MainConfigNo": "",
+     "HasSerial": false,
+     "Udef1": "",
+     "Udef2": "",
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0
+    }
+   ],
+   [
+    "insert",
+    "comProdRec",
+    {
+     "Flag": 400,
+     "BillNO": "RM-20261109001",
+     "RowNO": 2,
+     "SerNO": 2,
+     "BillDate": 20261109,
+     "ProdID": "Q-TAB",
+     "ProdName": "客供",
+     "CostAvg": 3.0,
+     "Quantity": 40,
+     "QuanComb": 0,
+     "MLPrice": 3.0,
+     "MLAmount": 120.0,
+     "AdjustStyle": 0,
+     "WareID": "015",
+     "WareOut": "002",
+     "MLDist": 0,
+     "QtyRemain": 1,
+     "TranType": 0,
+     "FromNO": "",
+     "FromRow": 0,
+     "ParentRowNO": 0,
+     "TaxRate": 0,
+     "TaxAmt": 0,
+     "HaveBatch": false,
+     "NeedUpdate": true,
+     "CostForAcc": 0,
+     "Weight": 0,
+     "CostAvgOut": 3.0,
+     "HasCheck": true,
+     "Price": 0,
+     "DisCount": 0,
+     "Amount": 0,
+     "ItemRemark": "",
+     "SUnitID": "",
+     "SPrice": 0,
+     "SQuantity": 1,
+     "UnitRelation": 1,
+     "EQuantity": 40,
+     "EUnitID": "",
+     "EUnitRelation": 0,
+     "MLTaxAmt": 0,
+     "StdCost": 0,
+     "YearCompressType": 0,
+     "IsOdd": true,
+     "BoxID": "",
+     "BoxQty": 0,
+     "HasBox": false,
+     "HasCharacter": false,
+     "HasPic": false,
+     "MatchNO": "",
+     "ConfigNO": "",
+     "Detail": "",
+     "CurVersion": "",
+     "MainConfigNo": "",
+     "HasSerial": false,
+     "Udef1": "",
+     "Udef2": "",
+     "Udef3": "",
+     "Udef4": "",
+     "Udef5": "",
+     "Udef6": 0,
+     "Udef7": 0,
+     "Udef8": 0,
+     "Udef9": 0,
+     "Udef10": 0,
+     "Udef11": 0,
+     "Udef12": "",
+     "Udef13": "",
+     "Udef14": "",
+     "Udef15": "",
+     "Udef16": "",
+     "Udef17": "",
+     "Udef18": "",
+     "Udef19": "",
+     "Udef20": "",
+     "Udef21": "",
+     "Udef22": "",
+     "Udef23": "",
+     "Udef24": "",
+     "Udef25": "",
+     "Udef26": "",
+     "Udef27": 0,
+     "Udef28": 0,
+     "Udef29": 0,
+     "Udef30": 0,
+     "Udef31": 0,
+     "Udef32": 0,
+     "Udef33": 0,
+     "Udef34": 0,
+     "Udef35": 0,
+     "Udef36": 0,
+     "Udef37": 0,
+     "Udef38": 0,
+     "Udef39": 0,
+     "Udef40": 0,
+     "Udef41": 0,
+     "Udef42": 0,
+     "Udef43": 0,
+     "Udef44": 0,
+     "Udef45": 0,
+     "Udef46": 0,
+     "Udef47": 0,
+     "Udef48": 0,
+     "Udef49": 0,
+     "Udef50": 0,
+     "Udef51": 0,
+     "Udef52": 0,
+     "Udef53": 0,
+     "Udef54": 0,
+     "Udef55": 0,
+     "Udef56": 0,
+     "Udef57": 0,
+     "Udef58": 0,
+     "Udef59": 0,
+     "Udef60": 0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 1300.0,
+     "BCQty": 1300.0,
+     "TotalCost": 26650.0
+    },
+    {
+     "ProdID": "P",
+     "WareID": "001"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     1300.0,
+     1300.0,
+     26650.0,
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "001",
+     "Quantity": -700.0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "P",
+     "001",
+     ""
+    ]
+   ],
+   [
+    "update",
+    "stkYearMonthAvg",
+    {
+     "AtLastQuan": 1300.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "001",
+     "BatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE stkYearMonthAvg",
+    [
+     1300.0,
+     202611,
+     "P",
+     "001",
+     ""
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 800.0,
+     "BCQty": 800.0,
+     "TotalCost": 17350.0,
+     "Cost": 21.688
+    },
+    {
+     "ProdID": "P",
+     "WareID": "015"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     800.0,
+     800.0,
+     17350.0,
+     21.688,
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "update",
+    "StkYearMonthQty",
+    {
+     "Quantity": 800.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "015"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE StkYearMonthQty",
+    [
+     800.0,
+     202611,
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "P",
+     "015",
+     ""
+    ]
+   ],
+   [
+    "update",
+    "stkYearMonthAvg",
+    {
+     "AtLastQuan": 800.0
+    },
+    {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "015",
+     "BatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE stkYearMonthAvg",
+    [
+     800.0,
+     202611,
+     "P",
+     "015",
+     ""
+    ]
+   ],
+   [
+    "execute",
+    "UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s",
+    [
+     20261109,
+     20261109,
+     "P"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "update",
+    "comWareAmount",
+    {
+     "Quantity": 60.0,
+     "BCQty": 60.0,
+     "TotalCost": 180.0
+    },
+    {
+     "ProdID": "Q-TAB",
+     "WareID": "002"
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comWareAmount",
+    [
+     60.0,
+     60.0,
+     180.0,
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "002",
+     "Quantity": -40.0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "002",
+     ""
+    ]
+   ],
+   [
+    "insert",
+    "stkYearMonthAvg",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "002",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": -40.0,
+     "MonthCost": 0,
+     "OnlyCost": false,
+     "AtLastCost": 0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "comWareAmount",
+    {
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 3.0,
+     "Quantity": 40.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 120.0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 40.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM StkYearMonthQty WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "015"
+    ]
+   ],
+   [
+    "insert",
+    "StkYearMonthQty",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "Quantity": 40.0
+    }
+   ],
+   [
+    "one",
+    "SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s",
+    [
+     202611,
+     "Q-TAB",
+     "015",
+     ""
+    ]
+   ],
+   [
+    "insert",
+    "stkYearMonthAvg",
+    {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 40.0,
+     "MonthCost": 0,
+     "OnlyCost": false,
+     "AtLastCost": 0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   ],
+   [
+    "execute",
+    "UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s",
+    [
+     20261109,
+     20261109,
+     "Q-TAB"
+    ]
+   ],
+   [
+    "insert",
+    "comChangeLog",
+    {
+     "ProgID": "ChiStock.Move",
+     "ChangeTime": 46335.4375,
+     "IPAddr": "10.0.0.5",
+     "UserName": "017",
+     "PKValue": "RM-20261109001",
+     "Action": 1,
+     "Datas": null,
+     "ComputerName": "HOST",
+     "WinUser": "web",
+     "Flag": 0,
+     "OldValue": "",
+     "WinLang": 1,
+     "IsChiDataSet": false,
+     "ActionName": ""
+    }
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM stkMoveMain WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM stkMoveSub WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT COUNT(*) FROM comProdRec WHERE Flag=400 AND BillNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT SumQty FROM stkMoveMain WHERE Flag=400 AND MoveNO=%s",
+    [
+     "RM-20261109001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "001"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "P",
+     "015"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "002"
+    ]
+   ],
+   [
+    "execute",
+    "SELECT Quantity FROM comWareAmount WHERE ProdID=%s AND WareID=%s",
+    [
+     "Q-TAB",
+     "015"
+    ]
+   ]
+  ],
+  "state": {
+   "stocks": {
+    "P|001": {
+     "Quantity": 1300.0,
+     "BCQty": 1300.0,
+     "Cost": 20.5,
+     "TotalCost": 26650.0
+    },
+    "P|015": {
+     "Quantity": 800.0,
+     "BCQty": 800.0,
+     "Cost": 21.688,
+     "TotalCost": 17350.0
+    },
+    "Q-TAB|002": {
+     "Quantity": 60.0,
+     "BCQty": 60.0,
+     "Cost": 3,
+     "TotalCost": 180.0
+    },
+    "Q-TAB|015": {
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "SafeStock": 0,
+     "BQuantity": 0,
+     "BLendQuan": 0,
+     "BBorrowQuan": 0,
+     "BCost": 0,
+     "Cost": 3.0,
+     "Quantity": 40.0,
+     "LendQuan": 0,
+     "BorrowQuan": 0,
+     "Source": false,
+     "TotalCost": 120.0,
+     "LatestInDate": 0,
+     "LatestOutDate": 0,
+     "LatestPurchDate": 0,
+     "LatestSalesDate": 0,
+     "BCQty": 40.0,
+     "BTotalCost": 0,
+     "BLabour": 0,
+     "BMaterial": 0,
+     "BManufacture": 0,
+     "BMachining": 0,
+     "CLabour": 0,
+     "CMaterial": 0,
+     "CManufacture": 0,
+     "CMachining": 0,
+     "BCInQty": 0,
+     "BCOutQty": 0,
+     "BCBorrowQty": 0,
+     "BCLendQty": 0,
+     "Remark": "",
+     "StorageID": "",
+     "POSSaleQty": 0,
+     "UpdateKey": 0
+    }
+   },
+   "rolls": {
+    "202611|P|001": {
+     "YearMonth": 202611,
+     "ProdID": "P",
+     "WareID": "001",
+     "Quantity": -700.0
+    },
+    "202611|P|015": {
+     "Quantity": 800.0
+    },
+    "202611|Q-TAB|002": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "002",
+     "Quantity": -40.0
+    },
+    "202611|Q-TAB|015": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "Quantity": 40.0
+    }
+   },
+   "avgs": {
+    "202611|P|001": {
+     "AtLastQuan": 1300.0
+    },
+    "202611|P|015": {
+     "AtLastQuan": 800.0
+    },
+    "202611|Q-TAB|002": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "002",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": -40.0,
+     "MonthCost": 0,
+     "OnlyCost": false,
+     "AtLastCost": 0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    },
+    "202611|Q-TAB|015": {
+     "YearMonth": 202611,
+     "ProdID": "Q-TAB",
+     "WareID": "015",
+     "BatchID": "",
+     "InOutCost": 0,
+     "InOutQuan": 0,
+     "AtLastQuan": 40.0,
+     "MonthCost": 0,
+     "OnlyCost": false,
+     "AtLastCost": 0,
+     "InQuan": 0,
+     "InCost": 0,
+     "Labour": 0,
+     "Material": 0,
+     "Manufacture": 0,
+     "Machining": 0,
+     "clLabour": 0,
+     "clMaterial": 0,
+     "clManufacture": 0,
+     "clMachining": 0,
+     "sBatchID": ""
+    }
+   },
+   "products": {
+    "P": {
+     "ProdID": "P",
+     "ProdName": "面板",
+     "CAvgCost": 21,
+     "CTotalCost": 63000,
+     "LatestIndate": 20261109,
+     "LatestOutDate": 20261109
+    },
+    "Q-TAB": {
+     "ProdID": "Q-TAB",
+     "ProdName": "客供",
+     "CAvgCost": 3,
+     "CTotalCost": 300,
+     "LatestIndate": 20261109,
+     "LatestOutDate": 20261109
+    }
+   }
+  }
+ }
+}

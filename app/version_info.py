@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.09.3"
+APP_VERSION = "v2026.11.09.4"
 APP_RELEASED_AT = "2026-11-09"
-APP_HEADLINE = "修復一鍵調撥確認寫入 HTTP 500，並整理調撥預覽與分頁"
+APP_HEADLINE = "重寫一鍵調撥畫面與操作流程"
 APP_CHANGELOG = [
+    {"title": "v2026.11.09.4：重寫一鍵調撥畫面與操作流程", "items": ["一鍵調撥改成獨立分頁（倉庫 → 一鍵調撥），點進去就列出每個批次，不再藏在缺料採購的彈窗；缺料採購保留「去一鍵調撥」捷徑。", "每個批次一張卡片，標題寫「11-1 · 一張調撥單」，旁邊直接寫撥幾項、撥多少、短少多少或「已開 RM-…」。", "表頭：料號／品名／從哪倉／要撥／公司倉現有／本次撥／短少／成本；倉別寫成「001 一般倉」「002 客供倉」。", "勾好批次按「開 N 張調撥單」，確認後逐張寫入並列出單號；寫完自動重新整理，調撥紀錄收在下方。", "後端整理 execute_bill 結構與請求模型，寫入正航的欄位與加減不變（以重構前錄下的完整寫入序列逐筆比對）。"]},
     {"title": "v2026.11.09.3：修復一鍵調撥確認寫入 500，預覽文案與分頁整理", "items": ["修復 ErpTransferCreateRequest 缺少 List 匯入導致確認寫入 HTTP 500。", "調撥預覽表頭改短：從哪倉／要撥／公司倉現有／本次撥／短少／成本；每個批次標題標明「一張調撥單」。", "頂部分頁收成四組（排程／採購／倉庫／資料），倉庫組可直接開一鍵調撥。", "公司3一鍵調撥開關維持開啟，行為不變。"]},
     {"title": "v2026.11.09.2：一鍵調撥補寫 comChangeLog，月成本檔只寫當月", "items": ["對齊正航手開調撥：寫入 comChangeLog（ProgID=ChiStock.Move、Action=1、PKValue=調撥單號）；UserName 與單頭 MakerID 相同（ERP_PO_MAKER_ID）。", "CostByWare=0 的 stkYearMonthAvg 改為只同步當月（WareID 空白）；不再新建或改寫上月列。", "CostByWare=1、BCQty、不寫 CAvgCost/CTotalCost、公司3調撥開關仍關閉，行為不變。"]},
     {"title": "v2026.11.09.1：一鍵調撥補寫 BCQty 與 stkYearMonthAvg", "items": ["依公司3手開調撥單 RM-20261105001 / RM-20261106001 對照：調撥更新或新增 comWareAmount 時，BCQty 一律設為與 Quantity 相同（來源倉與 015 皆是）。", "新增寫入 stkYearMonthAvg（BatchID 空白）：依倉庫成本（CostByWare=1，公司13）時以倉庫為鍵，只增減 AtLastQuan；依公司成本（CostByWare=0，公司3）時 WareID 空白，當月與上月的 AtLastQuan 設為該料號全倉庫存合計，MonthCost / AtLastCost 同步 comProduct 的 CAvgCost / CTotalCost。", "comProduct 的 CAvgCost / CTotalCost 微調的確切公式尚待確認正航算法，本版仍不更動，只更新 LatestIndate / LatestOutDate。", "公司3仍未開放一鍵調撥，行為不變。"]},

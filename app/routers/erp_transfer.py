@@ -1,3 +1,6 @@
+"""一鍵調撥 API（倉庫 → 一鍵調撥）：預覽只讀；確認寫入每個批次各開一張調撥單。"""
+from __future__ import annotations
+
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 
@@ -11,6 +14,7 @@ router = APIRouter(prefix='/shortage-po/transfer')
 
 @router.get('/config')
 async def config():
+    """寫入公司與是否可用；公司由伺服器環境決定，瀏覽器不能指定。"""
     return erp_transfer.get_config()
 
 
@@ -24,8 +28,9 @@ async def preview():
 
 @router.post('/create')
 async def create(req: ErpTransferCreateRequest, request: Request):
+    client_ip = request.client.host if request.client else ''
     try:
-        return await run_in_threadpool(erp_transfer.create, req.dict(), 'web', request.client.host if request.client else '')
+        return await run_in_threadpool(erp_transfer.create, req.dict(), 'web', client_ip)
     except Exception as exc:
         raise _http_error(exc) from None
 

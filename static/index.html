@@ -494,11 +494,24 @@
     </div>
 
     <div id="tab-transfer-tab" class="tab-content">
-      <div class="erp-po-shell">
-        <div class="erp-po-actions" style="gap:12px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-primary" id="btn-warehouse-transfer" type="button">開啟一鍵調撥</button>
-          <span class="erp-po-hint">一個批次開一張調撥單；一般料從一般倉撥到庚霖倉，客供料從客供倉撥到庚霖倉。刪單請到正航刪。</span>
+      <div class="erp-po-shell transfer-shell">
+        <div class="transfer-top">
+          <h2>一鍵調撥</h2>
+          <span id="transfer-target" class="erp-po-badge">讀取設定中...</span>
+          <span class="spacer"></span>
+          <button class="btn btn-sm" id="btn-transfer-refresh" type="button">重新整理</button>
         </div>
+        <p id="transfer-intro" class="transfer-intro"></p>
+        <div id="transfer-batches"></div>
+        <div class="transfer-actions">
+          <button class="btn btn-primary" id="btn-transfer-submit" type="button" disabled>請勾選要開的批次</button>
+        </div>
+        <div id="transfer-result" class="transfer-result" role="status" hidden></div>
+        <details class="transfer-history-box">
+          <summary>調撥紀錄</summary>
+          <p class="erp-po-hint">開錯了請到正航刪單，再按「重新檢查」；網站不會反向寫入正航。</p>
+          <div id="transfer-history"></div>
+        </details>
       </div>
     </div>
 
@@ -510,7 +523,7 @@
             <select id="shortage-po-cutoff" title="這個批次（含）以前視為已在正航調撥到庚霖；之後的批次網站已扣 ST、正航還沒調撥的量算「待調撥」"></select>
           </label>
           <span class="erp-po-hint">（含）以前視為已調撥完成；之後批次已扣、正航還沒調撥的量 = 待調撥，缺 = 需求 + 待調撥 − ST</span>
-          <button type="button" id="btn-shortage-transfer">一鍵調撥</button>
+          <button type="button" class="btn btn-sm" id="btn-shortage-transfer">去一鍵調撥</button>
           <span id="shortage-po-cutoff-info" class="erp-po-hint"></span>
         </div>
         <div class="shortage-po-orders">
@@ -1131,6 +1144,7 @@ import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/st
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 import { initErpReceive, onErpReceiveTabActivated } from "/static/modules/erp_receive.js";
 import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
+import { initTransfer, onTransferTabActivated } from "/static/modules/erp_transfer.js";
 import { initPostprocessLinks } from "/static/modules/postprocess_links.js";
 import { initPartConversion, onPartConversionTabActivated } from "/static/modules/part_conversion.js";
 import { initPoPullin, onPoPullinTabActivated } from "/static/modules/po_pullin.js";
@@ -1162,6 +1176,7 @@ function activateTabButton(btn) {
   if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
   if (btn.dataset.tab === "erp-receive-tab") void onErpReceiveTabActivated();
   if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
+  if (btn.dataset.tab === "transfer-tab") void onTransferTabActivated();
   if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
   if (btn.dataset.tab === "po-pullin-tab") void onPoPullinTabActivated();
   if (btn.dataset.tab === "alerts-tab") refreshAlerts();
@@ -2259,6 +2274,7 @@ async function init() {
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
   try { await initErpReceive(); } catch (e) { console.warn("initErpReceive failed:", e); }
   try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
+  try { initTransfer(); } catch (e) { console.warn("initTransfer failed:", e); }
   try { initPostprocessLinks(); } catch (e) { console.warn("initPostprocessLinks failed:", e); }
   try { await initPartConversion(); } catch (e) { console.warn("initPartConversion failed:", e); }
   try { await initPoPullin(); } catch (e) { console.warn("initPoPullin failed:", e); }

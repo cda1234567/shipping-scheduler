@@ -515,9 +515,11 @@ class PostprocessSuggestRequest(BaseModel):
 
 
 class ErpTransferCreateRequest(BaseModel):
-    batches: List[str]
-    client_token: str
-    preview_token: str
+    """一鍵調撥確認寫入；內容檢查（空值、長度、預覽是否過期）由 erp_transfer.create 回中文 400。"""
+    batches: List[str] = Field(default_factory=list)  # 勾選的批次 key（如 "2026/11-1"），一個 key 開一張單
+    client_token: str = ""  # 每次預覽產生一個，重送保護用
+    preview_token: str = ""
 
 
-ErpTransferCreateRequest.update_forward_refs()
+# 本檔有 from __future__ import annotations；明確解析型別，避免 ForwardRef 在請求時才爆 500。
+ErpTransferCreateRequest.update_forward_refs(List=List)
