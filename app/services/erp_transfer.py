@@ -355,6 +355,16 @@ def _safe_log(rec: dict) -> int | None:
         return None
 
 
+def _bill_lines(batch: dict) -> list[tuple]:
+    """比對用：要撥哪些料、從哪倉、待撥／本次撥數量、成本。
+
+    庫存欄（stock_src、stock_target、short）與入庫平均會因同一請求前幾張已寫入而變，不列入比對；
+    實際庫存與成本由 _lock_rows 在鎖定後再檢查。
+    """
+    return [(r['part'], r.get('ware_out', SOURCE_WARE), float(r['pending']), float(r['transfer']), float(r.get('cost') or 0))
+            for r in batch['rows']]
+
+
 def _write(target: str, creds: dict, key: str, expected: dict, check_full: bool = False, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
     conn = ep._connect_write(creds)
     committed = False
@@ -367,7 +377,8 @@ def _write(target: str, creds: dict, key: str, expected: dict, check_full: bool 
             original = next((b for b in expected['batches'] if b['key'] == key), None)
             if batch and batch['already']:
                 raise ep.DuplicateSubmitError(f"此批次已調撥：{batch['already']['move_no']}")
-            if (not batch or not original or batch['rows'] != original['rows'] or current['date'] != expected['date']
+            # 第一張比對整份預覽；後續張只比對本批要撥的內容（前張寫入會改變庫存數字）。
+            if (not batch or not original or _bill_lines(batch) != _bill_lines(original) or current['date'] != expected['date']
                     or (check_full and digest(current) != digest(expected))):
                 raise ep.PoValidationError('資料已變動，請重新預覽')
             try:

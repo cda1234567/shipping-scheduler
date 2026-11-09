@@ -390,6 +390,60 @@ class TransferSubmitTests(unittest.TestCase):
             self.assertTrue(write.call_args_list[0].kwargs['check_full'])
             self.assertFalse(write.call_args_list[1].kwargs['check_full'])
 
+    def _shared_part_plans(self, after_stock=50):
+        """A、B 共用料號 P：預覽時公司3／寫入公司 001 各 150；A 撥 100 後兩邊都剩 after_stock、015 多 100。"""
+        info = {'warnings': [], 'batches': [dict(key='A', code='A', rows=[dict(part='P', pending=100, ware_out='001')]),
+                                           dict(key='B', code='B', rows=[dict(part='P', pending=50, ware_out='001')])]}
+        params = dict(cost_by_ware=False, digits=3, dot=True)
+
+        def run(src, out_qty, in_qty, prior):
+            def read(cur, sql, args):
+                if 'comProduct' in sql: return dict(ProdName='品名', CAvgCost=21)
+                return dict(Quantity=out_qty if args[-1] == '001' else in_qty, TotalCost=0)
+            with patch.object(et, 'source_stock', return_value={('P', '001'): src}), patch.object(st, 'batch_breakdown', return_value=copy.deepcopy(info)), patch.object(et.er, 'load_cost_params', return_value=params), patch.object(et, 'one', side_effect=read), patch.object(et.db, 'successful_erp_transfers', return_value=prior):
+                return et.plan(Mock(), 'CHIComp03', lock=True)
+        preview = json.loads(json.dumps(run(150, 150, 0, [])))
+        after = run(after_stock, after_stock, 100, [dict(batch_key='A', move_no='RM-20261109001')])
+        return preview, after
+
+    def test_second_bill_ignores_stock_columns_changed_by_first_bill(self):
+        import time
+        preview, after = self._shared_part_plans()
+        before_b, after_b = preview['batches'][1]['rows'][0], after['batches'][1]['rows'][0]
+        # 前張寫入後，B 的庫存欄確實不同（舊版整列比對會誤判）；要撥的內容不變。
+        self.assertNotEqual(before_b, after_b)
+        self.assertEqual((before_b['stock_target'], after_b['stock_target']), (150, 50))
+        self.assertEqual((before_b['transfer'], after_b['transfer'], after_b['cost']), (50, 50, before_b['cost']))
+        token = et.digest(preview)
+        conn = Mock()
+        bills = [dict(move_no='RM-20261109001', sum_qty=100), dict(move_no='RM-20261109002', sum_qty=50)]
+        with patch.dict(et._PREVIEWS, {token: (time.monotonic(), preview)}, clear=True), patch.object(et, 'resolve_target', return_value=('CHIComp03', {})), patch.object(et.db, 'successful_erp_transfers', return_value=[]), patch.object(et, '_safe_log', side_effect=[1, 2]), patch.object(ep, '_connect_write', return_value=conn), patch.object(ep, '_check_db_name'), patch.object(et, 'plan', side_effect=[copy.deepcopy(preview), after]), patch.object(et, 'execute_bill', side_effect=bills) as write:
+            result = et.create(dict(batches=['A', 'B'], client_token='token', preview_token=token))
+        self.assertEqual([(r['batch_key'], r['ok'], r['move_no']) for r in result['results']],
+                         [('A', True, 'RM-20261109001'), ('B', True, 'RM-20261109002')])
+        self.assertEqual(result['stopped'], [])
+        self.assertEqual(write.call_args_list[1].args[2]['rows'][0]['transfer'], 50)
+        self.assertEqual(conn.commit.call_count, 2)
+
+    def test_second_bill_still_blocked_when_transfer_part_ware_or_cost_change(self):
+        preview, _ = self._shared_part_plans()
+        changes = {'transfer': self._shared_part_plans(after_stock=40)[1]}
+        for field, value in (('part', 'Q'), ('ware_out', '002'), ('pending', 60), ('cost', 22)):
+            _, current = self._shared_part_plans()
+            current['batches'][1]['rows'][0][field] = value
+            changes[field] = current
+        _, current = self._shared_part_plans()
+        current['batches'][1]['rows'].append(dict(current['batches'][1]['rows'][0], part='Q'))
+        changes['extra_row'] = current
+        for field, current in changes.items():
+            with self.subTest(field=field):
+                conn = Mock()
+                with patch.object(ep, '_connect_write', return_value=conn), patch.object(ep, '_check_db_name'), patch.object(et, 'plan', return_value=current), patch.object(et, 'execute_bill') as write:
+                    with self.assertRaisesRegex(ep.PoValidationError, '資料已變動，請重新預覽'):
+                        et._write('CHIComp03', {}, 'B', preview, check_full=False)
+                    write.assert_not_called()
+                    conn.commit.assert_not_called()
+
     def test_claim_blocks_inflight_batch(self):
         import time
         expected = sample_plan()
