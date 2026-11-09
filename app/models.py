@@ -425,6 +425,7 @@ class ErpReceiveRequest(BaseModel):
     confirm: bool = False  # 超收時使用者確認後才帶 true
     client_token: str = ""  # 前端每次開啟預覽產生，防重複送出
     update_cost: Optional[bool] = None  # 是否更新平均成本；空 = 環境變數 ERP_RECEIVE_UPDATE_COST（預設 1）
+    exch_rate: Optional[float] = None  # 發票匯率（外幣採購單轉台幣進貨時手動輸入）；空 = 自動判斷
 
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
