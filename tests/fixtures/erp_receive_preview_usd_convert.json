@@ -1,0 +1,137 @@
+{
+ "with": {
+  "target": "CHIComp03",
+  "target_label": "公司3（正式）",
+  "is_test": false,
+  "is_production": true,
+  "update_cost": true,
+  "im_no": "IM-20261109005",
+  "qm_no": "QM-20261109005",
+  "rm_no": "RM-20261109004",
+  "today": 20261109,
+  "rm_date": 20261109,
+  "terms": {
+   "AccMonth": 202611,
+   "PrepayDay": 20261225,
+   "EncashDay": 20270124
+  },
+  "vendor": {
+   "id": "P0373",
+   "name": "廠商"
+  },
+  "currency": "NTD",
+  "warehouse": "001",
+  "po_currency": "USD",
+  "mode": "convert",
+  "exch_rate": 32.77,
+  "rate_source": "manual",
+  "rate_required": false,
+  "rate_hint": {
+   "po": 30.385,
+   "currency": 30.385
+  },
+  "tax_type": 0,
+  "tax_label": "應稅（外加 5%）",
+  "lines": [
+   {
+    "row_no": 1,
+    "po_no": "PO-20260612001",
+    "po_row": 1,
+    "prod_id": "IC-ASM3142",
+    "prod_name": "IC ASM3142",
+    "unit": "",
+    "qty": 3000.0,
+    "qty_remain": 3000.0,
+    "price": 216.282,
+    "src_price": 6.6,
+    "po_price": 6.6,
+    "tax_rate": 0.05,
+    "amount": 648846.0,
+    "tax": 32442.0,
+    "ml_price": 216.282,
+    "ml_amount": 648846.0
+   }
+  ],
+  "totals": {
+   "sum_qty": 3000.0,
+   "sum_amount": 648846.0,
+   "sum_tax": 32442.0,
+   "total": 681288.0,
+   "local_amount": 648846.0,
+   "local_tax": 32442.0,
+   "local_total": 681288.0
+  },
+  "needs_confirm": false,
+  "closed_pos": [
+   "PO-20260612001"
+  ]
+ },
+ "without": {
+  "target": "CHIComp03",
+  "target_label": "公司3（正式）",
+  "is_test": false,
+  "is_production": true,
+  "update_cost": true,
+  "im_no": "IM-20261109005",
+  "qm_no": "QM-20261109005",
+  "rm_no": "RM-20261109004",
+  "today": 20261109,
+  "rm_date": 20261109,
+  "terms": {
+   "AccMonth": 202611,
+   "PrepayDay": 20261225,
+   "EncashDay": 20270124
+  },
+  "vendor": {
+   "id": "P0373",
+   "name": "廠商"
+  },
+  "currency": "NTD",
+  "warehouse": "001",
+  "po_currency": "USD",
+  "mode": "convert",
+  "exch_rate": 0.0,
+  "rate_source": "missing",
+  "rate_required": true,
+  "rate_hint": {
+   "po": 30.385,
+   "currency": 30.385
+  },
+  "tax_type": 0,
+  "tax_label": "應稅（外加 5%）",
+  "lines": [
+   {
+    "row_no": 1,
+    "po_no": "PO-20260612001",
+    "po_row": 1,
+    "prod_id": "IC-ASM3142",
+    "prod_name": "IC ASM3142",
+    "unit": "",
+    "qty": 3000.0,
+    "qty_remain": 3000.0,
+    "price": 0.0,
+    "src_price": 6.6,
+    "po_price": 6.6,
+    "tax_rate": 0.05,
+    "amount": 0.0,
+    "tax": 0.0,
+    "ml_price": 0.0,
+    "ml_amount": 0.0
+   }
+  ],
+  "totals": {
+   "sum_qty": 3000.0,
+   "sum_amount": 0.0,
+   "sum_tax": 0.0,
+   "total": 0.0,
+   "local_amount": 0.0,
+   "local_tax": 0.0,
+   "local_total": 0.0
+  },
+  "needs_confirm": false,
+  "closed_pos": [
+   "PO-20260612001"
+  ]
+ },
+ "_note": "v2026.11.09.11 線上 /api/erp-receive/preview 回應（USD 採購單轉台幣，with=發票匯率 32.77、without=未填）；中文欄位已換成可讀文字，數字原樣"
+}

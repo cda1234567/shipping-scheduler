@@ -13,6 +13,7 @@ let _rePreviewPending = false;
 let _costTouched = false;
 let _rate = "";          // 預覽畫面輸入的發票匯率（外幣採購單）；空 = 尚未輸入，不能寫入
 let _rateVendor = null;  // 匯率是哪家廠商時輸入的；換廠商就不沿用
+let _lastShown = null;   // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
 const el = id => document.getElementById(id);
@@ -81,6 +82,36 @@ function currentRate() {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+// 匯率輸入框：change（離開欄位）或按 Enter 都重新預覽；預覽中再改會排隊，不會被吃掉
+function applyRate(value) {
+  const n = Number(String(value ?? "").trim());
+  if (!Number.isFinite(n) || n <= 0) { showToast("發票匯率必須大於 0", { tone: "error" }); return; }
+  const same = _rate === String(n) && _rateVendor === _picker.lockedGroup();
+  _rate = String(n);
+  _rateVendor = _picker.lockedGroup();
+  if (_busy) { if (!same) _rePreviewPending = true; return; }
+  if (same && _preview && Number(_preview.exch_rate) === n && !_preview.rate_required) return;  // Enter 後又 blur：不重複預覽
+  void handlePreview();
+}
+
+function bindRateInput() {
+  const input = el("erp-receive-rate");
+  if (!input) return;
+  input.addEventListener("input", () => {
+    // 匯率改了但還沒重新預覽：先鎖住確認鈕，免得照舊金額寫入
+    const btn = el("btn-erp-receive-create");
+    if (btn) { btn.disabled = true; btn.title = "匯率已修改，按 Enter 或點別處重新預覽"; }
+    const tip = el("erp-receive-rate-tip");
+    if (tip) tip.hidden = false;
+  });
+  input.addEventListener("change", event => applyRate(event.target.value));
+  input.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applyRate(event.target.value);
+  });
+}
+
 
 function currencyBlock(r) {
   const tax = Number(r.tax_type || 0) === 0 ? esc(r.tax_label || "應稅") : `<strong>${esc(r.tax_label || "")}</strong>`;
@@ -95,18 +126,21 @@ function rateInput(r) {
   if (!r.mode || r.mode === "local") return "";
   const h = r.rate_hint || {};
   const hint = [h.po ? `採購單 ${h.po}` : "", h.currency ? `正航幣別檔 ${h.currency}` : ""].filter(Boolean).join(" / ");
-  const val = r.rate_required ? "" : esc(r.exch_rate);
-  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.po_currency)}）<input type="number" id="erp-receive-rate" class="num" min="0" step="any" style="width:7em" placeholder="照發票填" value="${val}"></label>${hint ? ` <span style="color:#999">參考：${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
+  // 使用者輸入過的匯率優先（預覽失敗重畫時也不會把剛打的數字清掉）
+  const typed = currentRate();
+  const val = typed !== null ? esc(typed) : (r.rate_required ? "" : esc(r.exch_rate));
+  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.po_currency)}）<input type="number" id="erp-receive-rate" class="num" min="0" step="any" style="width:7em" placeholder="照發票填" value="${val}"></label> <span id="erp-receive-rate-tip" class="erp-po-hint" style="display:inline" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">參考：${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
 }
 
 function hidePreview() {
   _preview = null;
+  _lastShown = null;
   _token = "";
   const p = el("erp-receive-preview");
   if (p) { p.hidden = true; p.innerHTML = ""; }
 }
 
-function renderPreview(r) {
+function renderPreview(r, error = "") {
   const p = el("erp-receive-preview");
   const warn = (r.warnings || []).map(w => `<div class="erp-po-warn">${esc(w.message)}</div>`).join("");
   const cur = esc(r.currency || "NTD");
@@ -115,7 +149,9 @@ function renderPreview(r) {
   const costText = r.update_cost === false
     ? '<span class="erp-receive-cost-off">不更新平均成本</span>'
     : "更新平均成本";
-  p.innerHTML = `
+  const errorBox = error ? `<div id="erp-receive-preview-error" class="erp-po-result is-error">❌ 預覽失敗：${esc(error)}（下方是上一次的預覽，不能照這份收料；修正後按 Enter 或「預覽」重試）</div>` : "";
+  const blocked = Boolean(error) || r.rate_required;
+  p.innerHTML = `${errorBox}
     <div class="erp-po-badge ${r.is_production ? "is-prod" : "is-test"} erp-po-badge-small">寫入：${esc(targetText(r.target_label, r.is_production))}　${costText}</div>
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>　廠商 ${esc(r.vendor.id)} ${esc(r.vendor.name)}</div>
     <div class="erp-po-hint">單號照正航各類分開編號（收料 / 驗收 / 進貨各自當日最大號 + 1，三個號碼可能不同）；寫入時若撞號會自動重選。</div>
@@ -127,16 +163,29 @@ function renderPreview(r) {
       <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.po_no)} #${l.po_row}</td><td class="mono">${esc(l.prod_id)}</td><td class="num">${fmt(l.qty)}</td>${conv ? `<td class="num">${fmt(l.src_price)}</td>` : ""}<td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.tax)}</td>${foreign ? `<td class="num">${fmt(l.ml_amount)}</td>` : ""}</tr>`).join("")}</tbody>
     </table></div>
     <div class="erp-po-totals">幣別 ${cur}　數量 ${fmt(r.totals.sum_qty)}　未稅 ${fmt(r.totals.sum_amount)}　稅 ${fmt(r.totals.sum_tax)}${Number(r.tax_type || 0) !== 0 ? "（免稅）" : ""}　<strong>${Number(r.tax_type || 0) !== 0 ? "合計" : "含稅合計"} ${cur} ${fmt(r.totals.total)}</strong>${foreign ? `　台幣 ${fmt(r.totals.local_total)}` : ""}</div>
-    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-receive-create" type="button"${r.rate_required ? ' disabled title="請先輸入發票匯率"' : ""}>確認收料</button></div>`;
+    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-receive-create" type="button"${blocked ? ` disabled title="${error ? "預覽失敗，請重新預覽" : "請先輸入發票匯率"}"` : ""}>確認收料</button></div>`;
   p.hidden = false;
   el("btn-erp-receive-create").addEventListener("click", handleCreate);
-  el("erp-receive-rate")?.addEventListener("change", event => {
-    const n = Number(event.target.value);
-    if (!Number.isFinite(n) || n <= 0) { showToast("發票匯率必須大於 0", { tone: "error" }); return; }
-    _rate = String(n);
-    _rateVendor = _picker.lockedGroup();
-    void handlePreview();
-  });
+  bindRateInput();
+}
+
+// 預覽失敗：不再整塊清掉（以前畫面會直接「不見」），改在預覽區顯示錯誤；
+// 有上一次預覽就保留給使用者對照（確認鈕鎖住），沒有就只顯示錯誤
+function showPreviewError(message, last) {
+  _preview = null;
+  _token = "";
+  const p = el("erp-receive-preview");
+  if (!p) return;
+  if (last) {
+    try { renderPreview(last, message); return; } catch (_) { /* 舊資料也畫不出來就只顯示錯誤 */ }
+  }
+  p.innerHTML = `<div id="erp-receive-preview-error" class="erp-po-result is-error">❌ 預覽失敗：${esc(message)}</div>`;
+  p.hidden = false;
+}
+
+function markPreviewBusy() {
+  const btn = el("btn-erp-receive-create");
+  if (btn) { btn.disabled = true; btn.textContent = "重新預覽中…"; }
 }
 
 function currentRmDate() {
@@ -158,13 +207,18 @@ async function handlePreview() {
   let body;
   try { body = buildBody(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
   _busy = true;
+  const last = _preview || _lastShown;
+  markPreviewBusy();
   try {
     _token = newToken();
-    _preview = await apiPost("/api/erp-receive/preview", body);
-    renderPreview(_preview);
+    const r = await apiPost("/api/erp-receive/preview", body);
+    renderPreview(r);
+    _preview = r;
+    _lastShown = r;
   } catch (error) {
-    hidePreview();
-    showToast(`預覽失敗：${error.message}`, { tone: "error", sticky: true });
+    console.error("erp-receive preview failed", error);
+    showPreviewError(error.message || String(error), last);
+    showToast(`預覽失敗：${error.message || error}`, { tone: "error", sticky: true });
   } finally {
     _busy = false;
     if (_rePreviewPending) { _rePreviewPending = false; void handlePreview(); }
@@ -185,8 +239,8 @@ async function handleCreate() {
   let body;
   try { body = buildBody(); } catch (error) { showToast(error.message, { tone: "error" }); return; }
   if (!_preview || Number(_preview.rm_date) !== Number(body.rm_date)) {
-    // 預覽與畫面上的發票日期不一致：先重新預覽，讓使用者看過新的帳款月份再確認
-    showToast("發票日期已變更，已重新預覽，請確認後再按「確認收料」");
+    // 沒有有效預覽，或與畫面上的發票日期不一致：先重新預覽，讓使用者看過新的帳款月份再確認
+    showToast(_preview ? "發票日期已變更，已重新預覽，請確認後再按「確認收料」" : "已重新預覽，請確認後再按「確認收料」");
     await handlePreview();
     return;
   }
