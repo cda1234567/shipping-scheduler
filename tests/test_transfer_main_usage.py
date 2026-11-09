@@ -69,6 +69,31 @@ class MainBatchUsageTests(unittest.TestCase):
             HEADERS = old
         self.assertEqual(read_batch_models(str(self.path)), {"10-7": ["TD4-REV-1.1"]})
 
+    def test_old_same_code_group_far_left_excluded(self):
+        global HEADERS
+        old = HEADERS
+        # 11-4 舊年度在左（A/B 板相鄰），今年在右；中間隔了別的批次。
+        HEADERS = old[:8] + ["11-4", "59103", "T3iu-REV-1.2 (A板)", "11-4", "59103", "T3iu-REV-1.2 (B板)",
+                             "10-6", "PO-2", "TX2-S1 Main", "11-4", "4500059664", "TA7-7-REV-A"]
+        try:
+            _save(self.path, [["P1", "V", 0, "", None, None, None, 500, 10, 1, 1, 20, 1, 1, 30, 1, 1, 40, 1, 1]])
+        finally:
+            HEADERS = old
+        self.assertEqual(read_batch_usage(str(self.path))["11-4"], {"P1": 40})
+        self.assertEqual(read_batch_models(str(self.path))["11-4"], ["TA7-7-REV-A"])
+
+    def test_adjacent_same_code_groups_still_summed_after_old_group(self):
+        global HEADERS
+        old = HEADERS
+        HEADERS = old[:8] + ["10-6", "PO-0", "OLD-MODEL", "10-5", "PO-1", "EC-MODEL",
+                             "10-6", "PO-2", "TX2-S1 Main", "10-6", "PO-3", "TX2-S1 Conn"]
+        try:
+            _save(self.path, [["P1", "V", 0, "", None, None, None, 500, 5, 1, 1, 7, 1, 1, 100, 1, 1, 60, 1, 1]])
+        finally:
+            HEADERS = old
+        self.assertEqual(read_batch_usage(str(self.path))["10-6"], {"P1": 160})
+        self.assertEqual(read_batch_models(str(self.path))["10-6"], ["TX2-S1 Main", "TX2-S1 Conn"])
+
     def test_main_batch_models_never_raises(self):
         with patch.object(st.db, "get_setting", return_value=str(self.path)):
             self.assertEqual(st.main_batch_models()["10-6"], ["TX2-S1 Main", "TX2-S1 Conn"])

@@ -235,6 +235,23 @@ def _norm_batch_code(code) -> str:
     return f"{int(match.group(1))}-{int(match.group(2))}" if match else ""
 
 
+def _latest_batch_groups(batches: dict[str, list[int]]) -> dict[str, list[int]]:
+    """同一批次碼（正規化後）只取最右邊那段相鄰三欄組的結存欄 end；主檔批次碼會跨年度重複，舊組不混入。"""
+    grouped: dict[str, list[int]] = {}
+    for code, ends in batches.items():
+        grouped.setdefault(_norm_batch_code(code), []).extend(ends)
+    result: dict[str, list[int]] = {}
+    for code, ends in grouped.items():
+        ordered = sorted(set(ends))
+        run = [ordered[-1]]
+        for end in reversed(ordered[:-1]):
+            if end != run[0] - 3:
+                break
+            run.insert(0, end)
+        result[code] = run
+    return result
+
+
 def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
     """唯讀各批次調撥量：{批次碼: {料號: 數量}}。
 
@@ -248,9 +265,7 @@ def read_batch_usage(path: str) -> dict[str, dict[str, float]]:
         _, batches = main_balance_columns(rows[0] if rows else ())
         read_raw = lambda row, col: rows[row][col] if 0 <= row < len(rows) and 0 <= col < len(rows[row]) else None
         resolver = create_main_cell_resolver(read_raw)
-        usage_cols: dict[str, list[int]] = {}
-        for code, ends in batches.items():
-            usage_cols.setdefault(_norm_batch_code(code), []).extend(end - 2 for end in ends)
+        usage_cols = {code: [end - 2 for end in ends] for code, ends in _latest_batch_groups(batches).items()}
         result: dict[str, dict[str, float]] = {}
         pc = _part_col()
         for code, cols in usage_cols.items():
@@ -283,8 +298,8 @@ def read_batch_models(path: str) -> dict[str, list[str]]:
         headers = next(wb.worksheets[0].iter_rows(max_row=1, values_only=True), ())
         _, batches = main_balance_columns(headers)
         result: dict[str, list[str]] = {}
-        for code, ends in batches.items():
-            models = result.setdefault(_norm_batch_code(code), [])
+        for code, ends in _latest_batch_groups(batches).items():
+            models = result.setdefault(code, [])
             for end in ends:
                 name = str(headers[end] or "").strip() if end < len(headers) else ""
                 if name and name not in models:
