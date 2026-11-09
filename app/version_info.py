@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.06.1"
-APP_RELEASED_AT = "2026-11-06"
-APP_HEADLINE = "列印連不到小幫手時自動重啟再印一次，失敗提示顯示約 10 秒，拿掉主機端每 5 分鐘 watchdog"
+APP_VERSION = "v2026.11.09.1"
+APP_RELEASED_AT = "2026-11-09"
+APP_HEADLINE = "一鍵調撥對齊正航手開調撥單：補寫庫存 BCQty 與月成本檔 stkYearMonthAvg"
 APP_CHANGELOG = [
+    {"title": "v2026.11.09.1：一鍵調撥補寫 BCQty 與 stkYearMonthAvg", "items": ["依公司3手開調撥單 RM-20261105001 / RM-20261106001 對照：調撥更新或新增 comWareAmount 時，BCQty 一律設為與 Quantity 相同（來源倉與 015 皆是）。", "新增寫入 stkYearMonthAvg（BatchID 空白）：依倉庫成本（CostByWare=1，公司13）時以倉庫為鍵，只增減 AtLastQuan；依公司成本（CostByWare=0，公司3）時 WareID 空白，當月與上月的 AtLastQuan 設為該料號全倉庫存合計，MonthCost / AtLastCost 同步 comProduct 的 CAvgCost / CTotalCost。", "comProduct 的 CAvgCost / CTotalCost 微調的確切公式尚待確認正航算法，本版仍不更動，只更新 LatestIndate / LatestOutDate。", "公司3仍未開放一鍵調撥，行為不變。"]},
     {"title": "v2026.11.06.1：列印自動重啟重試", "items": ["按列印若連不到小幫手，會自動呼叫主機重啟服務再印一次。", "失敗提示改為顯示約 10 秒。", "拿掉每 5 分鐘 watchdog（主機端）。"]},
     {"title": "v2026.11.05.6：MOQ 改用近 10 次進貨最大公因數", "items": ["採購預設 MOQ 取該料號近 10 張進貨單（同單加總、數量大於 0）的最大公因數，例如 60000、70000 得 10000。", "若最大公因數低於主檔 MOQ（沒有則用正航最小採購量），改用該底限並標示「低於主檔MOQ，用主檔」。", "沒有進貨紀錄時沿用主檔 MOQ，再退回正航最小採購量。", "開採購單、低庫存與缺料採購的提示文字同步改為「近N次進貨最大公因數」。"]},
     {"title": "v2026.11.05.5：進貨單列印再對齊正航", "items": ["依 FR2 螢幕字寬與空格規則折行。", "列印字距依 600dpi 整數推進，行距改為 4.064mm，修正明細及表頭伸展高度。", "修正頁尾金額右緣與月結付款條件。", "發票地址讀取廠商資料。"]},

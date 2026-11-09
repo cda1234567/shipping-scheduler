@@ -221,11 +221,15 @@ class TransferWriteEffectsTests(unittest.TestCase):
                 stocks = {source_ware: {'Quantity': 2000, 'Cost': 21, 'TotalCost': 42000,
                                   'LatestInDate': 20261001, 'LatestOutDate': 20261002}}
                 rolls = {source_ware: {'Quantity': 2000}}
+                avgs = {}
                 inserts = []
                 updates = []
                 cur = Mock()
                 def read(cursor, sql, args):
-                    if 'comProduct' in sql: return dict(CAvgCost=21, ProdName='面板')
+                    if 'comProduct' in sql: return dict(CAvgCost=21, CTotalCost=42000, ProdName='面板')
+                    if 'stkYearMonthAvg' in sql:
+                        self.assertEqual(args[-1], '')
+                        return copy.deepcopy(avgs.get((args[0], args[2])))
                     if 'StkYearMonthQty' in sql:
                         self.assertEqual(args[0], 202611)
                         return copy.deepcopy(rolls.get(args[-1]))
@@ -234,14 +238,18 @@ class TransferWriteEffectsTests(unittest.TestCase):
                     inserts.append((table, values))
                     if table == 'comWareAmount': stocks[values['WareID']] = dict(values)
                     if table == 'StkYearMonthQty': rolls[values['WareID']] = dict(values)
+                    if table == 'stkYearMonthAvg': avgs[(values['YearMonth'], values['WareID'])] = dict(values)
                 def update(table, values, where):
                     updates.append((table, values, where))
                     if table == 'comWareAmount': stocks[where['WareID']].update(values)
                     if table == 'StkYearMonthQty': rolls[where['WareID']].update(values)
+                    if table == 'stkYearMonthAvg': avgs[(where['YearMonth'], where['WareID'])].update(values)
                     return 'UPDATE '+table, tuple(values.values())+tuple(where.values())
                 def execute(sql, args=()):
                     if sql.startswith('SELECT COUNT'):
                         cur.fetchone.return_value = (1,)
+                    if sql.startswith('SELECT SUM(Quantity)'):
+                        cur.fetchone.return_value = (sum(v['Quantity'] for v in stocks.values()),)
                     if sql.startswith('SELECT SumQty'):
                         cur.fetchone.return_value = (1000,)
                     if sql.startswith('SELECT Quantity'):
@@ -257,6 +265,18 @@ class TransferWriteEffectsTests(unittest.TestCase):
                 self.assertEqual(stock_updates[0][-1], source_ware)
                 self.assertEqual(stocks[source_ware]['Quantity'], 1000)
                 self.assertEqual(stocks['015']['Quantity'], 1000)
+                self.assertEqual(stocks[source_ware]['BCQty'], stocks[source_ware]['Quantity'])
+                self.assertEqual(stocks['015']['BCQty'], stocks['015']['Quantity'])
+                if by_ware:
+                    self.assertEqual(set(avgs), {(202611, source_ware), (202611, '015')})
+                    self.assertEqual(avgs[(202611, source_ware)]['AtLastQuan'], -1000)
+                    self.assertEqual(avgs[(202611, '015')]['AtLastQuan'], 1000)
+                else:
+                    self.assertEqual(set(avgs), {(202611, ''), (202610, '')})
+                    for month in (202611, 202610):
+                        self.assertEqual(avgs[(month, '')]['AtLastQuan'], 2000)
+                        self.assertEqual(avgs[(month, '')]['MonthCost'], 21)
+                        self.assertEqual(avgs[(month, '')]['AtLastCost'], 42000)
                 self.assertEqual(rolls[source_ware]['Quantity'], 1000)
                 self.assertEqual(rolls['015']['Quantity'], 1000)
                 self.assertEqual(stocks[source_ware]['LatestInDate'], 20261001)
@@ -265,7 +285,7 @@ class TransferWriteEffectsTests(unittest.TestCase):
                 self.assertEqual(stocks[source_ware]['TotalCost'], 21000 if by_ware else 42000)
                 self.assertEqual(stocks['015']['Cost'], 21 if by_ware else 0)
                 self.assertEqual(stocks['015']['TotalCost'], 21000 if by_ware else 0)
-                self.assertEqual({table for table, _ in inserts}, {'stkMoveMain', 'stkMoveSub', 'comProdRec', 'comWareAmount', 'StkYearMonthQty'})
+                self.assertEqual({table for table, _ in inserts}, {'stkMoveMain', 'stkMoveSub', 'comProdRec', 'comWareAmount', 'StkYearMonthQty', 'stkYearMonthAvg'})
                 self.assertTrue(all('LatestInDate' not in vals and 'LatestOutDate' not in vals for _, vals, _ in updates))
                 product_updates = [c for c in cur.execute.call_args_list if c.args[0].startswith('UPDATE comProduct')]
                 self.assertEqual(len(product_updates), 1)

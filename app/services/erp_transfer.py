@@ -196,6 +196,34 @@ def insert(cur: Any, table: str, values: dict) -> None:
     cur.execute(sql, args)
 
 
+def prev_year_month(ym: int) -> int:
+    return ym - 1 if ym % 100 > 1 else (ym // 100 - 1) * 100 + 12
+
+
+def upsert_year_month_avg(cur: Any, ym: int, part: str, ware: str, delta: float | None = None, **values: Any) -> None:
+    """stkYearMonthAvg（BatchID=''）：delta 為 AtLastQuan 增減量，其餘欄位直接覆寫。"""
+    key = (ym, part, ware, '')
+    old = one(cur, 'SELECT * FROM stkYearMonthAvg WITH (UPDLOCK, HOLDLOCK) WHERE YearMonth=%s AND ProdID=%s AND WareID=%s AND BatchID=%s', key)
+    if delta is not None:
+        values['AtLastQuan'] = float(ep._get(old or {}, 'AtLastQuan') or 0) + delta
+    if old:
+        sql, args = er.build_update('stkYearMonthAvg', values, dict(YearMonth=ym, ProdID=part, WareID=ware, BatchID=''))
+        cur.execute(sql, args)
+    else:
+        insert(cur, 'stkYearMonthAvg', er._row('stkYearMonthAvg', YearMonth=ym, ProdID=part, WareID=ware, BatchID='',
+                                               OnlyCost=False, sBatchID='', **values))
+
+
+def sync_company_avg(cur: Any, ym: int, product: dict, part: str) -> None:
+    """CostByWare=0（公司3）：當月與上月以全公司庫存合計、comProduct 成本同步 stkYearMonthAvg。"""
+    cur.execute('SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s', (part,))
+    total = float(cur.fetchone()[0] or 0)
+    for month in (ym, prev_year_month(ym)):
+        upsert_year_month_avg(cur, month, part, '', AtLastQuan=total,
+                              MonthCost=float(ep._get(product, 'CAvgCost') or 0),
+                              AtLastCost=float(ep._get(product, 'CTotalCost') or 0))
+
+
 def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
     missing = []
     for spec in ep._master_specs('', parts, '015'):
@@ -217,8 +245,10 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
     params = er.load_cost_params(cur, target)
     # 未勾選的前批次不會真的改變015成本；以此交易實際鎖定的庫存算入庫平均。
     rows = [dict(r) for r in rows]
+    products: dict[str, dict] = {}
     for r in rows:
         product = one(cur, 'SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s', (r['part'],))
+        products[r['part']] = product or {}
         outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], r.get('ware_out', '001'))) or {}
         incoming = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (r['part'], '015')) or {}
         ware, part, qty = r.get('ware_out', '001'), r['part'], r['transfer']
@@ -241,7 +271,7 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
             if quantity < 0:
                 part, qty = r['part'], r['transfer']
                 raise ep.PoValidationError(f'目標公司 {ware} 倉庫存不足：{part}（需 {qty}），已中止')
-            values = {'Quantity': quantity}
+            values = {'Quantity': quantity, 'BCQty': quantity}
             if params['cost_by_ware']:
                 values['TotalCost'] = float(ep._get(old or {}, 'TotalCost') or 0)+sign*r['amount']
                 if ware == '015':
@@ -260,6 +290,11 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int) -> dict[str, An
                 cur.execute(sql, args)
             else:
                 insert(cur, 'StkYearMonthQty', er._row('StkYearMonthQty', YearMonth=ym, ProdID=r['part'], WareID=ware, Quantity=qty))
+            if params['cost_by_ware']:
+                upsert_year_month_avg(cur, ym, r['part'], ware, delta=sign*r['transfer'])
+        if not params['cost_by_ware']:
+            # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動，只同步月成本檔。
+            sync_company_avg(cur, today // 100, products[r['part']], r['part'])
         cur.execute('UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s', (today, today, r['part']))
     for table, col, count in [('stkMoveMain', 'MoveNO', 1), ('stkMoveSub', 'MoveNO', len(rows)), ('comProdRec', 'BillNO', len(rows))]:
         cur.execute(f'SELECT COUNT(*) FROM {table} WHERE Flag=400 AND {col}=%s', (number,))
