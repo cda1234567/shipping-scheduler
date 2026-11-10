@@ -1244,7 +1244,8 @@ body.edit-auth-readonly #bom-upload-area {
 .calc-workspace-shell {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 58px);
+  /* 高度跟著 .tab-content 撐滿；不要用 100vh，沒扣到 header／分頁列底部會被切掉 */
+  align-self: stretch;
   min-height: 0;
   background: #f8fafc;
 }
