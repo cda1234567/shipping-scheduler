@@ -123,6 +123,7 @@
       <button class="tab-btn" data-group="purchase" data-tab="po-pullin-tab">提前清單 <span id="po-pullin-badge" class="tab-badge tab-badge-danger" style="display:none"></span></button>
       <button class="tab-btn" data-group="warehouse" data-tab="erp-receive-tab">一次收料</button>
       <button class="tab-btn" data-group="warehouse" data-tab="transfer-tab">一鍵調撥</button>
+      <button class="tab-btn" data-group="warehouse" data-tab="erp-invoice-tab">開 Invoice</button>
       <button class="tab-btn" data-group="data" data-tab="bom">BOM 管理</button>
       <button class="tab-btn" data-group="data" data-tab="part-conversion-tab">轉換料</button>
       <button class="tab-btn" data-group="data" data-tab="defectives-tab">不良品</button>
@@ -449,6 +450,34 @@
           <table class="erp-po-table">
             <thead><tr><th>時間</th><th>收料 / 驗收 / 進貨</th><th>公司</th><th>廠商</th><th class="num">含稅合計</th><th>狀態</th><th>列印</th></tr></thead>
             <tbody id="erp-receive-history"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Tab: 開 Invoice（S/C → 外銷 ST- Invoice；寫入公司見上方標示，正式公司需三個環境變數開啟） ── -->
+    <div id="tab-erp-invoice-tab" class="tab-content">
+      <div class="erp-po-shell">
+        <div id="erp-invoice-badge" class="erp-po-badge">讀取設定中...</div>
+        <div id="erp-invoice-picker"></div>
+        <div class="erp-po-actions erp-receive-actions">
+          <span class="spacer"></span>
+          <label class="erp-receive-date-field" for="erp-invoice-date">發票日期
+            <input type="date" id="erp-invoice-date" required>
+          </label>
+          <span class="erp-po-hint">改日期會自動重新預覽；匯率在預覽畫面可改</span>
+          <label class="erp-receive-cost-field" for="erp-invoice-update-cost" title="不勾：總成本（CTotalCost / 倉庫 TotalCost / Cost）不動，庫存量照常扣">
+            <input type="checkbox" id="erp-invoice-update-cost" checked> 扣總成本
+          </label>
+          <button class="btn btn-primary" id="btn-erp-invoice-preview" type="button">預覽</button>
+        </div>
+        <div id="erp-invoice-preview" class="erp-po-preview" hidden></div>
+        <div id="erp-invoice-result" class="erp-po-result" hidden></div>
+        <h4 class="erp-po-history-title">Invoice 紀錄（本機）</h4>
+        <div class="erp-po-table-wrap">
+          <table class="erp-po-table">
+            <thead><tr><th>時間</th><th>Invoice</th><th>公司</th><th>客戶</th><th class="num">合計</th><th class="num">匯率</th><th>狀態</th></tr></thead>
+            <tbody id="erp-invoice-history"></tbody>
           </table>
         </div>
       </div>
@@ -1149,6 +1178,7 @@ import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.j
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 import { initErpReceive, onErpReceiveTabActivated } from "/static/modules/erp_receive.js";
+import { initErpInvoice, onErpInvoiceTabActivated } from "/static/modules/erp_invoice.js";
 import { initShortagePurchase, onShortagePurchaseTabActivated } from "/static/modules/shortage_po.js";
 import { initTransfer, onTransferTabActivated } from "/static/modules/erp_transfer.js";
 import { initPostprocessLinks } from "/static/modules/postprocess_links.js";
@@ -1181,6 +1211,7 @@ function activateTabButton(btn) {
   if (btn.dataset.tab === "low-stock-tab") void onLowStockTabActivated();
   if (btn.dataset.tab === "erp-po-tab") void onErpPurchaseTabActivated();
   if (btn.dataset.tab === "erp-receive-tab") void onErpReceiveTabActivated();
+  if (btn.dataset.tab === "erp-invoice-tab") void onErpInvoiceTabActivated();
   if (btn.dataset.tab === "shortage-po-tab") void onShortagePurchaseTabActivated();
   if (btn.dataset.tab === "transfer-tab") void onTransferTabActivated();
   if (btn.dataset.tab === "part-conversion-tab") void onPartConversionTabActivated();
@@ -2279,6 +2310,7 @@ async function init() {
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
   try { await initErpReceive(); } catch (e) { console.warn("initErpReceive failed:", e); }
+  try { await initErpInvoice(); } catch (e) { console.warn("initErpInvoice failed:", e); }
   try { await initShortagePurchase(); } catch (e) { console.warn("initShortagePurchase failed:", e); }
   try { initTransfer(); } catch (e) { console.warn("initTransfer failed:", e); }
   try { initPostprocessLinks(); } catch (e) { console.warn("initPostprocessLinks failed:", e); }

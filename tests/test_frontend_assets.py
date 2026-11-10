@@ -11,7 +11,7 @@ from pathlib import Path
 class TabBarOrderTests(unittest.TestCase):
     VISIBLE = ["schedule", "completed", "main-preview-v2", "calc-workspace",
                "shortage-po-tab", "erp-po-tab", "low-stock-tab", "po-pullin-tab",
-               "erp-receive-tab", "transfer-tab",
+               "erp-receive-tab", "transfer-tab", "erp-invoice-tab",
                "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab"]
     HIDDEN = {"alerts-tab", "logs-tab", "st-inventory"}
 

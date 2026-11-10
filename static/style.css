@@ -708,16 +708,17 @@ body.edit-auth-readonly #bom-upload-area {
 .tab-btn[data-tab="po-pullin-tab"] { order: 7; }
 .tab-btn[data-tab="erp-receive-tab"] { order: 8; }
 .tab-btn[data-tab="transfer-tab"] { order: 9; }
-.tab-btn[data-tab="bom"] { order: 10; }
-.tab-btn[data-tab="part-conversion-tab"] { order: 11; }
-.tab-btn[data-tab="defectives-tab"] { order: 12; }
-.tab-btn[data-tab="backups-tab"] { order: 13; }
-.tab-btn[data-tab="analytics-tab"] { order: 14; }
-.tab-btn[data-tab="st-packages-tab"] { order: 15; }
-.tab-btn[data-tab="sea-freight-tab"] { order: 16; }
-.tab-btn[data-tab="st-inventory"] { order: 17; }
-.tab-btn[data-tab="alerts-tab"] { order: 18; }
-.tab-btn[data-tab="logs-tab"] { order: 19; }
+.tab-btn[data-tab="erp-invoice-tab"] { order: 10; }
+.tab-btn[data-tab="bom"] { order: 11; }
+.tab-btn[data-tab="part-conversion-tab"] { order: 12; }
+.tab-btn[data-tab="defectives-tab"] { order: 13; }
+.tab-btn[data-tab="backups-tab"] { order: 14; }
+.tab-btn[data-tab="analytics-tab"] { order: 15; }
+.tab-btn[data-tab="st-packages-tab"] { order: 16; }
+.tab-btn[data-tab="sea-freight-tab"] { order: 17; }
+.tab-btn[data-tab="st-inventory"] { order: 18; }
+.tab-btn[data-tab="alerts-tab"] { order: 19; }
+.tab-btn[data-tab="logs-tab"] { order: 20; }
 .tab-btn.active { color: #007aff; border-bottom-color: #007aff; }
 
 .tab-content { display: none; flex: 1; overflow: hidden; }

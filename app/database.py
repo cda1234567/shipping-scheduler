@@ -448,6 +448,29 @@ CREATE TABLE IF NOT EXISTS erp_receipts (
     exch_rate     REAL
 );
 
+-- 開 Invoice（外銷 ST- 單）本機紀錄（成功與失敗嘗試都記）
+CREATE TABLE IF NOT EXISTS erp_invoices (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_db     TEXT NOT NULL DEFAULT '',
+    bill_no       TEXT NOT NULL DEFAULT '',
+    inv_date      INTEGER NOT NULL DEFAULT 0,
+    customer_id   TEXT NOT NULL DEFAULT '',
+    customer_name TEXT NOT NULL DEFAULT '',
+    currency      TEXT NOT NULL DEFAULT '',
+    exch_rate     REAL,
+    lines_json    TEXT NOT NULL DEFAULT '[]',
+    sum_qty       REAL NOT NULL DEFAULT 0,
+    total         REAL NOT NULL DEFAULT 0,
+    local_total   REAL NOT NULL DEFAULT 0,
+    actor         TEXT NOT NULL DEFAULT '',
+    client_ip     TEXT NOT NULL DEFAULT '',
+    client_token  TEXT NOT NULL DEFAULT '',
+    fingerprint   TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'ok',
+    error         TEXT NOT NULL DEFAULT ''
+);
+
 -- 網站開出的採購單每一行是為哪些訂單買的（僅記錄 / 顯示，不參與任何缺料扣減）
 CREATE TABLE IF NOT EXISTS erp_po_line_allocations (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4211,6 +4234,56 @@ def find_recent_erp_receipt(fingerprint: str, since_iso: str) -> dict | None:
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM erp_receipts WHERE fingerprint=? AND status='ok' AND created_at>=? ORDER BY id DESC LIMIT 1",
+            (fingerprint, since_iso),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_erp_invoice(rec: dict) -> int:
+    """寫入一筆開 Invoice 本機紀錄（status=ok 或 error）。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO erp_invoices(
+                   target_db, bill_no, inv_date, customer_id, customer_name, currency, exch_rate, lines_json,
+                   sum_qty, total, local_total, actor, client_ip, client_token, fingerprint,
+                   created_at, status, error)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                rec.get("target_db", ""), rec.get("bill_no", ""), int(rec.get("inv_date") or 0),
+                rec.get("customer_id", ""), rec.get("customer_name", ""), rec.get("currency", "") or "",
+                None if rec.get("exch_rate") in (None, "") else float(rec.get("exch_rate")),
+                rec.get("lines_json", "[]"), float(rec.get("sum_qty") or 0), float(rec.get("total") or 0),
+                float(rec.get("local_total") or 0), rec.get("actor", ""), rec.get("client_ip", ""),
+                rec.get("client_token", ""), rec.get("fingerprint", ""), _now(),
+                rec.get("status", "ok"), rec.get("error", ""),
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def list_erp_invoices(limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM erp_invoices ORDER BY id DESC LIMIT ?", (int(limit),)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def find_erp_invoice_by_token(token: str) -> dict | None:
+    if not token:
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM erp_invoices WHERE client_token=? AND status='ok' ORDER BY id DESC LIMIT 1", (token,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def find_recent_erp_invoice(fingerprint: str, since_iso: str) -> dict | None:
+    """created_at >= since_iso 且內容指紋相同的成功紀錄。"""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM erp_invoices WHERE fingerprint=? AND status='ok' AND created_at>=? ORDER BY id DESC LIMIT 1",
             (fingerprint, since_iso),
         ).fetchone()
         return dict(row) if row else None

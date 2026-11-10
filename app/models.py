@@ -4,7 +4,7 @@ Pydantic 資料模型 — 用於 API request/response 和資料驗證。
 from __future__ import annotations
 from enum import Enum
 from datetime import date
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel, Field, validator
 import math
 import re
@@ -427,6 +427,23 @@ class ErpReceiveRequest(BaseModel):
     update_cost: Optional[bool] = None  # 是否更新平均成本；空 = 環境變數 ERP_RECEIVE_UPDATE_COST（預設 1）
     exch_rate: Optional[float] = None  # 發票匯率（外幣採購單轉台幣進貨時手動輸入）；空 = 自動判斷
 
+
+
+class ErpInvoiceLine(BaseModel):
+    sc_no: str
+    row_no: int
+    qty: float
+    price: Optional[float] = None  # 空 = 沿用 S/C 單價
+
+
+class ErpInvoiceRequest(BaseModel):
+    target: Optional[str] = None  # 空 = ERP_INVOICE_TARGET（預設 CHIComp13）
+    inv_date: Optional[Union[int, str]] = None  # 發票日 yyyymmdd 或 YYYY-MM-DD，空 = 今天
+    lines: list[ErpInvoiceLine]
+    confirm: bool = False  # 超開 S/C 剩餘量或庫存不足時使用者確認後才帶 true
+    client_token: str = ""  # 前端每次開啟預覽產生，防重複送出
+    update_cost: Optional[bool] = None  # 是否扣總成本；空 = 環境變數 ERP_INVOICE_UPDATE_COST（預設 1）
+    exch_rate: Optional[float] = None  # 本次發票匯率；空 = 正航幣別檔 BuyInRate
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
 
