@@ -50,7 +50,9 @@ export async function refreshLowStockAlerts() {
     const worst = alerts.slice(0, 3).map(a => a.part_number).join("、");
     const withOrder = alerts.filter(a => Number(a.on_order_qty) > 0).length;
     const orderText = withOrder > 0 ? `；其中 ${withOrder} 個已有在途量` : "";
-    meta.textContent = worst ? `最急：${worst}${orderText}` : "";
+    const etaShort = alerts.filter(a => a.eta_short).length;
+    const etaText = etaShort > 0 ? `；${etaShort} 個撐不到預交日` : "";
+    meta.textContent = worst ? `最急：${worst}${orderText}${etaText}` : "";
   }
 }
 
@@ -83,7 +85,8 @@ export async function refreshLowStock() {
       const suggested = data.last_suggested_at ? `；上次建議：${data.last_suggested_at}` : "；尚未執行過建議";
       const loaded = data.st_inventory_loaded_at ? `；ST 庫存更新：${String(data.st_inventory_loaded_at).slice(0, 16).replace("T", " ")}` : "";
       status.className = "file-status" + (data.low_count > 0 ? " warn" : " ok");
-      status.textContent = `共 ${_rows.length} 個料號，${data.low_count} 個低於門檻${suggested}${loaded}`;
+      const priority = data.priority_refreshed_at ? `；重點廠商 015 更新：${String(data.priority_refreshed_at).slice(0, 16)}` : "";
+      status.textContent = `共 ${_rows.length} 個料號，${data.low_count} 個低於門檻${suggested}${loaded}${priority}`;
     }
   } catch (error) {
     if (status) {
@@ -156,6 +159,24 @@ function onOrderHtml(r) {
   return "—";
 }
 
+// 重點廠商列：現有量 = ST + 015，下方小字分開顯示；非重點列照舊
+function qtyHtml(r) {
+  if (r.gl_qty === undefined) return fmtNum(r.qty);
+  const ware = esc(r.gl_ware_id || "015");
+  return `${fmtNum(r.qty)}<div class="low-stock-qty-split">ST ${fmtNum(r.st_qty)}／${ware} ${fmtNum(r.gl_qty)}</div>`;
+}
+
+function usageTitle(r) {
+  if (r.gl_usage_qty === undefined) return "";
+  const ware = r.gl_ware_id || "015";
+  return ` title="用量取 ST 與 ${esc(ware)} 較大者：ST ${fmtNum(r.st_usage_qty)}／${esc(ware)} ${fmtNum(r.gl_usage_qty)}"`;
+}
+
+function etaHtml(r) {
+  if (!r.eta_short) return "";
+  return `<div class="low-stock-eta-short">撐不到 ${esc(r.next_expected_date)}，約缺 ${fmtNum(r.eta_gap_days)} 天</div>`;
+}
+
 function statusHtml(status) {
   if (status === "on_order") return '<span class="low-stock-status on_order">已下單</span>';
   if (status === "low") return '<span class="low-stock-status low">低於門檻</span>';
@@ -186,26 +207,35 @@ function renderTable() {
     const part = esc(r.part_number);
     const manualThreshold = r.threshold_source === "manual" ? ' <span class="low-stock-tag">手動</span>' : "";
     const priorityClass = r.is_priority_supplier ? " priority-supplier" : "";
+    // 不在關注清單的重點廠商額外列：沒有可編輯的資料列，只提供「加入關注」
+    const editable = r.in_watch !== false;
+    const edit = html => (editable ? html : "");
+    const extraTag = r.priority_extra
+      ? ` <span class="low-stock-tag" title="重點廠商料號，因低於門檻或撐不到預交日而列出（${editable ? "不在主檔" : "不在關注清單"}）">${editable ? "不在主檔" : "未關注"}</span>`
+      : "";
+    const actions = editable
+      ? '<button class="btn btn-danger btn-sm" data-act="remove">移除</button>'
+      : '<button class="btn btn-secondary btn-sm" data-act="watch-add" title="加入低庫存關注清單">加入關注</button>';
     return `<tr class="low-stock-row ${r.status}${priorityClass}" data-part="${part}">
-      <td class="mono">${part}</td>
+      <td class="mono">${part}${extraTag}</td>
       <td>${esc(r.name)}</td>
       <td>${supplierHtml(r)}</td>
-      <td class="num">${fmtNum(r.qty)}</td>
+      <td class="num">${qtyHtml(r)}</td>
       <td>${onOrderHtml(r)}</td>
-      <td class="num">${fmtNum(r.avg_monthly_usage)}</td>
+      <td class="num"${usageTitle(r)}>${fmtNum(r.avg_monthly_usage)}</td>
       <td>${fmtNum(r.lead_time_days)} <span class="low-stock-tag src-${esc(r.lead_time_source)}">${esc(r.lead_time_label)}</span>
-        <button class="low-stock-link" data-act="edit-lead" title="修改交期（留空=恢復自動）">編輯</button></td>
+        ${edit('<button class="low-stock-link" data-act="edit-lead" title="修改交期（留空=恢復自動）">編輯</button>')}</td>
       <td class="num">${fmtNum(r.planned_lead_days)}</td>
       <td class="num">${fmtNum(r.actual_lead_days)}</td>
       <td>${delayHtml(r.delay_days)}</td>
       <td>${fmtNum(r.threshold)}${manualThreshold}
-        <button class="low-stock-link" data-act="edit-threshold" title="修改門檻（留空=恢復自動）">編輯</button></td>
+        ${edit('<button class="low-stock-link" data-act="edit-threshold" title="修改門檻（留空=恢復自動）">編輯</button>')}</td>
       <td class="num">${fmtNum(r.days_of_cover)}</td>
-      <td>${statusHtml(r.status)}</td>
-      <td><input type="checkbox" data-act="toggle" ${r.enabled ? "checked" : ""} aria-label="啟用 ${part}"></td>
-      <td>${esc(r.note)} <button class="low-stock-link" data-act="edit-note">編輯</button></td>
+      <td>${statusHtml(r.status)}${etaHtml(r)}</td>
+      <td>${edit(`<input type="checkbox" data-act="toggle" ${r.enabled ? "checked" : ""} aria-label="啟用 ${part}">`)}</td>
+      <td>${esc(r.note)} ${edit('<button class="low-stock-link" data-act="edit-note">編輯</button>')}</td>
       <td><button class="btn btn-secondary btn-sm" data-act="open-po" title="到「開採購單」頁籤，帶入此料號與建議數量">開採購單</button>
-        <button class="btn btn-danger btn-sm" data-act="remove">移除</button></td>
+        ${actions}</td>
     </tr>`;
   }).join("");
 }
@@ -272,6 +302,15 @@ async function onTableClick(event) {
     if (!requireEdit()) return;
     const note = window.prompt(`${part} 備註`, row.note || "");
     if (note !== null) await saveField(part, { note }, "備註已更新");
+  } else if (act === "watch-add") {
+    if (!requireEdit()) return;
+    try {
+      await apiPost("/api/low-stock/items", { part_number: part });
+      showToast(`已加入關注 ${part}`, { tone: "success" });
+    } catch (error) {
+      showToast(`加入失敗：${error.message}`, { tone: "error" });
+    }
+    await refreshLowStock();
   } else if (act === "remove") {
     if (!requireEdit()) return;
     if (!window.confirm(`確定將 ${part} 從低庫存關注清單移除？（之後「重新建議」不會自動加回）`)) return;
@@ -306,6 +345,7 @@ async function handleSuggest() {
       `保留手動門檻 ${s.kept_manual_threshold}、手動交期 ${s.kept_manual_lead}；清單共 ${s.total_rows} 筆`,
       { tone: "success", duration: 6000 },
     );
+    if (s.priority && s.priority.ok === false && s.priority.error) showToast(s.priority.error, { duration: 6000 });
     await refreshLowStock();
   } catch (error) {
     showToast(error.message, { tone: "error", sticky: true });

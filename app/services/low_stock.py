@@ -2,6 +2,7 @@
 
 從正航 ERP 讀 ST 倉的領用紀錄與採購交期，建議「常用料號」與低庫存門檻，
 並維護 low_stock_watch 關注清單。警示本身只讀本機 st_inventory_snapshot，不連 ERP。
+重點廠商的料另由 refresh_priority_parts 算入 015（庚霖倉）庫存與領用，存 low_stock_priority。
 
 ERP 全程唯讀 SELECT（%s 參數化）；任何 ERP 失敗都在寫入前丟出 ErpError，不改任何本機資料。
 """
@@ -29,6 +30,12 @@ LAST_SUGGESTED_KEY = "low_stock_last_suggested_at"
 PRIORITY_SUPPLIERS_KEY = "low_stock_priority_suppliers"
 DEFAULT_PRIORITY_SUPPLIERS: List[str] = ["萬晉", "崧嵐"]
 PRIORITY_SUPPLIER_MAX = 30
+PRIORITY_REFRESHED_KEY = "low_stock_priority_refreshed_at"
+# 只有重點廠商列才有的欄位（非重點列與 /alerts 的非重點項目不帶這些鍵）
+PRIORITY_VIEW_KEYS = (
+    "st_qty", "gl_qty", "gl_ware_id", "st_usage_qty", "gl_usage_qty",
+    "in_watch", "priority_extra", "eta_short", "eta_gap_days",
+)
 _PRIORITY_SPLIT_RE = re.compile(r"[,，、;；\n\r]+")
 IN_CHUNK = 500
 
@@ -691,6 +698,183 @@ def refresh_on_order() -> int:
         return 0
 
 
+# ── 重點廠商料號（含 015 庫存與領用；ERP 唯讀，結果存 low_stock_priority） ─────
+
+def _gl_ware_id() -> str:
+    """庚霖倉代號，沿用 st_pending_transfer.ware_ids()（環境變數 SHORTAGE_GL_WARE_ID，預設 015）。"""
+    from . import st_pending_transfer  # 延遲匯入：st_pending_transfer 也匯入本模組
+    return st_pending_transfer.ware_ids()[1]
+
+
+def _query_priority_suppliers(conn, keywords: List[str]) -> Dict[str, Tuple[str, str]]:
+    """正航廠商（comCustomer Flag=2）簡稱或全名含名單關鍵字者：{廠商 ID: (簡稱, 全名)}。"""
+    cur = conn.cursor()
+    cur.execute("SELECT ID, ShortName, FullName FROM comCustomer WHERE Flag = 2")
+    out: Dict[str, Tuple[str, str]] = {}
+    for cust_id, short, full in cur.fetchall():
+        key = str(cust_id or "").strip()
+        short, full = str(short or "").strip(), str(full or "").strip()
+        if key and (match_priority_supplier(short, keywords) or match_priority_supplier(full, keywords)):
+            out[key] = (short, full)
+    return out
+
+
+def _query_priority_parts(conn, supplier_ids: List[str]) -> Dict[str, dict]:
+    """最近一張進貨（comProdRec Flag=100，不限倉）的廠商在 supplier_ids 內的料號：{料號: {supplier_id, last_purchase_date}}。"""
+    out: Dict[str, dict] = {}
+    cur = conn.cursor()
+    for batch in _chunks(sorted(set(supplier_ids))):
+        cur.execute(
+            "SELECT t.ProdID, t.BillDate, a.CustID FROM ("
+            "SELECT ProdID, BillDate, BillNO, ROW_NUMBER() OVER ("
+            "PARTITION BY ProdID ORDER BY BillDate DESC, BillNO DESC) AS rn "
+            "FROM comProdRec WHERE Flag = 100) t "
+            "JOIN comBillAccounts a ON a.Flag = 100 AND a.FundBillNo = t.BillNO "
+            f"WHERE t.rn = 1 AND a.CustID IN {_in_clause(len(batch))}",
+            tuple(batch),
+        )
+        for prod_id, bill_date, cust_id in cur.fetchall():
+            part = norm_part(prod_id)
+            if part and part not in out:
+                d = _to_date(bill_date)
+                out[part] = {"supplier_id": str(cust_id or "").strip(), "last_purchase_date": d.isoformat() if d else ""}
+    return out
+
+
+def _query_gl_usage(conn, gl_ware: str, start: date, end: date, parts: List[str]) -> Dict[str, Tuple[float, int]]:
+    """015 倉出庫（Flag 331，Quantity 為負數）領用量取正數與單據數；正數為沖銷，一併加總。"""
+    result: Dict[str, Tuple[float, int]] = {}
+    cur = conn.cursor()
+    for batch in _chunks(parts):
+        cur.execute(
+            "SELECT ProdID, SUM(Quantity), COUNT(DISTINCT BillNO) FROM comProdRec "
+            "WHERE Flag = 331 AND WareID = %s AND BillDate >= %s AND BillDate <= %s "
+            f"AND ProdID IN {_in_clause(len(batch))} GROUP BY ProdID",
+            (gl_ware, _yyyymmdd(start), _yyyymmdd(end), *batch),
+        )
+        for prod_id, qty, bills in cur.fetchall():
+            part = norm_part(prod_id)
+            if part:
+                result[part] = (max(-float(qty or 0), 0.0), int(bills or 0))
+    return result
+
+
+def _query_ware_qty(conn, ware_id: str, parts: List[str]) -> Dict[str, float]:
+    """指定倉庫現有量（comWareAmount）。"""
+    result: Dict[str, float] = {}
+    cur = conn.cursor()
+    for batch in _chunks(parts):
+        cur.execute(
+            "SELECT ProdID, SUM(Quantity) FROM comWareAmount "
+            f"WHERE WareID = %s AND ProdID IN {_in_clause(len(batch))} GROUP BY ProdID",
+            (ware_id, *batch),
+        )
+        for prod_id, qty in cur.fetchall():
+            part = norm_part(prod_id)
+            if part:
+                result[part] = result.get(part, 0.0) + float(qty or 0)
+    return result
+
+
+_PRIORITY_COLUMNS = (
+    "name", "supplier_id", "supplier_name", "supplier_full_name", "last_purchase_date",
+    "st_usage_qty", "st_bill_count", "gl_ware_id", "gl_usage_qty", "gl_bill_count", "gl_qty",
+    "usage_qty", "avg_daily_usage", "lookback_days", "planned_lead_days", "actual_lead_days",
+    "delay_days", "delay_samples", "on_order_qty", "next_expected_date", "on_order_note", "refreshed_at",
+)
+
+
+def refresh_priority_parts(actor: str = "system") -> dict:
+    """從正航（唯讀）重算重點廠商料號並整批覆寫本機 low_stock_priority。永遠不丟例外。
+
+    廠商：名單關鍵字比對 comCustomer(Flag=2) → 最近一張進貨（Flag 100，任何倉）是這些廠商的料號。
+    用量 = max(ST 領用, 015 倉 Flag 331 領用)，期間沿用 lookback_days；另存 015 現有量、交期統計、在途量。
+    ERP 任何失敗：不動本機舊資料，回傳 ok=False。名單為空：清空此表（不需 ERP）。
+    """
+    try:
+        db.ensure_low_stock_table()
+        keywords = get_priority_suppliers()
+        now = _now_text()
+        if not keywords:
+            with db.get_conn() as conn:
+                conn.execute("DELETE FROM low_stock_priority")
+            db.set_setting(PRIORITY_REFRESHED_KEY, now)
+            return {"ok": True, "suppliers": 0, "parts": 0, "rows": 0}
+        cfg = get_config()
+        today = local_now().date()
+        lookback = int(cfg["lookback_days"])
+        start = today - timedelta(days=lookback)
+        ware_id = erp_stock.get_settings()["ware_id"]
+        gl_ware = _gl_ware_id()
+        with db.get_conn() as conn:
+            watch_parts = {norm_part(r["part_number"]) for r in conn.execute(
+                "SELECT part_number FROM low_stock_watch WHERE dismissed=0").fetchall()}
+
+        # ── 階段一：只讀 ERP（失敗就跳到 except，本機資料不動） ──
+        with _erp_session() as erp:
+            suppliers = _query_priority_suppliers(erp, keywords)
+            part_supplier = _query_priority_parts(erp, list(suppliers)) if suppliers else {}
+            parts = sorted(part_supplier)
+            st_usage = _query_usage(erp, ware_id, start, today, parts) if parts else {}
+            gl_usage = _query_gl_usage(erp, gl_ware, start, today, parts) if parts else {}
+            # 沒有任何領用的料號不會被列入，只保留有用量或已在關注清單的
+            targets = [
+                p for p in parts
+                if st_usage.get(p, (0.0, 0))[0] > 0 or gl_usage.get(p, (0.0, 0))[0] > 0 or p in watch_parts
+            ]
+            gl_qty = _query_ware_qty(erp, gl_ware, targets) if targets else {}
+            info = _query_part_info(erp, targets, ware_id, today, cfg) if targets else {}
+            on_order = _fetch_on_order(erp, targets, today, cfg)
+
+        # ── 階段二：寫入 ──
+        snapshot = db.get_st_inventory_snapshot()
+        rows = []
+        for part in targets:
+            st_net, st_bills = st_usage.get(part, (0.0, 0))
+            gl_net, gl_bills = gl_usage.get(part, (0.0, 0))
+            usage = max(max(float(st_net), 0.0), float(gl_net))
+            meta = part_supplier[part]
+            short, full = suppliers.get(meta["supplier_id"], ("", ""))
+            pinfo = info.get(part, {})
+            if on_order is None:
+                oo_qty, oo_date, oo_note = 0.0, "", ON_ORDER_NOTE_FAILED
+            else:
+                (oo_qty, oo_date), oo_note = on_order.get(part, (0.0, "")), ""
+            snap_name = str((snapshot.get(part) or {}).get("description") or "").strip()
+            rows.append({
+                "name": snap_name or pinfo.get("name") or "",
+                "supplier_id": meta["supplier_id"], "supplier_name": short or meta["supplier_id"],
+                "supplier_full_name": full, "last_purchase_date": meta["last_purchase_date"],
+                "st_usage_qty": float(st_net), "st_bill_count": int(st_bills),
+                "gl_ware_id": gl_ware, "gl_usage_qty": float(gl_net), "gl_bill_count": int(gl_bills),
+                "gl_qty": float(gl_qty.get(part, 0.0)),
+                "usage_qty": usage, "avg_daily_usage": calc_avg_daily_usage(usage, lookback), "lookback_days": lookback,
+                "planned_lead_days": pinfo.get("planned_lead_days"), "actual_lead_days": pinfo.get("actual_lead_days"),
+                "delay_days": pinfo.get("delay_days"), "delay_samples": int(pinfo.get("delay_samples") or 0),
+                "on_order_qty": float(oo_qty), "next_expected_date": oo_date, "on_order_note": oo_note,
+                "refreshed_at": now, "part_number": part,
+            })
+        with db.get_conn() as conn:
+            conn.execute("DELETE FROM low_stock_priority")
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO low_stock_priority(part_number, " + ", ".join(_PRIORITY_COLUMNS) + ") VALUES("
+                    + ",".join("?" * (len(_PRIORITY_COLUMNS) + 1)) + ")",
+                    [row["part_number"], *(row[c] for c in _PRIORITY_COLUMNS)],
+                )
+        db.set_setting(PRIORITY_REFRESHED_KEY, now)
+        db.log_activity(
+            "低庫存提醒重點廠商",
+            f"{actor}：重算 015 庫存與領用，廠商 {len(suppliers)}、料號 {len(parts)}、有用量 {len(targets)} 筆",
+        )
+        return {"ok": True, "suppliers": len(suppliers), "parts": len(parts), "rows": len(targets),
+                "on_order_ok": on_order is not None}
+    except Exception as exc:
+        logger.warning("重點廠商低庫存重算失敗（保留舊資料）：%s", type(exc).__name__, exc_info=True)
+        message = str(exc) if isinstance(exc, ErpError) else type(exc).__name__
+        return {"ok": False, "error": f"重點廠商 015 庫存重算失敗：{message}（保留上次資料）"}
+
+
 # ── 建議 ──────────────────────────────────────────────────────────────────
 
 def _apply_stats(row: dict, usage: Tuple[float, int], info: dict, cfg: Dict[str, float], snapshot_name: str) -> None:
@@ -792,6 +976,7 @@ def run_suggestion(actor: str = "system") -> dict:
         f"保留手動門檻 {summary['kept_manual_threshold']}、保留手動交期 {summary['kept_manual_lead']}、"
         f"清單共 {summary['total_rows']} 筆",
     )
+    summary["priority"] = refresh_priority_parts(actor)  # 獨立處理，失敗不影響建議結果
     return summary
 
 
@@ -1012,18 +1197,126 @@ def with_moq(views: List[dict]) -> List[dict]:
     return views
 
 
+def _priority_records(keywords: List[str]) -> Dict[str, Tuple[dict, str]]:
+    """low_stock_priority 中廠商仍符合目前名單的列：{料號: (資料列, 命中關鍵字)}；名單為空 → {}。"""
+    if not keywords:
+        return {}
+    with db.get_conn() as conn:
+        recs = [dict(r) for r in conn.execute("SELECT * FROM low_stock_priority").fetchall()]
+    out: Dict[str, Tuple[dict, str]] = {}
+    for r in recs:
+        word = (match_priority_supplier(r.get("supplier_name"), keywords)
+                or match_priority_supplier(r.get("supplier_full_name"), keywords))
+        if word:
+            out[norm_part(r["part_number"])] = (r, word)
+    return out
+
+
+def _priority_view(
+    prec: dict, keyword: str, watch: Optional[dict], st_qty: float,
+    cfg: Dict[str, float], keywords: List[str], today: date,
+) -> dict:
+    """重點廠商列：用量 = max(ST, 015)、現有量 = ST + 015；關注清單內的手動門檻 / 交期 / 停用 / 備註照用。
+
+    依日均用量撐不到在途最近預交日（今天 + 可撐天數 < 預交日）→ eta_short，狀態視為 low。"""
+    if watch:
+        rec = dict(watch)
+    else:
+        rec = _new_row("priority", "system")
+        rec.update(
+            part_number=prec["part_number"], name=prec.get("name") or "",
+            planned_lead_days=prec.get("planned_lead_days"), actual_lead_days=prec.get("actual_lead_days"),
+            delay_days=prec.get("delay_days"), delay_samples=prec.get("delay_samples") or 0,
+            suggested_at=prec.get("refreshed_at") or "",
+        )
+    # 在途量一律用重點廠商表（與關注清單同時刷新；剛加入關注的料號在關注清單內還沒有在途資料）
+    rec.update(
+        on_order_qty=prec.get("on_order_qty"), next_expected_date=prec.get("next_expected_date") or "",
+        on_order_note=prec.get("on_order_note") or "",
+    )
+    rec["avg_daily_usage"] = prec.get("avg_daily_usage")
+    rec["usage_qty"] = prec.get("usage_qty")
+    rec["bill_count"] = int(prec.get("st_bill_count") or 0) + int(prec.get("gl_bill_count") or 0)
+    rec["last_purchase_supplier"] = prec.get("supplier_name") or rec.get("last_purchase_supplier") or ""
+    if prec.get("last_purchase_date"):
+        rec["last_purchase_date"] = prec["last_purchase_date"]
+    if not rec.get("name"):
+        rec["name"] = prec.get("name") or ""
+    derive_auto_fields(rec, cfg)
+    gl_qty = float(prec.get("gl_qty") or 0)
+    view = _view_row(rec, st_qty + gl_qty, keywords)
+    view.update(
+        priority_supplier=keyword, is_priority_supplier=True,
+        st_qty=st_qty, gl_qty=gl_qty, gl_ware_id=prec.get("gl_ware_id") or "",
+        st_usage_qty=prec.get("st_usage_qty"), gl_usage_qty=prec.get("gl_usage_qty"),
+        in_watch=bool(watch), priority_extra=False, eta_short=False, eta_gap_days=None,
+    )
+    avg = view["avg_daily_usage"]
+    try:
+        eta = date.fromisoformat(view["next_expected_date"]) if view["next_expected_date"] else None
+    except ValueError:
+        eta = None
+    if view["enabled"] and eta and avg and avg > 0:
+        gap = (eta - today).days - view["qty"] / float(avg)
+        if gap > 1e-9:
+            view["eta_short"] = True
+            view["eta_gap_days"] = int(math.ceil(gap - 1e-9))
+            view["status"] = "low"
+    return view
+
+
+def _priority_listed(view: dict) -> bool:
+    """額外列（不在關注清單或不在主檔）只在「現有量低於門檻」或「撐不到預交日」時列入。"""
+    if not view["enabled"]:
+        return False
+    threshold = view["threshold"]
+    return view["eta_short"] or (threshold is not None and view["qty"] < threshold)
+
+
 def list_rows(main_parts: Any = _UNSET) -> List[dict]:
-    """所有未移除的關注料號（含現有量與狀態），重點廠商在前，再來低庫存，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。"""
+    """所有未移除的關注料號（含現有量與狀態），重點廠商在前，再來低庫存，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。
+
+    重點廠商料號（low_stock_priority，廠商符合目前名單）改用 ST + 015 的用量與現有量；
+    不在關注清單或不在主檔的重點廠商料，只有低於門檻或撐不到預交日才額外列入（使用者移除過的不列）。"""
     db.ensure_low_stock_table()
     if main_parts is _UNSET:
         main_parts = main_file_parts()
     with db.get_conn() as conn:
-        recs = [dict(r) for r in conn.execute("SELECT * FROM low_stock_watch WHERE dismissed=0").fetchall()]
+        all_recs = [dict(r) for r in conn.execute("SELECT * FROM low_stock_watch WHERE dismissed=0").fetchall()]
+    recs = all_recs
     if main_parts is not None:
         recs = [r for r in recs if norm_part(r["part_number"]) in main_parts]
     stock = db.get_st_inventory_stock()
     priority = get_priority_suppliers()
-    views = with_moq([_view_row(r, float(stock.get(r["part_number"], 0.0)), priority) for r in recs])
+    prio = _priority_records(priority)
+    if not prio:
+        views = [_view_row(r, float(stock.get(r["part_number"], 0.0)), priority) for r in recs]
+    else:
+        cfg = get_config()
+        today = local_now().date()
+        views = []
+        shown = set()
+        for r in recs:
+            part = norm_part(r["part_number"])
+            shown.add(part)
+            if part in prio:
+                prec, word = prio[part]
+                views.append(_priority_view(prec, word, r, float(stock.get(part, 0.0)), cfg, priority, today))
+            else:
+                views.append(_view_row(r, float(stock.get(r["part_number"], 0.0)), priority))
+        watch_by_part = {norm_part(r["part_number"]): r for r in all_recs}
+        with db.get_conn() as conn:
+            dismissed = {norm_part(r["part_number"]) for r in conn.execute(
+                "SELECT part_number FROM low_stock_watch WHERE dismissed=1").fetchall()}
+        for part in sorted(prio):
+            if part in shown or part in dismissed:
+                continue
+            prec, word = prio[part]
+            view = _priority_view(prec, word, watch_by_part.get(part), float(stock.get(part, 0.0)), cfg, priority, today)
+            if _priority_listed(view):
+                view["priority_extra"] = True
+                views.append(view)
+    views = with_moq(views)
     order = {"low": 0, "on_order": 1, "ok": 2, "disabled": 3}
     views.sort(key=lambda v: (not v["is_priority_supplier"], order[v["status"]], *_sort_key(v)))
     return views
@@ -1037,3 +1330,7 @@ def list_alerts(main_parts: Any = _UNSET) -> List[dict]:
 
 def last_suggested_at() -> str:
     return db.get_setting(LAST_SUGGESTED_KEY, "")
+
+
+def priority_refreshed_at() -> str:
+    return db.get_setting(PRIORITY_REFRESHED_KEY, "")

@@ -72,7 +72,36 @@ LOW_STOCK_MIGRATION_COLUMNS = (
     ("on_order_note", "TEXT"),
 )
 
-_CREATE_SQL = LOW_STOCK_WATCH_SQL + """
+# 低庫存提醒：重點廠商料號（含 015 庫存與領用）的正航計算結果；由 low_stock.refresh_priority_parts 整批覆寫
+LOW_STOCK_PRIORITY_SQL = """
+CREATE TABLE IF NOT EXISTS low_stock_priority (
+    part_number        TEXT PRIMARY KEY,
+    name               TEXT NOT NULL DEFAULT '',
+    supplier_id        TEXT NOT NULL DEFAULT '',
+    supplier_name      TEXT NOT NULL DEFAULT '',
+    supplier_full_name TEXT NOT NULL DEFAULT '',
+    last_purchase_date TEXT NOT NULL DEFAULT '',
+    st_usage_qty       REAL NOT NULL DEFAULT 0,
+    st_bill_count      INTEGER NOT NULL DEFAULT 0,
+    gl_ware_id         TEXT NOT NULL DEFAULT '',
+    gl_usage_qty       REAL NOT NULL DEFAULT 0,
+    gl_bill_count      INTEGER NOT NULL DEFAULT 0,
+    gl_qty             REAL NOT NULL DEFAULT 0,
+    usage_qty          REAL NOT NULL DEFAULT 0,
+    avg_daily_usage    REAL,
+    lookback_days      INTEGER NOT NULL DEFAULT 0,
+    planned_lead_days  REAL,
+    actual_lead_days   REAL,
+    delay_days         REAL,
+    delay_samples      INTEGER NOT NULL DEFAULT 0,
+    on_order_qty       REAL,
+    next_expected_date TEXT NOT NULL DEFAULT '',
+    on_order_note      TEXT NOT NULL DEFAULT '',
+    refreshed_at       TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_CREATE_SQL = LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + """
 CREATE TABLE IF NOT EXISTS erp_transfers (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  batch_key TEXT NOT NULL DEFAULT '', batch_code TEXT NOT NULL DEFAULT '',
@@ -800,7 +829,7 @@ def _migrate_low_stock_columns(conn) -> None:
 def ensure_low_stock_table() -> None:
     """低庫存關注清單表（冪等；供 init_db 以外的一次性腳本呼叫）。"""
     with get_conn() as conn:
-        conn.executescript(LOW_STOCK_WATCH_SQL)
+        conn.executescript(LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL)
         _migrate_low_stock_columns(conn)
 
 

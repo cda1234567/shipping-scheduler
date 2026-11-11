@@ -72,6 +72,8 @@ async def get_low_stock_alerts():
                 "receipt_qtys": a.get("receipt_qtys", []),
                 "moq_floor_applied": a.get("moq_floor_applied", False),
                 "suggested_po_qty": a["suggested_po_qty"],
+                # 重點廠商列才有（ST／015 分開、撐不到預交日）；非重點項目內容不變
+                **{k: a[k] for k in low_stock.PRIORITY_VIEW_KEYS if k in a},
             }
             for a in alerts
         ],
@@ -89,6 +91,7 @@ async def get_low_stock_watchlist():
         "rows": rows,
         "low_count": sum(1 for r in rows if r["status"] == "low"),
         "last_suggested_at": low_stock.last_suggested_at(),
+        "priority_refreshed_at": low_stock.priority_refreshed_at(),
         "st_inventory_loaded_at": db.get_setting("st_inventory_loaded_at", ""),
     }
 

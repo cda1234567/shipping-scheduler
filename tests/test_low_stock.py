@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 import unittest
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -123,6 +123,11 @@ class DbCase(unittest.TestCase):
         self.usage = {}
         self.info = {}
         self.on_order = {}
+        # 重點廠商（015）用：正航廠商、最近進貨廠商、015 領用 / 庫存
+        self.erp_suppliers = {}
+        self.erp_last_purchase = {}
+        self.gl_usage = {}
+        self.gl_qty = {}
         self.add_patchers = [
             patch.object(ls, "_query_on_order", lambda conn, parts, *a, **k: {
                 p: v for p, v in self.on_order.items() if p in parts}),
@@ -130,6 +135,15 @@ class DbCase(unittest.TestCase):
                 k: v for k, v in self.usage.items() if parts is None or k in parts}),
             patch.object(ls, "_query_part_info", lambda conn, parts, ware, today, cfg: {
                 p: dict(self.info.get(p, {})) for p in parts}),
+            patch.object(ls, "_query_priority_suppliers", lambda conn, keywords: {
+                cid: names for cid, names in self.erp_suppliers.items()
+                if ls.match_priority_supplier(names[0], keywords) or ls.match_priority_supplier(names[1], keywords)}),
+            patch.object(ls, "_query_priority_parts", lambda conn, ids: {
+                p: dict(v) for p, v in self.erp_last_purchase.items() if v["supplier_id"] in ids}),
+            patch.object(ls, "_query_gl_usage", lambda conn, ware, start, end, parts: {
+                p: v for p, v in self.gl_usage.items() if p in parts}),
+            patch.object(ls, "_query_ware_qty", lambda conn, ware, parts: {
+                p: v for p, v in self.gl_qty.items() if p in parts}),
         ]
         for p in self.add_patchers:
             p.start()
@@ -862,6 +876,244 @@ class MainFileFilterTests(DbCase):
             self.assertIsNone(ls.main_file_parts())
 
 
+class FakeCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, params))
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+class FakeConn:
+    def __init__(self, rows):
+        self.cur = FakeCursor(rows)
+
+    def cursor(self):
+        return self.cur
+
+
+class PriorityQueryTests(unittest.TestCase):
+    def test_gl_usage_takes_positive_and_filters_flag_331_ware(self):
+        conn = FakeConn([("oc-10823b ", -8600.0, 14), ("X-1", 50.0, 1)])
+        out = ls._query_gl_usage(conn, "015", date(2025, 11, 11), date(2026, 11, 11), ["OC-10823B", "X-1"])
+        self.assertEqual(out, {"OC-10823B": (8600.0, 14), "X-1": (0.0, 1)})
+        sql, params = conn.cur.calls[0]
+        self.assertIn("Flag = 331", sql)
+        self.assertIn("WareID = %s", sql)
+        self.assertEqual(params[:3], ("015", 20251111, 20261111))
+
+    def test_suppliers_match_keywords_flag_2(self):
+        conn = FakeConn([("P0175", "萬晉興業有限", "萬晉興業有限公司"), ("P0195", "崧嵐企業有限", ""),
+                         ("P0001", "其他電子", "其他電子")])
+        out = ls._query_priority_suppliers(conn, ["萬晉", "崧嵐"])
+        self.assertEqual(sorted(out), ["P0175", "P0195"])
+        self.assertIn("Flag = 2", conn.cur.calls[0][0])
+
+    def test_priority_parts_any_ware_last_purchase(self):
+        conn = FakeConn([("OC-10823B", 20261029, "P0175")])
+        out = ls._query_priority_parts(conn, ["P0175"])
+        self.assertEqual(out, {"OC-10823B": {"supplier_id": "P0175", "last_purchase_date": "2026-10-29"}})
+        sql = conn.cur.calls[0][0]
+        self.assertIn("Flag = 100", sql)
+        self.assertNotIn("WareID", sql)  # 任何倉
+
+    def test_ware_qty(self):
+        conn = FakeConn([("OC-10823B", 530.0)])
+        self.assertEqual(ls._query_ware_qty(conn, "015", ["OC-10823B"]), {"OC-10823B": 530.0})
+        self.assertEqual(conn.cur.calls[0][1], ("015", "OC-10823B"))
+
+    def test_gl_ware_id_follows_shortage_env(self):
+        with patch.object(erp_stock, "get_settings", lambda: {"ware_id": "001"}):
+            with patch.dict("os.environ", {"SHORTAGE_GL_WARE_ID": ""}):
+                self.assertEqual(ls._gl_ware_id(), "015")
+            with patch.dict("os.environ", {"SHORTAGE_GL_WARE_ID": "016"}):
+                self.assertEqual(ls._gl_ware_id(), "016")
+
+
+class PriorityGlTests(DbCase):
+    MAIN = {"A-1", "B-1", "W-1"}
+
+    def setUp(self):
+        super().setUp()
+        app = FastAPI()
+        app.include_router(low_stock_router.router, prefix="/api")
+        self.client = TestClient(app)
+        self.today = ls.local_now().date()
+        self.eta = (self.today + timedelta(days=54)).isoformat()
+        # 非重點廠商的關注料（ST 領用）
+        self.usage = {"A-1": (900.0, 5), "B-1": (90.0, 4), "W-1": (90.0, 4)}
+        ls.run_suggestion()
+        db.set_setting("low_stock_lookback_days", "365")
+        ls.recompute_all()
+        self.set_stock("A-1", 10)    # low
+        self.set_stock("B-1", 1000)  # ok
+        self.set_stock("W-1", 1000)
+        self.conn.execute("UPDATE low_stock_watch SET last_purchase_supplier='其他電子' WHERE part_number IN ('A-1','B-1')")
+        self.conn.commit()
+        ls.add_part("OTHER-X", threshold=100)  # 非重點、不在主檔（現有量 0 → low）
+        # 正航：萬晉 P0175、崧嵐 P0195、其他 P0001
+        self.erp_suppliers = {"P0175": ("萬晉興業有限", "萬晉興業有限公司"), "P0195": ("崧嵐企業有限", ""),
+                              "P0001": ("其他電子", "其他電子")}
+        self.erp_last_purchase = {
+            "OC-10823B": {"supplier_id": "P0175", "last_purchase_date": "2026-10-29"},
+            "OK-PART": {"supplier_id": "P0195", "last_purchase_date": "2026-10-01"},
+            "W-1": {"supplier_id": "P0195", "last_purchase_date": "2026-09-01"},
+            "OTHER-X": {"supplier_id": "P0001", "last_purchase_date": "2026-09-01"},
+            "A-1": {"supplier_id": "P0001", "last_purchase_date": "2026-09-01"},
+        }
+        self.gl_usage = {"OC-10823B": (8600.0, 14), "OK-PART": (8600.0, 14), "W-1": (3650.0, 20)}
+        self.gl_qty = {"OC-10823B": 530.0, "OK-PART": 6000.0, "W-1": 200.0}
+        self.on_order = {"OC-10823B": (6000.0, self.eta), "OK-PART": (6000.0, self.eta)}
+
+    def rows(self):
+        return {r["part_number"]: r for r in ls.list_rows(set(self.MAIN))}
+
+    def test_oc_10823b_listed_because_cannot_last_until_eta(self):
+        res = ls.refresh_priority_parts()
+        self.assertTrue(res["ok"], res)
+        stored = dict(self.conn.execute("SELECT * FROM low_stock_priority WHERE part_number='OC-10823B'").fetchone())
+        self.assertEqual((stored["supplier_id"], stored["gl_ware_id"], stored["gl_qty"]), ("P0175", "015", 530.0))
+        self.assertEqual((stored["st_usage_qty"], stored["gl_usage_qty"], stored["usage_qty"]), (0.0, 8600.0, 8600.0))
+        r = self.rows()["OC-10823B"]
+        self.assertTrue(r["is_priority_supplier"])
+        self.assertEqual(r["priority_supplier"], "萬晉")
+        self.assertEqual(r["last_purchase_supplier"], "萬晉興業有限")
+        self.assertTrue(r["priority_extra"])
+        self.assertFalse(r["in_watch"])
+        self.assertEqual((r["qty"], r["st_qty"], r["gl_qty"]), (530.0, 0.0, 530.0))
+        self.assertAlmostEqual(r["avg_daily_usage"], 8600 / 365)
+        self.assertEqual(r["threshold"], 248)  # 日均 23.56 × 預設 7 天 × 1.5 → 不是低於門檻
+        self.assertTrue(r["eta_short"])        # 原因：530 / 23.56 ≈ 22.5 天 < 54 天
+        self.assertEqual(r["eta_gap_days"], 32)
+        self.assertEqual(r["status"], "low")
+        self.assertEqual((r["on_order_qty"], r["next_expected_date"]), (6000.0, self.eta))
+        # watchlist / 只看重點廠商 / 側欄 alerts 都看得到
+        with patch.object(ls, "main_file_parts", lambda: set(self.MAIN)):
+            wl = self.client.get("/api/low-stock/watchlist").json()
+            alerts = self.client.get("/api/low-stock/alerts").json()
+        self.assertTrue(wl["priority_refreshed_at"])
+        self.assertEqual(wl["rows"][0]["part_number"], "OC-10823B")
+        by_alert = {a["part_number"]: a for a in alerts["alerts"]}
+        self.assertTrue(by_alert["OC-10823B"]["eta_short"])
+        self.assertEqual(by_alert["OC-10823B"]["gl_qty"], 530.0)
+        self.assertNotIn("eta_short", by_alert["A-1"])
+
+    def test_priority_part_with_enough_stock_not_listed(self):
+        ls.refresh_priority_parts()
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM low_stock_priority WHERE part_number='OK-PART'").fetchone())
+        self.assertNotIn("OK-PART", self.rows())  # 6000 / 23.56 ≈ 255 天 > 54 天，且高於門檻
+
+    def test_priority_without_on_order_only_threshold(self):
+        self.on_order = {}
+        ls.refresh_priority_parts()
+        self.assertNotIn("OC-10823B", self.rows())  # 沒在途：530 >= 門檻 248 → 不列
+        self.gl_qty["OC-10823B"] = 100.0
+        ls.refresh_priority_parts()
+        r = self.rows()["OC-10823B"]
+        self.assertEqual(r["status"], "low")
+        self.assertFalse(r["eta_short"])
+
+    def test_non_priority_not_in_main_still_filtered(self):
+        ls.refresh_priority_parts()
+        self.assertNotIn("OTHER-X", self.rows())
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM low_stock_priority WHERE part_number='OTHER-X'").fetchone())
+        with patch.object(ls, "main_file_parts", lambda: set(self.MAIN)):
+            parts = [a["part_number"] for a in self.client.get("/api/low-stock/alerts").json()["alerts"]]
+        self.assertNotIn("OTHER-X", parts)
+
+    def test_non_priority_rows_unchanged(self):
+        self.conn.execute("DELETE FROM low_stock_priority")
+        self.conn.commit()
+        before_rows = [r for r in ls.list_rows(set(self.MAIN)) if r["part_number"] in ("A-1", "B-1")]
+        before_alerts = [a for a in ls.list_alerts(set(self.MAIN)) if a["part_number"] in ("A-1", "B-1")]
+        with patch.object(ls, "main_file_parts", lambda: set(self.MAIN)):
+            before_api = [a for a in self.client.get("/api/low-stock/alerts").json()["alerts"] if a["part_number"] == "A-1"]
+        ls.refresh_priority_parts()
+        after_rows = [r for r in ls.list_rows(set(self.MAIN)) if r["part_number"] in ("A-1", "B-1")]
+        after_alerts = [a for a in ls.list_alerts(set(self.MAIN)) if a["part_number"] in ("A-1", "B-1")]
+        with patch.object(ls, "main_file_parts", lambda: set(self.MAIN)):
+            after_api = [a for a in self.client.get("/api/low-stock/alerts").json()["alerts"] if a["part_number"] == "A-1"]
+        self.assertEqual(after_rows, before_rows)
+        self.assertEqual(after_alerts, before_alerts)
+        self.assertEqual(after_api, before_api)
+        self.assertEqual(before_rows[0]["qty"], 10.0)
+        for key in ls.PRIORITY_VIEW_KEYS:
+            self.assertNotIn(key, after_rows[0])
+
+    def test_watched_priority_row_uses_max_usage_and_st_plus_gl(self):
+        ls.update_part("W-1", note="重要")
+        ls.refresh_priority_parts()
+        r = self.rows()["W-1"]
+        self.assertFalse(r["priority_extra"])
+        self.assertTrue(r["in_watch"])
+        self.assertEqual((r["qty"], r["st_qty"], r["gl_qty"]), (1200.0, 1000.0, 200.0))
+        self.assertAlmostEqual(r["avg_daily_usage"], 10.0)  # max(ST 90, 015 3650) / 365
+        self.assertEqual(r["threshold"], 105)                # 10 × 7 × 1.5
+        self.assertEqual(r["status"], "ok")
+        self.assertEqual(r["note"], "重要")
+        ls.update_part("W-1", threshold_qty=5000)            # 手動門檻照用
+        self.assertEqual(self.rows()["W-1"]["threshold"], 5000)
+        self.assertEqual(self.rows()["W-1"]["status"], "low")
+
+    def test_dismissed_priority_part_not_listed_and_watch_add(self):
+        ls.refresh_priority_parts()
+        res = self.client.post("/api/low-stock/items", json={"part_number": "OC-10823B"})
+        self.assertEqual(res.status_code, 200)
+        r = self.rows()["OC-10823B"]
+        self.assertTrue(r["in_watch"])        # 已在關注、但不在主檔 → 仍依條件列出，可編輯
+        self.assertTrue(r["priority_extra"])
+        self.assertEqual(self.client.post("/api/low-stock/items/update",
+                                          json={"part_number": "OC-10823B", "note": "n"}).status_code, 200)
+        self.assertEqual(self.client.post("/api/low-stock/items/remove", json={"part_number": "OC-10823B"}).status_code, 200)
+        self.assertNotIn("OC-10823B", self.rows())
+
+    def test_erp_failure_keeps_old_data(self):
+        self.assertTrue(ls.refresh_priority_parts()["ok"])
+        before = [dict(r) for r in self.conn.execute("SELECT * FROM low_stock_priority ORDER BY part_number")]
+        with patch.object(ls, "_query_gl_usage", side_effect=erp_stock.ErpUnavailable("ERP 查詢失敗：連線逾時")):
+            res = ls.refresh_priority_parts()
+        self.assertFalse(res["ok"])
+        self.assertIn("連線逾時", res["error"])
+        with patch.object(ls, "_erp_session", side_effect=RuntimeError("down")):
+            self.assertFalse(ls.refresh_priority_parts()["ok"])
+        after = [dict(r) for r in self.conn.execute("SELECT * FROM low_stock_priority ORDER BY part_number")]
+        self.assertEqual(after, before)
+        self.assertIn("OC-10823B", self.rows())
+        # 建議流程：重點廠商重算失敗不影響建議本身
+        with patch.object(ls, "_query_gl_usage", side_effect=RuntimeError("boom")):
+            summary = ls.run_suggestion()
+        self.assertFalse(summary["priority"]["ok"])
+        self.assertGreater(summary["total_rows"], 0)
+
+    def test_empty_list_produces_no_extra_rows(self):
+        ls.refresh_priority_parts()
+        ls.save_priority_suppliers([])
+        rows = self.rows()  # 尚未重算也不產生額外列
+        self.assertNotIn("OC-10823B", rows)
+        self.assertFalse(any(r["is_priority_supplier"] for r in rows.values()))
+        self.assertTrue(all("gl_qty" not in r for r in rows.values()))
+        self.assertTrue(ls.refresh_priority_parts()["ok"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM low_stock_priority").fetchone()[0], 0)
+
+    def test_suggest_and_st_sync_call_refresh(self):
+        summary = ls.run_suggestion()
+        self.assertTrue(summary["priority"]["ok"])
+        self.assertIn("OC-10823B", self.rows())
+        root = Path(__file__).resolve().parents[1]
+        sync = (root / "app" / "services" / "st_erp_sync.py").read_text(encoding="utf-8")
+        self.assertIn("low_stock.refresh_on_order()", sync)
+        self.assertIn("low_stock.refresh_priority_parts(actor)", sync)
+
+    def test_list_rows_never_calls_erp(self):
+        ls.refresh_priority_parts()
+        with patch.object(ls, "_erp_session", side_effect=AssertionError("no ERP")):
+            self.assertIn("OC-10823B", self.rows())
+
+
 class FrontendWiringTests(unittest.TestCase):
     def test_tab_module_and_notice_wired(self):
         root = Path(__file__).resolve().parents[1]
@@ -896,6 +1148,12 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("趕交期注意", module)
         css = (root / "static" / "style.css").read_text(encoding="utf-8")
         self.assertIn(".low-stock-row.priority-supplier", css)
+        # 重點廠商 015：現有量分開顯示、撐不到預交日、額外列改「加入關注」
+        self.assertIn("gl_qty", module)
+        self.assertIn("撐不到", module)
+        self.assertIn('data-act="watch-add"', module)
+        self.assertIn("加入關注", module)
+        self.assertIn(".low-stock-eta-short", css)
 
 
 if __name__ == "__main__":

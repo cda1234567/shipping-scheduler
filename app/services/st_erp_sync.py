@@ -111,6 +111,11 @@ def sync_st_inventory_from_erp(actor: str = ERP_ACTOR) -> dict:
             low_stock.refresh_on_order()
         except Exception:
             logger.warning("同步後刷新低庫存在途量失敗", exc_info=True)
+        try:  # 重點廠商 015 庫存與領用重算，同樣獨立處理（失敗保留舊資料）
+            from . import low_stock
+            low_stock.refresh_priority_parts(actor)
+        except Exception:
+            logger.warning("同步後重算低庫存重點廠商失敗", exc_info=True)
         return {
             "ok": True,
             "source": ST_SOURCE_ERP,
