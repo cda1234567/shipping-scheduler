@@ -97,9 +97,21 @@ CREATE TABLE IF NOT EXISTS low_stock_priority (
     on_order_qty       REAL,
     next_expected_date TEXT NOT NULL DEFAULT '',
     on_order_note      TEXT NOT NULL DEFAULT '',
-    refreshed_at       TEXT NOT NULL DEFAULT ''
+    refreshed_at       TEXT NOT NULL DEFAULT '',
+    st_recent_usage_qty  REAL NOT NULL DEFAULT 0,
+    st_recent_bill_count INTEGER NOT NULL DEFAULT 0,
+    gl_recent_usage_qty  REAL NOT NULL DEFAULT 0,
+    gl_recent_bill_count INTEGER NOT NULL DEFAULT 0
 );
 """
+
+# 舊 DB 的 low_stock_priority 補欄位用（近 suggest_lookback_days 天 ST／015 淨領用與單據數，判斷常用料）
+LOW_STOCK_PRIORITY_MIGRATION_COLUMNS = (
+    ("st_recent_usage_qty", "REAL NOT NULL DEFAULT 0"),
+    ("st_recent_bill_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("gl_recent_usage_qty", "REAL NOT NULL DEFAULT 0"),
+    ("gl_recent_bill_count", "INTEGER NOT NULL DEFAULT 0"),
+)
 
 _CREATE_SQL = LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + """
 CREATE TABLE IF NOT EXISTS erp_transfers (
@@ -824,6 +836,10 @@ def _migrate_low_stock_columns(conn) -> None:
     for name, col_type in LOW_STOCK_MIGRATION_COLUMNS:
         if name not in cols:
             conn.execute(f"ALTER TABLE low_stock_watch ADD COLUMN {name} {col_type}")
+    prio_cols = {r[1] for r in conn.execute("PRAGMA table_info(low_stock_priority)").fetchall()}
+    for name, col_type in LOW_STOCK_PRIORITY_MIGRATION_COLUMNS:
+        if prio_cols and name not in prio_cols:
+            conn.execute(f"ALTER TABLE low_stock_priority ADD COLUMN {name} {col_type}")
 
 
 def ensure_low_stock_table() -> None:

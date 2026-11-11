@@ -1113,6 +1113,77 @@ class PriorityGlTests(DbCase):
         with patch.object(ls, "_erp_session", side_effect=AssertionError("no ERP")):
             self.assertIn("OC-10823B", self.rows())
 
+    def _windowed(self, full, recent):
+        """依查詢起日回不同窗口：近 suggest_lookback_days（90）天回 recent，其餘（lookback 365 天）回 full。"""
+        recent_start = self.today - timedelta(days=90)
+
+        def query(conn, ware, start, end, parts=None):
+            src = recent if start == recent_start else full
+            return {p: v for p, v in src.items() if parts is None or p in parts}
+        return query
+
+    def test_one_off_priority_parts_not_listed(self):
+        # 一單一買：015 現有量 0、近 90 天只有 1–2 張單據 → 永遠低於門檻，但不是常用料 → 不列
+        for i, src in enumerate(("P0175", "P0195", "P0175", "P0195")):
+            self.erp_last_purchase[f"ONE-{i}"] = {"supplier_id": src, "last_purchase_date": "2019-05-01"}
+        gl_full = dict(self.gl_usage, **{"ONE-0": (500.0, 1), "ONE-1": (800.0, 2), "ONE-3": (300.0, 5)})
+        gl_recent = dict(self.gl_usage, **{"ONE-0": (500.0, 1), "ONE-1": (800.0, 2), "ONE-3": (300.0, 2)})
+        st_full = dict(self.usage, **{"ONE-2": (120.0, 2), "ONE-3": (50.0, 4)})
+        st_recent = dict(self.usage, **{"ONE-2": (120.0, 2), "ONE-3": (-10.0, 4)})  # ST 4 張但淨領用 ≤ 0
+        with patch.object(ls, "_query_gl_usage", self._windowed(gl_full, gl_recent)), \
+                patch.object(ls, "_query_usage", self._windowed(st_full, st_recent)):
+            self.assertTrue(ls.refresh_priority_parts()["ok"])
+        stored = {r["part_number"]: dict(r) for r in self.conn.execute("SELECT * FROM low_stock_priority")}
+        self.assertEqual((stored["ONE-1"]["gl_bill_count"], stored["ONE-1"]["gl_recent_bill_count"]), (2, 2))
+        self.assertEqual((stored["ONE-3"]["gl_bill_count"], stored["ONE-3"]["gl_recent_bill_count"]), (5, 2))
+        self.assertEqual((stored["ONE-3"]["st_recent_bill_count"], stored["ONE-3"]["st_recent_usage_qty"]), (4, -10.0))
+        rows = self.rows()
+        for i in range(4):
+            self.assertIn(f"ONE-{i}", stored)
+            self.assertNotIn(f"ONE-{i}", rows)
+        # 單看門檻其實是低於門檻（現有量 0），擋下的只有頻率條件
+        prec, word = ls._priority_records(ls.get_priority_suppliers())["ONE-1"]
+        view = ls._priority_view(prec, word, None, 0.0, ls.get_config(), ls.get_priority_suppliers(), self.today)
+        self.assertEqual(view["status"], "low")
+        self.assertFalse(ls._priority_frequent(prec, ls.get_config()))
+        self.assertIn("OC-10823B", rows)  # 常用料照列
+
+    def test_oc_10823b_recent_three_bills_listed(self):
+        # 線上情境：015 近 90 天 Flag 331 3 張（2026-09-03 ×2、2026-10-13），共 1,600；撐不到預交日 → 仍列入
+        self.on_order = {"OC-10823B": (6000.0, "2027-01-04")}
+        gl_recent = dict(self.gl_usage, **{"OC-10823B": (1600.0, 3)})
+        with patch.object(ls, "_query_gl_usage", self._windowed(self.gl_usage, gl_recent)):
+            self.assertTrue(ls.refresh_priority_parts()["ok"])
+        stored = dict(self.conn.execute("SELECT * FROM low_stock_priority WHERE part_number='OC-10823B'").fetchone())
+        self.assertEqual((stored["gl_recent_bill_count"], stored["gl_recent_usage_qty"]), (3, 1600.0))
+        self.assertEqual((stored["gl_bill_count"], stored["gl_usage_qty"]), (14, 8600.0))  # 日均仍用 365 天窗口
+        r = self.rows()["OC-10823B"]
+        self.assertTrue(r["priority_extra"])
+        self.assertTrue(r["eta_short"])
+        self.assertEqual(r["status"], "low")
+        # 最少單據數調高到 4 → 不再是常用料
+        ls.save_config({"min_bills": 4})
+        self.assertNotIn("OC-10823B", self.rows())
+
+    def test_watched_main_priority_row_ignores_frequency(self):
+        gl_recent = dict(self.gl_usage, **{"W-1": (30.0, 1)})
+        with patch.object(ls, "_query_gl_usage", self._windowed(self.gl_usage, gl_recent)):
+            ls.refresh_priority_parts()
+        r = self.rows()["W-1"]
+        self.assertTrue(r["in_watch"])
+        self.assertFalse(r["priority_extra"])
+        self.assertTrue(r["is_priority_supplier"])
+
+    def test_priority_table_migration_adds_recent_columns(self):
+        self.conn.execute("DROP TABLE low_stock_priority")
+        self.conn.execute("CREATE TABLE low_stock_priority (part_number TEXT PRIMARY KEY, gl_qty REAL NOT NULL DEFAULT 0)")
+        self.conn.execute("INSERT INTO low_stock_priority(part_number, gl_qty) VALUES('OLD-1', 0)")
+        db.ensure_low_stock_table()
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(low_stock_priority)").fetchall()}
+        self.assertTrue({"st_recent_usage_qty", "st_recent_bill_count", "gl_recent_usage_qty", "gl_recent_bill_count"} <= cols)
+        old = dict(self.conn.execute("SELECT * FROM low_stock_priority WHERE part_number='OLD-1'").fetchone())
+        self.assertEqual((old["gl_recent_bill_count"], old["st_recent_bill_count"]), (0, 0))
+
 
 class FrontendWiringTests(unittest.TestCase):
     def test_tab_module_and_notice_wired(self):

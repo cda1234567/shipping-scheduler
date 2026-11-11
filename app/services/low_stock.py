@@ -781,6 +781,7 @@ _PRIORITY_COLUMNS = (
     "st_usage_qty", "st_bill_count", "gl_ware_id", "gl_usage_qty", "gl_bill_count", "gl_qty",
     "usage_qty", "avg_daily_usage", "lookback_days", "planned_lead_days", "actual_lead_days",
     "delay_days", "delay_samples", "on_order_qty", "next_expected_date", "on_order_note", "refreshed_at",
+    "st_recent_usage_qty", "st_recent_bill_count", "gl_recent_usage_qty", "gl_recent_bill_count",
 )
 
 
@@ -788,7 +789,8 @@ def refresh_priority_parts(actor: str = "system") -> dict:
     """從正航（唯讀）重算重點廠商料號並整批覆寫本機 low_stock_priority。永遠不丟例外。
 
     廠商：名單關鍵字比對 comCustomer(Flag=2) → 最近一張進貨（Flag 100，任何倉）是這些廠商的料號。
-    用量 = max(ST 領用, 015 倉 Flag 331 領用)，期間沿用 lookback_days；另存 015 現有量、交期統計、在途量。
+    用量 = max(ST 領用, 015 倉 Flag 331 領用)，期間沿用 lookback_days；另存 015 現有量、交期統計、在途量，
+    以及近 suggest_lookback_days 天 ST／015 的淨領用與單據數（list_rows 判斷額外列是否為常用料）。
     ERP 任何失敗：不動本機舊資料，回傳 ok=False。名單為空：清空此表（不需 ERP）。
     """
     try:
@@ -804,6 +806,7 @@ def refresh_priority_parts(actor: str = "system") -> dict:
         today = local_now().date()
         lookback = int(cfg["lookback_days"])
         start = today - timedelta(days=lookback)
+        suggest_start = today - timedelta(days=int(cfg["suggest_lookback_days"]))  # 常用料頻率判斷用
         ware_id = erp_stock.get_settings()["ware_id"]
         gl_ware = _gl_ware_id()
         with db.get_conn() as conn:
@@ -822,6 +825,11 @@ def refresh_priority_parts(actor: str = "system") -> dict:
                 p for p in parts
                 if st_usage.get(p, (0.0, 0))[0] > 0 or gl_usage.get(p, (0.0, 0))[0] > 0 or p in watch_parts
             ]
+            if suggest_start == start:
+                st_recent, gl_recent = st_usage, gl_usage
+            else:
+                st_recent = _query_usage(erp, ware_id, suggest_start, today, targets) if targets else {}
+                gl_recent = _query_gl_usage(erp, gl_ware, suggest_start, today, targets) if targets else {}
             gl_qty = _query_ware_qty(erp, gl_ware, targets) if targets else {}
             info = _query_part_info(erp, targets, ware_id, today, cfg) if targets else {}
             on_order = _fetch_on_order(erp, targets, today, cfg)
@@ -832,6 +840,8 @@ def refresh_priority_parts(actor: str = "system") -> dict:
         for part in targets:
             st_net, st_bills = st_usage.get(part, (0.0, 0))
             gl_net, gl_bills = gl_usage.get(part, (0.0, 0))
+            st_recent_net, st_recent_bills = st_recent.get(part, (0.0, 0))
+            gl_recent_net, gl_recent_bills = gl_recent.get(part, (0.0, 0))
             usage = max(max(float(st_net), 0.0), float(gl_net))
             meta = part_supplier[part]
             short, full = suppliers.get(meta["supplier_id"], ("", ""))
@@ -853,6 +863,8 @@ def refresh_priority_parts(actor: str = "system") -> dict:
                 "delay_days": pinfo.get("delay_days"), "delay_samples": int(pinfo.get("delay_samples") or 0),
                 "on_order_qty": float(oo_qty), "next_expected_date": oo_date, "on_order_note": oo_note,
                 "refreshed_at": now, "part_number": part,
+                "st_recent_usage_qty": float(st_recent_net), "st_recent_bill_count": int(st_recent_bills),
+                "gl_recent_usage_qty": float(gl_recent_net), "gl_recent_bill_count": int(gl_recent_bills),
             })
         with db.get_conn() as conn:
             conn.execute("DELETE FROM low_stock_priority")
@@ -1265,9 +1277,20 @@ def _priority_view(
     return view
 
 
-def _priority_listed(view: dict) -> bool:
-    """額外列（不在關注清單或不在主檔）只在「現有量低於門檻」或「撐不到預交日」時列入。"""
-    if not view["enabled"]:
+def _priority_frequent(prec: dict, cfg: Dict[str, float]) -> bool:
+    """常用料：近 suggest_lookback_days 天 ST 或 015 任一來源單據數 ≥ min_bills 且該來源淨領用 > 0（同建議候選規則）。"""
+    min_bills = cfg["min_bills"]
+    return any(
+        int(prec.get(f"{src}_recent_bill_count") or 0) >= min_bills and float(prec.get(f"{src}_recent_usage_qty") or 0) > 0
+        for src in ("st", "gl")
+    )
+
+
+def _priority_listed(view: dict, prec: dict, cfg: Dict[str, float]) -> bool:
+    """額外列（不在關注清單或不在主檔）須先是常用料，再「現有量低於門檻」或「撐不到預交日」才列入。
+
+    一單一買、進來就用掉的料現有量常為 0，永遠低於門檻，不先篩頻率會灌爆清單。"""
+    if not view["enabled"] or not _priority_frequent(prec, cfg):
         return False
     threshold = view["threshold"]
     return view["eta_short"] or (threshold is not None and view["qty"] < threshold)
@@ -1277,7 +1300,8 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
     """所有未移除的關注料號（含現有量與狀態），重點廠商在前，再來低庫存，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。
 
     重點廠商料號（low_stock_priority，廠商符合目前名單）改用 ST + 015 的用量與現有量；
-    不在關注清單或不在主檔的重點廠商料，只有低於門檻或撐不到預交日才額外列入（使用者移除過的不列）。"""
+    不在關注清單或不在主檔的重點廠商料，須為常用料（近 suggest_lookback_days 天 ST 或 015 單據數 ≥ min_bills），
+    且低於門檻或撐不到預交日才額外列入（使用者移除過的不列）。"""
     db.ensure_low_stock_table()
     if main_parts is _UNSET:
         main_parts = main_file_parts()
@@ -1313,7 +1337,7 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
                 continue
             prec, word = prio[part]
             view = _priority_view(prec, word, watch_by_part.get(part), float(stock.get(part, 0.0)), cfg, priority, today)
-            if _priority_listed(view):
+            if _priority_listed(view, prec, cfg):
                 view["priority_extra"] = True
                 views.append(view)
     views = with_moq(views)
