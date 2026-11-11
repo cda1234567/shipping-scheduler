@@ -407,9 +407,12 @@ class ShortageListTests(Base):
         _, p = self.parts()
         self.assertEqual((p["PK-1"]["suggested_qty"], p["PK-1"]["moq_adjusted"]), (0, False))
         self.assertEqual((p["AC-1"]["suggested_qty"], p["AC-1"]["moq"], p["AC-1"]["moq_source"]), (5, 0, "none"))
-        # 訂單分配以調整後的量為準：多買的記成備品
-        extra = [a for a in ec["allocations"] if a["kind"] == "extra"]
-        self.assertEqual(sum(a["qty"] for a in extra), 920)
+        # 訂單分配以調整後的量為準：多於缺的部分記成「MOQ 進位」（不再有 kind=extra）
+        self.assertFalse([a for a in ec["allocations"] if a["kind"] == "extra"])
+        moq_round = [a for a in ec["allocations"] if a["kind"] == "moq_round"]
+        self.assertEqual(sum(a["qty"] for a in moq_round), 920)
+        self.assertEqual((ec["overage_qty"], ec["overage_reason"], ec["moq_round_qty"], ec["user_over_qty"]), (920, "moq", 920, 0))
+        self.assertEqual((oc["overage_qty"], oc["overage_reason"]), (0, ""))
 
     def test_moq_estimated_from_latest_receipt(self):
         # 最近一次進貨量優先於本站 MOQ / 正航 MinPurch；沒有進貨紀錄的料號走原本的退路
@@ -568,10 +571,21 @@ class AllocateTests(unittest.TestCase):
         orders = [aorder(1, "B", "2026-12-28", 100), aorder(2, "A", "2026-12-10", 40), aorder(3, "C", "2027-01-05", 10)]
         self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 0, 50)), [(2, 40.0, "order"), (1, 10.0, "order")])
 
-    def test_extra_when_overbuying(self):
+    def test_overbuying_is_moq_round_or_user_over_never_extra(self):
         orders = [aorder(1, "A", "2026-12-10", 40)]
         out = sp.allocate_purchase_to_orders(orders, 10, 50)
-        self.assertEqual(self.pairs(out), [(1, 30.0, "order"), (0, 20.0, "extra")])
+        self.assertEqual(self.pairs(out), [(1, 30.0, "order"), (0, 20.0, "user_over")])
+        out = sp.allocate_purchase_to_orders(orders, 10, 50, moq_room=15)
+        self.assertEqual(self.pairs(out), [(1, 30.0, "order"), (0, 15.0, "moq_round"), (0, 5.0, "user_over")])
+
+    def test_pending_gap_is_pending_transfer(self):
+        # 待調撥 30 > ST 20：ST 全留給待調撥，訂單 40 全買，再補前批待調撥不足 10
+        orders = [aorder(1, "A", "2026-12-10", 40)]
+        out = sp.allocate_purchase_to_orders(orders, 20, 50, pending=30)
+        self.assertEqual(self.pairs(out), [(1, 40.0, "order"), (0, 10.0, "pending_transfer")])
+        # 待調撥 10 < ST 20：剩 ST 10 先抵訂單
+        out = sp.allocate_purchase_to_orders(orders, 20, 30, pending=10)
+        self.assertEqual(self.pairs(out), [(1, 30.0, "order")])
 
     def test_empty_dates_last_and_stable(self):
         orders = [aorder(1, "N1", "", 10), aorder(2, "D", "2026-12-10", 10), aorder(3, "N2", "", 10)]
@@ -585,7 +599,7 @@ class AllocateTests(unittest.TestCase):
     def test_st_covers_everything_and_zero_purchase(self):
         orders = [aorder(1, "A", "2026-12-10", 40)]
         self.assertEqual(sp.allocate_purchase_to_orders(orders, 100, 0), [])
-        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 100, 5)), [(0, 5.0, "extra")])
+        self.assertEqual(self.pairs(sp.allocate_purchase_to_orders(orders, 100, 5)), [(0, 5.0, "user_over")])
 
     def test_same_order_rows_merge(self):
         orders = [aorder(1, "A", "2026-12-10", 10), aorder(1, "A", "2026-12-10", 15)]
@@ -609,14 +623,16 @@ class AllocationFlowTests(ShortageListTests):
         self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 100)]), group(2, "B", "2026-12-28", [item("AC-1", 50)])]
         self.st = {"AC-1": 30}
         raw = [{"supplier_id": "S2", "remark": "", "lines": [
-            {"part_number": "ac-1", "qty": 130, "price": 1, "pre_in_date": "2026-11-01",
+            {"part_number": "ac-1", "qty": 130, "price": 1, "pre_in_date": "2026-11-01", "qty_edited": True,
              "allocations": [{"order_id": 99, "qty": 1}]},
             {"part_number": "ZZ-9", "qty": 7, "price": 1, "pre_in_date": "2026-11-01"}]}]
         out = sp.prepare_groups(raw, [1, 2])
         self.assertEqual(out[0]["alloc_source"], "shortage_po")
         la, lz = out[0]["lines"]
         self.assertEqual([(a["order_id"], a["qty"], a["kind"]) for a in la["allocations"]],
-                         [(1, 70.0, "order"), (2, 50.0, "order"), (0, 10.0, "extra")])  # 客戶端送的 99 被忽略
+                         [(1, 70.0, "order"), (2, 50.0, "order"), (0, 10.0, "user_over")])  # 客戶端送的 99 被忽略
+        self.assertEqual((la["overage_qty"], la["overage_reason"], la["user_over_qty"]), (10, "user", 10))
+        self.assertNotIn("shortage_snapshot", lz)
         self.assertEqual([(a["kind"], a["qty"]) for a in lz["allocations"]], [("manual", 7.0)])
         # 沒有 order_ids → 全部 manual
         out = sp.prepare_groups(raw, None)
@@ -672,12 +688,13 @@ class SequentialAllocationTests(AllocationFlowTests):
         self.st = {"AC-1": 30}  # 淨需求 120：A 70、B 50
         raw = [
             {"supplier_id": "S2", "lines": [{"part_number": "AC-1", "qty": 40, "price": 1, "pre_in_date": "2026-11-01"}]},
-            {"supplier_id": "S3", "lines": [{"part_number": "ac-1", "qty": 90, "price": 1, "pre_in_date": "2026-11-01"}]},
+            {"supplier_id": "S3", "lines": [{"part_number": "ac-1", "qty": 90, "price": 1, "pre_in_date": "2026-11-01", "qty_edited": True}]},
         ]
         out = sp.prepare_groups(raw, [1, 2])
         pairs = lambda g: [(a["order_id"], a["qty"], a["kind"]) for a in out[g]["lines"][0]["allocations"]]
         self.assertEqual(pairs(0), [(1, 40.0, "order")])
-        self.assertEqual(pairs(1), [(1, 30.0, "order"), (2, 50.0, "order"), (0, 10.0, "extra")])
+        self.assertEqual(pairs(1), [(1, 30.0, "order"), (2, 50.0, "order"), (0, 10.0, "user_over")])
+        self.assertEqual((out[0]["lines"][0]["overage_qty"], out[1]["lines"][0]["overage_qty"]), (0, 10))
         # 兩行合計 = 淨需求 120 + 超買 10，ST 沒有被重複扣
         total = sum(a["qty"] for g in out for a in g["lines"][0]["allocations"])
         self.assertEqual(total, 130.0)

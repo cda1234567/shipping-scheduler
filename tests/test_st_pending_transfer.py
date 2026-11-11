@@ -288,9 +288,11 @@ class ShortageListPendingTests(ComputeBase):
         self.assertEqual(res["pending_transfer"]["cutoff_code"], "10-3")
 
     def test_allocation_context_uses_st_minus_pending(self):
+        # v2026.11.11.2：ST 與待調撥分開存，分配時才用 ST − 待調撥；缺 / 建議量與缺料清單同一套
         ctx = sp._allocation_context([264])
-        self.assertEqual(ctx["EC-10025A"]["st"], 0)
-        self.assertEqual(ctx["EC-20117A"]["st"], 2000)
+        a, b = ctx["EC-10025A"], ctx["EC-20117A"]
+        self.assertEqual((a["st"] - a["pending"], a["shortage"], a["suggested_qty"]), (0, 10000, 10000))
+        self.assertEqual((b["st"] - b["pending"], b["shortage"]), (2000, 0))
 
 
 class RouterTests(ComputeBase):

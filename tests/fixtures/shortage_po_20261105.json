@@ -1,0 +1,763 @@
+{
+ "note": "PO-20261105001 重現用：從 system_backup_20261105_020018.db 抽出（只留訂單 / ST / 扣量 / 補料，不含設定密碼雜湊等）",
+ "settings": {
+  "st_inventory_loaded_at": "2026-11-04T21:44:52"
+ },
+ "orders": [
+  {
+   "id": 4,
+   "code": "11-5",
+   "status": "dispatched",
+   "archived_at": "2026-11-04T23:25:20.299664",
+   "model": "T7U",
+   "pcb": "PCB-A1098",
+   "po_number": "4500058961",
+   "order_qty": 320.0,
+   "ship_date": "2026-03-06",
+   "delivery_date": "2026-03-06",
+   "created_at": "2026-03-11T15:23:03.811177"
+  },
+  {
+   "id": 209,
+   "code": "10-3",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "OT35",
+   "pcb": "SPCB-A1134",
+   "po_number": "4500059587",
+   "order_qty": 15.0,
+   "ship_date": "2026-10-15",
+   "delivery_date": "2026-10-15",
+   "created_at": "2026-09-18T10:28:22.251821"
+  },
+  {
+   "id": 211,
+   "code": "10-4",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T6U",
+   "pcb": "PCB-A1124",
+   "po_number": "4500059613",
+   "order_qty": 200.0,
+   "ship_date": "2026-11-06",
+   "delivery_date": "2026-11-06",
+   "created_at": "2026-09-21T10:55:28.581296"
+  },
+  {
+   "id": 218,
+   "code": "10-5",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TA7-2",
+   "pcb": "PCB-A1128",
+   "po_number": "4500059613",
+   "order_qty": 200.0,
+   "ship_date": "2026-12-04",
+   "delivery_date": "2026-12-04",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 219,
+   "code": "10-6",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TX2-S1",
+   "pcb": "PCB-A1134",
+   "po_number": "4500059613",
+   "order_qty": 100.0,
+   "ship_date": "2026-12-04",
+   "delivery_date": "2026-12-04",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 220,
+   "code": "10-8",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T7U",
+   "pcb": "PCB-A1098",
+   "po_number": "4500059613",
+   "order_qty": 320.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 221,
+   "code": "10-9",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T8U",
+   "pcb": "PCB-A1095",
+   "po_number": "4500059613",
+   "order_qty": 520.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 222,
+   "code": "10-10",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TA7-3",
+   "pcb": "PCB-A1129",
+   "po_number": "4500059613",
+   "order_qty": 200.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 223,
+   "code": "10-11",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TA7-9",
+   "pcb": "PCB-A1132",
+   "po_number": "4500059613",
+   "order_qty": 200.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 224,
+   "code": "10-7",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TD4",
+   "pcb": "PCB-A1126",
+   "po_number": "4500059613",
+   "order_qty": 100.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-09-30T15:46:03.370548"
+  },
+  {
+   "id": 234,
+   "code": "11-1",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T356789IU",
+   "pcb": "PCB-A1121 / PCB-A1122",
+   "po_number": "4500059651",
+   "order_qty": 192.0,
+   "ship_date": "2027-01-29",
+   "delivery_date": "2027-01-29",
+   "created_at": "2026-10-21T09:45:19.062962"
+  },
+  {
+   "id": 235,
+   "code": "11-2",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T356789IU+LCD",
+   "pcb": "PCB-A1123",
+   "po_number": "4500059651",
+   "order_qty": 144.0,
+   "ship_date": "2027-01-29",
+   "delivery_date": "2027-01-29",
+   "created_at": "2026-10-21T09:45:19.062962"
+  },
+  {
+   "id": 262,
+   "code": "11-4",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TA7-7",
+   "pcb": "PCB-A1131",
+   "po_number": "4500059664",
+   "order_qty": 200.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-11-04T15:21:41.344152"
+  },
+  {
+   "id": 263,
+   "code": "11-3",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "TA7-6",
+   "pcb": "SPCB-A1136",
+   "po_number": "4500059672",
+   "order_qty": 15.0,
+   "ship_date": "2026-12-16",
+   "delivery_date": "2026-12-16",
+   "created_at": "2026-11-04T15:21:41.344152"
+  },
+  {
+   "id": 264,
+   "code": "11-5",
+   "status": "dispatched",
+   "archived_at": "",
+   "model": "T356789IU",
+   "pcb": "PCB-A1121 / PCB-A1122",
+   "po_number": "4500059674",
+   "order_qty": 192.0,
+   "ship_date": "2026-12-31",
+   "delivery_date": "2026-12-31",
+   "created_at": "2026-11-04T15:21:41.344152"
+  }
+ ],
+ "st": [
+  {
+   "part_number": "EC-10032A",
+   "stock_qty": 60000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-10041A",
+   "stock_qty": 20000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20087A",
+   "stock_qty": 40000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20090A",
+   "stock_qty": 4000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20097A",
+   "stock_qty": 120000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20117A",
+   "stock_qty": 180000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20136A",
+   "stock_qty": 70000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  },
+  {
+   "part_number": "EC-20137A",
+   "stock_qty": 20000.0,
+   "loaded_at": "2026-11-04T21:44:52.425933"
+  }
+ ],
+ "consumptions": [
+  {
+   "order_id": 211,
+   "part_number": "EC-10032A",
+   "used_qty": 10000.0,
+   "stock_before": 80000.0,
+   "stock_after": 70000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-10032A",
+   "used_qty": 30000.0,
+   "stock_before": 70000.0,
+   "stock_after": 40000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-10032A",
+   "used_qty": 20000.0,
+   "stock_before": 40000.0,
+   "stock_after": 20000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10032A",
+   "used_qty": 10000.0,
+   "stock_before": 60000.0,
+   "stock_after": 50000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10032A",
+   "used_qty": 10000.0,
+   "stock_before": 60000.0,
+   "stock_after": 50000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 209,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 30000.0,
+   "stock_after": 20000.0,
+   "consumed_at": "2026-09-18T10:52:19",
+   "rolled_back_at": "2026-09-18T10:52:30.759884"
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 30000.0,
+   "stock_after": 20000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 20000.0,
+   "stock_after": 10000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 10000.0,
+   "stock_after": 0.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 20000.0,
+   "stock_after": 10000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10041A",
+   "used_qty": 10000.0,
+   "stock_before": 20000.0,
+   "stock_after": 10000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 209,
+   "part_number": "EC-20087A",
+   "used_qty": 4000.0,
+   "stock_before": 40000.0,
+   "stock_after": 36000.0,
+   "consumed_at": "2026-09-18T10:52:19",
+   "rolled_back_at": "2026-09-18T10:52:30.759884"
+  },
+  {
+   "order_id": 209,
+   "part_number": "EC-20087A",
+   "used_qty": 4000.0,
+   "stock_before": 40000.0,
+   "stock_after": 36000.0,
+   "consumed_at": "2026-09-18T11:02:32",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20087A",
+   "used_qty": 4000.0,
+   "stock_before": 36000.0,
+   "stock_after": 32000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20087A",
+   "used_qty": 20000.0,
+   "stock_before": 28000.0,
+   "stock_after": 8000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20087A",
+   "used_qty": 12000.0,
+   "stock_before": 8000.0,
+   "stock_after": -4000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20087A",
+   "used_qty": 8000.0,
+   "stock_before": 40000.0,
+   "stock_after": 32000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20087A",
+   "used_qty": 8000.0,
+   "stock_before": 40000.0,
+   "stock_after": 32000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20090A",
+   "used_qty": 1000.0,
+   "stock_before": 2000.0,
+   "stock_after": 1000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20090A",
+   "used_qty": 2000.0,
+   "stock_before": 0.0,
+   "stock_after": -2000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20090A",
+   "used_qty": 1000.0,
+   "stock_before": 4000.0,
+   "stock_after": 3000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20090A",
+   "used_qty": 1000.0,
+   "stock_before": 4000.0,
+   "stock_after": 3000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20097A",
+   "used_qty": 15000.0,
+   "stock_before": 75000.0,
+   "stock_after": 60000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20097A",
+   "used_qty": 75000.0,
+   "stock_before": 60000.0,
+   "stock_after": -15000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20097A",
+   "used_qty": 30000.0,
+   "stock_before": -15000.0,
+   "stock_after": -45000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20097A",
+   "used_qty": 15000.0,
+   "stock_before": 120000.0,
+   "stock_after": 105000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20097A",
+   "used_qty": 15000.0,
+   "stock_before": 120000.0,
+   "stock_after": 105000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20117A",
+   "used_qty": 10000.0,
+   "stock_before": 270000.0,
+   "stock_after": 260000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20117A",
+   "used_qty": 60000.0,
+   "stock_before": 230000.0,
+   "stock_after": 170000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20117A",
+   "used_qty": 70000.0,
+   "stock_before": 170000.0,
+   "stock_after": 100000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20117A",
+   "used_qty": 30000.0,
+   "stock_before": 180000.0,
+   "stock_after": 150000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20117A",
+   "used_qty": 30000.0,
+   "stock_before": 180000.0,
+   "stock_after": 150000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20136A",
+   "used_qty": 10000.0,
+   "stock_before": 60000.0,
+   "stock_after": 50000.0,
+   "consumed_at": "2026-09-21T11:04:40",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20136A",
+   "used_qty": 40000.0,
+   "stock_before": 50000.0,
+   "stock_after": 10000.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20136A",
+   "used_qty": 20000.0,
+   "stock_before": 10000.0,
+   "stock_after": -10000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20136A",
+   "used_qty": 10000.0,
+   "stock_before": 70000.0,
+   "stock_after": 60000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20136A",
+   "used_qty": 10000.0,
+   "stock_before": 70000.0,
+   "stock_after": 60000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20137A",
+   "used_qty": 16000.0,
+   "stock_before": 16000.0,
+   "stock_after": 0.0,
+   "consumed_at": "2026-10-14T15:07:59",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20137A",
+   "used_qty": 4000.0,
+   "stock_before": 0.0,
+   "stock_after": -4000.0,
+   "consumed_at": "2026-10-22T10:30:51",
+   "rolled_back_at": ""
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20137A",
+   "used_qty": 4000.0,
+   "stock_before": 20000.0,
+   "stock_after": 16000.0,
+   "consumed_at": "2026-11-04T16:07:17",
+   "rolled_back_at": "2026-11-04T16:10:44.132421"
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20137A",
+   "used_qty": 4000.0,
+   "stock_before": 20000.0,
+   "stock_after": 16000.0,
+   "consumed_at": "2026-11-04T16:17:24",
+   "rolled_back_at": ""
+  }
+ ],
+ "supplements": [
+  {
+   "order_id": 211,
+   "part_number": "EC-10032A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20087A",
+   "supplement_qty": 4000.0
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20090A",
+   "supplement_qty": 1000.0
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20097A",
+   "supplement_qty": 15000.0
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20117A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 211,
+   "part_number": "EC-20136A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-10032A",
+   "supplement_qty": 30000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-10041A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20087A",
+   "supplement_qty": 20000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20097A",
+   "supplement_qty": 75000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20117A",
+   "supplement_qty": 60000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20136A",
+   "supplement_qty": 40000.0
+  },
+  {
+   "order_id": 220,
+   "part_number": "EC-20137A",
+   "supplement_qty": 16000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-10032A",
+   "supplement_qty": 20000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-10041A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20087A",
+   "supplement_qty": 12000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20090A",
+   "supplement_qty": 2000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20097A",
+   "supplement_qty": 30000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20117A",
+   "supplement_qty": 70000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20136A",
+   "supplement_qty": 20000.0
+  },
+  {
+   "order_id": 234,
+   "part_number": "EC-20137A",
+   "supplement_qty": 4000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10032A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-10041A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20087A",
+   "supplement_qty": 8000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20090A",
+   "supplement_qty": 1000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20097A",
+   "supplement_qty": 15000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20117A",
+   "supplement_qty": 30000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20136A",
+   "supplement_qty": 10000.0
+  },
+  {
+   "order_id": 264,
+   "part_number": "EC-20137A",
+   "supplement_qty": 4000.0
+  }
+ ]
+}

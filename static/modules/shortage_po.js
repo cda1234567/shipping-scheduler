@@ -177,6 +177,7 @@ function toRow(p) {
     moqSource: p.moq_source || "",
     lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "", gcd: p.receipt_gcd, count: p.receipt_count, floor: p.moq_floor_applied },
     moqAdjusted: Boolean(p.moq_adjusted),
+    suggested: Number(p.suggested_qty) || 0, // 缺經 MOQ 調整後的建議量（伺服器算的，不會超過 max(缺, MOQ)）
     price: String(p.price ?? 0),
     currency: "", // 空 = 依該供應商 + 料號最近一張正航採購單自動判斷；NTD / USD = 手動
     date: p.pre_in_date || "",
@@ -353,6 +354,32 @@ function syncLinked() {
   return structural;
 }
 
+/** 採購量多於缺時拆成「MOQ 進位」與「使用者改量 / 後段加工連動」；回傳 { moq, user, linked, over }。 */
+export function overageParts(qty, needQty, suggested, { edited = false, linked = false } = {}) {
+  const q = Number(qty);
+  const need = Math.max(Number(needQty) || 0, 0);
+  const sugg = Math.max(Number(suggested) || 0, need);
+  const over = Number.isFinite(q) ? Math.max(q - need, 0) : 0;
+  const moq = Math.min(over, sugg - need);
+  const rest = over - moq;
+  return { over, moq, user: edited ? rest : 0, linked: !edited && linked ? rest : 0, unexplained: !edited && !linked ? rest : 0 };
+}
+
+/** 數量欄下方的多買說明：MOQ 進位 / 使用者改量 / 後段加工連動（加工行本身沒有缺料計算，不顯示）。 */
+export function overageNote(r) {
+  if (r.isLinked || !(Number(r.needQty) > 0)) return "";
+  const p = overageParts(r.qty, r.needQty, r.suggested, { edited: r.qtyEdited, linked: Boolean(r.linkedFrom?.length) });
+  const notes = [];
+  if (p.moq > 0) {
+    const few = r.moqSource === "last_receipt" && Number(r.lastReceipt?.count) === 1 ? "；MOQ 只依 1 張進貨推算，可能是上次整批的量，請確認" : "";
+    notes.push(`MOQ 進位：缺 ${fmtQty(r.needQty)}，MOQ ${fmtQty(r.moq)}，多買 ${fmtQty(p.moq)}${few}`);
+  }
+  if (p.user > 0) notes.push(`多買 ${fmtQty(p.user)}，原因：使用者改量`);
+  if (p.linked > 0) notes.push(`多買 ${fmtQty(p.linked)}，原因：後段加工連動`);
+  if (p.unexplained > 0) notes.push(`超過建議量 ${fmtQty(p.unexplained)}`);
+  return notes.join("；");
+}
+
 function linkNote(r) {
   if (r.linkedFrom?.length) {
     const from = r.linkedFrom.map(f => `${f.part}（×${fmtQty(f.ratio)}，${fmtQty(f.qty)}）`).join("、");
@@ -488,7 +515,8 @@ function rowHtml(r) {
     <td class="num">${fmtQty(r.onOrder)}</td>
     <td class="num ${r.needsPurchase ? "shortage-po-short" : ""}">${fmtQty(r.shortage)}</td>
     <td><input type="number" data-act="qty" class="num" min="0" step="any" value="${esc(r.qty)}" ${r.doneBill ? "disabled" : ""}>
-      ${r.needQty || r.moqSource ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource, r.lastReceipt))}</div>` : ""}</td>
+      ${r.needQty || r.moqSource ? `<div class="erp-po-hint ${r.moqAdjusted ? "shortage-po-adjusted" : ""}">${esc(moqHintText(r.needQty, r.moq, r.moqSource, r.lastReceipt))}</div>` : ""}
+      <div class="erp-po-hint shortage-po-adjusted shortage-po-overage" data-role="overage">${esc(overageNote(r))}</div></td>
     <td><input type="number" data-act="price" class="num" min="0" step="any" value="${esc(r.price)}" ${r.doneBill ? "disabled" : ""}></td>
     <td><select data-act="currency" ${r.doneBill ? "disabled" : ""}>
       ${CURRENCY_OPTIONS.map(([v, label]) => `<option value="${v}" ${(r.currency || "") === v ? "selected" : ""}>${label}</option>`).join("")}
@@ -604,7 +632,12 @@ function onGroupsInput(event) {
   const act = event.target.dataset?.act;
   const row = rowOf(event.target);
   if (!row) return;
-  if (act === "qty") { row.qty = event.target.value; row.qtyEdited = true; }
+  if (act === "qty") {
+    row.qty = event.target.value;
+    row.qtyEdited = true;
+    const note = event.target.closest("tr")?.querySelector('[data-role="overage"]');
+    if (note) note.textContent = overageNote(row);
+  }
   else if (act === "price") { row.price = event.target.value; row.priceEdited = true; }
   else return;
   if (act === "qty" && !row.isLinked && row.postprocess.length) {
@@ -621,6 +654,8 @@ function refreshLinkedInputs() {
     const row = _rows.find(r => r.part === tr.dataset.part);
     const input = tr.querySelector('input[data-act="qty"]');
     if (row && input && row.linkedFrom?.length && document.activeElement !== input) input.value = row.qty;
+    const note = tr.querySelector('[data-role="overage"]');
+    if (row && note) note.textContent = overageNote(row);
   });
 }
 
@@ -721,7 +756,12 @@ function buildGroups() {
         if (!(qty > 0)) throw new Error(`${r.part}：請填大於 0 的數量`);
         if (!Number.isFinite(price) || price < 0) throw new Error(`${r.part}：請填單價`);
         if (!r.date) throw new Error(`${r.part}：請填預計進貨日`);
-        return { part_number: r.part, qty, price, pre_in_date: r.date, ...(r.currency ? { currency: r.currency } : {}) };
+        return {
+          part_number: r.part, qty, price, pre_in_date: r.date, ...(r.currency ? { currency: r.currency } : {}),
+          // 只有使用者改過數量（或後段加工連動）才允許超過建議量；伺服器會擋沒有標記的超量
+          ...(r.qtyEdited ? { qty_edited: true } : {}),
+          ...(!r.qtyEdited && r.linkedFrom?.length ? { qty_linked: true } : {}),
+        };
       }),
     });
   }
@@ -759,6 +799,17 @@ function invalidatePreview() {
   if (note) note.hidden = previewIsCurrent();
 }
 
+/** 預覽 / 開單：伺服器存的每行計算依據（需求、待調撥、ST、缺、MOQ、建議量、最後數量、多買原因）。 */
+export function snapshotText(s) {
+  if (!s) return "";
+  const base = `需求 ${fmtQty(s.need)}，待調撥 ${fmtQty(s.pending_transfer)}，ST ${fmtQty(s.st)}，缺 ${fmtQty(s.shortage)}，` +
+    `MOQ ${s.moq ? fmtQty(s.moq) : "無"}，建議 ${fmtQty(s.suggested_qty)}，採購 ${fmtQty(s.qty)}`;
+  const over = [];
+  if (s.moq_round_qty > 0) over.push(`MOQ 進位多買 ${fmtQty(s.moq_round_qty)}`);
+  if (s.user_over_qty > 0) over.push(`多買 ${fmtQty(s.user_over_qty)}，原因：${s.overage_reason === "postprocess" ? "後段加工連動" : "使用者改量"}`);
+  return over.length ? `${base}（${over.join("；")}）` : base;
+}
+
 function cardHtml(r) {
   if (!r.ok) {
     return `<div class="shortage-po-card is-error"><strong class="mono">${esc(r.supplier_id)}</strong>　❌ ${esc(r.error)}</div>`;
@@ -775,7 +826,7 @@ function cardHtml(r) {
       <tbody>${r.lines.map(l => `<tr><td class="mono">${esc(l.part_number)}</td><td>${esc(l.product_name)}</td>
         <td class="num">${fmtQty(l.qty)}</td><td class="num">${fmtQty(l.price)}</td><td class="num">${fmtQty(l.amount)}</td>
         <td>${esc(l.pre_in_date)}</td></tr>
-        <tr class="shortage-po-alloc"><td colspan="6" class="erp-po-hint">${esc(allocationText(l.allocations))}</td></tr>`).join("")}</tbody></table>
+        <tr class="shortage-po-alloc"><td colspan="6" class="erp-po-hint">${esc(allocationText(l.allocations))}${l.shortage_snapshot ? `<br>${esc(snapshotText(l.shortage_snapshot))}` : ""}</td></tr>`).join("")}</tbody></table>
     <div class="erp-po-totals">${r.currency && r.currency !== "NTD" ? `${esc(r.currency)} ` : ""}未稅 <strong>${fmtQty(r.totals.sum_amount)}</strong>　稅額 <strong>${fmtQty(r.totals.sum_tax)}</strong>　合計 <strong>${fmtQty(r.totals.total)}</strong></div>
   </div>`;
 }

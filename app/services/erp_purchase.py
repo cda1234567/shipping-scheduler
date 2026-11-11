@@ -666,7 +666,8 @@ def _to_decimal(value: Any, label: str) -> Decimal:
         raise PoValidationError(f"{label}不是有效數字") from None
 
 
-ALLOC_KINDS = ("order", "extra", "manual")
+# extra（舊版缺料採購的多買列）v2026.11.11.2 起不再接受；舊單紀錄照原樣保留
+ALLOC_KINDS = ("order", "manual", "pending_transfer", "moq_round", "user_over")
 ALLOC_SOURCES = ("shortage_po", "manual_po")
 _ALLOC_EPS = Decimal("0.000001")
 
@@ -945,6 +946,7 @@ def normalize_request(req: Dict[str, Any]) -> Dict[str, Any]:
             "part_number": part, "qty": qty, "price": price, "pre_in_date": date_to_int(pre_in),
             "allocations": _normalize_allocations(raw.get("allocations"), qty, i),
             "currency": line_curr,
+            **({"shortage_snapshot": dict(raw["shortage_snapshot"])} if isinstance(raw.get("shortage_snapshot"), dict) else {}),
         })
     _resolve_allocation_orders(lines)
     return {
@@ -1342,6 +1344,8 @@ def _jsonable_lines(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "ml_amount": float(line.get("ml_amount", line["amount"])),
             "pre_in_date": f"{p // 10000:04d}-{p // 100 % 100:02d}-{p % 100:02d}",
             "allocations": [dict(a) for a in line.get("allocations") or []],
+            # 缺料採購：開單當下的需求 / 待調撥 / ST / 缺 / MOQ / 建議量 / 最後數量 / 多買原因
+            **({"shortage_snapshot": dict(line["shortage_snapshot"])} if line.get("shortage_snapshot") else {}),
         })
     return out
 

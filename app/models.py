@@ -377,7 +377,7 @@ class ErpPoAllocation(BaseModel):
     customer_po: str = ""
     ship_date: str = ""
     qty: float
-    kind: str = ""  # order | extra | manual（空值依 order_id 判斷）
+    kind: str = ""  # order | manual | pending_transfer | moq_round | user_over（空值依 order_id 判斷）
 
 
 class ErpPoLine(BaseModel):
@@ -387,6 +387,8 @@ class ErpPoLine(BaseModel):
     pre_in_date: str  # YYYY-MM-DD
     allocations: Optional[list[ErpPoAllocation]] = None
     currency: Optional[str] = None  # NTD / USD；空 = 依該料號 + 供應商最近一張採購單自動判斷
+    qty_edited: bool = False  # 缺料採購：使用者在畫面上改過數量（才允許超過 MOQ 調整後的建議量）
+    qty_linked: bool = False  # 缺料採購：數量由後段加工連動（鈞洋件 × 比例）決定
 
 
 class ErpPoRequest(BaseModel):

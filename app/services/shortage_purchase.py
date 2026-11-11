@@ -1,7 +1,7 @@
 """缺料採購：寫入主檔 / 生成發料單之後，列出哪些料要買，勾選後依供應商各開一張正航採購單。
 
 流程：選訂單 → build_shortage_list（彙整需求、加待調撥、扣 ST 現有（在途僅供參考、不扣除）、解析供應商 / 單價 / 預計進貨日）
-缺 = max(0, 需求 + 待調撥 − ST)，再套 MOQ。待調撥見 st_pending_transfer（截止批次之後網站已扣、正航還沒調撥的量）。
+缺 = max(0, 需求 + 待調撥 − ST)，再套 MOQ（建議量 = max(缺, MOQ)，多出來的標「MOQ 進位」，不另列多買）。待調撥見 st_pending_transfer（截止批次之後網站已扣、正航還沒調撥的量）。
 → 使用者勾選 → erp_purchase.preview_many 預覽 → create_many 逐張寫入（每張獨立 transaction）。
 
 預計進貨日（以「最早出貨日的訂單」為準）：
@@ -95,26 +95,42 @@ def classify_part(part_number: str, description: str = "") -> str:
 
 
 # ── 採購量 → 訂單分配（僅記錄 / 顯示，不參與缺料計算）──────────────────────
+#
+# v2026.11.11.2 起採購量只會分到以下幾類（不再有 order_id=0 的 extra 列）：
+#   order            勾選訂單的剩餘需求（ST 先抵）
+#   pending_transfer 補前批待調撥（截止批次之後已發料、ST 不夠的部分；= 缺料公式裡「待調撥 − ST」）
+#   moq_round        MOQ 進位（建議量 − 缺；只在缺 > 0 時才會有）
+#   user_over        使用者改量多買（超過 MOQ 調整後建議量的部分；只有畫面上改過數量才允許）
+ALLOC_KIND_LABELS = {
+    "order": "訂單",
+    "pending_transfer": "補前批待調撥",
+    "moq_round": "MOQ 進位",
+    "user_over": "使用者改量",
+    "manual": "未綁訂單",
+}
+OVERAGE_MOQ = "moq"
+OVERAGE_USER = "user"
+OVERAGE_POSTPROCESS = "postprocess"  # 清單上已有的加工件被鈞洋件連動加量（沒有手動改量）
+
 
 def _qty_clean(value: float) -> float:
     return round(float(value), 6)
 
 
-def allocate_purchase_to_orders(
-    orders: List[Dict[str, Any]], st: float, purchase_qty: float
-) -> List[Dict[str, Any]]:
-    return _allocate(orders, st, purchase_qty)[0]
+def _blank_alloc(qty: float, kind: str) -> Dict[str, Any]:
+    return {
+        "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
+        "dispatch_session_id": 0, "qty": _qty_clean(qty), "kind": kind,
+    }
 
 
-def _allocate(
-    orders: List[Dict[str, Any]], st: float, purchase_qty: float
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """把一次採購量分配給各訂單（純函式）。
+def _alloc_state(
+    orders: List[Dict[str, Any]], st: float, pending: float = 0.0, moq_room: float = 0.0
+) -> Dict[str, Any]:
+    """分配的起始狀態：ST 先依出貨日抵各訂單需求，剩下的是本次要買的。
 
-    依出貨日由早到晚（空日期排最後、同日維持原順序）：先用 max(ST, 0) 依序抵各訂單需求，
-    再把採購量依序填入各訂單剩餘需求；買不夠時較晚的訂單分到較少或沒有（零量不列出），
-    買超過的部分記成一筆 kind='extra'（order_id=0）。同一張訂單的多筆需求會合併。
-    回傳 (分配結果, 扣除 ST 與本次採購後各訂單的剩餘需求)，供同料號多行接續分配。
+    st 為 ST 有效庫存（負數視為 0），pending 為待調撥：ST 先保留給待調撥，
+    不夠的部分（pending − max(ST, 0)）就是「補前批待調撥」；moq_room 為可記成 MOQ 進位的量。
     """
     merged: Dict[Any, Dict[str, Any]] = {}
     for o in orders:
@@ -130,20 +146,30 @@ def _allocate(
         merged.values(),
         key=lambda m: parse_ship_date(m["order"].get("ship_date")) or date.max,
     )
-    st_left = max(float(st or 0), 0.0)
+    st_pos = max(float(st or 0), 0.0)
+    pend = max(float(pending or 0), 0.0)
+    st_left = max(st_pos - pend, 0.0)
     for m in ordered:
         used = min(st_left, m["need"])
         st_left -= used
         m["need"] -= used
+    return {
+        "orders": ordered,
+        "gap": max(pend - st_pos, 0.0),
+        "moq_room": max(float(moq_room or 0), 0.0),
+    }
+
+
+def _allocate_from(state: Dict[str, Any], purchase_qty: float) -> List[Dict[str, Any]]:
+    """依序填：訂單（出貨日早到晚）→ 補前批待調撥 → MOQ 進位 → 使用者改量；會更新 state 供同料號下一行接續。"""
     left = max(float(purchase_qty or 0), 0.0)
     out: List[Dict[str, Any]] = []
-    takes = []
-    for m in ordered:
+    for m in state["orders"]:
         take = min(left, m["need"])
-        takes.append((m, take if take > 1e-9 else 0.0))
         if take <= 1e-9:
             continue
         left -= take
+        m["need"] -= take
         o = m["order"]
         out.append({
             "order_id": o.get("order_id") or 0,
@@ -155,17 +181,50 @@ def _allocate(
             "qty": _qty_clean(take),
             "kind": "order",
         })
+    for key, kind in (("gap", "pending_transfer"), ("moq_room", "moq_round")):
+        take = min(left, state[key])
+        if take > 1e-9:
+            out.append(_blank_alloc(take, kind))
+            left -= take
+            state[key] -= take
     if left > 1e-9:
-        out.append({
-            "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
-            "dispatch_session_id": 0, "qty": _qty_clean(left), "kind": "extra",
-        })
-    remaining = [{**m["order"], "qty": m["need"] - min(left_take, m["need"])} for m, left_take in takes]
-    return out, [o for o in remaining if o["qty"] > 1e-9]
+        out.append(_blank_alloc(left, "user_over"))
+    return out
+
+
+def allocate_purchase_to_orders(
+    orders: List[Dict[str, Any]], st: float, purchase_qty: float,
+    pending: float = 0.0, moq_room: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """把一次採購量分配給各訂單（純函式）。
+
+    依出貨日由早到晚（空日期排最後、同日維持原順序）：先用 ST（扣掉待調撥後）依序抵各訂單需求，
+    再把採購量依序填入各訂單剩餘需求；買不夠時較晚的訂單分到較少或沒有（零量不列出）。
+    訂單填滿後依序記「補前批待調撥」、「MOQ 進位」（最多 moq_room），再多的記「使用者改量」。
+    同一張訂單的多筆需求會合併。
+    """
+    return _allocate_from(_alloc_state(orders, st, pending, moq_room), purchase_qty)
+
+
+def overage_breakdown(qty: float, need_qty: float, suggested_qty: float) -> Dict[str, Any]:
+    """採購量超過缺的部分：MOQ 進位（≤ 建議量 − 缺）與使用者改量（> 建議量）。純函式。"""
+    q = max(float(qty or 0), 0.0)
+    need = max(float(need_qty or 0), 0.0)
+    suggested = max(float(suggested_qty or 0), need)
+    over = max(q - need, 0.0)
+    moq_part = min(over, suggested - need)
+    user_part = over - moq_part
+    reason = OVERAGE_USER if user_part > 1e-9 else (OVERAGE_MOQ if moq_part > 1e-9 else "")
+    return {
+        "overage_qty": _qty_clean(over),
+        "overage_reason": reason,
+        "moq_round_qty": _qty_clean(moq_part),
+        "user_over_qty": _qty_clean(user_part),
+    }
 
 
 def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
-    """依勾選的訂單重建每個料號的 ST 與各訂單需求（與缺料清單同一來源，不查 ERP）。"""
+    """依勾選的訂單重建每個料號的需求 / 待調撥 / ST / 缺 / MOQ / 建議量（與缺料清單同一套算法）。"""
     from ..routers import dispatch as dispatch_router  # 延遲載入避免循環相依
 
     groups = dispatch_router.build_dispatch_groups(order_ids, {})
@@ -175,22 +234,38 @@ def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
     mapping = part_conversion.active_map()
     sources = part_conversion.sources_by_target(mapping)
     pending = st_pending_transfer.compute(order_ids, mapping)["parts"]
-    # 可用 ST = ST − 待調撥（已被前面批次用掉、只是正航還沒調撥）
-    return {
-        key: {
-            "st": part_conversion.effective_stock(key, st_stock, sources)[0]
-            - pending.get(key, {}).get("pending", 0.0),
-            "orders": entry["orders"],
+    aggregated = _aggregate(groups, mapping)
+    moq_info = moq_service.lookup_moq([k for k in aggregated if not erp_purchase.customer_supplied_reason(k)])
+    out: Dict[str, Dict[str, Any]] = {}
+    for key, entry in aggregated.items():
+        st = part_conversion.effective_stock(key, st_stock, sources)[0]
+        pend = float(pending.get(key, {}).get("pending", 0.0))
+        shortage = float(summarize_requested_supply(entry["need"] + pend, st)["purchase_needed_qty"])
+        fields = moq_service.moq_fields(shortage, moq_info.get(key))
+        out[key] = {
+            "st": st, "pending": pend, "orders": entry["orders"], "need": entry["need"],
+            "shortage": shortage, **fields,
         }
-        for key, entry in _aggregate(groups, mapping).items()
+    return out
+
+
+def _snapshot(ctx: Dict[str, Any], qty: float, qty_edited: bool, over: Dict[str, Any]) -> Dict[str, Any]:
+    """開單當下每顆料的計算依據（存進 erp_purchase_orders.lines_json）。"""
+    return {
+        "need": _qty_clean(ctx["need"]),
+        "pending_transfer": _qty_clean(ctx["pending"]),
+        "st": _qty_clean(ctx["st"]),
+        "shortage": _qty_clean(ctx["shortage"]),
+        "need_qty": ctx["need_qty"],
+        "moq": ctx["moq"],
+        "moq_source": ctx["moq_source"],
+        "receipt_gcd": ctx.get("receipt_gcd"),
+        "receipt_count": ctx.get("receipt_count") or 0,
+        "suggested_qty": ctx["suggested_qty"],
+        "qty": _qty_clean(qty),
+        "qty_edited": bool(qty_edited),
+        **over,
     }
-
-
-def _manual_allocation(qty: float) -> List[Dict[str, Any]]:
-    return [{
-        "order_id": 0, "order_code": "", "model": "", "customer_po": "", "ship_date": "",
-        "dispatch_session_id": 0, "qty": _qty_clean(qty), "kind": "manual",
-    }]
 
 
 def _clamp_date_text(value: Any, today: date) -> Any:
@@ -205,10 +280,12 @@ def _clamp_date_text(value: Any, today: date) -> Any:
 def prepare_groups(
     groups: List[Dict[str, Any]], order_ids: Optional[List[int]] = None
 ) -> List[Dict[str, Any]]:
-    """替每個勾選行依最終數量重算 allocations，並標記來源為 shortage_po。
+    """替每個勾選行依最終數量重算 allocations、附上 shortage_snapshot，並標記來源為 shortage_po。
 
     沒有 order_ids、或料號不在這批訂單的需求內時，該行記成一筆 manual；
     用戶端送來的 allocations 一律忽略（以伺服器重算為準）；早於今天的預計進貨日一律改為今天。
+    數量超過「缺經 MOQ 調整後的建議量」時，該行必須帶 qty_edited=true（使用者在畫面上改過）
+    或 qty_linked=true（後段加工連動），否則拒絕。
     """
     today = local_now().date()
     ids = list(dict.fromkeys(int(i) for i in (order_ids or []) if i))
@@ -219,23 +296,51 @@ def prepare_groups(
         except Exception as exc:
             logger.warning("缺料採購：重建訂單分配失敗，改記為手動：%s", type(exc).__name__)
     # 同料號出現在多行（如拆給不同供應商）時依序接續分配：ST 只扣一次，後一行從前一行已覆蓋的需求之後開始
-    state: Dict[str, Dict[str, Any]] = {k: {"st": v["st"], "orders": v["orders"]} for k, v in context.items()}
+    state: Dict[str, Dict[str, Any]] = {}
+    bought: Dict[str, float] = {}
     out = []
     for group in groups:
         lines = []
         for line in group.get("lines") or []:
             part = str(line.get("part_number") or "").strip().upper()
             qty = float(line.get("qty") or 0)
-            ctx = state.get(part)
+            edited = bool(line.get("qty_edited"))
+            linked = bool(line.get("qty_linked"))  # 後段加工連動（鈞洋件 × 比例）讓數量變大
+            ctx = context.get(part)
+            extra_fields: Dict[str, Any] = {}
             if ctx:
-                allocations, remaining = _allocate(ctx["orders"], ctx["st"], qty)
-                ctx["st"], ctx["orders"] = 0.0, remaining
+                before = bought.get(part, 0.0)
+                bought[part] = before + qty
+                total = overage_breakdown(bought[part], ctx["need_qty"], ctx["suggested_qty"])
+                prior = overage_breakdown(before, ctx["need_qty"], ctx["suggested_qty"])
+                user_part = total["user_over_qty"] - prior["user_over_qty"]
+                if user_part > 1e-9 and not (edited or linked):
+                    raise erp_purchase.PoValidationError(
+                        f"{part}：採購量 {_qty_clean(bought[part]):g} 超過建議量 {ctx['suggested_qty']:g}"
+                        f"（缺 {ctx['need_qty']:g}，MOQ {ctx['moq']:g}），且沒有在畫面上改量；請重新產生缺料清單"
+                    )
+                over = {
+                    "overage_qty": _qty_clean(total["overage_qty"] - prior["overage_qty"]),
+                    "moq_round_qty": _qty_clean(total["moq_round_qty"] - prior["moq_round_qty"]),
+                    "user_over_qty": _qty_clean(user_part),
+                }
+                over["overage_reason"] = (
+                    (OVERAGE_USER if edited else OVERAGE_POSTPROCESS) if over["user_over_qty"] > 1e-9
+                    else OVERAGE_MOQ if over["moq_round_qty"] > 1e-9 else ""
+                )
+                if part not in state:
+                    state[part] = _alloc_state(
+                        ctx["orders"], ctx["st"], ctx["pending"], ctx["suggested_qty"] - ctx["need_qty"]
+                    )
+                allocations = _allocate_from(state[part], qty)
+                extra_fields = {**over, "shortage_snapshot": _snapshot(ctx, qty, edited, over)}
             else:
-                allocations = _manual_allocation(qty)
+                allocations = [_blank_alloc(qty, "manual")]
             lines.append({
                 **line,
                 "pre_in_date": _clamp_date_text(line.get("pre_in_date"), today),
                 "allocations": allocations,
+                **extra_fields,
             })
         out.append({**group, "remark": "", "lines": lines, "alloc_source": "shortage_po"})
     return out
@@ -619,9 +724,11 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         postprocess_out = [
             _postprocess_entry(link, lookups, pp_dates, keys) for link in link_list
         ]
-        # 預設採購量 = max(缺料量, MOQ)；使用者可手動改，建立採購單時不再調整
+        # 預設採購量 = 缺經 MOQ 調整（moq_service.adjust_qty：max(缺, MOQ)；缺 0 就是 0），不會再多；
+        # 多於缺的部分照實標成「MOQ 進位」（overage_reason=moq）
         qty_fields = moq_service.moq_fields(shortage, moq_info.get(key))
         suggested = qty_fields["suggested_qty"]
+        over = overage_breakdown(suggested, qty_fields["need_qty"], suggested)
         parts_out.append({
             "part_number": key,
             "dispatch_seq": positions.get(key),
@@ -644,7 +751,10 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "shortage": shortage,
             "needs_purchase": shortage > 0,
             **qty_fields,
-            "allocations": allocate_purchase_to_orders(entry["orders"], st - pend["pending"], suggested),
+            **over,
+            "allocations": allocate_purchase_to_orders(
+                entry["orders"], st, suggested, pend["pending"], suggested - qty_fields["need_qty"]
+            ),
             "price": float(last.get("price") or 0),
             "last_bill_no": last.get("bill_no", ""),
             "last_bill_date": last.get("bill_date", ""),

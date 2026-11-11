@@ -653,7 +653,10 @@ export function allocationText(allocs) {
   if (!allocs || !allocs.length) return "—（舊單無紀錄）";
   if (allocs.every(a => a.kind === "manual")) return "手動（未綁訂單）";
   const parts = allocs.map(a => {
-    if (a.kind === "extra") return `備品 ×${fmtMoney(a.qty)}`;
+    if (a.kind === "moq_round") return `MOQ 進位 ×${fmtMoney(a.qty)}`;
+    if (a.kind === "user_over") return `使用者改量多買 ×${fmtMoney(a.qty)}`;
+    if (a.kind === "pending_transfer") return `補前批待調撥 ×${fmtMoney(a.qty)}`;
+    if (a.kind === "extra") return `多買（舊紀錄，未綁訂單）×${fmtMoney(a.qty)}`; // v2026.11.11.2 以前的舊單
     if (a.kind === "manual") return `未綁訂單 ×${fmtMoney(a.qty)}`;
     const po = a.customer_po ? `（PO ${a.customer_po}）` : "";
     return `${[a.order_code, a.model].filter(Boolean).join(" ") || `訂單 ${a.order_id}`}${po} ×${fmtMoney(a.qty)}`;
