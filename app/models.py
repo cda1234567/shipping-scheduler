@@ -359,6 +359,21 @@ class LowStockPrioritySuppliersRequest(BaseModel):
     suppliers: Union[List[str], str] = []
 
 
+class LowStockSupplierLeadRequest(BaseModel):
+    # 交期整數 0~730；交期空且 anytime=false = 清除（回到預設）
+    supplier_id: str
+    lead_days: Optional[Union[float, str]] = None
+    anytime: bool = False
+
+
+class LowStockPartSettingRequest(BaseModel):
+    # 只有請求中實際出現的欄位才會更新（.dict(exclude_unset=True)）；lead_days / supplier_override 空 = 清除
+    part: str
+    lead_days: Optional[Union[float, str]] = None
+    anytime: Optional[bool] = None
+    supplier_override: Optional[str] = None
+
+
 class LowStockSettingsRequest(BaseModel):
     lookback_days: Optional[float] = None
     suggest_lookback_days: Optional[float] = None

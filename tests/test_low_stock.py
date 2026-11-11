@@ -1227,6 +1227,7 @@ class PriorityGlTests(DbCase):
 
 class FrontendWiringTests(unittest.TestCase):
     def test_tab_module_and_notice_wired(self):
+        """v2026.11.11.7：低庫存頁改成交期判斷清單（主清單 / 待確認區 / 廠商交期），舊門檻關注清單畫面拿掉。"""
         root = Path(__file__).resolve().parents[1]
         index = (root / "static" / "index.html").read_text(encoding="utf-8")
         module = (root / "static" / "modules" / "low_stock.js").read_text(encoding="utf-8")
@@ -1240,31 +1241,29 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn('"st-inventory-synced"', st_module)
         self.assertIn('"st-inventory-synced"', module)
         self.assertIn("export async function initLowStock({ autoLoad = true } = {})", module)
-        self.assertIn("/api/low-stock/alerts", module)
-        self.assertIn("main_file_filter_applied", module)
+        self.assertIn("/api/low-stock/plan", module)
+        self.assertIn("/api/low-stock/lead-settings/supplier", module)
+        self.assertIn("/api/low-stock/lead-settings/part", module)
         self.assertIn('id="low-stock-main-hint"', index)
-        self.assertIn('id="low-stock-hide-on-order"', index)
+        # 隱藏已下單：預設不勾，記在 localStorage
+        self.assertIn('<input type="checkbox" id="low-stock-hide-ordered">', index)
         self.assertIn("隱藏已下單", index)
-        self.assertIn("已下單", module)
         self.assertIn("localStorage", module)
         self.assertNotIn("fetch(", module.replace("apiFetch", ""))
-        # 重點廠商標註
-        self.assertIn('id="low-stock-only-priority"', index)
-        self.assertIn('id="low-stock-only-priority-label"', index)
-        self.assertIn('id="low-stock-set-priority-suppliers"', index)
-        self.assertIn("<th>廠商</th>", index)
-        self.assertIn("/api/low-stock/priority-suppliers", module)
-        self.assertIn("priority-supplier", module)
-        self.assertIn("last_purchase_supplier", module)
-        self.assertIn("趕交期注意", module)
+        # 待確認區預設收合；廠商交期區可收合
+        self.assertIn('<details id="low-stock-check"', index)
+        self.assertNotIn('<details id="low-stock-check" open', index)
+        self.assertIn('id="low-stock-supplier-panel" class="low-stock-supplier-panel" hidden', index)
+        self.assertIn("自由 ST", index)
+        self.assertIn("待總指揮確認", index)
+        for text in ("推定廠商", "手動", "萬晉/崧嵐", "可隨時下單", "僅參考，非交期", "改廠商"):
+            self.assertIn(text, module)
+        # 舊門檻 / 預設交期 / 頻率設定不再出現在畫面
+        for old in ("low-stock-set-default-lead", "low-stock-set-min-bills", "重新建議"):
+            self.assertNotIn(old, index)
         css = (root / "static" / "style.css").read_text(encoding="utf-8")
         self.assertIn(".low-stock-row.priority-supplier", css)
-        # 重點廠商 015：現有量分開顯示、撐不到預交日、額外列改「加入關注」
-        self.assertIn("gl_qty", module)
-        self.assertIn("撐不到", module)
-        self.assertIn('data-act="watch-add"', module)
-        self.assertIn("加入關注", module)
-        self.assertIn(".low-stock-eta-short", css)
+        self.assertIn(".low-stock-supplier-panel", css)
 
 
 if __name__ == "__main__":

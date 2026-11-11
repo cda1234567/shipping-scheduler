@@ -1,21 +1,31 @@
+// 低庫存提醒（v2026.11.11.7）：用廠商交期設定判斷、新可用量、推定廠商、待確認區。
+// 畫面只讀 /api/low-stock/plan（本機快照，不連正航）；「重新抓正航」才會唯讀查正航。
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
-import { prefillPurchaseOrder } from "/static/modules/erp_purchase.js";
 
 const REFRESH_MS = 5 * 60 * 1000;
-const HIDE_ON_ORDER_KEY = "low-stock-hide-on-order";
+const HIDE_ORDERED_KEY = "low-stock-plan-hide-ordered";
 
-let _rows = [];
-let _settings = {};
-let _prioritySuppliers = [];
+let _plan = null;
 let _initialized = false;
 let _busy = false;
+const _openDetail = new Set();
+
+function el(id) {
+  return document.getElementById(id);
+}
 
 function fmtNum(value, digits = 1) {
   if (value === null || value === undefined || value === "") return "—";
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
-  return Number.isInteger(n) ? String(n) : n.toFixed(digits);
+  return Number.isInteger(n) ? n.toLocaleString("en-US") : n.toLocaleString("en-US", { maximumFractionDigits: digits });
+}
+
+// '2026-11-11 23:50:01' → '11/11 23:50'（R-J4：日期寫 10/07）
+function fmtTime(text) {
+  const m = String(text || "").match(/^\d{4}-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  return m ? `${m[1]}/${m[2]} ${m[3]}:${m[4]}` : (text || "");
 }
 
 function requireEdit() {
@@ -25,44 +35,31 @@ function requireEdit() {
   return false;
 }
 
-// ── 徽章與側邊欄提醒（只讀 /alerts，不連 ERP） ─────────────────────────────
+// ── 徽章與側邊欄提醒（主清單列數，只讀本機） ──────────────────────────────
 export async function refreshLowStockAlerts() {
-  let data = null;
+  let count = 0;
+  let top = [];
   try {
-    data = await apiJson("/api/low-stock/alerts");
+    if (_plan) {
+      count = (_plan.main || []).length;
+      top = (_plan.main || []).slice(0, 3).map(r => r.part);
+    } else {
+      count = Number((await apiJson("/api/low-stock/plan/count"))?.count || 0);
+    }
   } catch (_) {
     return;
   }
-  const count = Number(data?.count || 0);
-  setMainFileHint(data);
-  const badge = document.getElementById("low-stock-badge");
+  const badge = el("low-stock-badge");
   if (badge) {
     badge.textContent = String(count);
     badge.style.display = count > 0 ? "inline" : "none";
   }
-  const notice = document.getElementById("low-stock-notice");
-  const btn = document.getElementById("low-stock-notice-btn");
-  const meta = document.getElementById("low-stock-notice-meta");
+  const notice = el("low-stock-notice");
   if (notice) notice.style.display = count > 0 ? "" : "none";
-  if (btn) btn.textContent = `⚠ ${count} 個常用料號低於門檻`;
-  if (meta) {
-    const alerts = data.alerts || [];
-    const worst = alerts.slice(0, 3).map(a => a.part_number).join("、");
-    const withOrder = alerts.filter(a => Number(a.on_order_qty) > 0).length;
-    const orderText = withOrder > 0 ? `；其中 ${withOrder} 個已有在途量` : "";
-    const etaShort = alerts.filter(a => a.eta_short).length;
-    const etaText = etaShort > 0 ? `；${etaShort} 個撐不到預交日` : "";
-    meta.textContent = worst ? `最急：${worst}${orderText}${etaText}` : "";
-  }
-}
-
-// 主檔讀不到、未套用料號過濾時，在狀態列下方顯示一行提示
-function setMainFileHint(data) {
-  const el = document.getElementById("low-stock-main-hint");
-  if (!el) return;
-  const show = data && data.main_file_filter_applied === false;
-  el.textContent = show ? (data.main_file_note || "") : "";
-  el.style.display = show ? "" : "none";
+  const btn = el("low-stock-notice-btn");
+  if (btn) btn.textContent = `⚠ 低庫存 ${count} 顆`;
+  const meta = el("low-stock-notice-meta");
+  if (meta) meta.textContent = top.length ? `最急：${top.join("、")}` : "";
 }
 
 export async function onLowStockTabActivated() {
@@ -71,23 +68,12 @@ export async function onLowStockTabActivated() {
 
 // ── 清單 ────────────────────────────────────────────────────────────────────
 export async function refreshLowStock() {
-  const status = document.getElementById("low-stock-status");
+  const status = el("low-stock-status");
   try {
-    const data = await apiJson("/api/low-stock/watchlist");
-    _rows = data.rows || [];
-    _settings = data.settings || {};
-    _prioritySuppliers = Array.isArray(data.priority_suppliers) ? data.priority_suppliers : [];
-    setMainFileHint(data);
-    renderPriorityFilterLabel();
-    renderSettings();
-    renderTable();
-    if (status) {
-      const suggested = data.last_suggested_at ? `；上次建議：${data.last_suggested_at}` : "；尚未執行過建議";
-      const loaded = data.st_inventory_loaded_at ? `；ST 庫存更新：${String(data.st_inventory_loaded_at).slice(0, 16).replace("T", " ")}` : "";
-      status.className = "file-status" + (data.low_count > 0 ? " warn" : " ok");
-      const priority = data.priority_refreshed_at ? `；重點廠商 015 更新：${String(data.priority_refreshed_at).slice(0, 16)}` : "";
-      status.textContent = `共 ${_rows.length} 個料號，${data.low_count} 個低於門檻${suggested}${loaded}${priority}`;
-    }
+    _plan = await apiJson("/api/low-stock/plan");
+    renderStatus();
+    renderSuppliers();
+    renderTables();
   } catch (error) {
     if (status) {
       status.className = "file-status warn";
@@ -97,174 +83,152 @@ export async function refreshLowStock() {
   void refreshLowStockAlerts();
 }
 
-function renderSettings() {
-  const map = {
-    "low-stock-set-lookback": "lookback_days",
-    "low-stock-set-suggest-lookback": "suggest_lookback_days",
-    "low-stock-set-min-bills": "min_bills",
-    "low-stock-set-safety": "safety_factor",
-    "low-stock-set-min-cover": "min_cover_days",
-    "low-stock-set-default-lead": "default_lead_days",
-    "low-stock-set-actual-ratio": "actual_lead_ratio",
-    "low-stock-set-actual-gap": "actual_lead_min_gap_days",
-    "low-stock-set-on-order-overdue": "on_order_max_overdue_days",
-  };
-  const panel = document.getElementById("low-stock-settings-panel");
-  if (panel && !panel.hidden) return; // 編輯中不覆蓋輸入
-  Object.entries(map).forEach(([id, key]) => {
-    const el = document.getElementById(id);
-    if (el && _settings[key] !== undefined) el.value = _settings[key];
-  });
-  const supplierInput = document.getElementById("low-stock-set-priority-suppliers");
-  if (supplierInput) supplierInput.value = _prioritySuppliers.join("、");
-}
-
-// 「只看重點廠商（萬晉、崧嵐）」文字依名單動態顯示；名單為空時停用
-function renderPriorityFilterLabel() {
-  const label = document.getElementById("low-stock-only-priority-label");
-  const box = document.getElementById("low-stock-only-priority");
-  const names = _prioritySuppliers.join("、");
-  if (label) label.textContent = names ? `只看重點廠商（${names}）` : "只看重點廠商（未設定）";
-  if (box) {
-    box.disabled = !names;
-    if (!names) box.checked = false;
+function renderStatus() {
+  const status = el("low-stock-status");
+  const hint = el("low-stock-main-hint");
+  if (!_plan) return;
+  const c = _plan.counts || {};
+  const cut = _plan.cutoff || {};
+  if (status) {
+    const parts = [
+      `母體 ${c.population || 0}`,
+      `主清單 ${c.main || 0}`,
+      `待確認 ${c.check || 0}`,
+      `可隨時下單 ${c.anytime || 0}`,
+      `有交期且撐得到 ${c.ok_with_lead || 0}`,
+    ];
+    const cutText = cut.code ? `待調撥截止批次 ${cut.code}（${cut.text || cut.source}）` : "待調撥截止批次：找不到";
+    const time = _plan.refreshed_at ? `資料時間 ${fmtTime(_plan.refreshed_at)}` : "尚未抓過正航，請按「重新抓正航」";
+    status.className = "file-status" + ((c.main || 0) > 0 ? " warn" : " ok");
+    status.textContent = `${parts.join("、")}；${cutText}；${time}`;
   }
-}
-
-function parseSupplierList(text) {
-  return String(text || "").split(/[,，、;；\n]+/).map(s => s.trim()).filter(Boolean);
+  if (hint) {
+    const lines = [];
+    if (_plan.error) lines.push(_plan.error);
+    (_plan.warnings || []).forEach(w => lines.push(w));
+    const noBom = _plan.no_bom_orders || [];
+    if (noBom.length) {
+      lines.push(`缺 BOM 的已發料訂單（資料待確認）：${noBom.map(o => `${o.code || "—"} ${o.model}`).join("、")}`);
+    }
+    hint.textContent = lines.join("；");
+    hint.style.display = lines.length ? "" : "none";
+  }
 }
 
 function supplierHtml(r) {
-  const name = r.last_purchase_supplier ? `<span class="low-stock-supplier">${esc(r.last_purchase_supplier)}</span>` : "—";
-  if (!r.is_priority_supplier) return name;
-  return `<span class="low-stock-priority-tag">${esc(r.priority_supplier)}</span> <span class="low-stock-priority-note">趕交期注意</span><br>${name}`;
+  if (!r.supplier_id) return '<span class="low-stock-hint">無廠商</span>';
+  const kind = r.supplier_kind === "inferred"
+    ? ' <span class="low-stock-tag" title="正航沒設主要廠商，用最近一張進貨的廠商">推定廠商</span>'
+    : (r.supplier_kind === "manual" ? ' <span class="low-stock-tag src-manual">手動</span>' : "");
+  return `<span class="low-stock-supplier" title="${esc(r.supplier_id)}">${esc(r.supplier_name)}</span>${kind}`;
 }
 
-function delayHtml(days) {
-  if (days === null || days === undefined) return "—";
-  const n = Number(days);
-  if (n > 0) return `<span class="low-stock-delay-late">+${fmtNum(n)} 天 延遲</span>`;
-  if (n < 0) return `<span class="low-stock-delay-early">提早 ${fmtNum(-n)} 天</span>`;
-  return "準時";
+function leadHtml(r) {
+  const ref = Number(r.perdays) > 0 ? `<div class="low-stock-hint">參考 PerDays ${fmtNum(r.perdays)}（僅參考，非交期）</div>` : "";
+  if (r.anytime) return `<span class="low-stock-tag">可隨時下單</span><div class="low-stock-hint">${esc(r.lead_text)}</div>${ref}`;
+  if (r.lead_days === null || r.lead_days === undefined) return `<span class="low-stock-hint">無交期</span>${ref}`;
+  return `${fmtNum(r.lead_days)} 天<div class="low-stock-hint">${esc(r.lead_text)}</div>${ref}`;
 }
 
-function onOrderHtml(r) {
-  const qty = Number(r.on_order_qty || 0);
-  if (qty > 0) {
-    const date = r.next_expected_date ? `，預計 ${esc(r.next_expected_date)}` : "";
-    return `<span class="low-stock-on-order-info">在途 ${fmtNum(qty)}${date}</span>`;
+function reasonHtml(r) {
+  const reasons = (r.reasons || []).map(t => `<div>${esc(t)}</div>`).join("");
+  const tags = (r.tags || []).map(t => {
+    const cls = t.startsWith("萬晉/崧嵐") ? "low-stock-priority-tag" : (t.startsWith("已下單") ? "low-stock-tag src-manual" : "low-stock-tag");
+    return `<span class="${cls}">${esc(t)}</span>`;
+  }).join(" ");
+  return reasons + (tags ? `<div class="low-stock-tags">${tags}</div>` : "");
+}
+
+function settingHtml(r) {
+  const lead = r.part_lead_days === null || r.part_lead_days === undefined ? "" : String(r.part_lead_days);
+  return `<input type="number" class="low-stock-lead-input" data-act="part-lead" min="0" max="730" step="1" value="${esc(lead)}" placeholder="交期" title="料號覆蓋交期（天，空白 = 用廠商交期）">
+    <label class="low-stock-filter" title="可隨時下單：不需要交期"><input type="checkbox" data-act="part-anytime" ${r.part_anytime ? "checked" : ""}> 隨時</label>
+    <button class="low-stock-link" data-act="part-supplier" title="改廠商（空白 = 自動判斷）">改廠商</button>`;
+}
+
+function detailHtml(r) {
+  const rows = (r.unissued_detail || []).map(d => `<tr>
+      <td class="mono">${esc(d.po)}</td><td>${esc((d.codes || []).join("、"))}</td>
+      <td class="num">${fmtNum(d.need)}</td><td class="num">${d.bom_need === null ? "缺 BOM" : fmtNum(d.bom_need)}</td>
+      <td class="num">${fmtNum(d.issued)}</td><td class="num">${fmtNum(d.unissued)}</td></tr>`).join("");
+  const table = rows
+    ? `<table class="low-stock-detail-table"><thead><tr><th>PO</th><th>批次</th><th class="num">需求（派工紀錄）</th><th class="num">BOM 版</th><th class="num">015 已領</th><th class="num">未領</th></tr></thead><tbody>${rows}</tbody></table>`
+    : '<div class="low-stock-hint">沒有已發料未領的需求</div>';
+  return `<div class="low-stock-detail-sum">ST ${fmtNum(r.st)}、待調撥 ${fmtNum(r.pending)}${r.pending_over_st ? `（原 ${fmtNum(r.pending_raw)}，超過 ST）` : ""}、自由 ST ${fmtNum(r.free_st)}、015 ${fmtNum(r.gl015)}、未領需求 ${fmtNum(r.unissued)}
+    → 可用 ${fmtNum(r.available)}（不含自由 ST：${fmtNum(r.available_without_free_st)}）</div>${table}`;
+}
+
+function rowHtml(r) {
+  const part = esc(r.part);
+  const cls = ["low-stock-row", r.priority_supplier ? "priority-supplier" : "", r.ordered ? "on_order" : (r.area === "main" ? "low" : "")].filter(Boolean).join(" ");
+  const open = _openDetail.has(r.part);
+  const main = `<tr class="${cls}" data-part="${part}">
+    <td class="mono">${part}<div class="low-stock-hint">${esc(r.name || "")}</div></td>
+    <td>${supplierHtml(r)}</td>
+    <td class="num"><button class="low-stock-link" data-act="detail" title="看 ST、待調撥、015、各 PO 未領">${fmtNum(r.available)}</button></td>
+    <td class="num">${fmtNum(r.free_st)}</td>
+    <td class="num">${fmtNum(r.need)}</td>
+    <td class="num">${fmtNum(r.daily, 2)}</td>
+    <td class="num">${fmtNum(r.cover_days)}</td>
+    <td>${leadHtml(r)}</td>
+    <td>${reasonHtml(r)}</td>
+    <td class="low-stock-setting">${settingHtml(r)}</td>
+  </tr>`;
+  return open ? main + `<tr class="low-stock-detail-row" data-detail="${part}"><td colspan="10">${detailHtml(r)}</td></tr>` : main;
+}
+
+function renderTables() {
+  if (!_plan) return;
+  const hideOrdered = Boolean(el("low-stock-hide-ordered")?.checked);
+  const keep = r => !(hideOrdered && r.ordered);
+  const main = (_plan.main || []).filter(keep);
+  const check = (_plan.check || []).filter(keep);
+  const mainBody = el("low-stock-main-body");
+  if (mainBody) {
+    mainBody.innerHTML = main.length
+      ? main.map(rowHtml).join("")
+      : `<tr><td colspan="10" class="low-stock-empty">${_plan.refreshed_at ? "主清單沒有料號。" : "尚未抓過正航，請按「重新抓正航」。"}</td></tr>`;
   }
-  if (r.on_order_note) return `<span class="low-stock-hint" title="${esc(r.on_order_note)}">${esc(r.on_order_note)}</span>`;
-  return "—";
-}
-
-// 重點廠商列：現有量 = ST + 015，下方小字分開顯示；非重點列照舊
-function qtyHtml(r) {
-  if (r.gl_qty === undefined) return fmtNum(r.qty);
-  const ware = esc(r.gl_ware_id || "015");
-  return `${fmtNum(r.qty)}<div class="low-stock-qty-split">ST ${fmtNum(r.st_qty)}／${ware} ${fmtNum(r.gl_qty)}</div>`;
-}
-
-function usageTitle(r) {
-  if (r.gl_usage_qty === undefined) return "";
-  const ware = r.gl_ware_id || "015";
-  return ` title="用量取 ST 與 ${esc(ware)} 較大者：ST ${fmtNum(r.st_usage_qty)}／${esc(ware)} ${fmtNum(r.gl_usage_qty)}"`;
-}
-
-function etaHtml(r) {
-  if (!r.eta_short) return "";
-  return `<div class="low-stock-eta-short">撐不到 ${esc(r.next_expected_date)}，約缺 ${fmtNum(r.eta_gap_days)} 天</div>`;
-}
-
-function statusHtml(status) {
-  if (status === "on_order") return '<span class="low-stock-status on_order">已下單</span>';
-  if (status === "low") return '<span class="low-stock-status low">低於門檻</span>';
-  if (status === "disabled") return '<span class="low-stock-status disabled">停用</span>';
-  return '<span class="low-stock-status ok">正常</span>';
-}
-
-function renderTable() {
-  const body = document.getElementById("low-stock-table-body");
-  if (!body) return;
-  const onlyLow = Boolean(document.getElementById("low-stock-only-low")?.checked);
-  const hideOnOrder = Boolean(document.getElementById("low-stock-hide-on-order")?.checked);
-  const onlyPriority = Boolean(document.getElementById("low-stock-only-priority")?.checked);
-  // 只看重點廠商時忽略「隱藏已下單」，重點廠商的已下單料也要看得到；排序沿用後端（重點廠商在最上面）
-  const rows = _rows.filter(r => {
-    if (onlyLow && r.status !== "low") return false;
-    if (onlyPriority) return Boolean(r.is_priority_supplier);
-    return !(hideOnOrder && r.status === "on_order");
-  });
-  if (!rows.length) {
-    const empty = onlyPriority
-      ? "目前沒有重點廠商的料號。"
-      : (onlyLow ? "目前沒有低於門檻的料號。" : "清單是空的，請按「重新建議」或手動新增料號。");
-    body.innerHTML = `<tr><td colspan="16" class="low-stock-empty">${empty}</td></tr>`;
-    return;
+  const checkBody = el("low-stock-check-body");
+  if (checkBody) {
+    checkBody.innerHTML = check.length ? check.map(rowHtml).join("") : '<tr><td colspan="10" class="low-stock-empty">沒有待確認的料號。</td></tr>';
   }
-  body.innerHTML = rows.map(r => {
-    const part = esc(r.part_number);
-    const manualThreshold = r.threshold_source === "manual" ? ' <span class="low-stock-tag">手動</span>' : "";
-    const priorityClass = r.is_priority_supplier ? " priority-supplier" : "";
-    // 不在關注清單的重點廠商額外列：沒有可編輯的資料列，只提供「加入關注」
-    const editable = r.in_watch !== false;
-    const edit = html => (editable ? html : "");
-    const extraTag = r.priority_extra
-      ? ` <span class="low-stock-tag" title="重點廠商料號，因低於門檻或撐不到預交日而列出（${editable ? "不在主檔" : "不在關注清單"}）">${editable ? "不在主檔" : "未關注"}</span>`
-      : "";
-    const actions = editable
-      ? '<button class="btn btn-danger btn-sm" data-act="remove">移除</button>'
-      : '<button class="btn btn-secondary btn-sm" data-act="watch-add" title="加入低庫存關注清單">加入關注</button>';
-    return `<tr class="low-stock-row ${r.status}${priorityClass}" data-part="${part}">
-      <td class="mono">${part}${extraTag}</td>
-      <td>${esc(r.name)}</td>
-      <td>${supplierHtml(r)}</td>
-      <td class="num">${qtyHtml(r)}</td>
-      <td>${onOrderHtml(r)}</td>
-      <td class="num"${usageTitle(r)}>${fmtNum(r.avg_monthly_usage)}</td>
-      <td>${fmtNum(r.lead_time_days)} <span class="low-stock-tag src-${esc(r.lead_time_source)}">${esc(r.lead_time_label)}</span>
-        ${edit('<button class="low-stock-link" data-act="edit-lead" title="修改交期（留空=恢復自動）">編輯</button>')}</td>
-      <td class="num">${fmtNum(r.planned_lead_days)}</td>
-      <td class="num">${fmtNum(r.actual_lead_days)}</td>
-      <td>${delayHtml(r.delay_days)}</td>
-      <td>${fmtNum(r.threshold)}${manualThreshold}
-        ${edit('<button class="low-stock-link" data-act="edit-threshold" title="修改門檻（留空=恢復自動）">編輯</button>')}</td>
-      <td class="num">${fmtNum(r.days_of_cover)}</td>
-      <td>${statusHtml(r.status)}${etaHtml(r)}</td>
-      <td>${edit(`<input type="checkbox" data-act="toggle" ${r.enabled ? "checked" : ""} aria-label="啟用 ${part}">`)}</td>
-      <td>${esc(r.note)} ${edit('<button class="low-stock-link" data-act="edit-note">編輯</button>')}</td>
-      <td><button class="btn btn-secondary btn-sm" data-act="open-po" title="到「開採購單」頁籤，帶入此料號與建議數量">開採購單</button>
-        ${actions}</td>
+  const summary = el("low-stock-check-summary");
+  if (summary) summary.textContent = `資料待確認 ${(_plan.check || []).length} 顆（無廠商交期，展開看）`;
+}
+
+function renderSuppliers() {
+  const body = el("low-stock-supplier-body");
+  if (!body || !_plan) return;
+  const rows = _plan.suppliers || [];
+  const noSupplier = Number(_plan.no_supplier_count || 0);
+  body.innerHTML = rows.map(s => {
+    const lead = s.is_default || s.lead_days === null || s.lead_days === undefined ? "" : String(s.lead_days);
+    const now = s.anytime ? "可隨時下單" : (s.lead_days === null || s.lead_days === undefined ? "無交期" : `${s.lead_days} 天`);
+    return `<tr data-supplier="${esc(s.supplier_id)}">
+      <td class="mono">${esc(s.supplier_id)}</td><td>${esc(s.supplier_name)}</td><td class="num">${fmtNum(s.part_count)}</td>
+      <td>${esc(now)}<div class="low-stock-hint">${esc(s.text)}</div></td>
+      <td><input type="number" class="low-stock-lead-input" data-act="sup-lead" min="0" max="730" step="1" value="${esc(lead)}" placeholder="天"></td>
+      <td><input type="checkbox" data-act="sup-anytime" ${!s.is_default && s.anytime ? "checked" : ""}></td>
+      <td><button class="btn btn-secondary btn-sm" data-act="sup-save">存</button></td>
     </tr>`;
-  }).join("");
+  }).join("") + (noSupplier ? `<tr><td colspan="7" class="low-stock-hint">無廠商 ${noSupplier} 顆：只能在料號列設定交期或改廠商。</td></tr>` : "");
 }
 
-async function saveField(part, fields, okMessage) {
-  if (!requireEdit()) return false;
+// ── 編輯 ───────────────────────────────────────────────────────────────────
+function findRow(part) {
+  return [...(_plan?.main || []), ...(_plan?.check || [])].find(r => r.part === part);
+}
+
+async function savePart(part, fields, okMessage) {
+  if (!requireEdit()) { renderTables(); return; }
   try {
-    await apiPost("/api/low-stock/items/update", { part_number: part, ...fields });
-    if (okMessage) showToast(okMessage, { tone: "success" });
-    await refreshLowStock();
-    return true;
+    await apiPost("/api/low-stock/lead-settings/part", { part, ...fields });
+    showToast(okMessage, { tone: "success" });
   } catch (error) {
     showToast(`儲存失敗：${error.message}`, { tone: "error" });
-    await refreshLowStock();
-    return false;
   }
-}
-
-function promptNumber(message, current) {
-  const raw = window.prompt(message, current === null || current === undefined ? "" : String(current));
-  if (raw === null) return undefined; // 取消
-  const text = raw.trim();
-  if (text === "") return null; // 恢復自動
-  const n = Number(text);
-  if (!Number.isFinite(n)) {
-    showToast("請輸入數字", { tone: "error" });
-    return undefined;
-  }
-  return n;
+  await refreshLowStock();
 }
 
 async function onTableClick(event) {
@@ -272,173 +236,92 @@ async function onTableClick(event) {
   const tr = event.target.closest("tr[data-part]");
   if (!target || !tr) return;
   const part = tr.dataset.part;
-  const row = _rows.find(r => r.part_number === part);
-  if (!row) return;
   const act = target.dataset.act;
-  if (act === "toggle") return; // 由 change 事件處理
-  if (act === "open-po") {
-    // 建議量 = max(門檻 - 現有量 - 在途量（至少 1）, MOQ)；後端已算好，缺值時在這裡補算
-    const gap = row.threshold === null || row.threshold === undefined
-      ? 1
-      : Math.max(1, Math.ceil(Number(row.threshold) - Number(row.qty || 0) - Number(row.on_order_qty || 0)));
-    const moq = Number(row.moq) > 0 ? Number(row.moq) : 0;
-    const qty = row.suggested_po_qty ?? Math.max(gap, Math.ceil(moq));
-    document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
-    prefillPurchaseOrder(part, qty, {
-      need: gap, moq, moq_source: row.moq_source || "",
-      receipt: { qty: row.last_receipt_qty, date: row.last_receipt_date, gcd: row.receipt_gcd, count: row.receipt_count, floor: row.moq_floor_applied },
-    });
-    return;
-  }
-  if (act === "edit-threshold") {
+  if (act === "detail") {
+    if (_openDetail.has(part)) _openDetail.delete(part); else _openDetail.add(part);
+    renderTables();
+  } else if (act === "part-supplier") {
     if (!requireEdit()) return;
-    const value = promptNumber(`${part} 門檻（留空 = 恢復自動建議）`, row.threshold);
-    if (value !== undefined) await saveField(part, { threshold_qty: value }, value === null ? "已恢復自動門檻" : "門檻已更新");
-  } else if (act === "edit-lead") {
-    if (!requireEdit()) return;
-    const value = promptNumber(`${part} 交期天數（留空 = 恢復自動）`, row.lead_time_days);
-    if (value !== undefined) await saveField(part, { lead_time_days: value }, value === null ? "已恢復自動交期" : "交期已更新");
-  } else if (act === "edit-note") {
-    if (!requireEdit()) return;
-    const note = window.prompt(`${part} 備註`, row.note || "");
-    if (note !== null) await saveField(part, { note }, "備註已更新");
-  } else if (act === "watch-add") {
-    if (!requireEdit()) return;
-    try {
-      await apiPost("/api/low-stock/items", { part_number: part });
-      showToast(`已加入關注 ${part}`, { tone: "success" });
-    } catch (error) {
-      showToast(`加入失敗：${error.message}`, { tone: "error" });
-    }
-    await refreshLowStock();
-  } else if (act === "remove") {
-    if (!requireEdit()) return;
-    if (!window.confirm(`確定將 ${part} 從低庫存關注清單移除？（之後「重新建議」不會自動加回）`)) return;
-    try {
-      await apiPost("/api/low-stock/items/remove", { part_number: part });
-      showToast("已移除", { tone: "success" });
-    } catch (error) {
-      showToast(`移除失敗：${error.message}`, { tone: "error" });
-    }
-    await refreshLowStock();
+    const row = findRow(part);
+    const raw = window.prompt(`${part} 廠商代碼（例如 P0175；空白 = 自動判斷）`, row?.supplier_override || "");
+    if (raw === null) return;
+    await savePart(part, { supplier_override: raw.trim() }, raw.trim() ? "廠商已改" : "已改回自動判斷");
   }
 }
 
 async function onTableChange(event) {
-  const target = event.target.closest('[data-act="toggle"]');
+  const target = event.target.closest("[data-act]");
   const tr = event.target.closest("tr[data-part]");
   if (!target || !tr) return;
-  const ok = await saveField(tr.dataset.part, { enabled: target.checked });
-  if (!ok) target.checked = !target.checked;
+  const part = tr.dataset.part;
+  if (target.dataset.act === "part-lead") {
+    const text = target.value.trim();
+    await savePart(part, { lead_days: text === "" ? null : text }, text === "" ? "已清除料號交期" : "料號交期已存");
+  } else if (target.dataset.act === "part-anytime") {
+    await savePart(part, { anytime: target.checked }, target.checked ? "已設可隨時下單" : "已取消可隨時下單");
+  }
 }
 
-async function handleSuggest() {
+async function onSupplierClick(event) {
+  const target = event.target.closest('[data-act="sup-save"]');
+  const tr = event.target.closest("tr[data-supplier]");
+  if (!target || !tr || !requireEdit()) return;
+  const text = tr.querySelector('[data-act="sup-lead"]')?.value.trim() || "";
+  const anytime = Boolean(tr.querySelector('[data-act="sup-anytime"]')?.checked);
+  try {
+    await apiPost("/api/low-stock/lead-settings/supplier", {
+      supplier_id: tr.dataset.supplier, lead_days: text === "" ? null : text, anytime,
+    });
+    showToast(text === "" && !anytime ? "已回到預設" : "廠商交期已存", { tone: "success" });
+  } catch (error) {
+    showToast(`儲存失敗：${error.message}`, { tone: "error" });
+  }
+  await refreshLowStock();
+}
+
+async function handleRefresh() {
   if (_busy || !requireEdit()) return;
   _busy = true;
-  const btn = document.getElementById("btn-low-stock-suggest");
-  if (btn) { btn.disabled = true; btn.textContent = "建議計算中..."; }
+  const btn = el("btn-low-stock-refresh");
+  if (btn) { btn.disabled = true; btn.textContent = "抓正航中..."; }
   try {
-    const s = await apiPost("/api/low-stock/suggest", {});
-    if (s.main_file_filter_applied === false && s.main_file_note) showToast(s.main_file_note, { duration: 6000 });
-    showToast(
-      `建議完成：候選 ${s.candidates} 個，新增 ${s.added}、更新 ${s.updated}；` +
-      `保留手動門檻 ${s.kept_manual_threshold}、手動交期 ${s.kept_manual_lead}；清單共 ${s.total_rows} 筆`,
-      { tone: "success", duration: 6000 },
-    );
-    if (s.priority && s.priority.ok === false && s.priority.error) showToast(s.priority.error, { duration: 6000 });
-    await refreshLowStock();
+    const res = await apiPost("/api/low-stock/plan/refresh", {});
+    showToast(`已更新，主檔料號 ${res.parts} 顆`, { tone: "success" });
   } catch (error) {
     showToast(error.message, { tone: "error", sticky: true });
   } finally {
     _busy = false;
-    if (btn) { btn.disabled = !isEditAuthenticated(); btn.textContent = "重新建議"; }
+    if (btn) { btn.disabled = false; btn.textContent = "重新抓正航"; }
   }
-}
-
-async function handleAdd(event) {
-  event.preventDefault();
-  if (!requireEdit()) return;
-  const part = document.getElementById("low-stock-add-part").value.trim();
-  if (!part) return;
-  const numOrNull = id => {
-    const v = document.getElementById(id).value.trim();
-    return v === "" ? null : Number(v);
-  };
-  try {
-    await apiPost("/api/low-stock/items", {
-      part_number: part,
-      threshold_qty: numOrNull("low-stock-add-threshold"),
-      lead_time_days: numOrNull("low-stock-add-lead"),
-      note: document.getElementById("low-stock-add-note").value.trim(),
-    });
-    event.target.reset();
-    showToast(`已新增 ${part.toUpperCase()}`, { tone: "success" });
-    await refreshLowStock();
-  } catch (error) {
-    showToast(`新增失敗：${error.message}`, { tone: "error" });
-  }
-}
-
-async function handleSaveSettings() {
-  if (!requireEdit()) return;
-  const val = id => Number(document.getElementById(id).value);
-  try {
-    _settings = await apiPost("/api/low-stock/settings", {
-      lookback_days: val("low-stock-set-lookback"),
-      suggest_lookback_days: val("low-stock-set-suggest-lookback"),
-      min_bills: val("low-stock-set-min-bills"),
-      safety_factor: val("low-stock-set-safety"),
-      min_cover_days: val("low-stock-set-min-cover"),
-      default_lead_days: val("low-stock-set-default-lead"),
-      actual_lead_ratio: val("low-stock-set-actual-ratio"),
-      actual_lead_min_gap_days: val("low-stock-set-actual-gap"),
-      on_order_max_overdue_days: val("low-stock-set-on-order-overdue"),
-    });
-    const suppliers = await apiPost("/api/low-stock/priority-suppliers", {
-      suppliers: parseSupplierList(document.getElementById("low-stock-set-priority-suppliers")?.value),
-    });
-    _prioritySuppliers = suppliers.suppliers || [];
-    showToast("設定已儲存，自動門檻已重算", { tone: "success" });
-    const panel = document.getElementById("low-stock-settings-panel");
-    if (panel) panel.hidden = true;
-    await refreshLowStock();
-  } catch (error) {
-    showToast(`儲存設定失敗：${error.message}`, { tone: "error" });
-  }
+  await refreshLowStock();
 }
 
 export async function initLowStock({ autoLoad = true } = {}) {
   if (!_initialized) {
-    document.getElementById("btn-low-stock-suggest")?.addEventListener("click", handleSuggest);
-    document.getElementById("low-stock-add-form")?.addEventListener("submit", handleAdd);
-    document.getElementById("btn-low-stock-save-settings")?.addEventListener("click", handleSaveSettings);
-    document.getElementById("btn-low-stock-settings-toggle")?.addEventListener("click", () => {
-      const panel = document.getElementById("low-stock-settings-panel");
-      if (!panel) return;
-      panel.hidden = !panel.hidden;
-      if (panel.hidden) renderSettings();
+    el("btn-low-stock-refresh")?.addEventListener("click", handleRefresh);
+    el("btn-low-stock-suppliers-toggle")?.addEventListener("click", () => {
+      const panel = el("low-stock-supplier-panel");
+      if (panel) panel.hidden = !panel.hidden;
     });
-    document.getElementById("low-stock-only-low")?.addEventListener("change", renderTable);
-    document.getElementById("low-stock-only-priority")?.addEventListener("change", renderTable);
-    const hideOnOrder = document.getElementById("low-stock-hide-on-order");
-    if (hideOnOrder) {
-      let saved = null;
-      try { saved = localStorage.getItem(HIDE_ON_ORDER_KEY); } catch (_) { /* 無 localStorage 則維持預設勾選 */ }
-      if (saved !== null) hideOnOrder.checked = saved === "1";
-      hideOnOrder.addEventListener("change", () => {
-        try { localStorage.setItem(HIDE_ON_ORDER_KEY, hideOnOrder.checked ? "1" : "0"); } catch (_) { /* ignore */ }
-        renderTable();
+    const hide = el("low-stock-hide-ordered");
+    if (hide) {
+      try { hide.checked = localStorage.getItem(HIDE_ORDERED_KEY) === "1"; } catch (_) { /* 無 localStorage：預設不勾 */ }
+      hide.addEventListener("change", () => {
+        try { localStorage.setItem(HIDE_ORDERED_KEY, hide.checked ? "1" : "0"); } catch (_) { /* ignore */ }
+        renderTables();
       });
     }
-    const body = document.getElementById("low-stock-table-body");
-    body?.addEventListener("click", onTableClick);
-    body?.addEventListener("change", onTableChange);
-    document.getElementById("low-stock-notice-btn")?.addEventListener("click", () => {
+    for (const id of ["low-stock-main-body", "low-stock-check-body"]) {
+      el(id)?.addEventListener("click", onTableClick);
+      el(id)?.addEventListener("change", onTableChange);
+    }
+    el("low-stock-supplier-body")?.addEventListener("click", onSupplierClick);
+    el("low-stock-notice-btn")?.addEventListener("click", () => {
       document.querySelector('.tab-btn[data-tab="low-stock-tab"]')?.click();
     });
-    // ST 庫存同步（ERP 或 Excel）後立即重算徽章
-    window.addEventListener("st-inventory-synced", () => { void refreshLowStockAlerts(); });
-    setInterval(() => { void refreshLowStockAlerts(); }, REFRESH_MS);
+    // ST 庫存同步後（會一併重算快照）更新徽章
+    window.addEventListener("st-inventory-synced", () => { _plan = null; void refreshLowStockAlerts(); });
+    setInterval(() => { _plan = null; void refreshLowStockAlerts(); }, REFRESH_MS);
     _initialized = true;
   }
   if (autoLoad) await refreshLowStock();

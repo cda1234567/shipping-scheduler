@@ -158,6 +158,13 @@ class ComputeBase(Base):
         self.consume(264, "EC-10025A", 10000)
         self.consume(300, "EC-10025A", 555, at="2026-11-04T17:30:00")  # ST 同步之後：本機 ST 已扣過
         self.consume(221, "EC-ROLLED", 777, rolled_back=True)
+        # 正式公司最後一張成功一鍵調撥 = 10-3 → 自動截止批次 10-3
+        self.add_transfer("2026/10-3", "RM-20261006001")
+
+    def add_transfer(self, key, move_no, target="CHIComp03", status="ok"):
+        self.conn.execute(
+            "INSERT INTO erp_transfers(batch_key, batch_code, target_db, move_no, status) VALUES(?,?,?,?,?)",
+            (key, key.split("/")[-1], target, move_no, status))
 
     def add_order(self, oid, code, at, status="dispatched"):
         self.conn.execute("INSERT INTO orders(id, code, model, po_number, status) VALUES(?,?,?,?,?)",
@@ -173,11 +180,12 @@ class ComputeBase(Base):
 
 
 class ComputeTests(ComputeBase):
-    def test_default_cutoff_and_settle_date(self):
-        self.assertEqual(spt.get_cutoff_setting(), "10-3")
+    def test_auto_cutoff_and_settle_date(self):
         r = spt.compute([264], self.conversions)
         info = r["info"]
         self.assertEqual((info["cutoff_code"], info["settle_date"], info["settle_source"]), ("10-3", "2026-10-06", "auto"))
+        self.assertEqual((info["cutoff_source"], info["cutoff_move_no"]), ("auto_erp_transfer", "RM-20261006001"))
+        self.assertIn("自動：最後一張成功調撥單批次 10-3（RM-20261006001）", info["cutoff_source_text"])
         self.assertEqual(info["batches"], ["10-9", "11-5", "11-6"])
         self.assertEqual(r["warnings"], [])
         p = r["parts"]
@@ -194,9 +202,9 @@ class ComputeTests(ComputeBase):
     def test_selected_orders_excluded_and_cutoff_change(self):
         p = spt.compute([], self.conversions)["parts"]
         self.assertEqual(p["EC-10025A"]["deducted"], 20000)  # 10-9 + 11-5（不含同步後的 11-6）
-        spt.set_cutoff_setting("10-9")
-        self.assertEqual(db.get_setting(spt.SETTING_KEY), "2026/10-9")
+        self.add_transfer("2026/10-9", "RM-20261016001")  # 調撥到 10-9 → 截止批次自動往後
         r = spt.compute([], self.conversions)
+        self.assertEqual(r["info"]["cutoff_code"], "10-9")
         self.assertEqual(r["info"]["batches"], ["11-5", "11-6"])
         # 10-9 的料在 10/13、10/16 各調一項：同票數取較晚那天
         self.assertEqual(r["info"]["settle_date"], "2026-10-16")
@@ -207,10 +215,13 @@ class ComputeTests(ComputeBase):
         self.assertEqual(len(self.erp_t["sql"]), n)
 
     def test_unknown_cutoff_warns_and_no_pending(self):
+        self.conn.execute("DELETE FROM erp_transfers")
         db.set_setting(spt.SETTING_KEY, "9-9")
         r = spt.compute([264], self.conversions)
         self.assertEqual(r["parts"], {})
-        self.assertIn("找不到截止批次", r["warnings"][0])
+        self.assertIn("設定值「9-9」也找不到", r["warnings"][0])
+        self.assertIn("找不到截止批次", r["warnings"][-1])
+        self.assertEqual(r["info"]["cutoff_source"], "setting_fallback")
         with self.assertRaises(ValueError):
             spt.set_cutoff_setting("9-9")
 
@@ -310,7 +321,10 @@ class RouterTests(ComputeBase):
         self.assertEqual([b["code"] for b in data["batches"]], ["10-2", "10-3", "10-9", "11-5", "11-6"])
         r = self.client.post("/api/shortage-po/transfer-cutoff", json={"cutoff": "2026/10-9"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["cutoff_code"], "10-9")
+        # 舊設定值照存（一鍵調撥仍用），但不再覆蓋自動判斷的截止批次
+        self.assertEqual(db.get_setting(spt.SETTING_KEY), "2026/10-9")
+        self.assertEqual((r.json()["cutoff_code"], r.json()["cutoff_source"], r.json()["setting"]),
+                         ("10-3", "auto_erp_transfer", "2026/10-9"))
         self.assertEqual(self.client.post("/api/shortage-po/transfer-cutoff", json={"cutoff": "zz"}).status_code, 400)
 
     def test_post_requires_edit_auth(self):

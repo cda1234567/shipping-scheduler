@@ -5267,6 +5267,24 @@ body.desktop-dark .frequent-zero-usage li span {
 .low-stock-supplier { font-size: 12px; color: #374151; }
 .low-stock-panel input.low-stock-priority-input { width: 220px; }
 .low-stock-link { border: none; background: none; color: #2563eb; font-size: 11px; cursor: pointer; padding: 0 2px; }
+/* v2026.11.11.7 低庫存（廠商交期判斷） */
+.low-stock-shell.low-stock-plan { overflow: auto; }
+.low-stock-plan .low-stock-table-wrap { flex: none; }
+.low-stock-plan .low-stock-table td { vertical-align: top; }
+.low-stock-plan .low-stock-hint { display: block; align-self: auto; }
+.low-stock-plan .low-stock-filter .low-stock-hint { display: inline; }
+.low-stock-supplier-panel { border: 1px solid #e5e7eb; border-radius: 8px; background: #fff; padding: 8px; display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; }
+.low-stock-supplier-panel[hidden] { display: none; }
+.low-stock-lead-input { width: 64px; padding: 2px 4px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 12px; }
+.low-stock-setting { white-space: nowrap; }
+.low-stock-setting .low-stock-filter { display: inline-flex; font-size: 12px; }
+.low-stock-tags { margin-top: 2px; display: flex; flex-wrap: wrap; gap: 3px; }
+.low-stock-check > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #374151; padding: 6px 2px; }
+.low-stock-detail-row td { background: #f8fafc; }
+.low-stock-detail-sum { font-size: 12px; color: #374151; margin-bottom: 4px; }
+.low-stock-detail-table { border-collapse: collapse; font-size: 12px; }
+.low-stock-detail-table th, .low-stock-detail-table td { border: 1px solid #e5e7eb; padding: 2px 6px; }
+.low-stock-detail-table .num { text-align: right; }
 
 /* ── 開採購單（正航 ERP） ── */
 .erp-po-shell { flex: 1; padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }

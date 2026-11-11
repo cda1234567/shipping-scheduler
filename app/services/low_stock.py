@@ -786,6 +786,21 @@ _PRIORITY_COLUMNS = (
 
 
 def refresh_priority_parts(actor: str = "system") -> dict:
+    """重點廠商重算（舊關注清單用）後，一併刷新 v2026.11.11.7 低庫存快照（low_stock_plan）。永遠不丟例外。
+
+    回傳舊的重點廠商結果，另加 plan = low_stock_plan.refresh_snapshot() 的結果。
+    """
+    result = _refresh_priority_rows(actor)
+    try:
+        from . import low_stock_plan  # 延遲匯入：low_stock_plan 也匯入本模組
+        result["plan"] = low_stock_plan.refresh_snapshot(actor)
+    except Exception as exc:  # refresh_snapshot 本身不丟例外，這裡只防匯入失敗
+        logger.warning("低庫存快照重算失敗：%s", type(exc).__name__)
+        result["plan"] = {"ok": False, "error": f"低庫存快照重算失敗：{type(exc).__name__}"}
+    return result
+
+
+def _refresh_priority_rows(actor: str = "system") -> dict:
     """從正航（唯讀）重算重點廠商料號並整批覆寫本機 low_stock_priority。永遠不丟例外。
 
     廠商：名單關鍵字比對 comCustomer(Flag=2) → 最近一張進貨（Flag 100，任何倉）是這些廠商的料號。

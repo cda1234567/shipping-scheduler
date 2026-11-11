@@ -6,12 +6,14 @@ from fastapi.concurrency import run_in_threadpool
 from .. import database as db
 from ..models import (
     LowStockAddRequest,
+    LowStockPartSettingRequest,
     LowStockPrioritySuppliersRequest,
     LowStockRemoveRequest,
     LowStockSettingsRequest,
+    LowStockSupplierLeadRequest,
     LowStockUpdateRequest,
 )
-from ..services import low_stock
+from ..services import low_stock, low_stock_plan
 from ..services.erp_stock import ErpError
 from ..services.local_time import local_now
 
@@ -164,3 +166,50 @@ async def remove_low_stock_item(req: LowStockRemoveRequest):
     if not low_stock.remove_part(req.part_number, actor=ACTOR):
         raise HTTPException(404, "找不到此料號")
     return {"ok": True}
+
+
+# ── v2026.11.11.7：交期設定判斷的低庫存清單（GET 只讀本機快照，不連正航） ──────────
+
+@router.get("/plan")
+async def get_low_stock_plan():
+    return await run_in_threadpool(low_stock_plan.build_plan)
+
+
+@router.get("/plan/count")
+async def get_low_stock_plan_count():
+    return {"count": await run_in_threadpool(low_stock_plan.alert_count)}
+
+
+@router.post("/plan/refresh")
+async def refresh_low_stock_plan():
+    """重新從正航（唯讀）抓資料算快照；失敗保留上次資料。"""
+    result = await run_in_threadpool(low_stock_plan.refresh_snapshot, ACTOR)
+    if not result.get("ok"):
+        raise HTTPException(503, result.get("error") or "低庫存快照重算失敗")
+    return result
+
+
+@router.get("/lead-settings")
+async def get_low_stock_lead_settings():
+    return await run_in_threadpool(low_stock_plan.get_settings)
+
+
+@router.post("/lead-settings/supplier")
+async def save_low_stock_supplier_lead(req: LowStockSupplierLeadRequest):
+    try:
+        return await run_in_threadpool(
+            low_stock_plan.save_supplier_lead, req.supplier_id, req.lead_days, req.anytime, ACTOR)
+    except low_stock_plan.LeadSettingError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.post("/lead-settings/part")
+async def save_low_stock_part_setting(req: LowStockPartSettingRequest):
+    fields = req.dict(exclude_unset=True)
+    part = fields.pop("part")
+    if fields.get("anytime", False) is None:
+        fields.pop("anytime")
+    try:
+        return await run_in_threadpool(lambda: low_stock_plan.save_part_setting(part, actor=ACTOR, **fields))
+    except low_stock_plan.LeadSettingError as exc:
+        raise HTTPException(400, str(exc)) from None

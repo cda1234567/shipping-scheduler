@@ -4,8 +4,11 @@
 正航的 ST 只有在人員打調撥單（Flag 400，001 → 015 庚霖倉）時才會減少。所以
 「已發料但還沒調撥」的料，正航 ST 看起來還在，缺料採購會少算。
 
-規則（B1，v2026.11.04.9）：
-- 截止批次（設定 shortage_transfer_cutoff_batch，預設 10-3）：該批次（含）以前的都視為已調撥完成。
+規則（B1，v2026.11.04.9；截止批次自動判斷 v2026.11.11.7）：
+- 截止批次：該批次（含）以前的都視為已調撥完成。自動 = 網站一鍵調撥紀錄（erp_transfers）中
+  status='ok'、target_db 為正式公司（CHIComp03）的最大批次（依 batch_key 年/月/序排序，跨年正確）。
+  對應不到已發料批次（或沒有紀錄）時，退回設定 shortage_transfer_cutoff_batch，並在 warnings 寫明。
+  （一鍵調撥 batch_breakdown 仍用設定值，不在此次改動範圍。）
 - 待調撥（每個料號）= 截止批次之後、已發料訂單的網站扣 ST 量（st_dispatch_consumptions，未退回）
   − 對應期間正航 001 → 015 的調撥量（015 → 001 退回的扣回來）。
   * 對應期間 = 「截止批次的料實際調撥的那天」之後（不含當天）。那天自動判斷：截止批次扣過的料號，
@@ -162,6 +165,59 @@ def get_cutoff_setting() -> str:
     return str(db.get_setting(SETTING_KEY, "") or "").strip() or DEFAULT_CUTOFF
 
 
+PROD_TARGET = "CHIComp03"
+SOURCE_AUTO = "auto_erp_transfer"
+SOURCE_FALLBACK = "setting_fallback"
+_KEY_RE = re.compile(r"^(\d{4})/(\d{1,2})-(\d+)$")
+
+
+def parse_key(value: Any) -> Optional[Tuple[int, int, int]]:
+    """'2026/11-2' → (2026, 11, 2)；格式不符 → None。"""
+    m = _KEY_RE.match(str(value or "").strip())
+    if not m:
+        return None
+    year, month, seq = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return (year, month, seq) if 1 <= month <= 12 else None
+
+
+def last_transfer_record() -> Optional[Dict[str, Any]]:
+    """正式公司最後一張成功的一鍵調撥紀錄（依 batch_key 排序取最大）；沒有 → None。"""
+    best = None
+    for rec in db.successful_erp_transfers(PROD_TARGET):
+        key = parse_key(rec.get("batch_key"))
+        if key and (best is None or key > best[0]):
+            best = (key, rec)
+    return best[1] if best else None
+
+
+def effective_cutoff(batches: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """實際使用的截止批次：{batch, source, move_no, warnings}。batch 找不到為 None。"""
+    rec = last_transfer_record()
+    if not batches:
+        return {"batch": None, "source": SOURCE_AUTO if rec else SOURCE_FALLBACK,
+                "move_no": str((rec or {}).get("move_no") or ""), "warnings": []}
+    if rec:
+        hit = next((b for b in batches if b["key"] == rec["batch_key"]), None)
+        if hit:
+            return {"batch": hit, "source": SOURCE_AUTO, "move_no": str(rec.get("move_no") or ""), "warnings": []}
+    setting = str(db.get_setting(SETTING_KEY, "") or "").strip()
+    hit = resolve_cutoff(setting, batches) if setting else None
+    if rec:
+        why = f"最後一張成功調撥單批次 {rec['batch_key']}（{rec.get('move_no') or '無單號'}）對應不到已發料批次"
+    else:
+        why = "找不到成功的正式調撥單（公司 03）"
+    tail = f"改用設定值 {setting}" if hit else (f"設定值「{setting}」也找不到" if setting else "也沒有設定值")
+    return {"batch": hit, "source": SOURCE_FALLBACK, "move_no": "", "warnings": [f"待調撥：{why}，{tail}"]}
+
+
+def source_text(cut: Dict[str, Any]) -> str:
+    """畫面用來源說明。"""
+    b = cut.get("batch")
+    if cut.get("source") == SOURCE_AUTO and b:
+        return f"自動：最後一張成功調撥單批次 {b['code']}（{cut.get('move_no') or '無單號'}）"
+    return f"設定值 {b['code']}（自動判斷失敗）" if b else "找不到截止批次"
+
+
 def set_cutoff_setting(value: str) -> Dict[str, Any]:
     batches = list_batches()
     hit = resolve_cutoff(value, batches)
@@ -173,12 +229,18 @@ def set_cutoff_setting(value: str) -> Dict[str, Any]:
 
 def config(batches: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     batches = list_batches() if batches is None else batches
-    value = get_cutoff_setting()
-    hit = resolve_cutoff(value, batches)
+    value = str(db.get_setting(SETTING_KEY, "") or "").strip()
+    cut = effective_cutoff(batches)
+    hit = cut["batch"]
     return {
         "cutoff": hit["key"] if hit else value,
         "cutoff_code": hit["code"] if hit else value,
         "cutoff_found": bool(hit),
+        "cutoff_source": cut["source"],
+        "cutoff_move_no": cut["move_no"],
+        "cutoff_source_text": source_text(cut),
+        "warnings": cut["warnings"],
+        "setting": value,
         "default": DEFAULT_CUTOFF,
         "batches": [{k: b[k] for k in ("key", "code", "year", "label", "first_dispatched_at")} for b in batches],
     }
@@ -279,16 +341,23 @@ def compute(exclude_order_ids: Iterable[int] = (), conversions: Optional[Dict[st
     """
     conversions = part_conversion.active_map() if conversions is None else conversions
     exclude = {int(i) for i in exclude_order_ids if i}
-    info: Dict[str, Any] = {"cutoff": "", "cutoff_code": "", "settle_date": "", "settle_source": "",
-                            "transfer_after": "", "batches": [], "order_count": 0, "st_loaded_at": ""}
+    info: Dict[str, Any] = {"cutoff": "", "cutoff_code": "", "cutoff_source": "", "cutoff_move_no": "",
+                            "cutoff_source_text": "", "settle_date": "", "settle_source": "",
+                            "transfer_after": "", "batches": [], "order_count": 0, "st_loaded_at": "", "warnings": []}
     result: Dict[str, Any] = {"parts": {}, "info": info, "warnings": []}
     batches = list_batches()
-    setting = get_cutoff_setting()
-    cutoff = resolve_cutoff(setting, batches)
+    cut = effective_cutoff(batches)
+    cutoff = cut["batch"]
+    info.update(cutoff_source=cut["source"], cutoff_move_no=cut["move_no"], cutoff_source_text=source_text(cut))
     if not cutoff:
+        # 沒有任何扣 ST 紀錄時不需要截止批次，不提示
         if batches and _consumptions([i for b in batches for i in b["order_ids"]], ""):
-            result["warnings"].append(f"待調撥：找不到截止批次「{setting}」，本次未計算待調撥（請在上方重新選擇）")
+            msgs = cut["warnings"] + ["待調撥：找不到截止批次，本次未計算待調撥"]
+            info["warnings"].extend(msgs)
+            result["warnings"].extend(msgs)
         return result
+    info["warnings"].extend(cut["warnings"])
+    result["warnings"].extend(cut["warnings"])
     info.update(cutoff=cutoff["key"], cutoff_code=cutoff["code"])
     idx = batches.index(cutoff)
     after = batches[idx + 1:]

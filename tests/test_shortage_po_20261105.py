@@ -79,7 +79,9 @@ class Po20261105Base(unittest.TestCase):
         for s in fx["st"]:
             c.execute("INSERT INTO st_inventory_snapshot(part_number, stock_qty, loaded_at) VALUES(?,?,?)",
                       (s["part_number"], s["stock_qty"], s["loaded_at"]))
-        # 當時沒有 shortage_transfer_cutoff_batch → 預設截止批次 10-3
+        # 當時正式公司最後一張成功一鍵調撥是 10-3 → 自動截止批次 10-3
+        c.execute("INSERT INTO erp_transfers(batch_key, batch_code, target_db, move_no, status)"
+                  " VALUES('2026/10-3', '10-3', 'CHIComp03', 'RM-TEST', 'ok')")
         c.execute("INSERT INTO settings(key, value) VALUES('st_inventory_loaded_at', ?)", (fx["settings"]["st_inventory_loaded_at"],))
         sessions = {}
         for x in fx["consumptions"]:

@@ -554,9 +554,7 @@
       <div class="erp-po-shell shortage-po-shell">
         <div id="shortage-po-badge" class="erp-po-badge">讀取設定中...</div>
         <div class="shortage-po-cutoff">
-          <label>調撥截止批次
-            <select id="shortage-po-cutoff" title="這個批次（含）以前視為已在正航調撥到庚霖；之後的批次網站已扣 ST、正航還沒調撥的量算「待調撥」"></select>
-          </label>
+          <span>調撥截止批次 <strong id="shortage-po-cutoff">—</strong></span>
           <span class="erp-po-hint">（含）以前視為已調撥完成；之後批次已扣、正航還沒調撥的量 = 待調撥，缺 = 需求 + 待調撥 − ST</span>
           <button type="button" class="btn btn-sm" id="btn-shortage-transfer">去一鍵調撥</button>
           <span id="shortage-po-cutoff-info" class="erp-po-hint"></span>
@@ -603,69 +601,69 @@
       </div>
     </div>
 
-    <!-- ── Tab: 低庫存提醒 ── -->
+    <!-- ── Tab: 低庫存提醒（v2026.11.11.7：廠商交期判斷） ── -->
     <div id="tab-low-stock-tab" class="tab-content">
-      <div class="low-stock-shell">
+      <div class="low-stock-shell low-stock-plan">
         <div class="low-stock-header">
           <div>
-            <h3 class="low-stock-title">常用料號低庫存提醒</h3>
-            <div class="low-stock-subtitle">依 ST 倉近期領用量與採購交期，建議常用料號與門檻；現有量取自本機 ST 庫存快照。</div>
+            <h3 class="low-stock-title">低庫存提醒</h3>
+            <div class="low-stock-subtitle">主清單：可用 ≤ 0、可用 &lt; 已排程需求、或撐不到交期。可用 = 自由 ST + 待調撥 + 015 − 已發料未領。</div>
           </div>
           <span class="spacer"></span>
-          <label class="low-stock-filter"><input type="checkbox" id="low-stock-only-low"> 只看低庫存</label>
-          <label class="low-stock-filter" title="已下採購單、現有量加在途量已達門檻的料號"><input type="checkbox" id="low-stock-hide-on-order" checked> 隱藏已下單</label>
-          <label class="low-stock-filter" title="只顯示最近進貨廠商為重點廠商的料號（含已下單）"><input type="checkbox" id="low-stock-only-priority"> <span id="low-stock-only-priority-label">只看重點廠商（萬晉、崧嵐）</span></label>
-          <button class="btn btn-secondary btn-sm" id="btn-low-stock-settings-toggle">設定</button>
-          <button class="btn btn-primary btn-sm" id="btn-low-stock-suggest" title="從正航 ERP 重新計算常用料號與建議門檻（不會覆蓋手動設定）">重新建議</button>
+          <label class="low-stock-filter"><input type="checkbox" id="low-stock-hide-ordered"> 隱藏已下單</label>
+          <button class="btn btn-secondary btn-sm" id="btn-low-stock-suppliers-toggle">廠商交期</button>
+          <button class="btn btn-primary btn-sm" id="btn-low-stock-refresh" title="從正航（唯讀）重新抓庫存、領用、在途、015 已領">重新抓正航</button>
         </div>
-        <div id="low-stock-settings-panel" class="low-stock-panel" hidden>
-          <label>用量統計天數 <input type="number" id="low-stock-set-lookback" min="7" max="730" step="1"></label>
-          <label>建議清單統計天數 <input type="number" id="low-stock-set-suggest-lookback" min="7" max="730" step="1"></label>
-          <label>最少單據數 <input type="number" id="low-stock-set-min-bills" min="1" max="50" step="1"></label>
-          <label>安全係數 <input type="number" id="low-stock-set-safety" min="0.1" max="10" step="0.1"></label>
-          <label>最低可撐天數 <input type="number" id="low-stock-set-min-cover" min="0" max="365" step="1"></label>
-          <label>預設交期（天） <input type="number" id="low-stock-set-default-lead" min="1" max="365" step="1"></label>
-          <label>實際交期比例上限 <input type="number" id="low-stock-set-actual-ratio" min="0" max="1" step="0.05"></label>
-          <label>實際交期最少縮短天數 <input type="number" id="low-stock-set-actual-gap" min="0" max="365" step="1"></label>
-          <label>在途逾期排除天數 <input type="number" id="low-stock-set-on-order-overdue" min="0" max="3650" step="1"></label>
-          <label>重點廠商（逗號或頓號分隔） <input type="text" id="low-stock-set-priority-suppliers" class="low-stock-priority-input" placeholder="例如 萬晉、崧嵐；空白=不標註"></label>
-          <button class="btn btn-primary btn-sm" id="btn-low-stock-save-settings">儲存設定</button>
-          <span class="low-stock-hint">儲存後會用已存的統計重算自動門檻；統計天數與最少單據數於下次「重新建議」生效。</span>
-        </div>
-        <form id="low-stock-add-form" class="low-stock-panel" autocomplete="off">
-          <label>料號 <input type="text" id="low-stock-add-part" placeholder="例如 EC-40019A" required></label>
-          <label>門檻（選填） <input type="number" id="low-stock-add-threshold" min="0" step="any" placeholder="空白=自動"></label>
-          <label>交期天數（選填） <input type="number" id="low-stock-add-lead" min="1" max="365" step="1" placeholder="空白=自動"></label>
-          <label>備註 <input type="text" id="low-stock-add-note"></label>
-          <button class="btn btn-secondary btn-sm" type="submit" id="btn-low-stock-add">新增料號</button>
-        </form>
-        <div id="low-stock-status" class="file-status">切到這頁後會讀取關注清單。</div>
+        <div id="low-stock-status" class="file-status">切到這頁後會讀取清單。</div>
         <div id="low-stock-main-hint" class="file-status warn" style="display:none"></div>
+        <div id="low-stock-supplier-panel" class="low-stock-supplier-panel" hidden>
+          <div class="low-stock-hint">洽智、萬晉、積禾、崧嵐預設 60 天，其他廠商預設可隨時下單。改完按「存」；天數清空又不勾 = 回到預設。</div>
+          <table class="low-stock-table">
+            <thead><tr><th>代碼</th><th>廠商</th><th class="num">料數</th><th>目前</th><th>交期（天）</th><th>可隨時下單</th><th></th></tr></thead>
+            <tbody id="low-stock-supplier-body"></tbody>
+          </table>
+        </div>
         <div class="low-stock-table-wrap">
           <table class="low-stock-table">
             <thead>
               <tr>
                 <th>料號</th>
-                <th>品名</th>
                 <th>廠商</th>
-                <th class="num">現有量</th>
-                <th>在途量 / 預計交期</th>
-                <th class="num">月均用量</th>
-                <th>交期(天)</th>
-                <th class="num">預定交期(天)</th>
-                <th class="num">實際交期(天)</th>
-                <th>延遲天數</th>
-                <th>門檻</th>
-                <th class="num">可撐天數</th>
-                <th>狀態</th>
-                <th>啟用</th>
-                <th>備註</th>
-                <th>操作</th>
+                <th class="num">可用</th>
+                <th class="num" title="ST − 待調撥；總指揮公式沒有這項，待總指揮確認">自由 ST<br><span class="low-stock-hint">待總指揮確認</span></th>
+                <th class="num">已排程需求</th>
+                <th class="num">日均</th>
+                <th class="num">可撐(天)</th>
+                <th>交期</th>
+                <th>依據</th>
+                <th>料號設定</th>
               </tr>
             </thead>
-            <tbody id="low-stock-table-body"></tbody>
+            <tbody id="low-stock-main-body"></tbody>
           </table>
         </div>
+        <details id="low-stock-check" class="low-stock-check">
+          <summary id="low-stock-check-summary">資料待確認</summary>
+          <div class="low-stock-table-wrap">
+            <table class="low-stock-table">
+              <thead>
+                <tr>
+                  <th>料號</th>
+                  <th>廠商</th>
+                  <th class="num">可用</th>
+                  <th class="num">自由 ST</th>
+                  <th class="num">已排程需求</th>
+                  <th class="num">日均</th>
+                  <th class="num">可撐(天)</th>
+                  <th>交期</th>
+                  <th>依據</th>
+                  <th>料號設定</th>
+                </tr>
+              </thead>
+              <tbody id="low-stock-check-body"></tbody>
+            </table>
+          </div>
+        </details>
       </div>
     </div>
 

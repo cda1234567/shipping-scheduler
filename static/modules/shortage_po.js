@@ -81,16 +81,21 @@ export function cutoffInfoText(info) {
   return parts.join("；");
 }
 
+// 截止批次改為自動判斷（最後一張成功調撥單批次），這裡只顯示，不再讓舊設定值覆蓋
 function renderCutoff() {
-  const sel = el("shortage-po-cutoff");
-  if (!sel) return;
-  const batches = _cutoff?.batches || [];
-  const current = _cutoff?.cutoff || "";
-  const options = batches.map(b => `<option value="${esc(b.key)}" ${b.key === current ? "selected" : ""}>${esc(b.label)}</option>`);
-  if (_cutoff && !_cutoff.cutoff_found) options.unshift(`<option value="" selected>（找不到 ${esc(_cutoff.cutoff_code)}，請選擇）</option>`);
-  sel.innerHTML = options.join("");
+  const box = el("shortage-po-cutoff");
+  if (!box) return;
+  if (!_cutoff) {
+    box.textContent = "—";
+  } else {
+    box.textContent = _cutoff.cutoff_found ? _cutoff.cutoff_code : "找不到";
+    box.title = [_cutoff.cutoff_source_text, ...(_cutoff.warnings || [])].filter(Boolean).join("；");
+  }
   const info = el("shortage-po-cutoff-info");
-  if (info) info.textContent = cutoffInfoText(_data?.pending_transfer);
+  if (info) {
+    const src = _cutoff?.cutoff_source_text ? `${_cutoff.cutoff_source_text}。` : "";
+    info.textContent = src + cutoffInfoText(_data?.pending_transfer);
+  }
 }
 
 async function loadCutoff() {
@@ -100,24 +105,6 @@ async function loadCutoff() {
     _cutoff = null;
   }
   renderCutoff();
-}
-
-async function onCutoffChange(event) {
-  const value = event.target.value;
-  if (!value) return;
-  if (!requireEdit()) { renderCutoff(); return; }
-  try {
-    _cutoff = await apiPost("/api/shortage-po/transfer-cutoff", { cutoff: value });
-    showToast(`調撥截止批次已改為 ${_cutoff.cutoff_code}`);
-  } catch (error) {
-    showToast(`儲存截止批次失敗：${error.message}`, { tone: "error" });
-  }
-  renderCutoff();
-  if (_data && _listOrderIds.length) {
-    _checkedOrders = new Set(_listOrderIds);
-    renderOrders();
-    await buildList();
-  }
 }
 
 // ── 訂單選擇 ────────────────────────────────────────────────────────────────
@@ -991,7 +978,6 @@ export async function initShortagePurchase() {
     if (event.target.checked) _checkedOrders.add(id); else _checkedOrders.delete(id);
   });
   el("btn-shortage-po-build")?.addEventListener("click", () => { void buildList(); });
-  el("shortage-po-cutoff")?.addEventListener("change", event => { void onCutoffChange(event); });
   el("btn-shortage-po-preview")?.addEventListener("click", handlePreview);
   el("shortage-po-show-all")?.addEventListener("change", event => {
     _showAll = event.target.checked;

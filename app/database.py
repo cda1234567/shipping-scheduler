@@ -113,7 +113,37 @@ LOW_STOCK_PRIORITY_MIGRATION_COLUMNS = (
     ("gl_recent_bill_count", "INTEGER NOT NULL DEFAULT 0"),
 )
 
-_CREATE_SQL = LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + """
+# 低庫存提醒 v2026.11.11.7：交期設定（Andy 在網站設定）與正航唯讀快照（refresh 時整批覆寫）
+LOW_STOCK_PLAN_SQL = """
+CREATE TABLE IF NOT EXISTS low_stock_supplier_lead (
+    supplier_id    TEXT PRIMARY KEY,
+    supplier_name  TEXT NOT NULL DEFAULT '',
+    lead_days      INTEGER,
+    anytime        INTEGER NOT NULL DEFAULT 0,
+    updated_at     TEXT NOT NULL DEFAULT '',
+    actor          TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS low_stock_part_setting (
+    part               TEXT PRIMARY KEY,
+    lead_days          INTEGER,
+    anytime            INTEGER NOT NULL DEFAULT 0,
+    supplier_override  TEXT NOT NULL DEFAULT '',
+    updated_at         TEXT NOT NULL DEFAULT '',
+    actor              TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS low_stock_plan_snapshot (
+    part          TEXT PRIMARY KEY,
+    payload_json  TEXT NOT NULL DEFAULT '{}',
+    refreshed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS low_stock_plan_suppliers (
+    supplier_id  TEXT PRIMARY KEY,
+    short_name   TEXT NOT NULL DEFAULT '',
+    full_name    TEXT NOT NULL DEFAULT ''
+);
+"""
+
+_CREATE_SQL = LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + LOW_STOCK_PLAN_SQL + """
 CREATE TABLE IF NOT EXISTS erp_transfers (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  batch_key TEXT NOT NULL DEFAULT '', batch_code TEXT NOT NULL DEFAULT '',
@@ -845,7 +875,7 @@ def _migrate_low_stock_columns(conn) -> None:
 def ensure_low_stock_table() -> None:
     """低庫存關注清單表（冪等；供 init_db 以外的一次性腳本呼叫）。"""
     with get_conn() as conn:
-        conn.executescript(LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL)
+        conn.executescript(LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + LOW_STOCK_PLAN_SQL)
         _migrate_low_stock_columns(conn)
 
 
@@ -5459,3 +5489,104 @@ def mark_erp_transfer_deleted(record_id: int) -> None:
 def successful_erp_transfers(target: str) -> list[dict]:
     with get_conn() as conn:
         return [dict(r) for r in conn.execute("SELECT * FROM erp_transfers WHERE target_db=? AND status='ok' ORDER BY id", (target,))]
+
+
+# ── 低庫存提醒：交期設定與正航快照（v2026.11.11.7） ─────────────────────────
+
+def get_low_stock_supplier_leads() -> dict[str, dict]:
+    """{廠商代碼: 設定列}；沒有列 = 用預設（四家長交期廠商 60 天，其他可隨時下單）。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM low_stock_supplier_lead").fetchall()
+    return {str(r["supplier_id"]): dict(r) for r in rows}
+
+
+def save_low_stock_supplier_lead(supplier_id: str, supplier_name: str, lead_days: int | None,
+                                 anytime: bool, actor: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO low_stock_supplier_lead(supplier_id, supplier_name, lead_days, anytime, updated_at, actor) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(supplier_id) DO UPDATE SET supplier_name=excluded.supplier_name, "
+            "lead_days=excluded.lead_days, anytime=excluded.anytime, updated_at=excluded.updated_at, actor=excluded.actor",
+            (supplier_id, supplier_name, lead_days, 1 if anytime else 0, _now(), actor),
+        )
+
+
+def delete_low_stock_supplier_lead(supplier_id: str) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM low_stock_supplier_lead WHERE supplier_id=?", (supplier_id,))
+
+
+def get_low_stock_part_settings() -> dict[str, dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM low_stock_part_setting").fetchall()
+    return {str(r["part"]): dict(r) for r in rows}
+
+
+def save_low_stock_part_setting(part: str, lead_days: int | None, anytime: bool,
+                                supplier_override: str, actor: str) -> None:
+    """三個值都是空（沒覆蓋交期、沒勾可隨時下單、沒改廠商）就刪掉該列。"""
+    with get_conn() as conn:
+        if lead_days is None and not anytime and not supplier_override:
+            conn.execute("DELETE FROM low_stock_part_setting WHERE part=?", (part,))
+            return
+        conn.execute(
+            "INSERT INTO low_stock_part_setting(part, lead_days, anytime, supplier_override, updated_at, actor) "
+            "VALUES(?,?,?,?,?,?) ON CONFLICT(part) DO UPDATE SET lead_days=excluded.lead_days, "
+            "anytime=excluded.anytime, supplier_override=excluded.supplier_override, "
+            "updated_at=excluded.updated_at, actor=excluded.actor",
+            (part, lead_days, 1 if anytime else 0, supplier_override, _now(), actor),
+        )
+
+
+def replace_low_stock_plan_snapshot(rows: dict[str, dict], suppliers: dict[str, tuple[str, str]],
+                                    refreshed_at: str) -> None:
+    """整批覆寫正航快照（同一個交易）。"""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM low_stock_plan_snapshot")
+        conn.executemany(
+            "INSERT INTO low_stock_plan_snapshot(part, payload_json, refreshed_at) VALUES(?,?,?)",
+            [(part, json.dumps(payload, ensure_ascii=False), refreshed_at) for part, payload in rows.items()],
+        )
+        conn.execute("DELETE FROM low_stock_plan_suppliers")
+        conn.executemany(
+            "INSERT INTO low_stock_plan_suppliers(supplier_id, short_name, full_name) VALUES(?,?,?)",
+            [(sid, short, full) for sid, (short, full) in suppliers.items()],
+        )
+
+
+def get_low_stock_plan_snapshot() -> dict[str, dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part, payload_json FROM low_stock_plan_snapshot").fetchall()
+    out: dict[str, dict] = {}
+    for r in rows:
+        try:
+            out[str(r["part"])] = json.loads(r["payload_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def get_low_stock_plan_suppliers() -> dict[str, tuple[str, str]]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM low_stock_plan_suppliers").fetchall()
+    return {str(r["supplier_id"]): (str(r["short_name"] or ""), str(r["full_name"] or "")) for r in rows}
+
+
+def get_orders_by_status(status: str) -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM orders WHERE status=? ORDER BY id", (status,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_dispatch_records_by_orders(order_ids: list[int]) -> dict[int, list[dict]]:
+    out: dict[int, list[dict]] = {}
+    ids = [int(i) for i in order_ids]
+    with get_conn() as conn:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            rows = conn.execute(
+                f"SELECT * FROM dispatch_records WHERE order_id IN ({','.join('?' * len(chunk))})", chunk,
+            ).fetchall()
+            for r in rows:
+                out.setdefault(int(r["order_id"]), []).append(dict(r))
+    return out
