@@ -935,7 +935,8 @@ class PriorityQueryTests(unittest.TestCase):
 
 
 class PriorityGlTests(DbCase):
-    MAIN = {"A-1", "B-1", "W-1"}
+    # 重點廠商料也只列主檔內料號：OC-10823B / OK-PART 在主檔
+    MAIN = {"A-1", "B-1", "W-1", "OC-10823B", "OK-PART"}
 
     def setUp(self):
         super().setUp()
@@ -969,8 +970,8 @@ class PriorityGlTests(DbCase):
         self.gl_qty = {"OC-10823B": 530.0, "OK-PART": 6000.0, "W-1": 200.0}
         self.on_order = {"OC-10823B": (6000.0, self.eta), "OK-PART": (6000.0, self.eta)}
 
-    def rows(self):
-        return {r["part_number"]: r for r in ls.list_rows(set(self.MAIN))}
+    def rows(self, main=None):
+        return {r["part_number"]: r for r in ls.list_rows(set(self.MAIN) if main is None else main)}
 
     def test_oc_10823b_listed_because_cannot_last_until_eta(self):
         res = ls.refresh_priority_parts()
@@ -1064,8 +1065,9 @@ class PriorityGlTests(DbCase):
         res = self.client.post("/api/low-stock/items", json={"part_number": "OC-10823B"})
         self.assertEqual(res.status_code, 200)
         r = self.rows()["OC-10823B"]
-        self.assertTrue(r["in_watch"])        # 已在關注、但不在主檔 → 仍依條件列出，可編輯
-        self.assertTrue(r["priority_extra"])
+        self.assertTrue(r["in_watch"])        # 已在關注且在主檔 → 一般關注列，可編輯
+        self.assertFalse(r["priority_extra"])
+        self.assertTrue(r["is_priority_supplier"])
         self.assertEqual(self.client.post("/api/low-stock/items/update",
                                           json={"part_number": "OC-10823B", "note": "n"}).status_code, 200)
         self.assertEqual(self.client.post("/api/low-stock/items/remove", json={"part_number": "OC-10823B"}).status_code, 200)
@@ -1137,7 +1139,7 @@ class PriorityGlTests(DbCase):
         self.assertEqual((stored["ONE-1"]["gl_bill_count"], stored["ONE-1"]["gl_recent_bill_count"]), (2, 2))
         self.assertEqual((stored["ONE-3"]["gl_bill_count"], stored["ONE-3"]["gl_recent_bill_count"]), (5, 2))
         self.assertEqual((stored["ONE-3"]["st_recent_bill_count"], stored["ONE-3"]["st_recent_usage_qty"]), (4, -10.0))
-        rows = self.rows()
+        rows = self.rows(set(self.MAIN) | {f"ONE-{i}" for i in range(4)})  # 都在主檔，擋下的只有頻率
         for i in range(4):
             self.assertIn(f"ONE-{i}", stored)
             self.assertNotIn(f"ONE-{i}", rows)
@@ -1173,6 +1175,44 @@ class PriorityGlTests(DbCase):
         self.assertTrue(r["in_watch"])
         self.assertFalse(r["priority_extra"])
         self.assertTrue(r["is_priority_supplier"])
+
+    def test_priority_not_in_main_follows_main_filter(self):
+        # 不在主檔的重點廠商料：額外列（NM-EXTRA）與已在關注（NM-WATCH）都一樣，主檔過濾開啟時不列、讀不到主檔（不過濾）時才列
+        for part in ("NM-EXTRA", "NM-WATCH"):
+            self.erp_last_purchase[part] = {"supplier_id": "P0175", "last_purchase_date": "2026-10-29"}
+            self.gl_usage[part] = (8600.0, 14)
+            self.gl_qty[part] = 100.0
+        ls.add_part("NM-WATCH")
+        self.assertTrue(ls.refresh_priority_parts()["ok"])
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM low_stock_priority WHERE part_number='NM-EXTRA'").fetchone())
+        on = self.rows()
+        self.assertNotIn("NM-EXTRA", on)
+        self.assertNotIn("NM-WATCH", on)
+        self.assertTrue(on["OC-10823B"]["priority_extra"])  # 在主檔的照列
+        with patch.object(ls, "main_file_parts", lambda: set(self.MAIN)):
+            wl = [r["part_number"] for r in self.client.get("/api/low-stock/watchlist").json()["rows"]]
+            alerts = [a["part_number"] for a in self.client.get("/api/low-stock/alerts").json()["alerts"]]
+        for parts in (wl, alerts):
+            self.assertNotIn("NM-EXTRA", parts)
+            self.assertNotIn("NM-WATCH", parts)
+            self.assertIn("OC-10823B", parts)
+        # 主檔加入後不必重算即列出
+        on = self.rows(set(self.MAIN) | {"NM-EXTRA", "NM-WATCH"})
+        self.assertTrue(on["NM-EXTRA"]["priority_extra"])
+        self.assertFalse(on["NM-WATCH"]["priority_extra"])
+        self.assertEqual(on["NM-WATCH"]["status"], "low")
+        # 不過濾（讀不到主檔）→ 跟一般料一樣全列
+        off = {r["part_number"]: r for r in ls.list_rows(None)}
+        self.assertTrue(off["NM-EXTRA"]["priority_extra"])
+        self.assertTrue(off["NM-WATCH"]["in_watch"])
+        self.assertTrue(off["NM-WATCH"]["is_priority_supplier"])
+        self.assertIn("OTHER-X", off)
+        with patch.object(ls, "main_file_parts", lambda: None):
+            wl = [r["part_number"] for r in self.client.get("/api/low-stock/watchlist").json()["rows"]]
+            alerts = [a["part_number"] for a in self.client.get("/api/low-stock/alerts").json()["alerts"]]
+        for parts in (wl, alerts):
+            self.assertIn("NM-EXTRA", parts)
+            self.assertIn("NM-WATCH", parts)
 
     def test_priority_table_migration_adds_recent_columns(self):
         self.conn.execute("DROP TABLE low_stock_priority")

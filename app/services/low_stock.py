@@ -1287,7 +1287,7 @@ def _priority_frequent(prec: dict, cfg: Dict[str, float]) -> bool:
 
 
 def _priority_listed(view: dict, prec: dict, cfg: Dict[str, float]) -> bool:
-    """額外列（不在關注清單或不在主檔）須先是常用料，再「現有量低於門檻」或「撐不到預交日」才列入。
+    """額外列（不在關注清單、但在主檔）須先是常用料，再「現有量低於門檻」或「撐不到預交日」才列入。
 
     一單一買、進來就用掉的料現有量常為 0，永遠低於門檻，不先篩頻率會灌爆清單。"""
     if not view["enabled"] or not _priority_frequent(prec, cfg):
@@ -1299,8 +1299,8 @@ def _priority_listed(view: dict, prec: dict, cfg: Dict[str, float]) -> bool:
 def list_rows(main_parts: Any = _UNSET) -> List[dict]:
     """所有未移除的關注料號（含現有量與狀態），重點廠商在前，再來低庫存，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。
 
-    重點廠商料號（low_stock_priority，廠商符合目前名單）改用 ST + 015 的用量與現有量；
-    不在關注清單或不在主檔的重點廠商料，須為常用料（近 suggest_lookback_days 天 ST 或 015 單據數 ≥ min_bills），
+    重點廠商料號（low_stock_priority，廠商符合目前名單）改用 ST + 015 的用量與現有量，同樣只列主檔內料號；
+    不在關注清單的重點廠商料，須為常用料（近 suggest_lookback_days 天 ST 或 015 單據數 ≥ min_bills），
     且低於門檻或撐不到預交日才額外列入（使用者移除過的不列）。"""
     db.ensure_low_stock_table()
     if main_parts is _UNSET:
@@ -1335,6 +1335,8 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
         for part in sorted(prio):
             if part in shown or part in dismissed:
                 continue
+            if main_parts is not None and part not in main_parts:
+                continue  # 重點廠商料也只列主檔有的料號（與一般料同一套過濾）
             prec, word = prio[part]
             view = _priority_view(prec, word, watch_by_part.get(part), float(stock.get(part, 0.0)), cfg, priority, today)
             if _priority_listed(view, prec, cfg):
