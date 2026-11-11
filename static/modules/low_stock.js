@@ -7,6 +7,7 @@ const HIDE_ON_ORDER_KEY = "low-stock-hide-on-order";
 
 let _rows = [];
 let _settings = {};
+let _prioritySuppliers = [];
 let _initialized = false;
 let _busy = false;
 
@@ -73,7 +74,9 @@ export async function refreshLowStock() {
     const data = await apiJson("/api/low-stock/watchlist");
     _rows = data.rows || [];
     _settings = data.settings || {};
+    _prioritySuppliers = Array.isArray(data.priority_suppliers) ? data.priority_suppliers : [];
     setMainFileHint(data);
+    renderPriorityFilterLabel();
     renderSettings();
     renderTable();
     if (status) {
@@ -109,6 +112,30 @@ function renderSettings() {
     const el = document.getElementById(id);
     if (el && _settings[key] !== undefined) el.value = _settings[key];
   });
+  const supplierInput = document.getElementById("low-stock-set-priority-suppliers");
+  if (supplierInput) supplierInput.value = _prioritySuppliers.join("、");
+}
+
+// 「只看重點廠商（萬晉、崧嵐）」文字依名單動態顯示；名單為空時停用
+function renderPriorityFilterLabel() {
+  const label = document.getElementById("low-stock-only-priority-label");
+  const box = document.getElementById("low-stock-only-priority");
+  const names = _prioritySuppliers.join("、");
+  if (label) label.textContent = names ? `只看重點廠商（${names}）` : "只看重點廠商（未設定）";
+  if (box) {
+    box.disabled = !names;
+    if (!names) box.checked = false;
+  }
+}
+
+function parseSupplierList(text) {
+  return String(text || "").split(/[,，、;；\n]+/).map(s => s.trim()).filter(Boolean);
+}
+
+function supplierHtml(r) {
+  const name = r.last_purchase_supplier ? `<span class="low-stock-supplier">${esc(r.last_purchase_supplier)}</span>` : "—";
+  if (!r.is_priority_supplier) return name;
+  return `<span class="low-stock-priority-tag">${esc(r.priority_supplier)}</span> <span class="low-stock-priority-note">趕交期注意</span><br>${name}`;
 }
 
 function delayHtml(days) {
@@ -141,17 +168,28 @@ function renderTable() {
   if (!body) return;
   const onlyLow = Boolean(document.getElementById("low-stock-only-low")?.checked);
   const hideOnOrder = Boolean(document.getElementById("low-stock-hide-on-order")?.checked);
-  const rows = _rows.filter(r => (!onlyLow || r.status === "low") && !(hideOnOrder && r.status === "on_order"));
+  const onlyPriority = Boolean(document.getElementById("low-stock-only-priority")?.checked);
+  // 只看重點廠商時忽略「隱藏已下單」，重點廠商的已下單料也要看得到；排序沿用後端（重點廠商在最上面）
+  const rows = _rows.filter(r => {
+    if (onlyLow && r.status !== "low") return false;
+    if (onlyPriority) return Boolean(r.is_priority_supplier);
+    return !(hideOnOrder && r.status === "on_order");
+  });
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="15" class="low-stock-empty">${onlyLow ? "目前沒有低於門檻的料號。" : "清單是空的，請按「重新建議」或手動新增料號。"}</td></tr>`;
+    const empty = onlyPriority
+      ? "目前沒有重點廠商的料號。"
+      : (onlyLow ? "目前沒有低於門檻的料號。" : "清單是空的，請按「重新建議」或手動新增料號。");
+    body.innerHTML = `<tr><td colspan="16" class="low-stock-empty">${empty}</td></tr>`;
     return;
   }
   body.innerHTML = rows.map(r => {
     const part = esc(r.part_number);
     const manualThreshold = r.threshold_source === "manual" ? ' <span class="low-stock-tag">手動</span>' : "";
-    return `<tr class="low-stock-row ${r.status}" data-part="${part}">
+    const priorityClass = r.is_priority_supplier ? " priority-supplier" : "";
+    return `<tr class="low-stock-row ${r.status}${priorityClass}" data-part="${part}">
       <td class="mono">${part}</td>
       <td>${esc(r.name)}</td>
+      <td>${supplierHtml(r)}</td>
       <td class="num">${fmtNum(r.qty)}</td>
       <td>${onOrderHtml(r)}</td>
       <td class="num">${fmtNum(r.avg_monthly_usage)}</td>
@@ -316,6 +354,10 @@ async function handleSaveSettings() {
       actual_lead_min_gap_days: val("low-stock-set-actual-gap"),
       on_order_max_overdue_days: val("low-stock-set-on-order-overdue"),
     });
+    const suppliers = await apiPost("/api/low-stock/priority-suppliers", {
+      suppliers: parseSupplierList(document.getElementById("low-stock-set-priority-suppliers")?.value),
+    });
+    _prioritySuppliers = suppliers.suppliers || [];
     showToast("設定已儲存，自動門檻已重算", { tone: "success" });
     const panel = document.getElementById("low-stock-settings-panel");
     if (panel) panel.hidden = true;
@@ -337,6 +379,7 @@ export async function initLowStock({ autoLoad = true } = {}) {
       if (panel.hidden) renderSettings();
     });
     document.getElementById("low-stock-only-low")?.addEventListener("change", renderTable);
+    document.getElementById("low-stock-only-priority")?.addEventListener("change", renderTable);
     const hideOnOrder = document.getElementById("low-stock-hide-on-order");
     if (hideOnOrder) {
       let saved = null;

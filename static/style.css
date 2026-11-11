@@ -5257,6 +5257,13 @@ body.desktop-dark .frequent-zero-usage li span {
 .low-stock-status.ok { color: #16a34a; }
 .low-stock-status.disabled { color: #9ca3af; }
 .low-stock-status.on_order { color: #6b7280; background: #e5e7eb; padding: 0 6px; border-radius: 8px; }
+.low-stock-row.priority-supplier td:first-child { border-left: 4px solid #ea580c; }
+.low-stock-row.priority-supplier.ok,
+.low-stock-row.priority-supplier.disabled { background: #fff7ed; }
+.low-stock-priority-tag { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; font-weight: 700; background: #ea580c; color: #fff; white-space: nowrap; }
+.low-stock-priority-note { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; font-weight: 600; background: #dc2626; color: #fff; white-space: nowrap; }
+.low-stock-supplier { font-size: 12px; color: #374151; }
+.low-stock-panel input.low-stock-priority-input { width: 220px; }
 .low-stock-link { border: none; background: none; color: #2563eb; font-size: 11px; cursor: pointer; padding: 0 2px; }
 
 /* ── 開採購單（正航 ERP） ── */

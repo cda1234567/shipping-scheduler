@@ -7,9 +7,12 @@ ERP 全程唯讀 SELECT（%s 參數化）；任何 ERP 失敗都在寫入前丟�
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import re
+import unicodedata
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
@@ -23,6 +26,10 @@ logger = logging.getLogger("low_stock")
 
 SETTING_PREFIX = "low_stock_"
 LAST_SUGGESTED_KEY = "low_stock_last_suggested_at"
+PRIORITY_SUPPLIERS_KEY = "low_stock_priority_suppliers"
+DEFAULT_PRIORITY_SUPPLIERS: List[str] = ["萬晉", "崧嵐"]
+PRIORITY_SUPPLIER_MAX = 30
+_PRIORITY_SPLIT_RE = re.compile(r"[,，、;；\n\r]+")
 IN_CHUNK = 500
 
 DEFAULT_CONFIG: Dict[str, float] = {
@@ -268,6 +275,65 @@ def save_config(values: Dict[str, Any], actor: str = "web") -> Dict[str, float]:
         db.set_setting(SETTING_PREFIX + key, str(val))
     recompute_all(actor=actor)
     return get_config()
+
+
+# ── 重點廠商（低庫存提醒特別標註；比對 last_purchase_supplier） ──────────────
+
+def _norm_supplier_text(value: Any) -> str:
+    """全半形統一（NFKC）、不分大小寫、去掉所有空白。"""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(text.split())
+
+
+def parse_priority_suppliers(value: Any) -> List[str]:
+    """接受 list 或逗號 / 頓號分隔字串；去空白、去重（依正規化後比對），保留原順序。"""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    out: List[str] = []
+    seen = set()
+    for item in items:
+        for part in _PRIORITY_SPLIT_RE.split(str(item or "")):
+            word = part.strip()
+            key = _norm_supplier_text(word)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(word)
+    if len(out) > PRIORITY_SUPPLIER_MAX:
+        raise LowStockError(f"重點廠商最多 {PRIORITY_SUPPLIER_MAX} 個")
+    return out
+
+
+def get_priority_suppliers() -> List[str]:
+    """未設定（或內容壞掉）時用預設名單；存過空清單則為空（不標註）。"""
+    raw = db.get_setting(PRIORITY_SUPPLIERS_KEY, "")
+    if str(raw).strip() == "":
+        return list(DEFAULT_PRIORITY_SUPPLIERS)
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, list):
+            raise ValueError("not a list")
+        return parse_priority_suppliers(data)
+    except ValueError:  # LowStockError 也是 ValueError
+        return list(DEFAULT_PRIORITY_SUPPLIERS)
+
+
+def save_priority_suppliers(value: Any, actor: str = "web") -> List[str]:
+    clean = parse_priority_suppliers(value)
+    db.set_setting(PRIORITY_SUPPLIERS_KEY, json.dumps(clean, ensure_ascii=False))
+    db.log_activity("低庫存提醒重點廠商", f"{actor}：{'、'.join(clean) or '（清空）'}")
+    return clean
+
+
+def match_priority_supplier(supplier: Any, keywords: Iterable[str]) -> str:
+    """回傳第一個被廠商名稱包含的關鍵字；都沒命中回傳空字串。"""
+    name = _norm_supplier_text(supplier)
+    if not name:
+        return ""
+    for word in keywords:
+        key = _norm_supplier_text(word)
+        if key and key in name:
+            return word
+    return ""
 
 
 # ── DB 存取 ───────────────────────────────────────────────────────────────
@@ -866,12 +932,14 @@ def remove_part(part: str, actor: str = "web") -> bool:
 
 # ── 讀取（只讀本機，不連 ERP） ─────────────────────────────────────────────
 
-def _view_row(rec: dict, qty: float) -> dict:
+def _view_row(rec: dict, qty: float, priority_suppliers: Iterable[str] = ()) -> dict:
     avg_daily = rec.get("avg_daily_usage")
     enabled = bool(rec.get("enabled"))
     threshold = rec.get("threshold_qty")
     lead_source = rec.get("lead_time_source") or "default"
     on_order_qty = float(rec.get("on_order_qty") or 0)
+    supplier = rec.get("last_purchase_supplier") or ""
+    priority = match_priority_supplier(supplier, priority_suppliers)
     return {
         "part_number": rec["part_number"],
         "name": rec.get("name") or "",
@@ -894,7 +962,9 @@ def _view_row(rec: dict, qty: float) -> dict:
         "delay_samples": rec.get("delay_samples") or 0,
         "days_of_cover": calc_days_of_cover(qty, avg_daily),
         "last_purchase_date": rec.get("last_purchase_date") or "",
-        "last_purchase_supplier": rec.get("last_purchase_supplier") or "",
+        "last_purchase_supplier": supplier,
+        "priority_supplier": priority,
+        "is_priority_supplier": bool(priority),
         "note": rec.get("note") or "",
         "source": rec.get("source") or "auto",
         "usage_qty": rec.get("usage_qty"),
@@ -943,7 +1013,7 @@ def with_moq(views: List[dict]) -> List[dict]:
 
 
 def list_rows(main_parts: Any = _UNSET) -> List[dict]:
-    """所有未移除的關注料號（含現有量與狀態），低庫存在前，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。"""
+    """所有未移除的關注料號（含現有量與狀態），重點廠商在前，再來低庫存，其次依可撐天數。只顯示主檔內料號（主檔讀不到則不過濾）。"""
     db.ensure_low_stock_table()
     if main_parts is _UNSET:
         main_parts = main_file_parts()
@@ -952,9 +1022,10 @@ def list_rows(main_parts: Any = _UNSET) -> List[dict]:
     if main_parts is not None:
         recs = [r for r in recs if norm_part(r["part_number"]) in main_parts]
     stock = db.get_st_inventory_stock()
-    views = with_moq([_view_row(r, float(stock.get(r["part_number"], 0.0))) for r in recs])
+    priority = get_priority_suppliers()
+    views = with_moq([_view_row(r, float(stock.get(r["part_number"], 0.0)), priority) for r in recs])
     order = {"low": 0, "on_order": 1, "ok": 2, "disabled": 3}
-    views.sort(key=lambda v: (order[v["status"]], *_sort_key(v)))
+    views.sort(key=lambda v: (not v["is_priority_supplier"], order[v["status"]], *_sort_key(v)))
     return views
 
 

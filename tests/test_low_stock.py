@@ -685,6 +685,110 @@ class ApiTests(DbCase):
             self.assertTrue(request_requires_edit_auth(make_request("POST", path)), path)
 
 
+class PrioritySupplierTests(DbCase):
+    def setUp(self):
+        super().setUp()
+        app = FastAPI()
+        app.include_router(low_stock_router.router, prefix="/api")
+        self.client = TestClient(app)
+        self.usage = {"A-1": (900.0, 5), "B-1": (90.0, 4), "C-1": (900.0, 5), "D-1": (90.0, 4)}
+        ls.run_suggestion()
+        self.set_stock("A-1", 10)    # low
+        self.set_stock("B-1", 1000)  # ok
+        self.set_stock("C-1", 5)     # low
+        self.set_stock("D-1", 1000)  # ok
+        self.set_supplier("A-1", "其他電子")
+        self.set_supplier("B-1", "萬晉興業有限")
+        self.set_supplier("C-1", "")
+        self.set_supplier("D-1", "崧嵐企業有限")
+
+    def set_supplier(self, part, name):
+        self.conn.execute("UPDATE low_stock_watch SET last_purchase_supplier=? WHERE part_number=?", (name, part))
+        self.conn.commit()
+
+    def rows(self):
+        return self.client.get("/api/low-stock/watchlist").json()["rows"]
+
+    def test_default_list(self):
+        self.assertEqual(ls.get_priority_suppliers(), ["萬晉", "崧嵐"])
+        self.assertEqual(self.client.get("/api/low-stock/priority-suppliers").json(), {"suppliers": ["萬晉", "崧嵐"]})
+        self.assertEqual(self.client.get("/api/low-stock/watchlist").json()["priority_suppliers"], ["萬晉", "崧嵐"])
+        db.set_setting(ls.PRIORITY_SUPPLIERS_KEY, "not json")
+        self.assertEqual(ls.get_priority_suppliers(), ["萬晉", "崧嵐"])
+
+    def test_match_tolerates_case_width_and_spaces(self):
+        self.assertEqual(ls.match_priority_supplier("萬晉興業有限", ["萬晉", "崧嵐"]), "萬晉")
+        self.assertEqual(ls.match_priority_supplier("崧 嵐企業", ["萬晉", "崧嵐"]), "崧嵐")
+        self.assertEqual(ls.match_priority_supplier("ＡＢＣ　Corp", ["abc"]), "abc")
+        self.assertEqual(ls.match_priority_supplier("abc corp", ["ＡＢＣ"]), "ＡＢＣ")
+        self.assertEqual(ls.match_priority_supplier("其他電子", ["萬晉", "崧嵐"]), "")
+        self.assertEqual(ls.match_priority_supplier("", ["萬晉"]), "")
+        self.assertEqual(ls.match_priority_supplier("萬晉", []), "")
+
+    def test_parse_list(self):
+        self.assertEqual(ls.parse_priority_suppliers("萬晉、崧嵐, ABC，abc ;  "), ["萬晉", "崧嵐", "ABC"])
+        self.assertEqual(ls.parse_priority_suppliers(["萬晉、崧嵐", " ", "萬晉"]), ["萬晉", "崧嵐"])
+        self.assertEqual(ls.parse_priority_suppliers(""), [])
+        with self.assertRaises(ls.LowStockError):
+            ls.parse_priority_suppliers([f"S{i}" for i in range(ls.PRIORITY_SUPPLIER_MAX + 1)])
+
+    def test_rows_tagged_and_sorted_first(self):
+        rows = self.rows()
+        by_part = {r["part_number"]: r for r in rows}
+        self.assertEqual(by_part["B-1"]["priority_supplier"], "萬晉")
+        self.assertTrue(by_part["B-1"]["is_priority_supplier"])
+        self.assertEqual(by_part["D-1"]["priority_supplier"], "崧嵐")
+        self.assertEqual(by_part["A-1"]["priority_supplier"], "")
+        self.assertFalse(by_part["A-1"]["is_priority_supplier"])
+        self.assertFalse(by_part["C-1"]["is_priority_supplier"])
+        order = [r["part_number"] for r in rows]
+        # 重點廠商（皆 ok）排最上面，其內與其外都維持原排序（狀態 → 可撐天數）
+        self.assertEqual(set(order[:2]), {"B-1", "D-1"})
+        self.assertEqual(order[2:], ["C-1", "A-1"])
+        self.assertEqual([r["status"] for r in rows[2:]], ["low", "low"])
+
+    def test_alerts_unchanged(self):
+        data = self.client.get("/api/low-stock/alerts").json()
+        self.assertEqual([a["part_number"] for a in data["alerts"]], ["C-1", "A-1"])
+        self.assertNotIn("priority_supplier", data["alerts"][0])
+        self.assertNotIn("is_priority_supplier", data["alerts"][0])
+        self.set_stock("B-1", 0)  # 重點廠商變 low，alerts 仍只依可撐天數排序
+        parts = [a["part_number"] for a in self.client.get("/api/low-stock/alerts").json()["alerts"]]
+        self.assertEqual(parts, ["B-1", "C-1", "A-1"])
+        self.set_stock("B-1", 4)
+        parts = [a["part_number"] for a in self.client.get("/api/low-stock/alerts").json()["alerts"]]
+        self.assertEqual(parts, ["C-1", "A-1", "B-1"])
+
+    def test_api_save_and_read(self):
+        res = self.client.post("/api/low-stock/priority-suppliers", json={"suppliers": "其他、 萬晉 "})
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json(), {"suppliers": ["其他", "萬晉"]})
+        self.assertEqual(self.client.get("/api/low-stock/priority-suppliers").json()["suppliers"], ["其他", "萬晉"])
+        by_part = {r["part_number"]: r for r in self.rows()}
+        self.assertEqual(by_part["A-1"]["priority_supplier"], "其他")
+        self.assertEqual(by_part["B-1"]["priority_supplier"], "萬晉")
+        self.assertFalse(by_part["D-1"]["is_priority_supplier"])
+        res = self.client.post("/api/low-stock/priority-suppliers", json={"suppliers": ["崧嵐"]})
+        self.assertEqual(res.json()["suppliers"], ["崧嵐"])
+        too_many = [f"S{i}" for i in range(ls.PRIORITY_SUPPLIER_MAX + 1)]
+        self.assertEqual(self.client.post("/api/low-stock/priority-suppliers", json={"suppliers": too_many}).status_code, 400)
+        self.assertEqual(ls.get_priority_suppliers(), ["崧嵐"])
+
+    def test_empty_list_tags_nothing(self):
+        res = self.client.post("/api/low-stock/priority-suppliers", json={"suppliers": []})
+        self.assertEqual(res.json()["suppliers"], [])
+        self.assertEqual(ls.get_priority_suppliers(), [])
+        rows = self.rows()
+        self.assertFalse(any(r["is_priority_supplier"] for r in rows))
+        self.assertTrue(all(r["priority_supplier"] == "" for r in rows))
+        self.assertEqual([r["status"] for r in rows], ["low", "low", "ok", "ok"])
+
+    def test_post_requires_edit_auth(self):
+        path = "/api/low-stock/priority-suppliers"
+        self.assertFalse(request_requires_edit_auth(make_request("GET", path)))
+        self.assertTrue(request_requires_edit_auth(make_request("POST", path)))
+
+
 class MainFileFilterTests(DbCase):
     def setUp(self):
         super().setUp()
@@ -781,6 +885,17 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("已下單", module)
         self.assertIn("localStorage", module)
         self.assertNotIn("fetch(", module.replace("apiFetch", ""))
+        # 重點廠商標註
+        self.assertIn('id="low-stock-only-priority"', index)
+        self.assertIn('id="low-stock-only-priority-label"', index)
+        self.assertIn('id="low-stock-set-priority-suppliers"', index)
+        self.assertIn("<th>廠商</th>", index)
+        self.assertIn("/api/low-stock/priority-suppliers", module)
+        self.assertIn("priority-supplier", module)
+        self.assertIn("last_purchase_supplier", module)
+        self.assertIn("趕交期注意", module)
+        css = (root / "static" / "style.css").read_text(encoding="utf-8")
+        self.assertIn(".low-stock-row.priority-supplier", css)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ from fastapi.concurrency import run_in_threadpool
 from .. import database as db
 from ..models import (
     LowStockAddRequest,
+    LowStockPrioritySuppliersRequest,
     LowStockRemoveRequest,
     LowStockSettingsRequest,
     LowStockUpdateRequest,
@@ -84,6 +85,7 @@ async def get_low_stock_watchlist():
     return {
         **low_stock.main_file_status(main_parts),
         "settings": low_stock.get_config(),
+        "priority_suppliers": low_stock.get_priority_suppliers(),
         "rows": rows,
         "low_count": sum(1 for r in rows if r["status"] == "low"),
         "last_suggested_at": low_stock.last_suggested_at(),
@@ -102,6 +104,19 @@ async def save_low_stock_settings(req: LowStockSettingsRequest):
     values = {k: v for k, v in values.items() if v is not None}
     try:
         return low_stock.save_config(values, actor=ACTOR)
+    except low_stock.LowStockError as exc:
+        raise _http_error(exc) from None
+
+
+@router.get("/priority-suppliers")
+async def get_low_stock_priority_suppliers():
+    return {"suppliers": low_stock.get_priority_suppliers()}
+
+
+@router.post("/priority-suppliers")
+async def save_low_stock_priority_suppliers(req: LowStockPrioritySuppliersRequest):
+    try:
+        return {"suppliers": low_stock.save_priority_suppliers(req.suppliers, actor=ACTOR)}
     except low_stock.LowStockError as exc:
         raise _http_error(exc) from None
 

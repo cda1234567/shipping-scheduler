@@ -354,6 +354,11 @@ class LowStockRemoveRequest(BaseModel):
     part_number: str
 
 
+class LowStockPrioritySuppliersRequest(BaseModel):
+    # 可傳 list 或逗號 / 頓號分隔字串；空清單 = 不標註任何廠商
+    suppliers: Union[List[str], str] = []
+
+
 class LowStockSettingsRequest(BaseModel):
     lookback_days: Optional[float] = None
     suggest_lookback_days: Optional[float] = None
