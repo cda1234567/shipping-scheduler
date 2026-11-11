@@ -892,7 +892,6 @@ def init_db():
         seed_postprocess_links(conn)
 
         _repair_managed_paths(conn)
-        auto_archive_orders(conn)
 
 
 @contextmanager
@@ -2415,7 +2414,6 @@ def apply_dispatch_code_shifts(code_shifts: dict[str, str], exclude_order_ids: l
             changes.append({"id": row["id"], "old_code": row["code"], "new_code": new_code,
                             "old_insert_before_code": old_anchor, "new_insert_before_code": new_anchor})
             conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (new_code, new_anchor, _now(), row["id"]))
-        auto_archive_orders(conn)
     return changes
 
 
@@ -2443,8 +2441,6 @@ def restore_dispatch_code_shifts(changes: list[dict]):
         for change in changes:
             conn.execute("UPDATE orders SET code=?, insert_before_code=?, updated_at=? WHERE id=?", (change["old_code"], change["old_insert_before_code"], _now(), change["id"]))
 
-        auto_archive_orders(conn)
-
 
 def create_manual_order(data: dict) -> dict:
     """手動建立未排程單據；業務欄位完全採用輸入值。"""
@@ -2465,7 +2461,6 @@ def create_manual_order(data: dict) -> dict:
             "VALUES(?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
             (*values, sort_order, insert_before_code, now, now),
         )
-        auto_archive_orders(conn)
         return dict(conn.execute("SELECT * FROM orders WHERE id=?", (cursor.lastrowid,)).fetchone())
 
 
@@ -2618,8 +2613,6 @@ def upsert_orders_from_schedule(rows: list[dict]) -> dict:
             })
             added_count += 1
 
-        auto_archive_orders(conn)
-
     return {
         "added": added_count,
         "updated": updated_count,
@@ -2649,34 +2642,6 @@ def _compare_order_fields(existing: dict, new_row: dict) -> list[dict]:
         changes.append({"field": "model", "label": "機種", "old": old_model, "new": new_model})
 
     return changes
-
-
-def auto_archive_orders(conn: sqlite3.Connection | None = None) -> list[dict]:
-    """同代號只保留最新訂單；可共用呼叫端交易，不刪除任何資料。"""
-    if conn is None:
-        with get_conn() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            return auto_archive_orders(connection)
-    rows = conn.execute(
-        "SELECT * FROM orders WHERE TRIM(code) != '' ORDER BY code, created_at DESC, id DESC"
-    ).fetchall()
-    newest: dict[str, int] = {}
-    archived = []
-    now = _now()
-    for row in rows:
-        code = row["code"]
-        if code not in newest:
-            newest[code] = row["id"]
-            continue
-        if row["archive_keep"] or row["archived_at"]:
-            continue
-        reason = f"同批次代號 {code} 已有較新訂單 #{newest[code]}"
-        conn.execute("UPDATE orders SET archived_at=?, archive_reason=? WHERE id=?",
-                     (now, reason, row["id"]))
-        archived.append({**dict(row), "archived_at": now, "archive_reason": reason})
-        conn.execute("INSERT INTO activity_logs(action, detail, created_at) VALUES(?,?,?)",
-                     ("自動封存訂單", f"訂單 #{row['id']}：{reason}", now))
-    return archived
 
 
 def list_archived_orders() -> list[dict]:
@@ -2771,8 +2736,6 @@ def update_order(order_id: int, **fields):
     vals = list(fields.values()) + [order_id]
     with get_conn() as conn:
         conn.execute(f"UPDATE orders SET {sets} WHERE id=?", vals)
-        if "code" in fields:
-            auto_archive_orders(conn)
 
 
 def get_dispatch_folders() -> list[str]:

@@ -6688,7 +6688,7 @@ async function loadArchivedOrders() {
       button.className = "btn btn-secondary btn-sm";
       button.textContent = "還原";
       button.addEventListener("click", async () => {
-        if (!confirm(`還原訂單 #${row.id}（${row.code}）？還原後將保留顯示，不再自動封存。`)) return;
+        if (!confirm(`還原訂單 #${row.id}（${row.code}）？還原後會重新出現在主列表；同批次代號不會再被自動封存。`)) return;
         button.disabled = true;
         try {
           await apiPost(`/api/schedule/orders/${row.id}/unarchive`, {});

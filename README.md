@@ -346,11 +346,11 @@ data/
 - `pyyaml` >= 6.0
 - `python-dateutil` >= 2.8.0
 
-## 同批次代號自動封存
+## 已封存訂單
 
-啟動、排程匯入、手動新增、改碼及發料重編／重編還原後，同代號依 `created_at`、再依 `id` 由新到舊，只保留最新訂單與已設定保留的訂單。封存只寫入註記，不刪除訂單、不改變發料狀態或庫存歷史。
+自 v2026.11.11.1 起，系統不再因為「同批次代號」自動封存任何訂單：啟動、排程匯入、手動新增、改批次代號及發料重編／重編還原都不會封存訂單。先前已封存的訂單維持封存，資料不刪除、不改變發料狀態或庫存歷史。
 
-排程頁展開「已封存」可查看原因並還原。還原會設定 `archive_keep=1`，往後不再自動封存。查詢使用 `GET /api/schedule/orders/archived`；還原使用 `POST /api/schedule/orders/{id}/unarchive`，沿用編輯權限驗證。
+排程頁展開「已封存」可查看原因並還原。查詢使用 `GET /api/schedule/orders/archived`；還原使用 `POST /api/schedule/orders/{id}/unarchive`（會設定 `archive_keep=1`），沿用編輯權限驗證。
 
 已排除封存訂單的清單：
 
