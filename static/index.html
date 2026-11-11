@@ -1203,7 +1203,7 @@ function activateTabButton(btn) {
   document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
   btn.classList.add("active");
   document.getElementById("tab-" + btn.dataset.tab)?.classList.add("active");
-  document.getElementById("sidebar")?.classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2" || btn.dataset.tab === "completed");
+  document.getElementById("sidebar")?.classList.toggle("sidebar-hidden", btn.dataset.tab === "main-preview-v2"); // 已發料（completed）跟出貨排程一樣保留左側欄
   if (btn.dataset.tab === "main-preview-v2") onMainPreviewV2TabActivated();
   if (btn.dataset.tab === "st-inventory") refreshStInventoryInMain();
   if (btn.dataset.tab === "completed") refreshCompleted();
