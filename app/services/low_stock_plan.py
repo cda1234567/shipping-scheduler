@@ -189,7 +189,7 @@ def classify(row: Dict[str, Any], today: date) -> Dict[str, Any]:
         tags.append(f"已下單 {fmt_qty(on_order)}" + (f"（預交 {fmt_date_full(row.get('eta'))}）" if row.get("eta") else ""))
         if eta and eta < today:
             tags.append(OVERDUE_TAG)
-    if row.get("pending_over_st"):
+    if row.get("pending_over_001"):
         tags.append(PENDING_OVER_TAG)
     row["tags"] = tags
     return row
@@ -306,6 +306,7 @@ def collect(parts: List[str], today: Optional[date] = None) -> Dict[str, Any]:
         st_usage = low_stock._query_usage(erp, ware_id, start, today, parts)
         gl_usage = low_stock._query_gl_usage(erp, gl_ware, start, today, parts)
         gl_qty = low_stock._query_ware_qty(erp, gl_ware, parts)
+        wh001 = low_stock._query_ware_qty(erp, ware_id, parts)  # 正航 001 現有 = 待調撥上限
         on_order = low_stock._fetch_on_order(erp, parts, today, cfg)
         issued_raw = aq.query_issued_by_po(erp, gl_ware, aq.issued_query_parts(parts, demands, conversions))
     if on_order is None:
@@ -317,7 +318,8 @@ def collect(parts: List[str], today: Optional[date] = None) -> Dict[str, Any]:
     rows: Dict[str, Dict[str, Any]] = {}
     for part in parts:
         prod = products.get(part, {})
-        avail = aq.calc_available(st_stock.get(part, 0.0), pending.get(part, 0.0), gl_qty.get(part, 0.0),
+        avail = aq.calc_available(st_stock.get(part, 0.0), pending.get(part, 0.0), wh001.get(part, 0.0),
+                                  gl_qty.get(part, 0.0),
                                   (unissued.get(part) or {}).get("unissued", 0.0))
         su = max(0.0, _num(st_usage.get(part, (0, 0))[0]))
         gu = max(0.0, _num(gl_usage.get(part, (0, 0))[0]))
@@ -464,8 +466,8 @@ def build_rows(today: Optional[date] = None) -> Dict[str, Any]:
 def _empty_payload() -> Dict[str, Any]:
     """手動新增、尚未抓過正航的料：數字一律空（畫面顯示 —），不當成 0 判斷。"""
     return {
-        "st": None, "pending_raw": None, "pending": None, "free_st": None, "gl015": None, "unissued": None,
-        "available": None, "available_without_free_st": None, "pending_over_st": False,
+        "st": None, "pending_raw": None, "wh001": None, "pending": None, "free_st": None, "gl015": None, "unissued": None,
+        "available": None, "available_without_free_st": None, "pending_over_001": False,
         "name": "", "perdays": 0, "major_supplier_id": "", "last_supplier_id": "", "last_purchase_date": "",
         "usage_st_1y": 0, "usage_015_1y": 0, "daily": 0, "need": 0, "on_order": 0, "eta": "", "unissued_detail": [],
     }
@@ -666,13 +668,14 @@ class LowStockPlanNotFound(LeadSettingError):
 # ── 開採購單建議量（R-E2/E3/E4/E10） ───────────────────────────────────────
 
 def shortage_qty(row: Dict[str, Any]) -> float:
-    """缺料量 = 已排需求 − 可用（可用 < 已排需求時）；已排需求為 0 時不買（不因可用 ≤ 0 無故多買）。"""
+    """缺料量 = max(已排需求 − 可用, 0)；可用為負時已排需求 0 也要補回（總指揮 2026-11-12）。
+
+    只因撐不到交期、可用仍 ≥ 已排需求的料為 0（數量請自填）。
+    """
     if row.get("no_data") or row.get("available") is None:
         return 0.0
     avail, need = _num(row["available"]), _num(row.get("need"))
-    if need <= 0 or avail >= need:
-        return 0.0
-    return round(need - avail, 4)
+    return round(max(need - avail, 0.0), 4)
 
 
 def suggested_po_qty(shortage: Any, moq: Any) -> int:

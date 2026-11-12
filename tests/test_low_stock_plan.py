@@ -44,7 +44,7 @@ class AvailableFormulaTests(unittest.TestCase):
         for po in ("4500059105", "4500059162", "4500059323", "4500059362", "4500059418"):
             self.assertEqual(by_po[po], 0, po)  # 已領完 = 0
         self.assertEqual((by_po["4500059674"], by_po["4500059664"]), (250, 250))
-        a = aq.calc_available(800, 800, 238, un["unissued"])
+        a = aq.calc_available(800, 800, 800, 238, un["unissued"])
         self.assertEqual((a["free_st"], a["pending"], a["available"], a["available_without_free_st"]), (0, 800, 538, 538))
 
     def test_same_po_multiple_batches_summed_before_issued(self):
@@ -87,18 +87,44 @@ class AvailableFormulaTests(unittest.TestCase):
         self.assertIn("A-OLD", aq.issued_query_parts(["A-NEW"], d, conv))  # 查已領時帶舊料號
 
     def test_free_st_both_values(self):
-        a = aq.calc_available(1000, 200, 50, 100)
+        a = aq.calc_available(1000, 200, 1000, 50, 100)
         self.assertEqual((a["free_st"], a["pending"]), (800, 200))
         self.assertEqual(a["available"], 800 + 200 + 50 - 100)
         self.assertEqual(a["available_without_free_st"], 200 + 50 - 100)
-        b = aq.calc_available(800, 800, 238, 500)
+        b = aq.calc_available(800, 800, 800, 238, 500)
         self.assertEqual(b["available"], b["available_without_free_st"])  # 自由 ST = 0 時相同
 
-    def test_pending_capped_by_st_and_flagged(self):
-        a = aq.calc_available(0, 10000, 5, 0)
+    def test_pending_capped_by_001_and_flagged(self):
+        """待調撥上限用正航 001 現有，不用 ST；旗標也比 001。"""
+        a = aq.calc_available(0, 10000, 0, 5, 0)  # ST 0、001 0、待調撥 10000 → 封頂 0、要標
         self.assertEqual((a["pending"], a["pending_raw"], a["available"]), (0, 10000, 5))
-        self.assertTrue(a["pending_over_st"])
-        self.assertEqual(aq.calc_available(0, 0, 0, 10)["available"], -10)  # 可以是負數
+        self.assertTrue(a["pending_over_001"])
+        self.assertNotIn("pending_over_st", a)
+        self.assertEqual(aq.calc_available(0, 0, 0, 0, 10)["available"], -10)  # 可以是負數
+
+    def test_st_zero_001_positive_counts_pending(self):
+        """EC-10029A 型：ST 0、001 有量、待調撥 20000 → 待調撥要算進可用，不能只剩 015 − 未領。"""
+        a = aq.calc_available(0, 20000, 20000, 100, 32680.99)
+        self.assertEqual((a["free_st"], a["pending"], a["wh001"]), (0, 20000, 20000))
+        self.assertEqual(a["available"], round(20000 + 100 - 32680.99, 4))
+        self.assertNotEqual(a["available"], round(100 - 32680.99, 4))
+        self.assertFalse(a["pending_over_001"])
+        b = aq.calc_available(0, 20000, 5000, 0, 0)  # 001 不足 → 封頂 001、要標
+        self.assertEqual((b["pending"], b["available"]), (5000, 5000))
+        self.assertTrue(b["pending_over_001"])
+
+    def test_st_and_001_differ(self):
+        a = aq.calc_available(100, 80, 50, 0, 0)   # ST 100、001 50、待調撥 80
+        self.assertEqual((a["pending"], a["free_st"], a["available"]), (50, 20, 70))
+        self.assertTrue(a["pending_over_001"])
+        b = aq.calc_available(100, 80, 200, 0, 0)  # ST 100、001 200、待調撥 80
+        self.assertEqual((b["pending"], b["free_st"], b["available"]), (80, 20, 100))
+        self.assertFalse(b["pending_over_001"])
+
+    def test_oc10888b_style_with_001(self):
+        a = aq.calc_available(800, 800, 800, 238, 500)
+        self.assertEqual((a["pending"], a["free_st"], a["available"]), (800, 0, 538))
+        self.assertFalse(a["pending_over_001"])
 
     def test_dispatch_records_preferred_bom_fallback_and_no_bom(self):
         orders = [{"id": 1, "code": "1-1", "po_number": "P1", "model": "M1", "order_qty": 100},
@@ -217,8 +243,8 @@ class SupplierLeadTests(unittest.TestCase):
 # ── 分類（快照 + 設定 → 主清單 / 待確認） ───────────────────────────────────
 
 def snap(**kw):
-    base = {"st": 0, "pending_raw": 0, "pending": 0, "free_st": 0, "gl015": 0, "unissued": 0,
-            "available": 0, "available_without_free_st": 0, "pending_over_st": False,
+    base = {"st": 0, "pending_raw": 0, "wh001": 0, "pending": 0, "free_st": 0, "gl015": 0, "unissued": 0,
+            "available": 0, "available_without_free_st": 0, "pending_over_001": False,
             "name": "", "perdays": 0, "major_supplier_id": "", "last_supplier_id": "", "last_purchase_date": "",
             "usage_st_1y": 365, "usage_015_1y": 0, "daily": 1.0, "need": 0, "on_order": 0, "eta": "",
             "unissued_detail": []}
@@ -367,7 +393,7 @@ class ClassifyTests(PlanBase):
             "O-1": snap(available=-100, on_order=5000, eta="2026-11-26"),
             "O-2": snap(available=0),
             "O-3": snap(available=-10),
-            "O-4": snap(available=-1, on_order=10, eta="2026-09-28", gl015=3, pending_over_st=True),
+            "O-4": snap(available=-1, on_order=10, eta="2026-09-28", gl015=3, pending_over_001=True),
         })
         res = self.plan()
         self.assertEqual([r["part"] for r in res["main"]], ["O-3", "O-2", "O-1", "O-4"])
@@ -423,7 +449,9 @@ class FakePlanCursor:
         elif "Flag = 400" in s:  # ST 領用
             self.rows = [(p, q, 3) for p, q in self.d["st_usage"].items() if p in params]
         elif "comWareAmount" in s:
-            self.rows = [(p, q) for p, q in self.d["gl_qty"].items() if p in params]
+            ware, *parts = params
+            qty = self.d["wh001"] if ware == "001" else self.d["gl_qty"]
+            self.rows = [(p, q) for p, q in qty.items() if p in parts]
         else:
             raise AssertionError(s)
 
@@ -441,7 +469,7 @@ class RefreshTests(PlanBase):
             "last": [("EC-NEW", 20261001, "P0327")],
             "issued": [("4500059105-A", "OC-10888B", -250), ("4500059418-A", "OC-10888B", -250)],
             "st_usage": {"OC-10888B": 0}, "gl_usage": {"OC-10888B": 2450, "EC-NEW": 100},
-            "gl_qty": {"OC-10888B": 238},
+            "gl_qty": {"OC-10888B": 238}, "wh001": {"OC-10888B": 800},
         }
 
         @contextmanager
@@ -481,7 +509,9 @@ class RefreshTests(PlanBase):
         snapshot = db.get_low_stock_plan_snapshot()
         self.assertNotIn("OC-10935B-TAB-C", snapshot)
         oc = snapshot["OC-10888B"]
-        self.assertEqual((oc["st"], oc["pending"], oc["free_st"], oc["gl015"], oc["unissued"]), (800, 800, 0, 238, 500))
+        self.assertEqual((oc["st"], oc["wh001"], oc["pending"], oc["free_st"], oc["gl015"], oc["unissued"]),
+                         (800, 800, 800, 0, 238, 500))
+        self.assertFalse(oc["pending_over_001"])
         self.assertEqual((oc["available"], oc["available_without_free_st"]), (538, 538))
         self.assertEqual({d["po"]: d["unissued"] for d in oc["unissued_detail"]},
                          {"4500059105": 0, "4500059418": 0, "4500059664": 250, "4500059674": 250})
@@ -721,9 +751,12 @@ class PoSuggestTests(PlanBase):
             "P-1": snap(available=100, need=1150, major_supplier_id="P0175"),   # 缺 1050
             "P-2": snap(available=-10, need=20, major_supplier_id="P0175"),     # 缺 30（同廠商）
             "P-3": snap(available=0, need=0, major_supplier_id="P0175"),        # 主清單（可用 0）但不缺
-            "P-4": snap(available=-5, need=0, major_supplier_id="P0175"),       # 已排需求 0 → 不無故多買
+            "P-4": snap(available=-5, need=0, major_supplier_id="P0175"),       # 可用負、已排 0 → 缺 5
             "P-5": snap(available=0, need=10, major_supplier_id="P0327"),       # 別家廠商
+            "UC-A0013B": snap(available=-1305, need=0, major_supplier_id="P0195"),  # 可用負、已排 0 → 缺 1305
+            "P-6": snap(available=30, need=10, daily=1.0, major_supplier_id="P0304"),  # 只因撐不到交期
         })
+        self.moq["UC-A0013B"] = moq_info(500, (500, 1000))
 
     def add_po(self, bill, part, qty, created, target="CHIComp02", supplier="P0175", status="ok"):
         import json
@@ -747,13 +780,28 @@ class PoSuggestTests(PlanBase):
     def test_shortage_definition(self):
         rows = {r["part"]: r for r in lp.build_rows(TODAY)["rows"]}
         self.assertEqual({p: r["shortage"] for p, r in rows.items()},
-                         {"P-1": 1050, "P-2": 30, "P-3": 0, "P-4": 0, "P-5": 10})
-        for part in ("P-3", "P-4"):  # 可用 ≤ 0 但已排需求 0：建議 0，不湊 MOQ
-            self.assertEqual(lp.po_suggest(part, TODAY)["item"]["suggested_qty"], 0, part)
+                         {"P-1": 1050, "P-2": 30, "P-3": 0, "P-4": 5, "P-5": 10, "UC-A0013B": 1305, "P-6": 0})
+        self.assertEqual(lp.po_suggest("P-3", TODAY)["item"]["suggested_qty"], 0)  # 可用 0、已排 0：不缺
+        self.assertEqual(lp.po_suggest("P-4", TODAY)["item"]["suggested_qty"], 5)  # 可用 −5、已排 0：缺 5，不是 0
+
+    def test_negative_available_zero_need_rounds_to_moq(self):
+        """UC-A0013B：可用 −1305、已排 0 → 缺 1305，照 MOQ 進位，不是 0、不是請自填。"""
+        it = lp.po_suggest("UC-A0013B", TODAY)["item"]
+        self.assertEqual(it["shortage"], 1305)
+        self.assertEqual(it["suggested_qty"], 1500)
+        from app.services import erp_purchase as ep
+        self.assertEqual(ep._suggested_qty("UC-A0013B"), 1305)
+
+    def test_only_lead_time_keeps_zero(self):
+        """可用仍夠已排需求、只因撐不到交期進主清單 → 缺料量 0，建議 0（數量請自填）。"""
+        row = {r["part"]: r for r in lp.build_rows(TODAY)["rows"]}["P-6"]
+        self.assertEqual(row["area"], lp.AREA_MAIN)
+        self.assertEqual(row["shortage"], 0)
+        self.assertEqual(lp.po_suggest("P-6", TODAY)["item"]["suggested_qty"], 0)
 
     def test_same_supplier_merged_in_main_order(self):
         res = lp.po_suggest("P-2", TODAY)
-        self.assertEqual([x["part"] for x in res["same_supplier"]], ["P-1"])  # 同廠商、缺料 > 0；P-3/P-4 不缺、P-5 別家
+        self.assertEqual([x["part"] for x in res["same_supplier"]], ["P-1", "P-4"])  # 同廠商、缺料 > 0；P-3 不缺、P-5 別家
         self.assertEqual(res["same_supplier"][0]["suggested_qty"], 1500)
         self.assertEqual(res["item"]["suggested_qty"], 30)
         self.assertEqual(lp.po_suggest("P-5", TODAY)["same_supplier"], [])
@@ -781,7 +829,8 @@ class PoSuggestTests(PlanBase):
         """開採購單頁手動輸入料號時的「需」也用新缺料量，不再用舊門檻。"""
         from app.services import erp_purchase as ep
         self.assertEqual(ep._suggested_qty("P-1"), 1050)
-        self.assertIsNone(ep._suggested_qty("P-4"))
+        self.assertEqual(ep._suggested_qty("P-4"), 5)
+        self.assertIsNone(ep._suggested_qty("P-3"))
 
     def test_no_erp_write_and_edit_auth(self):
         from starlette.requests import Request

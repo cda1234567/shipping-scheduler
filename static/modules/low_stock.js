@@ -163,7 +163,7 @@ function detailHtml(r) {
   const table = rows
     ? `<table class="low-stock-detail-table"><thead><tr><th>PO</th><th>批次</th><th class="num">需求（派工紀錄）</th><th class="num">BOM 版</th><th class="num">015 已領</th><th class="num">未領</th></tr></thead><tbody>${rows}</tbody></table>`
     : '<div class="low-stock-hint">沒有已發料未領的需求</div>';
-  return `<div class="low-stock-detail-sum">ST ${fmtNum(r.st)}、待調撥 ${fmtNum(r.pending)}${r.pending_over_st ? `（原 ${fmtNum(r.pending_raw)}，超過 ST）` : ""}、自由 ST ${fmtNum(r.free_st)}、015 ${fmtNum(r.gl015)}、未領需求 ${fmtNum(r.unissued)}
+  return `<div class="low-stock-detail-sum">ST ${fmtNum(r.st)}、001 現有 ${fmtNum(r.wh001)}、待調撥 ${fmtNum(r.pending)}${r.pending_over_001 ? `（原 ${fmtNum(r.pending_raw)}，超過 001 現有）` : ""}、自由 ST ${fmtNum(r.free_st)}、015 ${fmtNum(r.gl015)}、未領需求 ${fmtNum(r.unissued)}
     → 可用 ${fmtNum(r.available)}（不含自由 ST：${fmtNum(r.available_without_free_st)}）</div>${table}`;
 }
 

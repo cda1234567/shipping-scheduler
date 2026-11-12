@@ -4,7 +4,7 @@
     python tools/available_reconcile_report.py [--out-dir /tmp] [--today 2026-11-11]
 
 輸出 available_reconcile_<時間>.json 與 .csv：全部主檔料號（排除 -TAB），每顆料
-ST、待調撥（原值 / 封頂）、自由 ST、015、未領需求（逐 PO 明細）、available、available_without_free_st、
+ST、001 現有、待調撥（原值 / 以 001 現有封頂）、自由 ST、015、未領需求（逐 PO 明細）、available、available_without_free_st、
 主檔最右結存（main_reader.read_stock）、差異；依 |available_without_free_st − 主檔結存| 由大到小排，全部列出不加門檻。
 「推測原因」只是標示類別供總指揮核對：不清帳、不改主檔、不寫正航。
 正航只用唯讀 SELECT；本機只讀（不寫快照、不寫設定、不寫操作紀錄）。
@@ -29,7 +29,7 @@ from app.services.local_time import local_now  # noqa: E402
 
 MATCH_TOLERANCE = 0.5
 CSV_FIELDS = (
-    "part", "name", "st", "pending_raw", "pending", "free_st", "gl015", "unissued",
+    "part", "name", "st", "wh001", "pending_raw", "pending", "free_st", "gl015", "unissued",
     "available", "available_without_free_st", "main_balance", "diff", "diff_with_free_st", "match",
     "causes", "unissued_detail",
 )
@@ -39,7 +39,7 @@ def causes_for(row: dict, issued_pos: dict, match: bool) -> list:
     """推測原因類別（僅供參考）。"""
     out = []
     detail = row.get("unissued_detail") or []
-    if row.get("pending_over_st"):
+    if row.get("pending_over_001"):
         out.append("待調撥 > 001 現有（資料待確認）")
     if row.get("free_st", 0) > MATCH_TOLERANCE:
         out.append("B 自由 ST > 0（主檔結存不含自由 ST）")
@@ -79,11 +79,11 @@ def build(today: date) -> dict:
         diff = round(r["available_without_free_st"] - main_balance, 4)
         match = abs(diff) <= MATCH_TOLERANCE
         rows.append({
-            "part": part, "name": r["name"], "st": r["st"], "pending_raw": r["pending_raw"], "pending": r["pending"],
+            "part": part, "name": r["name"], "st": r["st"], "wh001": r["wh001"], "pending_raw": r["pending_raw"], "pending": r["pending"],
             "free_st": r["free_st"], "gl015": r["gl015"], "unissued": r["unissued"],
             "available": r["available"], "available_without_free_st": r["available_without_free_st"],
             "main_balance": main_balance, "diff": diff, "diff_with_free_st": round(r["available"] - main_balance, 4),
-            "match": match, "pending_over_st": r["pending_over_st"],
+            "match": match, "pending_over_001": r["pending_over_001"],
             "unissued_detail": r["unissued_detail"],
             "causes": causes_for(r, issued_by_part.get(part, {}), match),
         })
@@ -96,7 +96,7 @@ def build(today: date) -> dict:
             cause_counts[key] = cause_counts.get(key, 0) + 1
     return {
         "generated_at": local_now().strftime("%Y-%m-%d %H:%M:%S"),
-        "formula": "可用 = 自由 ST + 待調撥（min(待調撥, ST)）+ 015 − 未領需求；"
+        "formula": "可用 = max(0, ST − 待調撥) + min(待調撥, 001 現有) + 015 − 未領需求；"
                    "available_without_free_st = 待調撥 + 015 − 未領需求（總指揮原式），對帳用這個值",
         "main_file": main_path,
         "pending_info": data["pending_info"],
@@ -106,7 +106,7 @@ def build(today: date) -> dict:
         "summary": {
             "total": len(rows), "match": len(rows) - len(mismatch), "mismatch": len(mismatch),
             "free_st_parts": sum(1 for x in rows if x["free_st"] > MATCH_TOLERANCE),
-            "pending_over_st_parts": sum(1 for x in rows if x["pending_over_st"]),
+            "pending_over_001_parts": sum(1 for x in rows if x["pending_over_001"]),
             "cause_counts": dict(sorted(cause_counts.items(), key=lambda kv: -kv[1])),
         },
         "rows": rows,
@@ -145,7 +145,7 @@ def main() -> None:
     json_path, csv_path = write(report, Path(args.out_dir))
     s = report["summary"]
     print(f"總數 {s['total']}、一致 {s['match']}、不一致 {s['mismatch']}；自由 ST > 0 {s['free_st_parts']}；"
-          f"待調撥 > ST {s['pending_over_st_parts']}")
+          f"待調撥 > 001 現有 {s['pending_over_001_parts']}")
     print(json_path)
     print(csv_path)
 

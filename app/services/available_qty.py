@@ -1,7 +1,7 @@
-"""低庫存可用量（總指揮 2026-11-11 19:24／19:30／19:47 定案，v2026.11.11.7）。
+"""低庫存可用量（總指揮 2026-11-11 19:24／19:30／19:47 定案，v2026.11.11.7；2026-11-12 待調撥上限改 001）。
 
-可用 = 自由 ST + 待調撥 + 015 − 未領需求
-- 待調撥 = min(st_pending_transfer 該料 pending, ST)：正航 001 中尚未調撥的量（超過 ST 的標資料待確認）。
+可用 = max(0, ST − 待調撥) + min(待調撥, 001 現有) + 015 − 未領需求
+- 待調撥 = min(st_pending_transfer 該料 pending, 正航 001 現有)：正航 001 中尚未調撥的量（超過 001 現有的標資料待確認）。
 - 自由 ST = max(0, ST − 待調撥原值)：已確認算進可用量（規則表 19:30 完整公式，總指揮 00:41 再確認）；
   不含自由 ST 的值另存 available_without_free_st 供對帳，自由 ST = 0 時兩者相同。
 - 015 = 正航 015 現有量。
@@ -151,20 +151,24 @@ def unissued_by_part(demands: List[Dict[str, Any]], issued: Dict[Tuple[str, str]
     return out
 
 
-def calc_available(st: float, pending_raw: float, gl015: float, unissued: float) -> Dict[str, Any]:
-    """單一料號的可用量；可以是負數，照實回傳。"""
+def calc_available(st: float, pending_raw: float, wh001: float, gl015: float, unissued: float) -> Dict[str, Any]:
+    """單一料號的可用量；可以是負數，照實回傳。
+
+    st = 網站 ST 快照；wh001 = 正航 001 現有（待調撥上限）；自由 ST 仍用 ST − 待調撥原值。
+    """
     st = float(st or 0)
     pending_raw = max(0.0, float(pending_raw or 0))
-    pending = min(pending_raw, max(st, 0.0))
+    wh001 = float(wh001 or 0)
+    pending = min(pending_raw, max(wh001, 0.0))
     free_st = max(0.0, st - pending_raw)
     gl015 = float(gl015 or 0)
     unissued = float(unissued or 0)
     return {
-        "st": _round(st), "pending_raw": _round(pending_raw), "pending": _round(pending), "free_st": _round(free_st),
-        "gl015": _round(gl015), "unissued": _round(unissued),
+        "st": _round(st), "pending_raw": _round(pending_raw), "wh001": _round(wh001), "pending": _round(pending),
+        "free_st": _round(free_st), "gl015": _round(gl015), "unissued": _round(unissued),
         "available": _round(free_st + pending + gl015 - unissued),
         "available_without_free_st": _round(pending + gl015 - unissued),
-        "pending_over_st": pending_raw > max(st, 0.0) + 1e-9,
+        "pending_over_001": pending_raw > max(wh001, 0.0) + 1e-9,
     }
 
 
