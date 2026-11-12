@@ -1690,20 +1690,13 @@ def search_suppliers(q: str) -> List[Dict[str, str]]:
 
 
 def _suggested_qty(part: str) -> Optional[int]:
-    """低庫存關注清單內的料號：ceil(max(門檻 - 現有量 - 在途量, 0))（未計 MOQ）；不在清單或無門檻回 None。"""
-    from . import low_stock
+    """低庫存清單內的料號：缺料量（已排需求 − 可用，無條件進位）；不在清單或不缺回 None（不用舊門檻公式）。"""
+    from . import low_stock_plan
 
     try:
-        key = low_stock.norm_part(part)
-        for row in low_stock.list_rows(None):
-            if low_stock.norm_part(row["part_number"]) == key:
-                if row.get("threshold") is None:
-                    return None
-                gap = float(row["threshold"]) - float(row["qty"]) - float(row.get("on_order_qty") or 0)
-                return int(math.ceil(max(gap, 0)))
+        return low_stock_plan.shortage_for_part(part)
     except Exception:
         return None
-    return None
 
 
 def part_defaults(part: str) -> Dict[str, Any]:
@@ -1746,14 +1739,14 @@ def part_defaults(part: str) -> Dict[str, Any]:
             name = cur.fetchone()
             if name:
                 result["supplier_name"] = _text(name[0]) or _text(name[1])
-    # 建議量 = max(缺口, MOQ)；MOQ 本站優先、正航 MinPurch 補缺；使用者仍可手動改數量
+    # 建議量 = 缺口照 MOQ 往上取整（與低庫存頁「開採購單」相同，不多買）；MOQ 本站優先、正航 MinPurch 補缺；使用者仍可手動改數量
     from . import moq as moq_service
 
     need = _suggested_qty(key)
     if need is not None:
-        need = max(1, need)  # 與低庫存頁相同：缺口至少 1，再與 MOQ 取大
+        need = max(1, need)
     info = moq_service.lookup_moq([key]).get(key)
-    result.update(moq_service.moq_fields(need, info))
+    result.update(moq_service.moq_fields(need, info, (info or {}).get("moq") or 0))
     if need is None:
         result["need_qty"] = result["suggested_qty"] = None
         result["moq_adjusted"] = False

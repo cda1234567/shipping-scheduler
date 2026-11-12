@@ -13,6 +13,9 @@ Andy 22:03 廠商交期定案。
 不准預設 7 天；PerDays、PO 預交日、下單到收貨天數、舊 lead_time_days 等一律不當交期（PerDays 只顯示參考）。
 廠商歸屬：料號手動改的廠商 > 正航 comProduct.MajorSupplier > 最近一張進貨的廠商（推定）。
 
+手動新增料號（R-B9）：Andy 自己加的料一律進清單判斷（即使不在主檔母體或一年沒領用），套用同一套可用量與交期；
+料號含 -TAB 一律不收。開採購單建議量（R-E2/E3）＝缺料量照 MOQ（近 10 次進貨最大公因數）往上取整，不多買。
+
 資料：refresh_snapshot() 從正航唯讀查詢 + 本機資料算好每顆料的數字存 low_stock_plan_snapshot（ST 庫存同步後
 由 low_stock.refresh_priority_parts 一併呼叫）；build_plan() 只讀本機快照與設定做分類，不連正航。
 """
@@ -27,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import database as db
 from . import available_qty as aq
 from . import erp_stock, low_stock, part_conversion
+from . import moq as moq_service
 from .erp_stock import ErpError
 from .local_time import local_now
 
@@ -48,6 +52,8 @@ PRIORITY_TAG = "萬晉/崧嵐 趕交期注意"
 GL_TAG = "015 可能含已發料未領用（Q12 資料待確認）"
 OVERDUE_TAG = "在途逾期（資料待確認）"
 PENDING_OVER_TAG = "待調撥 > 001 現有（資料待確認）"
+MANUAL_TAG = "手動新增"
+NO_DATA_REASON = "手動新增，尚未抓到正航資料，請按「重新抓正航」"
 
 
 class LeadSettingError(ValueError):
@@ -348,6 +354,11 @@ def population_parts(main_parts: Optional[set]) -> List[str]:
     return sorted(p for p in (main_parts or set()) if p and not aq.is_tab(p))
 
 
+def manual_parts() -> Dict[str, Dict[str, Any]]:
+    """手動新增的料號（排除 -TAB）。"""
+    return {p: v for p, v in db.get_low_stock_manual_parts().items() if p and not aq.is_tab(p)}
+
+
 def refresh_snapshot(actor: str = "system") -> Dict[str, Any]:
     """重算快照並整批覆寫本機表。永遠不丟例外；正航或主檔失敗時保留舊快照。"""
     try:
@@ -355,7 +366,7 @@ def refresh_snapshot(actor: str = "system") -> Dict[str, Any]:
         main_parts = low_stock.main_file_parts()
         if main_parts is None:
             return _fail("讀不到主檔，低庫存快照未更新（保留上次資料）")
-        parts = population_parts(main_parts)
+        parts = sorted(set(population_parts(main_parts)) | set(manual_parts()))
         data = collect(parts)
         now = low_stock._now_text()
         db.replace_low_stock_plan_snapshot(data["rows"], data["suppliers"], now)
@@ -405,18 +416,24 @@ def build_rows(today: Optional[date] = None) -> Dict[str, Any]:
     part_rows = db.get_low_stock_part_settings()
     main_parts = low_stock.main_file_parts()
     keywords = low_stock.get_priority_suppliers()
+    manual = manual_parts()
     rows: List[Dict[str, Any]] = []
     excluded = {"tab": 0, "not_main": 0, "unused": 0}
-    for part, payload in sorted(snapshot.items()):
+    for part in sorted(set(snapshot) | set(manual)):
         if aq.is_tab(part):
             excluded["tab"] += 1
             continue
-        if main_parts is not None and part not in main_parts:
-            excluded["not_main"] += 1
-            continue
-        if _num(payload.get("usage_st_1y")) <= 0 and _num(payload.get("usage_015_1y")) <= 0:
-            excluded["unused"] += 1
-            continue
+        payload = snapshot.get(part)
+        is_manual = part in manual
+        if not is_manual:
+            if main_parts is not None and part not in main_parts:
+                excluded["not_main"] += 1
+                continue
+            if _num(payload.get("usage_st_1y")) <= 0 and _num(payload.get("usage_015_1y")) <= 0:
+                excluded["unused"] += 1
+                continue
+        no_data = payload is None
+        payload = payload or _empty_payload()
         ps = part_rows.get(part)
         sid, kind = resolve_supplier(payload, ps)
         short, full = _supplier_names(suppliers, sid)
@@ -430,9 +447,28 @@ def build_rows(today: Optional[date] = None) -> Dict[str, Any]:
             "lead_text": lead["text"],
             "part_lead_days": (ps or {}).get("lead_days"), "part_anytime": bool(int((ps or {}).get("anytime") or 0)),
             "supplier_override": str((ps or {}).get("supplier_override") or ""),
+            "manual": is_manual, "manual_note": str((manual.get(part) or {}).get("note") or ""),
+            "no_data": no_data,
         }
-        rows.append(classify(row, today))
+        if no_data:
+            row.update(area=AREA_CHECK, reasons=[NO_DATA_REASON], tags=[MANUAL_TAG], ordered=False, cover_days=None)
+        else:
+            classify(row, today)
+            if is_manual:
+                row["tags"].insert(0, MANUAL_TAG)
+        row["shortage"] = shortage_qty(row)
+        rows.append(row)
     return {"rows": rows, "excluded": excluded, "suppliers": suppliers, "supplier_rows": sup_rows}
+
+
+def _empty_payload() -> Dict[str, Any]:
+    """手動新增、尚未抓過正航的料：數字一律空（畫面顯示 —），不當成 0 判斷。"""
+    return {
+        "st": None, "pending_raw": None, "pending": None, "free_st": None, "gl015": None, "unissued": None,
+        "available": None, "available_without_free_st": None, "pending_over_st": False,
+        "name": "", "perdays": 0, "major_supplier_id": "", "last_supplier_id": "", "last_purchase_date": "",
+        "usage_st_1y": 0, "usage_015_1y": 0, "daily": 0, "need": 0, "on_order": 0, "eta": "", "unissued_detail": [],
+    }
 
 
 def supplier_table(rows: List[Dict[str, Any]], suppliers: Dict[str, Tuple[str, str]],
@@ -558,3 +594,149 @@ def save_part_setting(part: Any, lead_days: Any = _UNSET, anytime: Any = _UNSET,
     db.log_activity("低庫存料號設定", f"{actor}：{key} 交期 {lead if lead is not None else '—'}、"
                                       f"可隨時下單 {'是' if any_flag else '否'}、廠商 {sup or '自動'}")
     return {"part": key, "lead_days": lead, "anytime": any_flag, "supplier_override": sup}
+
+
+# ── 手動新增料號（R-B9） ───────────────────────────────────────────────────
+
+def _manual_key(part: Any) -> str:
+    key = aq.norm_part(part)
+    if not key:
+        raise LeadSettingError("請輸入料號")
+    if aq.is_tab(key):
+        raise LeadSettingError("-TAB 客供料不列入低庫存，不能新增")
+    return key
+
+
+def refresh_parts(parts: List[str], actor: str = "system") -> Dict[str, Any]:
+    """只重抓指定料號（正航唯讀）並更新快照列；失敗不丟例外、其他料號不動。"""
+    try:
+        db.ensure_low_stock_table()
+        data = collect(parts)
+        db.upsert_low_stock_plan_rows(data["rows"], data["suppliers"], low_stock._now_text())
+        return {"ok": True}
+    except Exception as exc:
+        logger.warning("低庫存料號重抓失敗：%s：%s", type(exc).__name__, exc)
+        message = str(exc) if isinstance(exc, ErpError) else type(exc).__name__
+        return {"ok": False, "error": f"正航資料沒抓到（{message}），請稍後按「重新抓正航」"}
+
+
+def add_manual_part(part: Any, lead_days: Any = None, note: Any = "", actor: str = "web") -> Dict[str, Any]:
+    """手動新增料號：記在 low_stock_manual_part；有填交期就存成料號覆蓋交期；接著唯讀抓這顆料的正航數字。"""
+    key = _manual_key(part)
+    lead = validate_lead(lead_days)
+    db.ensure_low_stock_table()
+    if key in db.get_low_stock_manual_parts():
+        raise LeadSettingError("此料號已手動新增過")
+    db.save_low_stock_manual_part(key, str(note or "").strip(), actor)
+    if lead is not None:
+        save_part_setting(key, lead_days=lead, actor=actor)
+    db.log_activity("低庫存手動新增料號", f"{actor}：{key}" + (f" 交期 {lead} 天" if lead is not None else ""))
+    fetched = refresh_parts([key], actor)
+    return {"part": key, "lead_days": lead, "fetched": fetched["ok"], "warning": fetched.get("error", "")}
+
+
+def update_manual_part(part: Any, actor: str = "web", **fields: Any) -> Dict[str, Any]:
+    """改手動料號的備註（note）；lead_days 走料號設定（空 = 清除，恢復廠商交期）。"""
+    key = _manual_key(part)
+    db.ensure_low_stock_table()
+    cur = db.get_low_stock_manual_parts().get(key)
+    if cur is None:
+        raise LowStockPlanNotFound("找不到此手動料號")
+    if "note" in fields:
+        db.save_low_stock_manual_part(key, str(fields["note"] or "").strip(), actor)
+    if "lead_days" in fields:
+        save_part_setting(key, lead_days=fields["lead_days"], actor=actor)
+    return {"part": key}
+
+
+def remove_manual_part(part: Any, actor: str = "web") -> bool:
+    """移除手動新增的料號；料號設定（交期覆蓋等）保留。原本就在母體的料照樣會列（照規則判斷）。"""
+    key = aq.norm_part(part)
+    db.ensure_low_stock_table()
+    if not key or not db.delete_low_stock_manual_part(key):
+        return False
+    db.log_activity("低庫存移除手動料號", f"{actor}：{key}")
+    return True
+
+
+class LowStockPlanNotFound(LeadSettingError):
+    """找不到料號。"""
+
+
+# ── 開採購單建議量（R-E2/E3/E4/E10） ───────────────────────────────────────
+
+def shortage_qty(row: Dict[str, Any]) -> float:
+    """缺料量 = 已排需求 − 可用（可用 < 已排需求時）；已排需求為 0 時不買（不因可用 ≤ 0 無故多買）。"""
+    if row.get("no_data") or row.get("available") is None:
+        return 0.0
+    avail, need = _num(row["available"]), _num(row.get("need"))
+    if need <= 0 or avail >= need:
+        return 0.0
+    return round(need - avail, 4)
+
+
+def suggested_po_qty(shortage: Any, moq: Any) -> int:
+    """缺料量照 MOQ 往上取整（MOQ 的整數倍），不多買；缺料量 0 就是 0。"""
+    return moq_service.adjust_qty(shortage, moq, moq)
+
+
+def _po_target() -> str:
+    """重複開單提醒要比對的寫入公司（同開採購單）；只讀設定，不碰寫入開關。"""
+    from . import erp_purchase
+
+    try:
+        return erp_purchase.get_target()
+    except Exception:
+        return erp_purchase._env("ERP_WRITE_TARGET", erp_purchase.DEFAULT_TARGET)
+
+
+def po_suggest(part: Any, today: Optional[date] = None) -> Dict[str, Any]:
+    """低庫存列「開採購單」：這顆料＋同廠商其他缺料（主清單順序）的建議量、MOQ 依據、近期已開過的採購單。"""
+    from . import po_duplicates
+
+    today = today or local_now().date()
+    key = aq.norm_part(part)
+    if not key or aq.is_tab(key):
+        raise LeadSettingError("-TAB 客供料不開採購單" if key else "請指定料號")
+    rows = build_rows(today)["rows"]
+    by_part = {r["part"]: r for r in rows}
+    row = by_part.get(key)
+    if row is None:
+        raise LowStockPlanNotFound("低庫存清單沒有這顆料")
+    siblings = []
+    if row["supplier_id"]:
+        main = sorted((r for r in rows if r["area"] == AREA_MAIN), key=sort_key_main)
+        siblings = [r for r in main if r["part"] != key and r["supplier_id"] == row["supplier_id"] and r["shortage"] > 0]
+    targets = [row, *siblings]
+    moq_info = moq_service.lookup_moq([r["part"] for r in targets])
+    target = _po_target()
+    prior = po_duplicates.load_prior(target, [r["part"] for r in targets])
+
+    def item(r: Dict[str, Any]) -> Dict[str, Any]:
+        info = moq_info.get(r["part"]) or {}
+        fields = moq_service.moq_fields(r["shortage"], info, info.get("moq") or 0)
+        recent = [{k: e[k] for k in ("bill_no", "date", "qty", "supplier_id")}
+                  for e in prior.get(r["part"], [])
+                  if (d := _parse_date(e.get("date"))) and 0 <= (today - d).days <= po_duplicates.PART_ALONE_DAYS]
+        return {
+            "part": r["part"], "name": r.get("name", ""), "supplier_id": r["supplier_id"],
+            "supplier_name": r["supplier_name"], "supplier_kind": r["supplier_kind"],
+            "available": r.get("available"), "need": r.get("need"), "shortage": r["shortage"],
+            "on_order": r.get("on_order") or 0, "eta": r.get("eta") or "",
+            **fields, "suggested_qty": suggested_po_qty(r["shortage"], info.get("moq") or 0),
+            "recent_pos": recent,
+        }
+
+    return {"item": item(row), "same_supplier": [item(r) for r in siblings],
+            "recent_days": po_duplicates.PART_ALONE_DAYS}
+
+
+def shortage_for_part(part: Any) -> Optional[int]:
+    """開採購單頁手動輸入料號時的「需」：低庫存清單有這顆料且缺料量 > 0 才回整數，否則 None。"""
+    key = aq.norm_part(part)
+    if not key:
+        return None
+    for r in build_rows()["rows"]:
+        if r["part"] == key:
+            return int(math.ceil(r["shortage"] - 1e-9)) if r["shortage"] > 0 else None
+    return None

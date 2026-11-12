@@ -414,9 +414,29 @@ function onLinesClick(event) {
 }
 
 // 供低庫存提醒呼叫：帶入料號與建議數量（已含 MOQ）；meta = { need, moq, moq_source, receipt } 用來顯示取整提示
+/** 目前開採購單頁的供應商與已填行數（低庫存「開採購單」判斷是否同廠商併單用）；沒選供應商回 null。 */
+export function purchaseDraftSupplier() {
+  return _supplier ? { ..._supplier, lines: _lines.filter(l => l.part.trim()).length } : null;
+}
+
+/** 清空開採購單頁（供應商、明細、後段加工），不碰已寫入的採購單。 */
+export function clearPurchaseDraft() {
+  _supplier = null;
+  _lines = [newLine()];
+  _companions = [];
+  renderSupplier();
+  renderLines();
+  renderCompanions();
+}
+
 export function prefillPurchaseOrder(part, qty, meta = null) {
   const empty = _lines.length === 1 && !_lines[0].part.trim();
   if (empty) _lines = [];
+  if (meta?.supplier?.id && !_supplier) {
+    // 低庫存帶入：用低庫存判斷的廠商（同廠商的料併在同一張）
+    _supplier = { id: meta.supplier.id, name: meta.supplier.name || meta.supplier.id };
+    renderSupplier();
+  }
   const line = newLine(String(part || "").toUpperCase());
   line.qty = qty ? String(qty) : "";
   line.qtyAuto = Boolean(qty);

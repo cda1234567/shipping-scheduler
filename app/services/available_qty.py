@@ -2,8 +2,8 @@
 
 可用 = 自由 ST + 待調撥 + 015 − 未領需求
 - 待調撥 = min(st_pending_transfer 該料 pending, ST)：正航 001 中尚未調撥的量（超過 ST 的標資料待確認）。
-- 自由 ST = max(0, ST − 待調撥原值)：總指揮原式沒有這項，畫面標「待總指揮確認」；
-  不含自由 ST 的值另存 available_without_free_st（= 總指揮原式），自由 ST = 0 時兩者相同。
+- 自由 ST = max(0, ST − 待調撥原值)：已確認算進可用量（規則表 19:30 完整公式，總指揮 00:41 再確認）；
+  不含自由 ST 的值另存 available_without_free_st 供對帳，自由 ST = 0 時兩者相同。
 - 015 = 正航 015 現有量。
 - 未領需求 = Σ 已發料（orders.status='dispatched'）各 PO：max(0, Σ 該 PO 各批需求 − 該 PO 015 已領)。
   * 每個批次只算一次需求，不管它是由哪一次 ST 補料供應的。

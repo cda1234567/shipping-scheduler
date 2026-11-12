@@ -885,15 +885,17 @@ class ApiCase(WriteFlowCase):
 
 class SuggestedQtyTests(unittest.TestCase):
     def test_gap_formula(self):
-        from app.services import low_stock
-        rows = [{"part_number": "A-1", "threshold": 100, "qty": 30.5, "on_order_qty": 20},
-                {"part_number": "B-1", "threshold": 10, "qty": 50, "on_order_qty": 0},
-                {"part_number": "C-1", "threshold": None, "qty": 0, "on_order_qty": 0}]
-        with patch.object(low_stock, "list_rows", lambda parts=None: rows):
+        """v2026.11.12.1：需 = 低庫存缺料量（已排需求 − 可用），不再用舊門檻公式；不缺或不在清單回 None。"""
+        from app.services import low_stock_plan
+        rows = [{"part": "A-1", "shortage": 49.5}, {"part": "B-1", "shortage": 0.0},
+                {"part": "C-1", "shortage": 0.0, "threshold": 100, "qty": 0}]
+        with patch.object(low_stock_plan, "build_rows", lambda today=None: {"rows": rows}):
             self.assertEqual(ep._suggested_qty("a-1"), 50)  # ceil(49.5)
-            self.assertEqual(ep._suggested_qty("B-1"), 0)
-            self.assertIsNone(ep._suggested_qty("C-1"))
+            self.assertIsNone(ep._suggested_qty("B-1"))
+            self.assertIsNone(ep._suggested_qty("C-1"))  # 舊門檻欄位不影響
             self.assertIsNone(ep._suggested_qty("Z-9"))
+        with patch.object(low_stock_plan, "build_rows", side_effect=RuntimeError("x")):
+            self.assertIsNone(ep._suggested_qty("A-1"))
 
 
 class PartDefaultsMoqTests(unittest.TestCase):

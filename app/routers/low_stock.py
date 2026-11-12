@@ -135,37 +135,48 @@ async def suggest_low_stock():
     return {"ok": True, **summary}
 
 
+# ── v2026.11.12.1：手動新增料號（R-B9）、開採購單建議量（R-E2/E3/E10） ──────────
+
+def _plan_error(exc: low_stock_plan.LeadSettingError) -> HTTPException:
+    return HTTPException(404 if isinstance(exc, low_stock_plan.LowStockPlanNotFound) else 400, str(exc))
+
+
 @router.post("/items")
 async def add_low_stock_item(req: LowStockAddRequest):
+    """手動新增料號：進低庫存清單判斷（不在母體也列）；-TAB 不收。新增後唯讀抓這顆料的正航數字。"""
     try:
-        row = await run_in_threadpool(
-            low_stock.add_part, req.part_number, req.threshold_qty, req.lead_time_days, req.note, ACTOR
-        )
-    except low_stock.LowStockError as exc:
-        raise _http_error(exc) from None
-    return {"ok": True, "part_number": row["part_number"]}
+        return {"ok": True, **await run_in_threadpool(
+            low_stock_plan.add_manual_part, req.part_number, req.lead_days, req.note, ACTOR)}
+    except low_stock_plan.LeadSettingError as exc:
+        status = 409 if "已手動新增" in str(exc) else None
+        raise (HTTPException(status, str(exc)) if status else _plan_error(exc)) from None
 
 
 @router.post("/items/update")
 async def update_low_stock_item(req: LowStockUpdateRequest):
     fields = req.dict(exclude_unset=True)
     part = fields.pop("part_number")
-    if "enabled" in fields and fields["enabled"] is None:
-        fields.pop("enabled")
-    if "note" in fields and fields["note"] is None:
-        fields["note"] = ""
     try:
-        low_stock.update_part(part, actor=ACTOR, **fields)
-    except low_stock.LowStockError as exc:
-        raise _http_error(exc) from None
-    return {"ok": True}
+        return {"ok": True, **await run_in_threadpool(
+            lambda: low_stock_plan.update_manual_part(part, actor=ACTOR, **fields))}
+    except low_stock_plan.LeadSettingError as exc:
+        raise _plan_error(exc) from None
 
 
 @router.post("/items/remove")
 async def remove_low_stock_item(req: LowStockRemoveRequest):
-    if not low_stock.remove_part(req.part_number, actor=ACTOR):
-        raise HTTPException(404, "找不到此料號")
+    if not await run_in_threadpool(low_stock_plan.remove_manual_part, req.part_number, ACTOR):
+        raise HTTPException(404, "找不到此手動料號")
     return {"ok": True}
+
+
+@router.get("/po-suggest")
+async def get_low_stock_po_suggest(part: str):
+    """開採購單建議量：缺料量照 MOQ 往上取整（不多買）＋同廠商其他缺料＋近期已開過的採購單。不寫正航。"""
+    try:
+        return await run_in_threadpool(low_stock_plan.po_suggest, part)
+    except low_stock_plan.LeadSettingError as exc:
+        raise _plan_error(exc) from None
 
 
 # ── v2026.11.11.7：交期設定判斷的低庫存清單（GET 只讀本機快照，不連正航） ──────────

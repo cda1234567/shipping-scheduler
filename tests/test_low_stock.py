@@ -678,18 +678,19 @@ class ApiTests(DbCase):
         self.assertEqual(res.status_code, 503)
         self.assertIn("尚未設定 ERP 連線", res.json()["detail"])
 
-    def test_item_endpoints(self):
-        res = self.client.post("/api/low-stock/items", json={"part_number": "p/q #9", "threshold_qty": 3})
-        self.assertEqual(res.json()["part_number"], "P/Q #9")
-        self.assertEqual(self.client.post("/api/low-stock/items", json={"part_number": "P/Q #9"}).status_code, 409)
-        res = self.client.post("/api/low-stock/items/update", json={"part_number": "P/Q #9", "threshold_qty": None})
-        self.assertEqual(res.status_code, 200)
+    def test_item_functions(self):
+        """舊關注清單的新增／修改／移除函式保留（HTTP /items 已改成新清單的手動新增料號，見 test_low_stock_plan）。"""
+        self.assertEqual(ls.add_part("p/q #9", threshold=3)["part_number"], "P/Q #9")
+        with self.assertRaises(ls.LowStockExists):
+            ls.add_part("P/Q #9")
+        ls.update_part("P/Q #9", threshold_qty=None)
         self.assertEqual(self.row("P/Q #9")["threshold_source"], "auto")
-        res = self.client.post("/api/low-stock/items/update", json={"part_number": "P/Q #9", "note": "n"})
+        ls.update_part("P/Q #9", note="n")
         self.assertEqual(self.row("P/Q #9")["note"], "n")
-        self.assertEqual(self.client.post("/api/low-stock/items/update", json={"part_number": "ZZ", "note": "n"}).status_code, 404)
-        self.assertEqual(self.client.post("/api/low-stock/items/remove", json={"part_number": "P/Q #9"}).status_code, 200)
-        self.assertEqual(self.client.post("/api/low-stock/items/remove", json={"part_number": "P/Q #9"}).status_code, 404)
+        with self.assertRaises(ls.LowStockNotFound):
+            ls.update_part("ZZ", note="n")
+        self.assertTrue(ls.remove_part("P/Q #9"))
+        self.assertFalse(ls.remove_part("P/Q #9"))
 
     def test_edit_auth_requirements(self):
         self.assertFalse(request_requires_edit_auth(make_request("GET", "/api/low-stock/alerts")))
@@ -1062,15 +1063,14 @@ class PriorityGlTests(DbCase):
 
     def test_dismissed_priority_part_not_listed_and_watch_add(self):
         ls.refresh_priority_parts()
-        res = self.client.post("/api/low-stock/items", json={"part_number": "OC-10823B"})
-        self.assertEqual(res.status_code, 200)
+        # v2026.11.12.1：/api/low-stock/items 改成新清單的手動新增料號；舊關注清單函式仍在，直接呼叫
+        ls.add_part("OC-10823B")
         r = self.rows()["OC-10823B"]
         self.assertTrue(r["in_watch"])        # 已在關注且在主檔 → 一般關注列，可編輯
         self.assertFalse(r["priority_extra"])
         self.assertTrue(r["is_priority_supplier"])
-        self.assertEqual(self.client.post("/api/low-stock/items/update",
-                                          json={"part_number": "OC-10823B", "note": "n"}).status_code, 200)
-        self.assertEqual(self.client.post("/api/low-stock/items/remove", json={"part_number": "OC-10823B"}).status_code, 200)
+        ls.update_part("OC-10823B", note="n")
+        self.assertTrue(ls.remove_part("OC-10823B"))
         self.assertNotIn("OC-10823B", self.rows())
 
     def test_erp_failure_keeps_old_data(self):
@@ -1255,12 +1255,30 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertNotIn('<details id="low-stock-check" open', index)
         self.assertIn('id="low-stock-supplier-panel" class="low-stock-supplier-panel" hidden', index)
         self.assertIn("自由 ST", index)
-        self.assertIn("待總指揮確認", index)
+        # 自由 ST 已確認算進可用量：畫面不再有待確認標記（字串拆開寫，測試檔本身也不出現這六個字）
+        marker = "待總指揮" + "確認"
+        self.assertNotIn(marker, index)
+        self.assertNotIn(marker, module)
         for text in ("推定廠商", "手動", "萬晉/崧嵐", "可隨時下單", "僅參考，非交期", "改廠商"):
             self.assertIn(text, module)
         # 舊門檻 / 預設交期 / 頻率設定不再出現在畫面
         for old in ("low-stock-set-default-lead", "low-stock-set-min-bills", "重新建議"):
             self.assertNotIn(old, index)
+        # v2026.11.12.1：放回手動新增料號（沒有門檻欄）與「開採購單」按鈕
+        form = index[index.index('<form id="low-stock-add-form"'):index.index("</form>", index.index('<form id="low-stock-add-form"'))]
+        for field in ('id="low-stock-add-part"', 'id="low-stock-add-lead"', 'id="low-stock-add-note"', "新增料號"):
+            self.assertIn(field, form)
+        self.assertNotIn("門檻", form)
+        self.assertNotIn("threshold", form)
+        for text in ('data-act="open-po"', 'data-act="remove"', "/api/low-stock/items", "/api/low-stock/items/remove",
+                     "/api/low-stock/po-suggest", 'data-tab="erp-po-tab"', "prefillPurchaseOrder", "同廠商",
+                     "已開過採購單", "low-stock-add-form"):
+            self.assertIn(text, module)
+        self.assertNotIn("threshold", module)
+        po_module = (root / "static" / "modules" / "erp_purchase.js").read_text(encoding="utf-8")
+        for name in ("export function prefillPurchaseOrder", "export function purchaseDraftSupplier",
+                     "export function clearPurchaseDraft"):
+            self.assertIn(name, po_module)
         css = (root / "static" / "style.css").read_text(encoding="utf-8")
         self.assertIn(".low-stock-row.priority-supplier", css)
         self.assertIn(".low-stock-supplier-panel", css)

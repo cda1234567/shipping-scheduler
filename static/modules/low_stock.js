@@ -1,7 +1,9 @@
 // 低庫存提醒（v2026.11.11.7）：用廠商交期設定判斷、新可用量、推定廠商、待確認區。
+// v2026.11.12.1：放回手動新增料號（R-B9）與「開採購單」按鈕（R-E3：缺料量照 MOQ 往上取整，同廠商併單、重複開提醒）。
 // 畫面只讀 /api/low-stock/plan（本機快照，不連正航）；「重新抓正航」才會唯讀查正航。
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
+import { clearPurchaseDraft, prefillPurchaseOrder, purchaseDraftSupplier } from "/static/modules/erp_purchase.js";
 
 const REFRESH_MS = 5 * 60 * 1000;
 const HIDE_ORDERED_KEY = "low-stock-plan-hide-ordered";
@@ -146,6 +148,13 @@ function settingHtml(r) {
     <button class="low-stock-link" data-act="part-supplier" title="改廠商（空白 = 自動判斷）">改廠商</button>`;
 }
 
+function actionHtml(r) {
+  const title = Number(r.shortage) > 0 ? `缺 ${fmtNum(r.shortage)}，照 MOQ 往上取整帶入` : "目前不缺（可用 ≥ 已排需求），數量請自填";
+  const po = r.no_data ? "" : `<button class="btn btn-secondary btn-sm" data-act="open-po" title="${esc(title)}">開採購單</button>`;
+  const remove = r.manual ? ' <button class="btn btn-danger btn-sm" data-act="remove" title="移除手動新增的料號">移除</button>' : "";
+  return po + remove;
+}
+
 function detailHtml(r) {
   const rows = (r.unissued_detail || []).map(d => `<tr>
       <td class="mono">${esc(d.po)}</td><td>${esc((d.codes || []).join("、"))}</td>
@@ -163,7 +172,7 @@ function rowHtml(r) {
   const cls = ["low-stock-row", r.priority_supplier ? "priority-supplier" : "", r.ordered ? "on_order" : (r.area === "main" ? "low" : "")].filter(Boolean).join(" ");
   const open = _openDetail.has(r.part);
   const main = `<tr class="${cls}" data-part="${part}">
-    <td class="mono">${part}<div class="low-stock-hint">${esc(r.name || "")}</div></td>
+    <td class="mono">${part}<div class="low-stock-hint">${esc(r.name || "")}</div>${r.manual_note ? `<div class="low-stock-hint">備註：${esc(r.manual_note)}</div>` : ""}</td>
     <td>${supplierHtml(r)}</td>
     <td class="num"><button class="low-stock-link" data-act="detail" title="看 ST、待調撥、015、各 PO 未領">${fmtNum(r.available)}</button></td>
     <td class="num">${fmtNum(r.free_st)}</td>
@@ -173,8 +182,9 @@ function rowHtml(r) {
     <td>${leadHtml(r)}</td>
     <td>${reasonHtml(r)}</td>
     <td class="low-stock-setting">${settingHtml(r)}</td>
+    <td class="low-stock-setting">${actionHtml(r)}</td>
   </tr>`;
-  return open ? main + `<tr class="low-stock-detail-row" data-detail="${part}"><td colspan="10">${detailHtml(r)}</td></tr>` : main;
+  return open ? main + `<tr class="low-stock-detail-row" data-detail="${part}"><td colspan="11">${detailHtml(r)}</td></tr>` : main;
 }
 
 function renderTables() {
@@ -187,11 +197,11 @@ function renderTables() {
   if (mainBody) {
     mainBody.innerHTML = main.length
       ? main.map(rowHtml).join("")
-      : `<tr><td colspan="10" class="low-stock-empty">${_plan.refreshed_at ? "主清單沒有料號。" : "尚未抓過正航，請按「重新抓正航」。"}</td></tr>`;
+      : `<tr><td colspan="11" class="low-stock-empty">${_plan.refreshed_at ? "主清單沒有料號。" : "尚未抓過正航，請按「重新抓正航」。"}</td></tr>`;
   }
   const checkBody = el("low-stock-check-body");
   if (checkBody) {
-    checkBody.innerHTML = check.length ? check.map(rowHtml).join("") : '<tr><td colspan="10" class="low-stock-empty">沒有待確認的料號。</td></tr>';
+    checkBody.innerHTML = check.length ? check.map(rowHtml).join("") : '<tr><td colspan="11" class="low-stock-empty">沒有待確認的料號。</td></tr>';
   }
   const summary = el("low-stock-check-summary");
   if (summary) summary.textContent = `資料待確認 ${(_plan.check || []).length} 顆（無廠商交期，展開看）`;
@@ -240,6 +250,18 @@ async function onTableClick(event) {
   if (act === "detail") {
     if (_openDetail.has(part)) _openDetail.delete(part); else _openDetail.add(part);
     renderTables();
+  } else if (act === "open-po") {
+    await openPurchaseOrder(part);
+  } else if (act === "remove") {
+    if (!requireEdit()) return;
+    if (!window.confirm(`確定移除手動新增的 ${part}？（交期設定保留；原本就符合條件的料照樣會列）`)) return;
+    try {
+      await apiPost("/api/low-stock/items/remove", { part_number: part });
+      showToast(`已移除 ${part}`, { tone: "success" });
+    } catch (error) {
+      showToast(`移除失敗：${error.message}`, { tone: "error" });
+    }
+    await refreshLowStock();
   } else if (act === "part-supplier") {
     if (!requireEdit()) return;
     const row = findRow(part);
@@ -247,6 +269,67 @@ async function onTableClick(event) {
     if (raw === null) return;
     await savePart(part, { supplier_override: raw.trim() }, raw.trim() ? "廠商已改" : "已改回自動判斷");
   }
+}
+
+// ── 開採購單（R-E3/E4/E10） ─────────────────────────────────────────────
+function recentText(it) {
+  const lines = (it.recent_pos || []).map(p => `${p.bill_no}（${String(p.date || "").slice(5).replace("-", "/")}，${fmtNum(p.qty)}）`);
+  if (Number(it.on_order) > 0) lines.push(`在途 ${fmtNum(it.on_order)}`);
+  return lines.length ? `${it.part}：${lines.join("、")}` : "";
+}
+
+async function openPurchaseOrder(part) {
+  let data;
+  try {
+    data = await apiJson(`/api/low-stock/po-suggest?part=${encodeURIComponent(part)}`);
+  } catch (error) {
+    showToast(`讀取建議量失敗：${error.message}`, { tone: "error" });
+    return;
+  }
+  const items = [data.item];
+  const same = data.same_supplier || [];
+  if (same.length) {
+    const list = same.map(it => `${it.part} 建議 ${fmtNum(it.suggested_qty)}`).join("\n");
+    if (window.confirm(`同廠商 ${data.item.supplier_name} 還有 ${same.length} 顆缺料：\n${list}\n\n一起帶入同一張採購單？（取消 = 只帶 ${part}）`)) {
+      items.push(...same);
+    }
+  }
+  const dup = items.map(recentText).filter(Boolean);
+  if (dup.length && !window.confirm(`近 ${data.recent_days} 天已開過採購單或已下單：\n${dup.join("\n")}\n\n仍要帶入開採購單？`)) return;
+  const sid = data.item.supplier_id;
+  const draft = purchaseDraftSupplier();
+  if (draft && draft.lines > 0 && sid && draft.id !== sid) {
+    if (!window.confirm(`開採購單頁目前是 ${draft.id} ${draft.name} 的單（${draft.lines} 行），要清空改開 ${sid} ${data.item.supplier_name}？`)) return;
+    clearPurchaseDraft();
+  }
+  document.querySelector('.tab-btn[data-tab="erp-po-tab"]')?.click();
+  for (const it of items) {
+    prefillPurchaseOrder(it.part, it.suggested_qty, {
+      need: it.shortage, moq: it.moq, moq_source: it.moq_source,
+      receipt: { qty: it.last_receipt_qty, date: it.last_receipt_date, gcd: it.receipt_gcd, count: it.receipt_count, floor: it.moq_floor_applied },
+      supplier: sid ? { id: sid, name: it.supplier_name } : null,
+    });
+  }
+  if (!(Number(data.item.suggested_qty) > 0)) showToast(`${part} 目前不缺（可用 ≥ 已排需求），數量請自填`);
+}
+
+// ── 手動新增料號（R-B9） ─────────────────────────────────────────────────
+async function handleAdd(event) {
+  event.preventDefault();
+  if (!requireEdit()) return;
+  const part = el("low-stock-add-part")?.value.trim() || "";
+  if (!part) return;
+  const lead = el("low-stock-add-lead")?.value.trim() || "";
+  try {
+    const res = await apiPost("/api/low-stock/items", {
+      part_number: part, lead_days: lead === "" ? null : lead, note: el("low-stock-add-note")?.value.trim() || "",
+    });
+    event.target.reset();
+    showToast(res.warning ? `已新增 ${res.part}；${res.warning}` : `已新增 ${res.part}`, res.warning ? { duration: 6000 } : { tone: "success" });
+  } catch (error) {
+    showToast(`新增失敗：${error.message}`, { tone: "error" });
+  }
+  await refreshLowStock();
 }
 
 async function onTableChange(event) {
@@ -299,6 +382,7 @@ async function handleRefresh() {
 export async function initLowStock({ autoLoad = true } = {}) {
   if (!_initialized) {
     el("btn-low-stock-refresh")?.addEventListener("click", handleRefresh);
+    el("low-stock-add-form")?.addEventListener("submit", handleAdd);
     el("btn-low-stock-suppliers-toggle")?.addEventListener("click", () => {
       const panel = el("low-stock-supplier-panel");
       if (panel) panel.hidden = !panel.hidden;

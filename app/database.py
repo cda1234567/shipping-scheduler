@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS low_stock_plan_suppliers (
     short_name   TEXT NOT NULL DEFAULT '',
     full_name    TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS low_stock_manual_part (
+    part        TEXT PRIMARY KEY,
+    note        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT '',
+    actor       TEXT NOT NULL DEFAULT ''
+);
 """
 
 _CREATE_SQL = LOW_STOCK_WATCH_SQL + LOW_STOCK_PRIORITY_SQL + LOW_STOCK_PLAN_SQL + """
@@ -5570,6 +5577,44 @@ def get_low_stock_plan_suppliers() -> dict[str, tuple[str, str]]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM low_stock_plan_suppliers").fetchall()
     return {str(r["supplier_id"]): (str(r["short_name"] or ""), str(r["full_name"] or "")) for r in rows}
+
+
+def upsert_low_stock_plan_rows(rows: dict[str, dict], suppliers: dict[str, tuple[str, str]],
+                               refreshed_at: str) -> None:
+    """只更新指定料號的快照列（手動新增料號時用；其他料號不動）。"""
+    with get_conn() as conn:
+        conn.executemany(
+            "INSERT INTO low_stock_plan_snapshot(part, payload_json, refreshed_at) VALUES(?,?,?) "
+            "ON CONFLICT(part) DO UPDATE SET payload_json=excluded.payload_json, refreshed_at=excluded.refreshed_at",
+            [(part, json.dumps(payload, ensure_ascii=False), refreshed_at) for part, payload in rows.items()],
+        )
+        conn.executemany(
+            "INSERT INTO low_stock_plan_suppliers(supplier_id, short_name, full_name) VALUES(?,?,?) "
+            "ON CONFLICT(supplier_id) DO UPDATE SET short_name=excluded.short_name, full_name=excluded.full_name",
+            [(sid, short, full) for sid, (short, full) in suppliers.items()],
+        )
+
+
+def get_low_stock_manual_parts() -> dict[str, dict]:
+    """低庫存手動新增的料號（R-B9）：{料號: {note, created_at, ...}}。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT * FROM low_stock_manual_part").fetchall()
+    return {str(r["part"]): dict(r) for r in rows}
+
+
+def save_low_stock_manual_part(part: str, note: str, actor: str) -> None:
+    now = _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO low_stock_manual_part(part, note, created_at, updated_at, actor) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(part) DO UPDATE SET note=excluded.note, updated_at=excluded.updated_at, actor=excluded.actor",
+            (part, note, now, now, actor),
+        )
+
+
+def delete_low_stock_manual_part(part: str) -> bool:
+    with get_conn() as conn:
+        return conn.execute("DELETE FROM low_stock_manual_part WHERE part=?", (part,)).rowcount > 0
 
 
 def get_orders_by_status(status: str) -> list[dict]:

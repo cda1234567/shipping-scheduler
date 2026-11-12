@@ -335,18 +335,16 @@ class DefectiveReplayRequest(BaseModel):
 # ── 常用料號低庫存提醒 ────────────────────────────────────────────────────────
 
 class LowStockAddRequest(BaseModel):
+    # 手動新增料號（R-B9）：交期選填（整數 0~730，空 = 用廠商交期）；沒有門檻欄
     part_number: str
-    threshold_qty: Optional[float] = None
-    lead_time_days: Optional[float] = None
+    lead_days: Optional[Union[float, str]] = None
     note: str = ""
 
 
 class LowStockUpdateRequest(BaseModel):
-    # 只有請求中實際出現的欄位才會更新（用 .dict(exclude_unset=True)）；threshold_qty / lead_time_days 為 null = 恢復自動
+    # 只有請求中實際出現的欄位才會更新（用 .dict(exclude_unset=True)）；lead_days 空 = 清除，恢復廠商交期
     part_number: str
-    threshold_qty: Optional[float] = None
-    lead_time_days: Optional[float] = None
-    enabled: Optional[bool] = None
+    lead_days: Optional[Union[float, str]] = None
     note: Optional[str] = None
 
 

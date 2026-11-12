@@ -614,6 +614,12 @@
           <button class="btn btn-secondary btn-sm" id="btn-low-stock-suppliers-toggle">廠商交期</button>
           <button class="btn btn-primary btn-sm" id="btn-low-stock-refresh" title="從正航（唯讀）重新抓庫存、領用、在途、015 已領">重新抓正航</button>
         </div>
+        <form id="low-stock-add-form" class="low-stock-panel" autocomplete="off">
+          <label>料號 <input type="text" id="low-stock-add-part" placeholder="例如 EC-40019A" required></label>
+          <label>交期天數（選填） <input type="number" id="low-stock-add-lead" min="0" max="730" step="1" placeholder="空白=廠商交期"></label>
+          <label>備註 <input type="text" id="low-stock-add-note"></label>
+          <button class="btn btn-secondary btn-sm" type="submit" id="btn-low-stock-add">新增料號</button>
+        </form>
         <div id="low-stock-status" class="file-status">切到這頁後會讀取清單。</div>
         <div id="low-stock-main-hint" class="file-status warn" style="display:none"></div>
         <div id="low-stock-supplier-panel" class="low-stock-supplier-panel" hidden>
@@ -630,13 +636,14 @@
                 <th>料號</th>
                 <th>廠商</th>
                 <th class="num">可用</th>
-                <th class="num" title="ST − 待調撥；總指揮公式沒有這項，待總指揮確認">自由 ST<br><span class="low-stock-hint">待總指揮確認</span></th>
+                <th class="num" title="ST − 待調撥，已算進可用">自由 ST</th>
                 <th class="num">已排程需求</th>
                 <th class="num">日均</th>
                 <th class="num">可撐(天)</th>
                 <th>交期</th>
                 <th>依據</th>
                 <th>料號設定</th>
+                <th></th>
               </tr>
             </thead>
             <tbody id="low-stock-main-body"></tbody>
@@ -658,6 +665,7 @@
                   <th>交期</th>
                   <th>依據</th>
                   <th>料號設定</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody id="low-stock-check-body"></tbody>
