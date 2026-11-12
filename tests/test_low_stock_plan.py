@@ -847,6 +847,130 @@ class PoSuggestTests(PlanBase):
             lp.po_suggest("P-1", TODAY)
 
 
+# ── v2026.11.12.3：「啟用」勾選（low_stock_watch.enabled） ───────────────────
+
+class EnabledToggleTests(PlanBase):
+    def setUp(self):
+        super().setUp()
+        os.environ.setdefault("PYTEST_CURRENT_TEST", "1")
+        from main import app
+        self.client = TestClient(app)
+        patches = [
+            patch.object(lp.moq_service, "lookup_moq", lambda parts: {p: moq_info(0) for p in parts}),
+            patch.object(lp, "_po_target", lambda: "CHIComp02"),
+            patch.object(lp, "collect", side_effect=AssertionError("切換啟用不可連正航")),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.load({
+            "E-1": snap(available=0, need=50, major_supplier_id="P0175"),        # 主清單、缺 50
+            "E-2": snap(available=-10, need=0, major_supplier_id="P0175"),       # 主清單、同廠商、缺 10
+            "NOSUP": snap(available=1000, daily=10.0),                           # 待確認
+            "OK-LEAD": snap(available=100, daily=1.0, major_supplier_id="P0304"),  # 撐得到 → 不列
+            "AB-TAB": snap(available=0, major_supplier_id="P0175"),             # -TAB 排除
+        })
+
+    def toggle(self, part, enabled):
+        return self.client.post("/api/low-stock/items/update", json={"part_number": part, "enabled": enabled})
+
+    def watch(self, part):
+        row = self.conn.execute("SELECT * FROM low_stock_watch WHERE part_number=?", (part,)).fetchone()
+        return dict(row) if row else None
+
+    def test_default_enabled_and_toggle_persists(self):
+        plan = self.plan()
+        self.assertTrue(all(r["enabled"] for r in plan["main"] + plan["check"]))
+        self.assertIsNone(self.watch("E-1"))
+        r = self.toggle("e-1", False)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual((r.json()["part"], r.json()["enabled"]), ("E-1", False))
+        self.assertEqual(self.watch("E-1")["enabled"], 0)  # 沒有 watch 列 → upsert enabled=0
+        plan = self.plan()
+        main = {x["part"]: x for x in plan["main"]}
+        self.assertIn("E-1", main)  # 停用仍留在主清單
+        self.assertFalse(main["E-1"]["enabled"])
+        self.assertEqual((plan["counts"]["main"], plan["counts"]["main_enabled"], plan["counts"]["main_disabled"]), (2, 1, 1))
+        self.assertEqual(self.client.get("/api/low-stock/plan/count").json(), {"count": 1})
+        self.assertEqual(main["E-1"]["shortage"], 50)  # 缺料量公式不變，只是不自動帶
+        r = self.toggle("E-1", True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(self.watch("E-1")["enabled"], 1)
+        self.assertTrue({x["part"]: x for x in self.plan()["main"]}["E-1"]["enabled"])
+        self.assertEqual(lp.alert_count(), 2)
+
+    def test_existing_disabled_watch_row_is_respected(self):
+        """v2026.11.11.7 之前就停用的舊紀錄（enabled=0，其他欄位有值）照樣停用；切回啟用不動其他欄位。"""
+        self.conn.execute("INSERT INTO low_stock_watch(part_number, source, enabled, note, threshold_qty) "
+                          "VALUES('NOSUP', 'manual', 0, '舊備註', 123)")
+        self.conn.commit()
+        plan = self.plan()
+        check = {x["part"]: x for x in plan["check"]}
+        self.assertFalse(check["NOSUP"]["enabled"])  # 待確認的停用列仍在待確認
+        self.assertEqual(plan["counts"]["check_disabled"], 1)
+        # 重抓正航（快照整批覆寫）後仍是停用
+        db.replace_low_stock_plan_snapshot(db.get_low_stock_plan_snapshot(), self.SUPPLIERS, "2026-11-12 08:00:00")
+        self.assertFalse({x["part"]: x for x in self.plan()["check"]}["NOSUP"]["enabled"])
+        self.toggle("NOSUP", True)
+        w = self.watch("NOSUP")
+        self.assertEqual((w["enabled"], w["source"], w["note"], w["threshold_qty"]), (1, "manual", "舊備註", 123))
+
+    def test_disabled_not_counted_and_not_auto_suggested(self):
+        lp.set_part_enabled("E-2", False, "t")
+        self.assertEqual(lp.alert_count(), 1)
+        res = lp.po_suggest("E-1", TODAY)
+        self.assertEqual(res["same_supplier"], [])  # 停用的同廠商料不併入
+        it = lp.po_suggest("E-2", TODAY)["item"]
+        self.assertEqual((it["enabled"], it["shortage"], it["suggested_qty"]), (False, 0, 0))
+        from app.services import erp_purchase as ep
+        self.assertIsNone(ep._suggested_qty("E-2"))
+        self.assertEqual(ep._suggested_qty("E-1"), 50)
+
+    def test_disabled_does_not_list_ok_parts_and_tab_excluded(self):
+        r = self.toggle("OK-LEAD", False)  # 在母體但不在主清單／待確認：可存旗標，但不會因此列出
+        self.assertEqual(r.status_code, 200, r.text)
+        plan = self.plan()
+        self.assertNotIn("OK-LEAD", [x["part"] for x in plan["main"] + plan["check"]])
+        self.assertNotIn("AB-TAB", [x["part"] for x in plan["main"] + plan["check"]])
+        self.assertEqual(plan["counts"]["excluded_tab"], 1)
+        r = self.toggle("AB-TAB", False)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("-TAB", r.json()["detail"])
+        self.assertEqual(self.toggle("ZZ-NOPE", False).status_code, 404)
+        self.assertIsNone(self.watch("AB-TAB"))
+        self.assertIsNone(self.watch("ZZ-NOPE"))
+
+    def test_manual_part_lead_note_still_work_and_toggle(self):
+        db.save_low_stock_manual_part("EC-M", "", "t")
+        r = self.client.post("/api/low-stock/items/update", json={"part_number": "EC-M", "lead_days": 45, "note": "改"})
+        self.assertEqual(r.status_code, 200, r.text)
+        row = {x["part"]: x for x in self.plan()["check"]}["EC-M"]  # 手動、尚未抓正航 → 待確認
+        self.assertEqual((row["lead_days"], row["manual_note"], row["enabled"]), (45, "改", True))
+        self.assertEqual(self.toggle("EC-M", False).status_code, 200)
+        row = {x["part"]: x for x in self.plan()["check"]}["EC-M"]
+        self.assertEqual((row["enabled"], row["manual_note"], row["lead_days"]), (False, "改", 45))
+        # 非手動料號：lead/note 仍 404，enabled 單獨可改
+        self.assertEqual(self.client.post("/api/low-stock/items/update",
+                                          json={"part_number": "E-1", "note": "x"}).status_code, 404)
+        self.assertEqual(self.toggle("E-1", False).status_code, 200)
+        # enabled=null 視同沒帶 → 走手動料號更新
+        r = self.client.post("/api/low-stock/items/update", json={"part_number": "EC-M", "note": "再改", "enabled": None})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse({x["part"]: x for x in self.plan()["check"]}["EC-M"]["enabled"])
+
+    def test_toggle_requires_edit_auth_and_no_erp_write(self):
+        from starlette.requests import Request
+        from app.services.edit_auth import request_requires_edit_auth
+
+        req = Request({"type": "http", "method": "POST", "path": "/api/low-stock/items/update", "headers": [],
+                       "query_string": b""})
+        self.assertTrue(request_requires_edit_auth(req))
+        from app.services import erp_purchase as ep
+        with patch.object(ep, "create_po", side_effect=AssertionError("不可寫正航")), \
+                patch.object(low_stock, "_erp_session", side_effect=AssertionError("不可連正航")):
+            self.assertEqual(self.toggle("E-1", False).status_code, 200)
+
+
 # ── 待調撥截止批次自動判斷（總指揮 D5） ─────────────────────────────────────
 
 class AutoCutoffTests(Base):

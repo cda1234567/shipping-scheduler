@@ -1,5 +1,6 @@
 // 低庫存提醒（v2026.11.11.7）：用廠商交期設定判斷、新可用量、推定廠商、待確認區。
 // v2026.11.12.1：放回手動新增料號（R-B9）與「開採購單」按鈕（R-E3：缺料量照 MOQ 往上取整，同廠商併單、重複開提醒）。
+// v2026.11.12.3：放回每列「啟用」勾選（low_stock_watch.enabled）；停用的列留在原清單、標「停用」，徽章不算。
 // 畫面只讀 /api/low-stock/plan（本機快照，不連正航）；「重新抓正航」才會唯讀查正航。
 import { apiJson, apiPost, esc, showToast } from "/static/modules/api.js";
 import { isEditAuthenticated, openEditAuthModal } from "/static/modules/edit_auth.js";
@@ -43,8 +44,9 @@ export async function refreshLowStockAlerts() {
   let top = [];
   try {
     if (_plan) {
-      count = (_plan.main || []).length;
-      top = (_plan.main || []).slice(0, 3).map(r => r.part);
+      const active = (_plan.main || []).filter(r => r.enabled !== false);
+      count = active.length;
+      top = active.slice(0, 3).map(r => r.part);
     } else {
       count = Number((await apiJson("/api/low-stock/plan/count"))?.count || 0);
     }
@@ -94,14 +96,14 @@ function renderStatus() {
   if (status) {
     const parts = [
       `母體 ${c.population || 0}`,
-      `主清單 ${c.main || 0}`,
+      `主清單 ${c.main_enabled ?? c.main ?? 0}` + (c.main_disabled ? `（另停用 ${c.main_disabled}）` : ""),
       `待確認 ${c.check || 0}`,
       `可隨時下單 ${c.anytime || 0}`,
       `有交期且撐得到 ${c.ok_with_lead || 0}`,
     ];
     const cutText = cut.code ? `待調撥截止批次 ${cut.code}（${cut.text || cut.source}）` : "待調撥截止批次：找不到";
     const time = _plan.refreshed_at ? `資料時間 ${fmtTime(_plan.refreshed_at)}` : "尚未抓過正航，請按「重新抓正航」";
-    status.className = "file-status" + ((c.main || 0) > 0 ? " warn" : " ok");
+    status.className = "file-status" + ((c.main_enabled ?? c.main ?? 0) > 0 ? " warn" : " ok");
     status.textContent = `${parts.join("、")}；${cutText}；${time}`;
   }
   if (hint) {
@@ -148,7 +150,16 @@ function settingHtml(r) {
     <button class="low-stock-link" data-act="part-supplier" title="改廠商（空白 = 自動判斷）">改廠商</button>`;
 }
 
+function enabledHtml(r) {
+  return `<input type="checkbox" data-act="toggle" ${r.enabled !== false ? "checked" : ""} title="勾選要不要追蹤" aria-label="啟用 ${esc(r.part)}">`
+    + (r.enabled === false ? '<div><span class="low-stock-status disabled">停用</span></div>' : "");
+}
+
 function actionHtml(r) {
+  if (r.enabled === false && !r.no_data) {
+    return '<button class="btn btn-secondary btn-sm" data-act="open-po" title="停用中：不自動帶缺料量，數量請自填">開採購單</button>'
+      + (r.manual ? ' <button class="btn btn-danger btn-sm" data-act="remove" title="移除手動新增的料號">移除</button>' : "");
+  }
   const title = Number(r.shortage) > 0 ? `缺 ${fmtNum(r.shortage)}，照 MOQ 往上取整帶入` : "目前不缺（可用 ≥ 已排需求），數量請自填";
   const po = r.no_data ? "" : `<button class="btn btn-secondary btn-sm" data-act="open-po" title="${esc(title)}">開採購單</button>`;
   const remove = r.manual ? ' <button class="btn btn-danger btn-sm" data-act="remove" title="移除手動新增的料號">移除</button>' : "";
@@ -169,9 +180,11 @@ function detailHtml(r) {
 
 function rowHtml(r) {
   const part = esc(r.part);
-  const cls = ["low-stock-row", r.priority_supplier ? "priority-supplier" : "", r.ordered ? "on_order" : (r.area === "main" ? "low" : "")].filter(Boolean).join(" ");
+  const state = r.enabled === false ? "disabled" : (r.ordered ? "on_order" : (r.area === "main" ? "low" : ""));
+  const cls = ["low-stock-row", r.priority_supplier ? "priority-supplier" : "", state].filter(Boolean).join(" ");
   const open = _openDetail.has(r.part);
   const main = `<tr class="${cls}" data-part="${part}">
+    <td>${enabledHtml(r)}</td>
     <td class="mono">${part}<div class="low-stock-hint">${esc(r.name || "")}</div>${r.manual_note ? `<div class="low-stock-hint">備註：${esc(r.manual_note)}</div>` : ""}</td>
     <td>${supplierHtml(r)}</td>
     <td class="num"><button class="low-stock-link" data-act="detail" title="看 ST、待調撥、015、各 PO 未領">${fmtNum(r.available)}</button></td>
@@ -184,7 +197,7 @@ function rowHtml(r) {
     <td class="low-stock-setting">${settingHtml(r)}</td>
     <td class="low-stock-setting">${actionHtml(r)}</td>
   </tr>`;
-  return open ? main + `<tr class="low-stock-detail-row" data-detail="${part}"><td colspan="11">${detailHtml(r)}</td></tr>` : main;
+  return open ? main + `<tr class="low-stock-detail-row" data-detail="${part}"><td colspan="12">${detailHtml(r)}</td></tr>` : main;
 }
 
 function renderTables() {
@@ -197,11 +210,11 @@ function renderTables() {
   if (mainBody) {
     mainBody.innerHTML = main.length
       ? main.map(rowHtml).join("")
-      : `<tr><td colspan="11" class="low-stock-empty">${_plan.refreshed_at ? "主清單沒有料號。" : "尚未抓過正航，請按「重新抓正航」。"}</td></tr>`;
+      : `<tr><td colspan="12" class="low-stock-empty">${_plan.refreshed_at ? "主清單沒有料號。" : "尚未抓過正航，請按「重新抓正航」。"}</td></tr>`;
   }
   const checkBody = el("low-stock-check-body");
   if (checkBody) {
-    checkBody.innerHTML = check.length ? check.map(rowHtml).join("") : '<tr><td colspan="11" class="low-stock-empty">沒有待確認的料號。</td></tr>';
+    checkBody.innerHTML = check.length ? check.map(rowHtml).join("") : '<tr><td colspan="12" class="low-stock-empty">沒有待確認的料號。</td></tr>';
   }
   const summary = el("low-stock-check-summary");
   if (summary) summary.textContent = `資料待確認 ${(_plan.check || []).length} 顆（無廠商交期，展開看）`;
@@ -310,7 +323,8 @@ async function openPurchaseOrder(part) {
       supplier: sid ? { id: sid, name: it.supplier_name } : null,
     });
   }
-  if (!(Number(data.item.suggested_qty) > 0)) showToast(`${part} 目前不缺（可用 ≥ 已排需求），數量請自填`);
+  if (data.item.enabled === false) showToast(`${part} 已停用（不追蹤），不自動帶缺料量，數量請自填`);
+  else if (!(Number(data.item.suggested_qty) > 0)) showToast(`${part} 目前不缺（可用 ≥ 已排需求），數量請自填`);
 }
 
 // ── 手動新增料號（R-B9） ─────────────────────────────────────────────────
@@ -337,12 +351,29 @@ async function onTableChange(event) {
   const tr = event.target.closest("tr[data-part]");
   if (!target || !tr) return;
   const part = tr.dataset.part;
-  if (target.dataset.act === "part-lead") {
+  if (target.dataset.act === "toggle") {
+    await toggleEnabled(part, target);
+  } else if (target.dataset.act === "part-lead") {
     const text = target.value.trim();
     await savePart(part, { lead_days: text === "" ? null : text }, text === "" ? "已清除料號交期" : "料號交期已存");
   } else if (target.dataset.act === "part-anytime") {
     await savePart(part, { anytime: target.checked }, target.checked ? "已設可隨時下單" : "已取消可隨時下單");
   }
+}
+
+// 啟用勾選：只改本機旗標後重讀 plan（不連正航）；沒登入或失敗就把勾選還原
+async function toggleEnabled(part, box) {
+  const enabled = box.checked;
+  if (!requireEdit()) { box.checked = !enabled; return; }
+  try {
+    await apiPost("/api/low-stock/items/update", { part_number: part, enabled });
+    showToast(enabled ? `${part} 已啟用追蹤` : `${part} 已停用（不追蹤，仍留在清單）`, { tone: "success" });
+  } catch (error) {
+    box.checked = !enabled;
+    showToast(`啟用設定失敗：${error.message}`, { tone: "error" });
+    return;
+  }
+  await refreshLowStock();
 }
 
 async function onSupplierClick(event) {

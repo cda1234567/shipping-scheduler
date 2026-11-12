@@ -419,6 +419,7 @@ def build_rows(today: Optional[date] = None) -> Dict[str, Any]:
     main_parts = low_stock.main_file_parts()
     keywords = low_stock.get_priority_suppliers()
     manual = manual_parts()
+    disabled = db.get_low_stock_disabled_parts()
     rows: List[Dict[str, Any]] = []
     excluded = {"tab": 0, "not_main": 0, "unused": 0}
     for part in sorted(set(snapshot) | set(manual)):
@@ -451,6 +452,7 @@ def build_rows(today: Optional[date] = None) -> Dict[str, Any]:
             "supplier_override": str((ps or {}).get("supplier_override") or ""),
             "manual": is_manual, "manual_note": str((manual.get(part) or {}).get("note") or ""),
             "no_data": no_data,
+            "enabled": part not in disabled,
         }
         if no_data:
             row.update(area=AREA_CHECK, reasons=[NO_DATA_REASON], tags=[MANUAL_TAG], ordered=False, cover_days=None)
@@ -516,6 +518,9 @@ def build_plan(today: Optional[date] = None) -> Dict[str, Any]:
             "anytime": sum(1 for r in rows if r["anytime"]),
             "ok_with_lead": sum(1 for r in rows if r["area"] == AREA_OK),
             "main_ordered": sum(1 for r in main if r["ordered"]),
+            "main_enabled": sum(1 for r in main if r["enabled"]),
+            "main_disabled": sum(1 for r in main if not r["enabled"]),
+            "check_disabled": sum(1 for r in check if not r["enabled"]),
             **{f"excluded_{k}": v for k, v in data["excluded"].items()},
         },
         "main": main,
@@ -528,9 +533,9 @@ def build_plan(today: Optional[date] = None) -> Dict[str, Any]:
 
 
 def alert_count() -> int:
-    """側欄／徽章用：主清單列數（不連正航）。"""
+    """側欄／徽章用：主清單列數，不算「啟用」沒勾的（不連正航）。"""
     try:
-        return sum(1 for r in build_rows()["rows"] if r["area"] == AREA_MAIN)
+        return sum(1 for r in build_rows()["rows"] if r["area"] == AREA_MAIN and r["enabled"])
     except Exception:
         logger.warning("低庫存主清單計數失敗", exc_info=True)
         return 0
@@ -665,6 +670,23 @@ class LowStockPlanNotFound(LeadSettingError):
     """找不到料號。"""
 
 
+# ── 「啟用」勾選（要不要追蹤；沿用 low_stock_watch.enabled） ───────────────────
+
+def set_part_enabled(part: Any, enabled: Any, actor: str = "web") -> Dict[str, Any]:
+    """只改本機 low_stock_watch.enabled（沒有列就新增）；不連正航、不改主檔。停用的料仍留在原清單。"""
+    key = aq.norm_part(part)
+    if not key:
+        raise LeadSettingError("請指定料號")
+    if aq.is_tab(key):
+        raise LeadSettingError("-TAB 客供料不列入低庫存")
+    if key not in {r["part"] for r in build_rows()["rows"]}:
+        raise LowStockPlanNotFound("低庫存清單沒有這顆料")
+    flag = bool(enabled)
+    db.set_low_stock_watch_enabled(key, flag, actor)
+    db.log_activity("低庫存啟用", f"{actor}：{key} → {'啟用' if flag else '停用'}")
+    return {"part": key, "enabled": flag}
+
+
 # ── 開採購單建議量（R-E2/E3/E4/E10） ───────────────────────────────────────
 
 def shortage_qty(row: Dict[str, Any]) -> float:
@@ -709,7 +731,8 @@ def po_suggest(part: Any, today: Optional[date] = None) -> Dict[str, Any]:
     siblings = []
     if row["supplier_id"]:
         main = sorted((r for r in rows if r["area"] == AREA_MAIN), key=sort_key_main)
-        siblings = [r for r in main if r["part"] != key and r["supplier_id"] == row["supplier_id"] and r["shortage"] > 0]
+        siblings = [r for r in main if r["part"] != key and r["supplier_id"] == row["supplier_id"]
+                    and r["enabled"] and r["shortage"] > 0]
     targets = [row, *siblings]
     moq_info = moq_service.lookup_moq([r["part"] for r in targets])
     target = _po_target()
@@ -717,16 +740,17 @@ def po_suggest(part: Any, today: Optional[date] = None) -> Dict[str, Any]:
 
     def item(r: Dict[str, Any]) -> Dict[str, Any]:
         info = moq_info.get(r["part"]) or {}
-        fields = moq_service.moq_fields(r["shortage"], info, info.get("moq") or 0)
+        shortage = r["shortage"] if r["enabled"] else 0.0  # 停用（不追蹤）的料不自動帶缺料量
+        fields = moq_service.moq_fields(shortage, info, info.get("moq") or 0)
         recent = [{k: e[k] for k in ("bill_no", "date", "qty", "supplier_id")}
                   for e in prior.get(r["part"], [])
                   if (d := _parse_date(e.get("date"))) and 0 <= (today - d).days <= po_duplicates.PART_ALONE_DAYS]
         return {
             "part": r["part"], "name": r.get("name", ""), "supplier_id": r["supplier_id"],
             "supplier_name": r["supplier_name"], "supplier_kind": r["supplier_kind"],
-            "available": r.get("available"), "need": r.get("need"), "shortage": r["shortage"],
+            "available": r.get("available"), "need": r.get("need"), "shortage": shortage, "enabled": r["enabled"],
             "on_order": r.get("on_order") or 0, "eta": r.get("eta") or "",
-            **fields, "suggested_qty": suggested_po_qty(r["shortage"], info.get("moq") or 0),
+            **fields, "suggested_qty": suggested_po_qty(shortage, info.get("moq") or 0),
             "recent_pos": recent,
         }
 
@@ -735,11 +759,11 @@ def po_suggest(part: Any, today: Optional[date] = None) -> Dict[str, Any]:
 
 
 def shortage_for_part(part: Any) -> Optional[int]:
-    """開採購單頁手動輸入料號時的「需」：低庫存清單有這顆料且缺料量 > 0 才回整數，否則 None。"""
+    """開採購單頁手動輸入料號時的「需」：低庫存清單有這顆料、有啟用且缺料量 > 0 才回整數，否則 None。"""
     key = aq.norm_part(part)
     if not key:
         return None
     for r in build_rows()["rows"]:
         if r["part"] == key:
-            return int(math.ceil(r["shortage"] - 1e-9)) if r["shortage"] > 0 else None
+            return int(math.ceil(r["shortage"] - 1e-9)) if r.get("enabled", True) and r["shortage"] > 0 else None
     return None

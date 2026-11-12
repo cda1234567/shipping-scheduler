@@ -154,13 +154,20 @@ async def add_low_stock_item(req: LowStockAddRequest):
 
 @router.post("/items/update")
 async def update_low_stock_item(req: LowStockUpdateRequest):
+    """手動料號改交期／備註；enabled = 啟用勾選（只改本機旗標，任何清單上的料號都可改）。"""
     fields = req.dict(exclude_unset=True)
     part = fields.pop("part_number")
+    enabled = fields.pop("enabled", None)
+    result = {}
     try:
-        return {"ok": True, **await run_in_threadpool(
-            lambda: low_stock_plan.update_manual_part(part, actor=ACTOR, **fields))}
+        if fields or enabled is None:
+            result.update(await run_in_threadpool(
+                lambda: low_stock_plan.update_manual_part(part, actor=ACTOR, **fields)))
+        if enabled is not None:
+            result.update(await run_in_threadpool(low_stock_plan.set_part_enabled, part, enabled, ACTOR))
     except low_stock_plan.LeadSettingError as exc:
         raise _plan_error(exc) from None
+    return {"ok": True, **result}
 
 
 @router.post("/items/remove")

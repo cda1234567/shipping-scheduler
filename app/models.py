@@ -343,9 +343,11 @@ class LowStockAddRequest(BaseModel):
 
 class LowStockUpdateRequest(BaseModel):
     # 只有請求中實際出現的欄位才會更新（用 .dict(exclude_unset=True)）；lead_days 空 = 清除，恢復廠商交期
+    # lead_days / note 只對手動新增料號；enabled（啟用勾選）對清單上任何料號都可改
     part_number: str
     lead_days: Optional[Union[float, str]] = None
     note: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 class LowStockRemoveRequest(BaseModel):

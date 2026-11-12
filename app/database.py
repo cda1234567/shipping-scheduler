@@ -5617,6 +5617,25 @@ def delete_low_stock_manual_part(part: str) -> bool:
         return conn.execute("DELETE FROM low_stock_manual_part WHERE part=?", (part,)).rowcount > 0
 
 
+def get_low_stock_disabled_parts() -> set[str]:
+    """低庫存「啟用」沒勾的料號（low_stock_watch.enabled=0；含 v2026.11.11.7 之前就停用的舊紀錄）。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT part_number FROM low_stock_watch WHERE enabled=0").fetchall()
+    return {str(r["part_number"] or "").strip().upper() for r in rows if r["part_number"]}
+
+
+def set_low_stock_watch_enabled(part: str, enabled: bool, actor: str) -> None:
+    """只改 low_stock_watch.enabled；沒有列就新增一列（其他欄位用預設值），既有列的其他欄位不動。"""
+    now = _now()
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO low_stock_watch(part_number, source, enabled, updated_at, updated_by) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(part_number) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at, "
+            "updated_by=excluded.updated_by",
+            (part, "plan", 1 if enabled else 0, now, actor),
+        )
+
+
 def get_orders_by_status(status: str) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute("SELECT * FROM orders WHERE status=? ORDER BY id", (status,)).fetchall()
