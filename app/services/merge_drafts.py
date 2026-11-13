@@ -1203,6 +1203,18 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
     if not candidates:
         return None
 
+    # 主檔同一工作表可能殘留舊循環的同名批次（例如舊 12-4），
+    # 規則與 dispatch.py 的 _cols_for_order 相同：只取批次欄右側 PO 表頭屬於這張訂單的欄。
+    po = re.sub(r"\D", "", str(order.get("po_number") or ""))
+    if po:
+        po_matched = []
+        for col in candidates:
+            header_po = re.sub(r"\D", "", _main_context_header(context, col + 1) or _main_header_text(ws, col + 1))
+            if header_po and (header_po == po or (len(header_po) >= 5 and po.endswith(header_po))):
+                po_matched.append(col)
+        if po_matched:
+            candidates = po_matched
+
     specific_tokens = _model_tokens(
         file_item.get("model"),
         (bom or {}).get("model"),

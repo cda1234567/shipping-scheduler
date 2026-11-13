@@ -171,6 +171,108 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual([ws.cell(r, 10).value for r in (5, 6)], [8, 0])
         workbook.close()
 
+    def _build_duplicate_batch_main_sheet(self, old_po_header="59032"):
+        # 主檔同表兩組 12-4：舊組（舊 PO）在前、新組（4500059664）在後，中間夾 10-10
+        workbook = Workbook()
+        ws = workbook.active
+        headers = {
+            1: "料號", 8: "盤點",
+            9: "12-4", 10: old_po_header, 11: "TA7-3-REV-A",
+            12: "10-10", 13: "4500059500", 14: "OTHER-MODEL",
+            15: "12-4", 16: "4500059664", 17: "TA7-3-REV-A",
+        }
+        for col, value in headers.items():
+            ws.cell(row=1, column=col, value=value)
+        rows = {
+            "OC-10990B": {8: 1189, 10: 500, 11: 689, 13: 500, 14: 189, 15: 1000, 16: 300, 17: 889},
+            "OC-10974B": {8: 500, 10: 500, 11: 0, 13: 0, 14: 0, 15: 1000, 16: 300, 17: 700},
+        }
+        for row_idx, (part, values) in enumerate(rows.items(), start=2):
+            ws.cell(row=row_idx, column=1, value=part)
+            for col, value in values.items():
+                ws.cell(row=row_idx, column=col, value=value)
+        return workbook, ws
+
+    def _committed_values_for_po(self, ws, po_number):
+        order = {"id": 42, "code": "12-4", "po_number": po_number, "model": "TA7-3-REV-A"}
+        file_item = {
+            "bom_file_id": "bom-1",
+            "model": "TA7-3-REV-A",
+            "group_model": "TA7-3-REV-A",
+            "carry_overs": {"OC-10990B": 189, "OC-10974B": 0},
+            "supplements": {},
+        }
+        bom = {"id": "bom-1", "model": "TA7-3-REV-A", "group_model": "TA7-3-REV-A"}
+        context = merge_drafts._main_value_context(ws)
+        with patch("app.services.merge_drafts.db.get_bom_components", return_value=[
+            {"part_number": "OC-10990B"},
+            {"part_number": "OC-10974B"},
+        ]):
+            col = merge_drafts._find_main_batch_col_for_file(ws, order, file_item, bom, context)
+            values = merge_drafts._main_values_for_committed_file(ws, order, file_item, bom, context)
+        return col, values
+
+    def test_committed_main_batch_col_uses_po_header_for_duplicate_batch_code(self):
+        workbook, ws = self._build_duplicate_batch_main_sheet()
+        try:
+            col, (carry_overs, supplements, actual) = self._committed_values_for_po(ws, "4500059664")
+        finally:
+            workbook.close()
+
+        self.assertEqual(col, 15)
+        self.assertEqual(carry_overs, {"OC-10990B": 189, "OC-10974B": 0})
+        self.assertEqual(supplements, {"OC-10990B": 1000, "OC-10974B": 1000})
+        self.assertEqual(actual, {
+            "OC-10990B": {"usage": 300, "balance": 889},
+            "OC-10974B": {"usage": 300, "balance": 700},
+        })
+
+        bom_wb = Workbook()
+        bom_ws = bom_wb.active
+        for row_idx, part in ((5, "OC-10990B"), (6, "OC-10974B")):
+            bom_ws.cell(row=row_idx, column=3, value=part)
+            bom_ws.cell(row=row_idx, column=6, value=300)
+            bom_ws.cell(row=row_idx, column=10, value=f"=G{row_idx}+H{row_idx}-F{row_idx}")
+        try:
+            merge_drafts._write_dispatch_values_to_ws(bom_ws, supplements, carry_overs, committed_quantities=actual)
+            self.assertEqual([bom_ws.cell(r, 7).value for r in (5, 6)], [189, 0])
+            self.assertEqual([bom_ws.cell(r, 8).value for r in (5, 6)], [1000, 1000])
+            self.assertEqual([bom_ws.cell(r, 6).value for r in (5, 6)], [300, 300])
+            self.assertEqual([bom_ws.cell(r, 10).value for r in (5, 6)], [889, 700])
+        finally:
+            bom_wb.close()
+
+    def test_committed_main_batch_col_short_po_header_matches_old_order_only(self):
+        workbook, ws = self._build_duplicate_batch_main_sheet()
+        try:
+            old_col, (old_carry, old_supply, old_actual) = self._committed_values_for_po(ws, "4500059032")
+        finally:
+            workbook.close()
+
+        # 舊組表頭 59032 對得到 4500059032
+        self.assertEqual(old_col, 9)
+        self.assertEqual(old_carry, {"OC-10990B": 1189, "OC-10974B": 500})
+        self.assertEqual(old_supply, {"OC-10990B": 0, "OC-10974B": 0})
+        self.assertEqual(old_actual["OC-10990B"], {"usage": 500, "balance": 689})
+
+    def test_committed_main_batch_col_po_without_match_keeps_model_scoring(self):
+        # 舊組表頭 59032 不可誤配 4500059664；這裡把新組 PO 也拿掉，兩組都對不到 PO 時維持原本機種打分（先碰到的）
+        workbook, ws = self._build_duplicate_batch_main_sheet()
+        try:
+            ws.cell(row=1, column=16, value="4500050000")
+            col, _ = self._committed_values_for_po(ws, "4500059664")
+        finally:
+            workbook.close()
+        self.assertEqual(col, 9)
+
+        workbook, ws = self._build_duplicate_batch_main_sheet(old_po_header="9664")
+        try:
+            # 短於 5 碼的表頭不做尾碼比對，只有完整相符的新組會被選到
+            col, _ = self._committed_values_for_po(ws, "4500059664")
+        finally:
+            workbook.close()
+        self.assertEqual(col, 15)
+
     def test_previous_stock_before_col_uses_rightmost_left_value_when_batch_header_blank(self):
         workbook = Workbook()
         worksheet = workbook.active
