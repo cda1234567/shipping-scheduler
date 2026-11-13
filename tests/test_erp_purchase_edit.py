@@ -164,9 +164,21 @@ class FakeCur:
             out = []
             for mm in sorted(c.state["ordBillMain"], key=lambda r: (r["BillDate"], r["BillNO"]), reverse=True):
                 cust = c.customers.get(mm["CustomerID"], {})
-                if any(_like(params[0], v) for v in (mm["BillNO"], mm["CustomerID"], cust.get("ShortName"), cust.get("FullName"))):
-                    out.append((mm["BillNO"], mm["BillDate"], mm["CustomerID"], cust.get("ShortName"), cust.get("FullName"),
-                                mm["SumBTaxAmt"], mm["SumAmtATax"], mm["CurrID"], mm["BillStatus"], mm["EndacaseDate"]))
+                if mm["Flag"] != 4:
+                    continue
+                if params:  # 有 q：表頭欄位或 EXISTS 明細料號 / 品名（排除 -TAB 列）
+                    assert "EXISTS (SELECT 1 FROM ordBillSub s" in s and params[6] == "%-TAB", s
+                    head = any(_like(params[0], v) for v in (mm["BillNO"], mm["CustomerID"], cust.get("ShortName"), cust.get("FullName")))
+                    line = any(sb["Flag"] == 4 and sb["BillNO"] == mm["BillNO"]
+                               and (_like(params[4], sb["ProdID"]) or _like(params[5], sb["ProdName"]))
+                               and not str(sb["ProdID"]).rstrip().upper().endswith("-TAB")
+                               for sb in c.state["ordBillSub"])
+                    if not (head or line):
+                        continue
+                else:
+                    assert "LIKE" not in s, s
+                out.append((mm["BillNO"], mm["BillDate"], mm["CustomerID"], cust.get("ShortName"), cust.get("FullName"),
+                            mm["SumBTaxAmt"], mm["SumAmtATax"], mm["CurrID"], mm["BillStatus"], mm["EndacaseDate"]))
             return self._set(out[:30], ["a"] * 10)
         m = re.match(r"SELECT \* FROM (ordBillMain|ordBillSub)(?: WITH \(UPDLOCK, HOLDLOCK\))? WHERE Flag = 4 AND BillNO = %s", s)
         if m:
@@ -356,16 +368,54 @@ class SearchLoadTests(EditCase):
         self.assertEqual((bills[0]["status"], bills[2]["status"], bills[2]["supplier_name"]), ("未結", "已結", "乙公司"))
         self.assertEqual(r.json()["company"], "CHIComp03")
         sql, params = next(x for x in self.c03.log if x[0].startswith("SELECT TOP 30 m.BillNO"))
-        self.assertIn("WHERE m.Flag = 4 AND (m.BillNO LIKE %s OR m.CustomerID LIKE %s OR c.ShortName LIKE %s OR c.FullName LIKE %s)", sql)
+        self.assertIn("WHERE m.Flag = 4 AND (m.BillNO LIKE %s OR m.CustomerID LIKE %s OR c.ShortName LIKE %s OR c.FullName LIKE %s"
+                      " OR EXISTS (SELECT 1 FROM ordBillSub s WHERE s.Flag = 4 AND s.BillNO = m.BillNO"
+                      " AND (s.ProdID LIKE %s OR s.ProdName LIKE %s) AND UPPER(RTRIM(s.ProdID)) NOT LIKE %s))", sql)
         self.assertIn("ORDER BY m.BillDate DESC, m.BillNO DESC", sql)
         self.client.get("/api/erp/po/bills", params={"q": "a_%["})
-        self.assertEqual(self.c03.log[-1][1][0], "%a[_][%][[]%")
+        self.assertEqual(self.c03.log[-1][1], ("%a[_][%][[]%",) * 6 + ("%-TAB",))
         self.assertEqual(self.client.get("/api/erp/po/bills", params={"q": "乙"}).json()["bills"][0]["bill_no"], "PO-20260901001")
+        self.assertEqual([b["bill_no"] for b in self.client.get("/api/erp/po/bills", params={"q": "P0175"}).json()["bills"]],
+                         ["PO-20261102001", "PO-20261001001"])
 
-    def test_search_blank_does_not_query(self):
-        n = len(self.c03.log)
-        self.assertEqual(self.client.get("/api/erp/po/bills", params={"q": "  "}).json()["bills"], [])
-        self.assertEqual(len(self.c03.log), n)
+    def test_search_by_part_or_name_dedup(self):
+        self.c03.seed(main_row("PO-A"), [sub_row("PO-A", 1, "AC-1", 10, 1, name="電容"), sub_row("PO-A", 2, "AC-1", 5, 1, name="電容"),
+                                         sub_row("PO-A", 3, "AC-12", 5, 1, name="電容 X")])
+        self.c03.seed(main_row("PO-B", BillDate=20261102), [sub_row("PO-B", 1, "BB-9", 10, 1, name="電阻")])
+        self.c03.seed(main_row("PO-C", BillDate=20261103, CustomerID="P0200", BillStatus=1), [sub_row("PO-C", 1, "XAC-1Y", 1, 1)])
+        bills = lambda q: [b["bill_no"] for b in self.client.get("/api/erp/po/bills", params={"q": q}).json()["bills"]]
+        self.assertEqual(bills("AC-1"), ["PO-C", "PO-A"])  # 部分符合、已結也列、同單多列只一次
+        self.assertEqual(bills("電容"), ["PO-A"])
+        self.assertEqual(bills("bb-9"), ["PO-B"])
+        d = self.client.get("/api/erp/po/bills", params={"q": "電阻"}).json()["bills"][0]
+        self.assertEqual(set(d), {"bill_no", "bill_date", "supplier_id", "supplier_name", "sum_amount", "total", "currency",
+                                  "closed", "status"})
+
+    def test_search_tab_line_alone_does_not_match_but_bill_no_does(self):
+        self.c03.seed(main_row("PO-T"), [sub_row("PO-T", 1, "AC-1", 10, 1, name="一般"),
+                                         sub_row("PO-T", 2, "CS-1-tab ", 5, 0, name="客供件")])
+        bills = lambda q: [b["bill_no"] for b in self.client.get("/api/erp/po/bills", params={"q": q}).json()["bills"]]
+        self.assertEqual(bills("CS-1"), [])
+        self.assertEqual(bills("客供件"), [])
+        self.assertEqual(bills("AC-1"), ["PO-T"])  # 同單非 -TAB 列符合照列
+        self.assertEqual(bills("PO-T"), ["PO-T"])  # 單號找得到，即使有 -TAB 列
+        self.assertEqual(bills("甲"), ["PO-T"])
+
+    def test_search_blank_lists_recent_30(self):
+        for i in range(35):
+            self.c03.seed(main_row(f"PO-{i:03d}", BillDate=20261001 + i), [])
+        r = self.client.get("/api/erp/po/bills", params={"q": "  "})
+        self.assertEqual(r.status_code, 200, r.text)
+        bills = [b["bill_no"] for b in r.json()["bills"]]
+        self.assertEqual(len(bills), 30)
+        self.assertEqual(bills[0], "PO-034")
+        self.assertEqual(bills[-1], "PO-005")
+        sql, params = self.c03.log[-1]
+        self.assertIn("SELECT TOP 30 m.BillNO", sql)
+        self.assertIn("WHERE m.Flag = 4 ORDER BY m.BillDate DESC, m.BillNO DESC", sql)
+        self.assertEqual(params, ())
+        self.assertEqual([b["bill_no"] for b in self.client.get("/api/erp/po/bills").json()["bills"]], bills)
+        self.assertTrue(all(s.startswith("SELECT") for s, _ in self.c03.log))  # 唯讀
 
     def test_search_other_company_refused(self):
         r = self.client.get("/api/erp/po/bills", params={"q": "PO", "company": "CHIComp02"})

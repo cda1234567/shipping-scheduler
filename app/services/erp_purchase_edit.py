@@ -197,22 +197,31 @@ def _supplier_name(row: Optional[Dict[str, Any]]) -> str:
 # ── 搜尋 / 載入（唯讀）────────────────────────────────────────────────────────
 
 def search_bills(q: str, company: str = "") -> Dict[str, Any]:
-    """舊採購單搜尋：單號 / 供應商代號 / 供應商簡稱或全名部分符合（LIKE 跳脫同供應商搜尋），TOP 30，新的在前。"""
+    """舊採購單搜尋（比照一次收料）：單號 / 供應商代號 / 簡稱 / 全名，或明細料號 / 品名部分符合（LIKE 跳脫同供應商搜尋）。
+
+    結果是整張單（明細用 EXISTS 比對，一張單只列一次）；只因 -TAB 客供料列符合不算命中。q 空白列最近的單。TOP 30，新的在前。
+    """
     text = (q or "").strip()
     company = _resolve_company(company)
     result: Dict[str, Any] = {"company": company, "company_label": ep.target_label(company), "bills": []}
-    if not text:
-        return result
-    pattern = f"%{ep._like_escape(text)}%"
+    where, params = "m.Flag = 4", ()
+    if text:
+        pattern = f"%{ep._like_escape(text)}%"
+        where += (
+            " AND (m.BillNO LIKE %s OR m.CustomerID LIKE %s OR c.ShortName LIKE %s OR c.FullName LIKE %s"
+            " OR EXISTS (SELECT 1 FROM ordBillSub s WHERE s.Flag = 4 AND s.BillNO = m.BillNO"
+            " AND (s.ProdID LIKE %s OR s.ProdName LIKE %s) AND UPPER(RTRIM(s.ProdID)) NOT LIKE %s))"
+        )
+        params = (pattern,) * 6 + (f"%{ep.CUSTOMER_SUPPLIED_SUFFIX}",)
     with _read_session(company) as conn:
         cur = conn.cursor()
         cur.execute(
             f"SELECT TOP {MAX_SEARCH} m.BillNO, m.BillDate, m.CustomerID, c.ShortName, c.FullName, "
             "m.SumBTaxAmt, m.SumAmtATax, m.CurrID, m.BillStatus, m.EndacaseDate "
             "FROM ordBillMain m LEFT JOIN comCustomer c ON c.Flag = 2 AND c.ID = m.CustomerID "
-            "WHERE m.Flag = 4 AND (m.BillNO LIKE %s OR m.CustomerID LIKE %s OR c.ShortName LIKE %s OR c.FullName LIKE %s) "
+            f"WHERE {where} "
             "ORDER BY m.BillDate DESC, m.BillNO DESC",
-            (pattern, pattern, pattern, pattern),
+            params,
         )
         for r in cur.fetchall():
             closed = _int(r[8]) != 0 or _int(r[9]) != 0

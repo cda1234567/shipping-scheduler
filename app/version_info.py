@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.13.2"
+APP_VERSION = "v2026.11.13.3"
 APP_RELEASED_AT = "2026-11-13"
-APP_HEADLINE = "修改舊採購單 API（搜尋／載入／預覽／寫入）；預設只寫公司13（測試），正式公司改單預設關"
+APP_HEADLINE = "開啟舊單搜尋比照收料：廠商／料號／品名／單號部分符合，空白列最近 30 張"
 APP_CHANGELOG = [
+    {"title": "v2026.11.13.3：開啟舊單搜尋比照收料（廠商／料號／單號，輸入即搜）", "items": [
+        "GET /api/erp/po/bills?q= 除了單號、供應商代號／簡稱／全名，也比對明細料號（ProdID）與品名（ProdName），LIKE 部分符合，跳脫方式同供應商搜尋與一次收料。",
+        "結果仍是整張採購單（欄位不變），明細用 EXISTS 比對，同一張單多列符合也只列一次。",
+        "只因 -TAB 客供料列（料號結尾 -TAB，不分大小寫）符合料號／品名，不會把單找出來；用單號或供應商找到的單即使含 -TAB 列照列。",
+        "q 空白改列該公司最近的單（TOP 30，新的在前），不再回空。其他不變：唯讀、免登入、只允許來源公司或改單目標、Flag=4、已結／未結都列。",
+    ]},
     {"title": "v2026.11.13.2：修改舊採購單 API（正式公司改單預設關）", "items": [
         "新增唯讀 GET /api/erp/po/bills?q=：來源公司 Flag=4 採購單，單號／供應商代號／簡稱／全名部分符合（LIKE 跳脫同供應商搜尋），TOP 30，新的在前，含未稅／含稅、幣別、未結／已結。q 空白不查。",
         "新增唯讀 GET /api/erp/po/bill?no=：表頭＋全部明細（含原有 -TAB 列），附 BillStatus、EndacaseDate、每列 RowNO／Quantity／QtyRemain，與不可修改／不可寫入的原因。",

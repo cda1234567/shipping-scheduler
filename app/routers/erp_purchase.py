@@ -123,7 +123,7 @@ async def po_history(limit: int = 50):
 
 @router.get("/bills")
 async def po_bills(q: str = "", company: str = ""):
-    """舊採購單搜尋（單號 / 供應商代號或名稱部分符合，TOP 30，新的在前）。唯讀。"""
+    """舊採購單搜尋（單號 / 供應商 / 明細料號或品名部分符合，空白列最近的單，TOP 30，新的在前）。唯讀。"""
     try:
         return await run_in_threadpool(erp_purchase_edit.search_bills, q, company)
     except ErpError as exc:
