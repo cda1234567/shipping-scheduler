@@ -2,6 +2,7 @@
 
 與 erp_stock.py（唯讀）不同，這裡會「寫入」ERP，所以規則很保守：
 - 只 INSERT 新單據 / 缺少的主檔，絕不 UPDATE / DELETE 既有資料。
+  （修改舊採購單是另一條寫入路徑，獨立在 erp_purchase_edit.py，另有開關 ERP_PO_EDIT_TARGET；本檔仍只 INSERT。）
 - 寫入目標公司由 ERP_WRITE_TARGET 指定（預設 CHIComp02 測試公司），帳密只放環境變數。
 - INSERT 一律明列欄位，欄位清單取自「目標」資料庫的 sys.columns（兩家公司欄位順序不同）。
 - 整張單（含補主檔）在同一個 transaction 內，寫完讀回比對後才 commit，任何錯誤即 rollback。

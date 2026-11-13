@@ -497,7 +497,9 @@ CREATE TABLE IF NOT EXISTS erp_purchase_orders (
     client_ip     TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL DEFAULT '',
     status        TEXT NOT NULL DEFAULT 'ok',
-    error         TEXT NOT NULL DEFAULT ''
+    error         TEXT NOT NULL DEFAULT '',
+    edited_at     TEXT NOT NULL DEFAULT '',
+    edit_note     TEXT NOT NULL DEFAULT ''
 );
 
 -- 一次收料（收料 / 驗收 / 進貨）本機紀錄（成功與失敗嘗試都記）
@@ -892,6 +894,11 @@ def init_db():
     with get_conn() as conn:
         conn.executescript(_CREATE_SQL)
         _migrate_low_stock_columns(conn)
+        po_cols = {r[1] for r in conn.execute("PRAGMA table_info(erp_purchase_orders)").fetchall()}
+        if "edited_at" not in po_cols:
+            conn.execute("ALTER TABLE erp_purchase_orders ADD COLUMN edited_at TEXT NOT NULL DEFAULT ''")
+        if "edit_note" not in po_cols:
+            conn.execute("ALTER TABLE erp_purchase_orders ADD COLUMN edit_note TEXT NOT NULL DEFAULT ''")
         rcpt_cols = {r[1] for r in conn.execute("PRAGMA table_info(erp_receipts)").fetchall()}
         if "currency" not in rcpt_cols:
             conn.execute("ALTER TABLE erp_receipts ADD COLUMN currency TEXT NOT NULL DEFAULT ''")
@@ -4218,6 +4225,16 @@ def add_erp_purchase_order(rec: dict) -> int:
             ),
         )
         return int(cur.lastrowid)
+
+
+def mark_erp_purchase_order_edited(bill_no: str, target_db: str, note: str) -> int:
+    """本站改過正航舊採購單後，在本機開單紀錄註記已修改（不刪紀錄、不改原本的明細與合計）；回傳註記筆數。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE erp_purchase_orders SET edited_at=?, edit_note=? WHERE status='ok' AND bill_no=? AND target_db=?",
+            (_now(), note, bill_no, target_db),
+        )
+        return int(cur.rowcount or 0)
 
 
 def list_erp_purchase_orders(limit: int = 50) -> list[dict]:

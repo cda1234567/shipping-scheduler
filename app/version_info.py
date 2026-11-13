@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.13.1"
+APP_VERSION = "v2026.11.13.2"
 APP_RELEASED_AT = "2026-11-13"
-APP_HEADLINE = "開採購單料號模糊搜尋 API、料號採購紀錄 API"
+APP_HEADLINE = "修改舊採購單 API（搜尋／載入／預覽／寫入）；預設只寫公司13（測試），正式公司改單預設關"
 APP_CHANGELOG = [
+    {"title": "v2026.11.13.2：修改舊採購單 API（正式公司改單預設關）", "items": [
+        "新增唯讀 GET /api/erp/po/bills?q=：來源公司 Flag=4 採購單，單號／供應商代號／簡稱／全名部分符合（LIKE 跳脫同供應商搜尋），TOP 30，新的在前，含未稅／含稅、幣別、未結／已結。q 空白不查。",
+        "新增唯讀 GET /api/erp/po/bill?no=：表頭＋全部明細（含原有 -TAB 列），附 BillStatus、EndacaseDate、每列 RowNO／Quantity／QtyRemain，與不可修改／不可寫入的原因。",
+        "新增 POST /api/erp/po/update/preview 與 /api/erp/po/update（confirm=true），要編輯登入。明細依 RowNO 更新、新列新增、移除的列刪除；未進貨列 QtyRemain 跟著新數量；金額稅額沿用開新單 compute_money；同一 transaction 寫完讀回比對，不符即 rollback。付款條件、地址、開單日期、核准人、拋轉狀態不動；絕不整張刪單。",
+        "拒絕：找不到單、已結案、任一明細已進貨、載入後被改過、原有 -TAB 列被移除、新增 -TAB 列、改原列料號、原列有單位換算／折扣卻改數量單價、單據公司與改單寫入目標不同（不可拿公司3的單改公司13）。",
+        "改單寫入目標另開 ERP_PO_EDIT_TARGET（預設 CHIComp13 測試）；正式公司要同時 ERP_PO_EDIT_TARGET=CHIComp03、ERP_ALLOW_PROD_PO_EDIT_CHICOMP03=1、ERP_ALLOW_PROD_WRITE_CHICOMP03=1、ERP_ALLOW_PROD_PO_CHICOMP03=1，預設關。/api/erp/po/config 新增 edit_target／edit_label／edit_available／edit_reason 等欄位，與開新單目標分開。",
+        "本機開單紀錄有該單時註記已修改（edited_at／edit_note），不刪紀錄。開新單寫入邏輯不變。",
+    ]},
     {"title": "v2026.11.13.1：開採購單料號模糊搜尋 API、料號採購紀錄 API", "items": [
         "新增唯讀 GET /api/erp/po/parts?q=：查正航來源公司 comProduct，料號（ProdID）或品名（ProdName）部分符合，最多 30 筆，回傳 { parts: [ { part_number, product_name } ] }。",
         "一律排除 -TAB 客供料（料號結尾 -TAB，不分大小寫）；q 空白回空陣列。寫法與供應商搜尋相同，開單寫入邏輯不變。",

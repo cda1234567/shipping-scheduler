@@ -431,6 +431,32 @@ class ErpPoCreateRequest(ErpPoRequest):
     confirm_missing_postprocess: bool = False  # 鈞洋件有後段加工對應但加工件不在同一批時，使用者確認後才帶 true
 
 
+
+# ── 修改舊採購單（v2026.11.13.2）────────────────────────────────────────────────
+
+class ErpPoEditLine(BaseModel):
+    row_no: int = 0  # 原有明細的 RowNO；0 = 新增列
+    part_number: str
+    qty: float
+    price: float
+    pre_in_date: str  # YYYY-MM-DD
+
+
+class ErpPoEditRequest(BaseModel):
+    bill_no: str
+    company: str = ""  # 載入來源公司（db）；空 = 來源公司 ERP_SQL_DATABASE
+    supplier_id: str
+    remark: str = ""
+    salesman: Optional[str] = None
+    currency: Optional[str] = None  # NTD / USD；空 = 原單幣別
+    tax_mode: Optional[str] = None  # taxable / exempt；空 = 原單課稅別
+    lines: list[ErpPoEditLine]
+    loaded: Optional[dict] = None  # 載入當下：{ bill_status, endacase_date, rows: [{ row_no, quantity, qty_remain }] }
+
+
+class ErpPoUpdateRequest(ErpPoEditRequest):
+    confirm: bool = False
+
 # ── 一次收料（收料→驗收→進貨）──────────────────────────────────────────────────
 
 class ErpReceiveLine(BaseModel):

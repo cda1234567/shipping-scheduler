@@ -3,8 +3,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
-from ..models import ErpPoCreateRequest, ErpPoRequest, ErpPoTermsRequest
-from ..services import erp_purchase, postprocess
+from ..models import ErpPoCreateRequest, ErpPoEditRequest, ErpPoRequest, ErpPoTermsRequest, ErpPoUpdateRequest
+from ..services import erp_purchase, erp_purchase_edit, postprocess
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
 router = APIRouter(prefix="/erp/po")
@@ -26,7 +26,8 @@ def _http_error(exc: Exception) -> HTTPException:
 
 @router.get("/config")
 async def po_config():
-    return erp_purchase.get_config()
+    # 開新單（target / available / label / reason）與改舊單（edit_*）的寫入目標分開回報
+    return {**erp_purchase.get_config(), **erp_purchase_edit.edit_config()}
 
 
 @router.get("/suppliers")
@@ -116,3 +117,42 @@ async def po_create(req: ErpPoCreateRequest, request: Request):
 @router.get("/history")
 async def po_history(limit: int = 50):
     return {"orders": await run_in_threadpool(erp_purchase.list_history, max(1, min(int(limit), 200)))}
+
+
+# ── 修改舊採購單（v2026.11.13.2）：搜尋 / 載入唯讀免登入；預覽 / 寫入是 POST，要編輯登入 ──
+
+@router.get("/bills")
+async def po_bills(q: str = "", company: str = ""):
+    """舊採購單搜尋（單號 / 供應商代號或名稱部分符合，TOP 30，新的在前）。唯讀。"""
+    try:
+        return await run_in_threadpool(erp_purchase_edit.search_bills, q, company)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.get("/bill")
+async def po_bill(no: str = "", company: str = ""):
+    """載入舊採購單表頭 + 全部明細（含原有 -TAB 列）與可否修改 / 寫入的原因。唯讀。"""
+    try:
+        return await run_in_threadpool(erp_purchase_edit.load_bill, no, company)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.post("/update/preview")
+async def po_update_preview(req: ErpPoEditRequest):
+    try:
+        return await run_in_threadpool(erp_purchase_edit.preview_update, req.dict())
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.post("/update")
+async def po_update(req: ErpPoUpdateRequest, request: Request):
+    ip = request.client.host if request.client else ""
+    try:
+        return await run_in_threadpool(erp_purchase_edit.update_po, req.dict(), ACTOR, ip)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+    except Exception as exc:  # 其他例外統一回 500，不洩漏細節
+        raise _http_error(exc) from None
