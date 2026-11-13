@@ -883,6 +883,100 @@ class ApiCase(WriteFlowCase):
         self.assertEqual(d["last_bill_date"], "2026-09-01")
 
 
+class PartSearchHistoryTests(ApiCase):
+    """v2026.11.13.1：開採購單料號模糊搜尋、料號採購紀錄（來源公司唯讀）。"""
+
+    def _session(self, rows, one=None):
+        calls = []
+
+        class Cur:
+            def execute(self, sql, params=None):
+                calls.append((" ".join(sql.split()), params))
+
+            def fetchall(self):
+                return list(rows)
+
+            def fetchone(self):
+                return one
+
+        class Conn:
+            def cursor(self):
+                return Cur()
+
+        @contextmanager
+        def session():
+            yield Conn()
+
+        return session, calls
+
+    def test_parts_partial_part_number_and_name(self):
+        session, calls = self._session([("AC-40838B", "電容 10uF"), ("XAC-1", "電阻")])
+        with patch.object(ep, "_source_session", session):
+            r = self.client.get("/api/erp/po/parts", params={"q": "ac-4"})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["parts"][0], {"part_number": "AC-40838B", "product_name": "電容 10uF"})
+        sql, params = calls[0]
+        self.assertIn("TOP 30", sql)
+        self.assertIn("ProdID LIKE %s OR ProdName LIKE %s", sql)
+        self.assertNotIn("ClassID", sql)
+        self.assertEqual(params[:2], ("%ac-4%", "%ac-4%"))
+        with patch.object(ep, "_source_session", session):
+            self.client.get("/api/erp/po/parts", params={"q": "電容_%"})
+        self.assertEqual(calls[1][1][:2], ("%電容[_][%]%", "%電容[_][%]%"))
+
+    def test_parts_excludes_tab(self):
+        session, calls = self._session([("A-1", "甲"), ("A-1-TAB", "客供"), ("a-2-tab ", "客供小寫"), ("A-TABX", "非客供")])
+        with patch.object(ep, "_source_session", session):
+            parts = self.client.get("/api/erp/po/parts", params={"q": "A"}).json()["parts"]
+        self.assertEqual([p["part_number"] for p in parts], ["A-1", "A-TABX"])
+        self.assertIn("NOT LIKE", calls[0][0])
+        self.assertEqual(calls[0][1][2], "%-TAB")
+
+    def test_parts_blank_query_returns_empty_without_db(self):
+        session, calls = self._session([("A-1", "甲")])
+        with patch.object(ep, "_source_session", session):
+            for q in ("", "   "):
+                self.assertEqual(self.client.get("/api/erp/po/parts", params={"q": q}).json(), {"parts": []})
+        self.assertEqual(calls, [])
+
+    def test_part_history_shape_and_order(self):
+        rows = [
+            (20261020, "PO-20261020001", "P0175", "甲", "甲公司", Decimal("1000"), Decimal("9.5"), "NTD"),
+            (20260901, "PO-20260901002", "P0200", "", "乙公司", Decimal("500"), Decimal("0.12"), "USD"),
+        ]
+        session, calls = self._session(rows, one=("AC-40838B", "電容"))
+        with patch.object(ep, "_source_session", session):
+            r = self.client.get("/api/erp/po/part-history", params={"part": " ac-40838b "})
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertEqual((d["part_number"], d["product_name"]), ("AC-40838B", "電容"))
+        self.assertEqual(d["records"][0], {
+            "bill_date": "2026-10-20", "bill_no": "PO-20261020001", "supplier_id": "P0175",
+            "supplier_name": "甲", "qty": 1000.0, "price": 9.5, "currency": "NTD",
+        })
+        self.assertEqual(d["records"][1]["supplier_name"], "乙公司")  # 沒簡稱用全名
+        self.assertEqual([x["bill_date"] for x in d["records"]], ["2026-10-20", "2026-09-01"])
+        sql, params = calls[1]
+        self.assertIn("TOP 50", sql)
+        self.assertIn("WHERE s.Flag = 4 AND s.ProdID = %s ORDER BY m.BillDate DESC, m.BillNO DESC", sql)
+        self.assertEqual(params, ("AC-40838B",))
+        self.assertTrue(all(c[0].startswith("SELECT") for c in calls))  # 唯讀
+
+    def test_part_history_no_records_and_blank(self):
+        session, calls = self._session([], one=None)
+        with patch.object(ep, "_source_session", session):
+            d = self.client.get("/api/erp/po/part-history", params={"part": "ZZ-9"}).json()
+            self.assertEqual(d, {"part_number": "ZZ-9", "product_name": "", "records": []})
+            blank = self.client.get("/api/erp/po/part-history", params={"part": " "}).json()
+        self.assertEqual(blank["records"], [])
+        self.assertEqual(len(calls), 2)  # 空白不查 DB
+
+    def test_new_endpoints_are_get_and_not_edit_protected(self):
+        for path in ("/api/erp/po/parts", "/api/erp/po/part-history"):
+            req = Request({"type": "http", "method": "GET", "path": path, "headers": [], "query_string": b""})
+            self.assertFalse(request_requires_edit_auth(req))
+
+
 class SuggestedQtyTests(unittest.TestCase):
     def test_gap_formula(self):
         """v2026.11.12.1：需 = 低庫存缺料量（已排需求 − 可用），不再用舊門檻公式；不缺或不在清單回 None。"""

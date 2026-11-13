@@ -38,10 +38,29 @@ async def po_suppliers(q: str = ""):
     return {"suppliers": rows}
 
 
+@router.get("/parts")
+async def po_parts(q: str = ""):
+    """開採購單料號模糊搜尋（料號或品名部分符合，排除 -TAB 客供料）。唯讀。"""
+    try:
+        rows = await run_in_threadpool(erp_purchase.search_parts, q)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+    return {"parts": rows}
+
+
 @router.get("/part-defaults")
 async def po_part_defaults(part: str = ""):
     try:
         return await run_in_threadpool(erp_purchase.part_defaults, part)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.get("/part-history")
+async def po_part_history(part: str = ""):
+    """料號過去採購紀錄（正航來源公司，唯讀）。"""
+    try:
+        return await run_in_threadpool(erp_purchase.part_history, part)
     except ErpError as exc:
         raise _http_error(exc) from None
 

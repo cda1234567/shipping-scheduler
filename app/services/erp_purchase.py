@@ -1689,6 +1689,62 @@ def search_suppliers(q: str) -> List[Dict[str, str]]:
         ]
 
 
+def search_parts(q: str) -> List[Dict[str, str]]:
+    """開採購單料號模糊搜尋：來源公司 comProduct 的 ProdID 或 ProdName 部分符合，TOP 30，排除 -TAB 客供料。唯讀。"""
+    text = q.strip()
+    if not text:
+        return []
+    pattern = f"%{_like_escape(text)}%"
+    with _source_session() as src:
+        cur = src.cursor()
+        cur.execute(
+            "SELECT TOP 30 ProdID, ProdName FROM comProduct "
+            "WHERE (ProdID LIKE %s OR ProdName LIKE %s) AND UPPER(RTRIM(ProdID)) NOT LIKE %s ORDER BY ProdID",
+            (pattern, pattern, f"%{CUSTOMER_SUPPLIED_SUFFIX}"),
+        )
+        return [
+            {"part_number": _text(r[0]), "product_name": _text(r[1])}
+            for r in cur.fetchall() if not customer_supplied_reason(r[0])
+        ]
+
+
+def _fmt_bill_date(value: Any) -> str:
+    bill_date = int(value or 0)
+    return f"{bill_date // 10000:04d}-{bill_date // 100 % 100:02d}-{bill_date % 100:02d}" if bill_date else ""
+
+
+def part_history(part: str) -> Dict[str, Any]:
+    """料號過去採購紀錄（與 part_defaults 上次單價同來源：ordBillSub Flag=4），新的在前，TOP 50。唯讀。"""
+    key = part.strip().upper()
+    result: Dict[str, Any] = {"part_number": key, "product_name": "", "records": []}
+    if not key:
+        return result
+    with _source_session() as src:
+        cur = src.cursor()
+        cur.execute("SELECT ProdID, ProdName FROM comProduct WHERE ProdID = %s", (key,))
+        found = cur.fetchone()
+        if found:
+            result.update(part_number=_text(found[0]), product_name=_text(found[1]))
+        cur.execute(
+            "SELECT TOP 50 m.BillDate, m.BillNO, m.CustomerID, c.ShortName, c.FullName, s.Quantity, s.Price, m.CurrID "
+            "FROM ordBillSub s JOIN ordBillMain m ON m.Flag = s.Flag AND m.BillNO = s.BillNO "
+            "LEFT JOIN comCustomer c ON c.Flag = 2 AND c.ID = m.CustomerID "
+            "WHERE s.Flag = 4 AND s.ProdID = %s ORDER BY m.BillDate DESC, m.BillNO DESC",
+            (key,),
+        )
+        result["records"] = [
+            {
+                "bill_date": _fmt_bill_date(r[0]), "bill_no": _text(r[1]), "supplier_id": _text(r[2]),
+                "supplier_name": _text(r[3]) or _text(r[4]),
+                "qty": float(r[5]) if r[5] is not None else None,
+                "price": float(r[6]) if r[6] is not None else None,
+                "currency": _text(r[7]),
+            }
+            for r in cur.fetchall()
+        ]
+    return result
+
+
 def _suggested_qty(part: str) -> Optional[int]:
     """低庫存清單內的料號：缺料量（已排需求 − 可用，無條件進位）；不在清單或不缺回 None（不用舊門檻公式）。"""
     from . import low_stock_plan

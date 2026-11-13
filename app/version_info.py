@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.12.3"
-APP_RELEASED_AT = "2026-11-12"
-APP_HEADLINE = "低庫存放回「啟用」勾選（要不要追蹤）"
+APP_VERSION = "v2026.11.13.1"
+APP_RELEASED_AT = "2026-11-13"
+APP_HEADLINE = "開採購單料號模糊搜尋 API、料號採購紀錄 API"
 APP_CHANGELOG = [
+    {"title": "v2026.11.13.1：開採購單料號模糊搜尋 API、料號採購紀錄 API", "items": [
+        "新增唯讀 GET /api/erp/po/parts?q=：查正航來源公司 comProduct，料號（ProdID）或品名（ProdName）部分符合，最多 30 筆，回傳 { parts: [ { part_number, product_name } ] }。",
+        "一律排除 -TAB 客供料（料號結尾 -TAB，不分大小寫）；q 空白回空陣列。寫法與供應商搜尋相同，開單寫入邏輯不變。",
+        "新增唯讀 GET /api/erp/po/part-history?part=：該料號在正航的過去採購紀錄（與上次單價同來源），新的在前，最多 50 筆，含日期、單號、供應商、數量、單價、幣別；沒紀錄回空陣列。",
+    ]},
     {"title": "v2026.11.12.3：低庫存放回「啟用」勾選", "items": [
         "主清單與待確認每列加回「啟用」勾選（預設勾），不勾 = 停用、不追蹤；列仍留在原清單，可再勾回。",
         "停用的料不算徽章、側欄「低庫存 N 顆」與 /api/low-stock/plan/count；開採購單不自動帶缺料量、也不併入同廠商缺料。",
