@@ -18,6 +18,7 @@ from ..config import cfg
 from .. import database as db
 from ..snapshot_sync import refresh_snapshot_from_main
 from .local_time import local_now
+from .main_negative_format import save_main_workbook
 from .xls_reader import open_workbook_any
 from .merge_to_main import (
     PART_COL,
@@ -214,7 +215,7 @@ def deduct_defectives_from_main(
         })
 
     ensure_main_header_wrap(ws)
-    wb.save(main_path)
+    save_main_workbook(wb, main_path)
     wb.close()
 
     return {

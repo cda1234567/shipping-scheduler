@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
+import threading
+from collections import OrderedDict
 from datetime import date, datetime, time
 from functools import lru_cache
 from pathlib import Path
@@ -18,6 +19,79 @@ from .xls_reader import is_xls, open_workbook_any
 _DEFAULT_COLUMN_WIDTH_PX = 92
 _DEFAULT_ROW_HEIGHT_PX = 24
 MAIN_PREVIEW_CACHE_DIR = DATA_DIR / "cache" / "main_preview"
+# 預覽 payload 格式變動時遞增，舊磁碟快取自動失效
+_PREVIEW_CACHE_VERSION = 2
+
+
+_RESPONSE_CACHE_MAX = 8
+_response_cache: "OrderedDict[tuple, bytes]" = OrderedDict()
+_response_cache_lock = threading.Lock()
+
+
+def get_main_preview_json_bytes(
+    path: str,
+    sheet_name: str | None = None,
+    *,
+    extra: dict | None = None,
+    compact: bool = False,
+) -> bytes:
+    """回傳組好的預覽 JSON bytes；主檔 mtime/size、封存欄位、extra 沒變就直接重用。"""
+    path_obj = Path(path)
+    stat = path_obj.stat()
+    archived = db.list_archived_orders()
+    active_keys = (
+        tuple(sorted((str(o["code"]), str(o["po_number"])) for o in db.get_orders()))
+        if archived else ()
+    )
+    key = (
+        str(path_obj),
+        stat.st_mtime_ns,
+        stat.st_size,
+        str(sheet_name or "").strip(),
+        repr(archived),
+        active_keys,
+        json.dumps(extra or {}, sort_keys=True, ensure_ascii=False, default=str),
+        bool(compact),
+    )
+    with _response_cache_lock:
+        cached = _response_cache.get(key)
+        if cached is not None:
+            _response_cache.move_to_end(key)
+            return cached
+
+    preview = dict(read_live_main_preview(path, sheet_name=sheet_name))
+    if compact:
+        preview = _compact_preview(preview)
+    preview.update(extra or {})
+    body = json.dumps(preview, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+    with _response_cache_lock:
+        _response_cache[key] = body
+        _response_cache.move_to_end(key)
+        while len(_response_cache) > _RESPONSE_CACHE_MAX:
+            _response_cache.popitem(last=False)
+    return body
+
+
+def clear_main_preview_response_cache() -> None:
+    with _response_cache_lock:
+        _response_cache.clear()
+
+
+def _compact_preview(preview: dict) -> dict:
+    """前端用：省略沒有值、也不是合併儲存格的空白格（約佔 9 成），其餘欄位原樣保留。"""
+    sheet = dict(preview["sheet"])
+    sheet["rows"] = [
+        {
+            **row,
+            "cells": [
+                c for c in row["cells"]
+                if c.get("value") not in ("", None) or "rowspan" in c or "colspan" in c
+            ],
+        }
+        for row in sheet["rows"]
+    ]
+    return {**preview, "sheet": sheet, "compact": True}
 
 
 def read_live_main_preview(path: str, sheet_name: str | None = None) -> dict:
@@ -34,9 +108,10 @@ def read_live_main_preview(path: str, sheet_name: str | None = None) -> dict:
 
 
 def _exclude_archived_columns(preview: dict) -> dict:
+    # 回傳淺層新結構、共用快取內的 cell dict（呼叫端不得改動 cell）；不再整包 deepcopy
     archived = db.list_archived_orders()
     if not archived:
-        return copy.deepcopy(preview)
+        return {**preview, "sheet": {**preview["sheet"]}}
     active = db.get_orders()
     archived_keys = {(str(o["code"]), str(o["po_number"])) for o in archived}
     active_keys = {(str(o["code"]), str(o["po_number"])) for o in active}
@@ -47,10 +122,12 @@ def _exclude_archived_columns(preview: dict) -> dict:
         key = (code, headers.get(col + 1, ""))
         if key in archived_keys and key not in active_keys:
             hidden.update((col, col + 1, col + 2))
-    result = copy.deepcopy(preview)
+    result = {**preview, "sheet": {**sheet}}
     result["sheet"]["columns"] = [c for c in sheet["columns"] if c["index"] not in hidden]
-    for row in result["sheet"]["rows"]:
-        row["cells"] = [c for c in row["cells"] if c["col"] not in hidden]
+    result["sheet"]["rows"] = [
+        {**row, "cells": [c for c in row["cells"] if c["col"] not in hidden]}
+        for row in sheet["rows"]
+    ]
     # 保留原始座標與總欄數，讓未封存欄位仍可正確編輯。
     return result
 
@@ -74,6 +151,7 @@ def _read_live_main_preview_cached(path: str, modified_ns: int, size: int, reque
             "selected_sheet": selected_sheet,
             "style_preserved": not is_xls(path),
             "sheet": _serialize_sheet(worksheet),
+            "cache_version": _PREVIEW_CACHE_VERSION,
         }
         _write_disk_cache(modified_ns, size, requested_sheet, preview)
         return preview
@@ -99,9 +177,12 @@ def _read_disk_cache(modified_ns: int, size: int, requested_sheet: str) -> dict 
 
     try:
         with cache_path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            cached = json.load(f)
     except (OSError, ValueError):
         return None
+    if not isinstance(cached, dict) or cached.get("cache_version") != _PREVIEW_CACHE_VERSION:
+        return None
+    return cached
 
 
 def _write_disk_cache(modified_ns: int, size: int, sheet_name: str, preview: dict) -> None:
@@ -153,6 +234,9 @@ def _serialize_sheet(worksheet) -> dict:
                 "value": _format_cell_value(cell.value, cell.number_format),
                 "style_id": style_id,
             }
+            if _is_negative_number(cell.value):
+                # 顯示層標示負數紅字，不動原儲存格樣式
+                cell_payload["negative"] = True
             merge = merged_anchors.get((row_idx, col_idx))
             if merge:
                 cell_payload["rowspan"] = merge["rowspan"]
@@ -182,6 +266,10 @@ def _serialize_sheet(worksheet) -> dict:
         "rows": rows,
         "styles": styles,
     }
+
+
+def _is_negative_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0
 
 
 def _detect_used_bounds(worksheet) -> tuple[int, int]:

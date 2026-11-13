@@ -9,6 +9,7 @@ import hashlib
 import openpyxl
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pydantic import BaseModel, Field
@@ -17,7 +18,8 @@ from .. import database as db
 from ..config import BACKUP_DIR, MAIN_FILE_DIR
 from ..services.server_downloads import maybe_server_save_bytes_response, maybe_server_save_response
 from ..models import UpdateMoqRequest
-from ..services.main_preview import read_live_main_preview
+from ..services.main_negative_format import main_file_download_bytes, save_main_workbook
+from ..services.main_preview import get_main_preview_json_bytes
 from ..services.main_reader import (
     find_legacy_snapshot_stock_fixes,
     read_moq,
@@ -354,6 +356,17 @@ async def download_main_file(request: Request):
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
     filename = db.get_setting("main_filename") or Path(main_path).name
+    # 尚未被系統寫過的主檔也要帶負數紅字規則：只在記憶體套用，不改磁碟檔
+    content = main_file_download_bytes(main_path)
+    if content is not None:
+        server_response = maybe_server_save_bytes_response(request, content, filename)
+        if server_response:
+            return server_response
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+        )
     return maybe_server_save_response(
         request,
         main_path,
@@ -363,28 +376,44 @@ async def download_main_file(request: Request):
 
 
 @router.get("/main-file/preview")
-async def get_main_preview(request: Request, sheet: str | None = None):
+async def get_main_preview(
+    request: Request,
+    sheet: str | None = None,
+    compact: bool = False,
+    meta: bool = False,
+):
     main_path = db.get_setting("main_file_path")
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
+
+    extra = {
+        "filename": db.get_setting("main_filename") or Path(main_path).name,
+        "loaded_at": db.get_setting("main_loaded_at"),
+    }
+    # meta=1：前端切回分頁時只確認主檔是否換過，不傳整張表
+    if meta:
+        return JSONResponse(content=extra, headers={"Cache-Control": "no-cache"})
 
     # ETag based on file mtime + sheet → 檔案沒變時回 304，瀏覽器跳過整個 download
     try:
         mtime_ns = Path(main_path).stat().st_mtime_ns
     except OSError:
         mtime_ns = 0
-    etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}|{db.list_archived_orders()}"
+    etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}|{db.list_archived_orders()}|{int(compact)}"
     etag = 'W/"' + hashlib.md5(etag_raw.encode("utf-8")).hexdigest() + '"'
 
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
 
-    preview = read_live_main_preview(main_path, sheet_name=sheet)
-    preview.update({
-        "filename": db.get_setting("main_filename") or Path(main_path).name,
-        "loaded_at": db.get_setting("main_loaded_at"),
-    })
-    return JSONResponse(content=preview, headers={"ETag": etag, "Cache-Control": "no-cache"})
+    # 組好的 JSON bytes 依主檔 mtime/size 快取，重複開預覽不再 deepcopy + 序列化 7 MB
+    body = await run_in_threadpool(
+        get_main_preview_json_bytes, main_path, sheet, extra=extra, compact=compact,
+    )
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"ETag": etag, "Cache-Control": "no-cache"},
+    )
 
 
 @router.get("/main-file/info")
@@ -686,7 +715,7 @@ async def edit_main_cell(req: EditCellRequest):
         col=req.col,
         snapshot_stock=snapshot_stock,
     )
-    wb.save(main_path)
+    save_main_workbook(wb, main_path)
     supplement_sync = _sync_supplement_from_main_cell(
         ws,
         row=req.row,

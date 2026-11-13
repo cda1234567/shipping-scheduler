@@ -11,6 +11,7 @@ from openpyxl.utils.cell import coordinate_to_tuple, get_column_letter
 from ..config import cfg
 from .main_file_lock import serialized_main_file_write
 from .bom_parser import _evaluate_numeric_formula
+from .main_negative_format import save_main_workbook
 from .xls_reader import open_workbook_any
 
 _PART_COL = None
@@ -354,7 +355,7 @@ def update_vendor(path: str, part_number: str, vendor: str) -> dict:
             old_vendor = str(cell.value or "").strip()
             new_vendor = str(vendor or "").strip()
             cell.value = new_vendor
-            wb.save(path)
+            save_main_workbook(wb, path)
             return {
                 "part_number": part_key,
                 "old_vendor": old_vendor,

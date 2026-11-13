@@ -23,6 +23,7 @@ from ..config import cfg
 from ..models import calc_suggested_qty
 from .local_time import local_now
 from .main_file_lock import serialized_main_file_write
+from .main_negative_format import save_main_workbook
 from .main_file_recalc import find_latest_supplement_event_for_row, recalc_batch_balances_for_cell
 from .main_reader import read_stock, read_stock_cells, read_latest_stock_from_sheet, main_balance_columns, _try_float as _stock_number
 from .bom_substitutions import allocate_substitution, find_rule, normalize_part
@@ -54,7 +55,7 @@ def _save_workbook_atomically(workbook, main_path: str, *, validate=None) -> Non
     )
     os.close(fd)
     try:
-        workbook.save(temp_name)
+        save_main_workbook(workbook, temp_name)
         if validate is not None:
             validate(temp_name)
         os.replace(temp_name, target)

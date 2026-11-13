@@ -72,6 +72,7 @@ const LS_ROWLEN_PREFIX = "mainPreviewV2.rowlen.";
 const HEADER_WRAP_ROW_HEIGHT = 80;
 const HEADER_WRAP_VALUE = "2";
 const HEADER_CLIP_VALUE = "0";
+const NEGATIVE_FONT_COLOR = "#FF0000";
 const HEADER_DISPLAY_BREAK_MIN_LENGTH = 9;
 let _wrapEnabled = (() => {
   try { return localStorage.getItem(LS_WRAP_KEY) !== "0"; } catch (_) { return true; }
@@ -163,9 +164,8 @@ export async function onMainPreviewV2TabActivated() {
   // 已 mount 過 → 快速 check 主檔是否變動，沒變就跳過重 mount
   if (_luckyMounted && _lastLoadedAt) {
     try {
-      const url = new URL("/api/main-file/preview", window.location.origin);
-      if (_activeSheet) url.searchParams.set("sheet", _activeSheet);
-      const payload = await apiJson(`${url.pathname}${url.search}`);
+      // meta=1 只回 filename / loaded_at，不再為了比對 loaded_at 重抓整張表
+      const payload = await apiJson("/api/main-file/preview?meta=1");
       if ((payload?.loaded_at || "") === _lastLoadedAt) return;
     } catch (_) {}
   }
@@ -194,6 +194,8 @@ export async function refreshMainPreviewV2({ force = false, sheet = "", eager = 
     const requestedSheet = sheet || _activeSheet || "";
     const url = new URL("/api/main-file/preview", window.location.origin);
     if (requestedSheet) url.searchParams.set("sheet", requestedSheet);
+    // compact=1 省略空白格（前端本來就不畫），JSON 小約 7 倍
+    url.searchParams.set("compact", "1");
 
     const payload = await apiJson(`${url.pathname}${url.search}`);
     if (token !== _loadToken) return;
@@ -404,6 +406,8 @@ function mountLuckysheet(payload) {
         _luckyMounted = true;
         _suppressNextHook = false;
         applyHeaderWrapFormat(colCount);
+        // Luckysheet 固定 setTimeout 500ms 才拿掉白色 loading 遮罩；表格此時已畫好，直接移除
+        document.getElementById("luckysheetloadingdata")?.remove();
         // 鍵盤左推到凍結邊界時，畫面跟著往左捲（避免 cursor 被凍結 A/B 欄壓住）
         bindFrozenBoundaryKeyboardScroll();
         // Luckysheet 沒 column/row resize hook，改用 mouseup 後 dump 整個 sheet
@@ -663,6 +667,8 @@ function buildCelldata(sheet) {
       if (rowIndex === 0) {
         cellValue.tb = _wrapEnabled ? HEADER_WRAP_VALUE : HEADER_CLIP_VALUE;
       }
+      // 負數紅字只改字色，不動背景/粗體等其他樣式
+      if (cell?.negative) cellValue.fc = NEGATIVE_FONT_COLOR;
       result.push({
         r: rowIndex,
         c: colIndex,
