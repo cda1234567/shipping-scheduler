@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.13.5"
-APP_RELEASED_AT = "2026-11-13"
-APP_HEADLINE = "主檔負數自動紅字、主檔預覽加速"
+APP_VERSION = "v2026.11.13.6"
+APP_RELEASED_AT = "2026-11-16"
+APP_HEADLINE = "採購單列印補資料 API（給 t357）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.13.6：採購單列印補資料 API（給 t357）", "items": [
+        "新增唯讀、免登入 GET /api/erp/po/print-info?supplier=&salesman=&bill=&parts=&company=：回傳廠商聯絡人／電話／傳真／付款方式、採購員姓名、明細單位，給 t357 產採購單 PDF 前補資料。只 SELECT，公司解析同 /api/erp/po/bill。",
+        "表頭用指定單號（Flag=4、同廠商），找不到就用該廠商最近一張採購單。電話只用 ordBillMain.LinkTelephone，沒有就空白，不用 comCustomer 的 Telephone1/2/3、MobileTel；聯絡人、傳真表頭空白才用廠商主檔。",
+        "付款方式只印名稱（1=次月、2=月結，不加天數）；其他值有 GatherOther 印它，否則空白。採購員查 comPerson.PersonName，查不到回空字串。單位先用該單明細 ordBillSub.Unit，缺的用 comProduct.Unit。查不到一律留空，不編值。",
+    ]},
     {"title": "v2026.11.13.5：主檔負數自動紅字、主檔預覽加速", "items": [
         "網站主檔預覽：數值小於 0 的格子顯示紅字；0、正數與文字不變色，原本的底色、粗體等樣式不動，也不改主檔資料。",
         "Excel 主檔第一張工作表加一條條件式格式「儲存格值 < 0 → 紅字」，範圍 D2 到目前最後一欄最後一列（A–C 料號／廠商／MOQ 不套），不改任何儲存格自身樣式。",

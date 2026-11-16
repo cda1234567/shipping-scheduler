@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from ..models import ErpPoCreateRequest, ErpPoEditRequest, ErpPoRequest, ErpPoTermsRequest, ErpPoUpdateRequest
-from ..services import erp_purchase, erp_purchase_edit, postprocess
+from ..services import erp_po_print_info, erp_purchase, erp_purchase_edit, postprocess
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
 router = APIRouter(prefix="/erp/po")
@@ -135,6 +135,15 @@ async def po_bill(no: str = "", company: str = ""):
     """載入舊採購單表頭 + 全部明細（含原有 -TAB 列）與可否修改 / 寫入的原因。唯讀。"""
     try:
         return await run_in_threadpool(erp_purchase_edit.load_bill, no, company)
+    except ErpError as exc:
+        raise _http_error(exc) from None
+
+
+@router.get("/print-info")
+async def po_print_info(supplier: str = "", salesman: str = "", bill: str = "", parts: str = "", company: str = ""):
+    """採購單列印補資料（廠商聯絡人 / 電話 / 傳真 / 付款方式、採購員姓名、明細單位），給 t357 產 PDF 用。唯讀。"""
+    try:
+        return await run_in_threadpool(erp_po_print_info.print_info, supplier, salesman, bill, parts, company)
     except ErpError as exc:
         raise _http_error(exc) from None
 
