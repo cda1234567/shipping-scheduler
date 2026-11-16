@@ -12,8 +12,7 @@ class TabBarOrderTests(unittest.TestCase):
     VISIBLE = ["schedule", "completed", "main-preview-v2", "calc-workspace",
                "shortage-po-tab", "erp-po-tab", "low-stock-tab", "po-pullin-tab",
                "erp-receive-tab", "transfer-tab", "erp-invoice-tab",
-               "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab",
-               "shipnote-tab"]  # 出貨單：倉庫分組，DOM 緊接在海運出貨之後
+               "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab"]
     HIDDEN = {"alerts-tab", "logs-tab", "st-inventory"}
 
     def setUp(self):
@@ -41,6 +40,14 @@ class TabBarOrderTests(unittest.TestCase):
         self.assertIn('id="tab-groups"', self.html)
         self.assertIn('id="tab-transfer-tab"', self.html)
         self.assertIn("setActiveTabGroup", self.html)
+
+    def test_shipnote_tab_removed(self):
+        # 出貨單改由 t357 入口；畫面不再有出貨單分頁，後端 /api/shipnote 保留
+        self.assertNotIn("shipnote-tab", self.html)
+        self.assertNotIn('id="tab-shipnote-tab"', self.html)
+        self.assertNotIn("initShipnote", self.html)
+        self.assertNotIn("onShipnoteTabActivated", self.html)
+        self.assertNotIn("/static/modules/shipnote.js", self.html)
 
     def test_css_order_matches_dom_order(self):
         import re

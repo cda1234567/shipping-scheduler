@@ -546,12 +546,10 @@ class ApiTests(unittest.TestCase):
 
         root = Path(__file__).resolve().parents[1]
         js = (root / "static" / "modules" / "shipnote.js").read_text(encoding="utf-8")
-        html = (root / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('_input(index, "name", item.name', js)
         self.assertIn('_input(index, "harmonized_code", item.harmonized_code', js)
         self.assertIn('harmonized_code: String(item.harmonized_code ?? "").trim()', js)
         self.assertIn('name: String(item.name ?? "").trim()', js)
-        self.assertIn("<th>HS code</th>", html)
 
     def test_search_api_uses_service(self):
         from main import app

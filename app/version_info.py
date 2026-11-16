@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.16.2"
+APP_VERSION = "v2026.11.16.3"
 APP_RELEASED_AT = "2026-11-16"
-APP_HEADLINE = "出貨單 HS code 改用歷史對照、品名與 HS 可改；CI 測試修正"
+APP_HEADLINE = "出貨單改由 t357 入口，本系統出貨單 API 保留"
 APP_CHANGELOG = [
+    {"title": "v2026.11.16.3：出貨單改由 t357 入口，API 保留", "items": [
+        "倉庫分組拿掉「出貨單」分頁，出貨單改從 t357 操作。",
+        "後端 /api/shipnote/config、search、export 全部保留不變（免登入、server_save 仍只在 server_save=1 時才存），給 t357 代理呼叫；-TAB 客供料維持排除。",
+    ]},
     {"title": "v2026.11.16.2：出貨單 HS 對照與 CI 修正", "items": [
         "出貨單 HS code 預設只用歷史出貨單對照表（app/resources/shipnote_hs_lookup.json）：先以品名（去頭尾空白、連續空白收成一格）查唯一對照，再以料號（不分大小寫）查唯一對照；都沒有或在衝突清單就留空，不再用海運出貨的推測規則。PCB-A1080（T3IU ADAPTER PCB-A1080）預設 8471.90.0000。",
         "出貨單每列的品名與 HS code 改成輸入框可直接修改，匯出用畫面上的值；品名預設仍是淨重主檔優先，沒有才用正航品名。-TAB 客供料維持排除。",

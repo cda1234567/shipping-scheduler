@@ -131,7 +131,6 @@
       <button class="tab-btn" data-group="data" data-tab="analytics-tab">分析</button>
       <button class="tab-btn" data-group="schedule" data-tab="st-packages-tab" hidden>無MOQ包裝</button>
       <button class="tab-btn" data-group="warehouse" data-tab="sea-freight-tab" hidden>海運出貨</button>
-      <button class="tab-btn" data-group="warehouse" data-tab="shipnote-tab">出貨單</button>
       <button class="tab-btn" data-group="warehouse" hidden data-tab="st-inventory">ST 庫存</button>
       <button class="tab-btn" data-group="data" hidden data-tab="alerts-tab">提醒</button>
       <button class="tab-btn" data-group="data" hidden data-tab="logs-tab">紀錄</button>
@@ -1093,76 +1092,6 @@
       </div>
     </div>
 
-    <!-- ── Tab: 出貨單 ── -->
-    <div id="tab-shipnote-tab" class="tab-content">
-      <div class="sea-freight-shell shipnote-shell">
-        <div class="sea-freight-header">
-          <div>
-            <h3>出貨單</h3>
-            <div class="sea-freight-subtitle">輸入正航 S/C 單號、Invoice 單號（ST-）或客戶 PO（可多張，空白或逗號分隔），品項從正航帶入；-TAB 客供料不列。</div>
-          </div>
-        </div>
-        <div class="shipnote-search">
-          <label class="shipnote-field"><span>類型</span>
-            <select id="shipnote-type">
-              <option value="general">一般</option>
-              <option value="ups">UPS</option>
-              <option value="sea">海運</option>
-              <option value="billing">請款</option>
-            </select>
-          </label>
-          <label class="shipnote-field shipnote-keywords"><span>S/C、Invoice（ST-）或客戶 PO</span>
-            <input id="shipnote-keywords" type="text" placeholder="例如 4500059497 ST-2026276 4131D000" autocomplete="off">
-          </label>
-          <button class="btn btn-primary btn-sm" id="btn-shipnote-search">查詢</button>
-        </div>
-        <div id="shipnote-status" class="sea-summary"></div>
-        <div class="sea-table-wrap shipnote-table-wrap">
-          <table class="sea-table shipnote-table" id="shipnote-table">
-            <thead>
-              <tr>
-                <th><input type="checkbox" id="shipnote-check-all" title="全選"></th>
-                <th>PO</th>
-                <th>正航單號</th>
-                <th>列號</th>
-                <th>料號</th>
-                <th>品名</th>
-                <th>HS code</th>
-                <th>數量</th>
-                <th>單價</th>
-                <th>金額</th>
-                <th class="shipnote-box">箱號</th>
-                <th class="shipnote-box">箱數</th>
-                <th class="shipnote-box">每箱</th>
-                <th class="shipnote-box">N.W.</th>
-                <th class="shipnote-box">G.W.</th>
-                <th class="shipnote-box">材積</th>
-                <th class="shipnote-box">尾箱號</th>
-                <th class="shipnote-box">尾箱數量</th>
-                <th class="shipnote-box">尾 N.W.</th>
-                <th class="shipnote-box">尾 G.W.</th>
-                <th class="shipnote-box">尾材積</th>
-              </tr>
-            </thead>
-            <tbody id="shipnote-body"><tr><td colspan="21" class="shipnote-empty">輸入單號或 PO 後按查詢</td></tr></tbody>
-          </table>
-        </div>
-        <div class="shipnote-footer">
-          <label class="shipnote-field"><span>嘜頭</span>
-            <select id="shipnote-mark">
-              <option value="HILLIARD">HILLIARD</option>
-              <option value="WAUKESHA">WAUKESHA</option>
-            </select>
-          </label>
-          <label class="shipnote-field"><span>日期</span><input id="shipnote-date" type="date"></label>
-          <label class="shipnote-field"><span>INVOICE NO</span><input id="shipnote-invoice-no" type="text"></label>
-          <label class="shipnote-field"><span>製單</span><input id="shipnote-maker" type="text" value="Andy"></label>
-          <label class="shipnote-field shipnote-remark"><span>備註</span><input id="shipnote-remark" type="text" placeholder="例如：請款 貨未進，用於支付 30%預付款"></label>
-          <button class="btn btn-success btn-sm" id="btn-shipnote-export">匯出 xlsx</button>
-        </div>
-      </div>
-    </div>
-
   </div><!-- /main-content -->
 
 </div><!-- /layout -->
@@ -1257,7 +1186,6 @@ import { initAnalytics, refreshAnalytics } from "/static/modules/analytics.js";
 import { initDefectives, refreshDefectives, onDefectivesTabActivated } from "/static/modules/defectives.js";
 import { initEditAuth } from "/static/modules/edit_auth.js";
 import { initSeaFreight, refreshSeaFreight } from "/static/modules/sea_freight.js";
-import { initShipnote, onShipnoteTabActivated } from "/static/modules/shipnote.js";
 import { initLowStock, refreshLowStockAlerts, onLowStockTabActivated } from "/static/modules/low_stock.js";
 import { initErpPurchase, onErpPurchaseTabActivated } from "/static/modules/erp_purchase.js";
 import { initErpReceive, onErpReceiveTabActivated } from "/static/modules/erp_receive.js";
@@ -1305,7 +1233,6 @@ function activateTabButton(btn) {
   if (btn.dataset.tab === "analytics-tab") refreshAnalytics();
   if (btn.dataset.tab === "defectives-tab") void onDefectivesTabActivated();
   if (btn.dataset.tab === "sea-freight-tab") refreshSeaFreight();
-  if (btn.dataset.tab === "shipnote-tab") onShipnoteTabActivated();
 }
 
 document.querySelectorAll(".tab-group-btn").forEach(btn => {
@@ -2391,7 +2318,6 @@ async function init() {
   try { await initAnalytics(); } catch (e) { console.warn("initAnalytics failed:", e); }
   try { await initDefectives({ autoLoad: false }); } catch (e) { console.warn("initDefectives failed:", e); }
   try { await initSeaFreight(); } catch (e) { console.warn("initSeaFreight failed:", e); }
-  try { initShipnote(); } catch (e) { console.warn("initShipnote failed:", e); }
   try { await initLowStock({ autoLoad: false }); } catch (e) { console.warn("initLowStock failed:", e); }
   try { await initErpPurchase(); } catch (e) { console.warn("initErpPurchase failed:", e); }
   try { await initErpReceive(); } catch (e) { console.warn("initErpReceive failed:", e); }
