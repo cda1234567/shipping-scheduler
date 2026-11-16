@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.13.6"
+APP_VERSION = "v2026.11.16.1"
 APP_RELEASED_AT = "2026-11-16"
-APP_HEADLINE = "採購單列印補資料 API（給 t357）"
+APP_HEADLINE = "新增出貨單分頁（正航 S/C／Invoice／客戶 PO 帶品項，匯出 OPENTEXT 出貨單）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.16.1：新增出貨單分頁", "items": [
+        "倉庫分組新增可見的「出貨單」分頁（海運出貨 Excel 匯入保留不動）。類型：一般、UPS、海運、請款。",
+        "輸入正航 S/C 單號、Invoice 單號（ST-）或客戶 PO（可多張），唯讀查正航 CHIComp03 帶出 PO、單號、列號、料號、品名、數量、單價、金額；可勾選、可改數量。-TAB 客供料一律不列也不匯出。",
+        "客戶 PO 取 S/C（TraBillMain Flag=2）的 Ref；搜 PO 會列出精確 Ref 與後綴拆單（如 4500059497-A、-B），各自顯示完整 Ref。Invoice 數量單價取 comProdRec，PO 經 FromNO 對回 S/C 的 Ref。",
+        "品名優先用淨重主檔名稱，沒有才用正航品名；每箱數量、N.W.、G.W.、材積從淨重主檔帶入，沒有就空白讓人填。HS code 沿用既有判斷，判斷不出就留空。",
+        "匯出套原 OPENTEXT 出貨單／海運出貨單／請款單模板：保留版面與嘜頭 OPENTEXT 繪圖；每聯日期（日期格式）、嘜頭、製單同步；INVOICE NO 預設空白；品項超過一聯接到下一聯；合計改用實際有資料的儲存格加總，各聯一致；請款單不填箱重、總箱數等為 0、備註帶輸入值。",
+    ]},
     {"title": "v2026.11.13.6：採購單列印補資料 API（給 t357）", "items": [
         "新增唯讀、免登入 GET /api/erp/po/print-info?supplier=&salesman=&bill=&parts=&company=：回傳廠商聯絡人／電話／傳真／付款方式、採購員姓名、明細單位，給 t357 產採購單 PDF 前補資料。只 SELECT，公司解析同 /api/erp/po/bill。",
         "表頭用指定單號（Flag=4、同廠商），找不到就用該廠商最近一張採購單。電話只用 ordBillMain.LinkTelephone，沒有就空白，不用 comCustomer 的 Telephone1/2/3、MobileTel；聯絡人、傳真表頭空白才用廠商主檔。",

@@ -12,7 +12,8 @@ class TabBarOrderTests(unittest.TestCase):
     VISIBLE = ["schedule", "completed", "main-preview-v2", "calc-workspace",
                "shortage-po-tab", "erp-po-tab", "low-stock-tab", "po-pullin-tab",
                "erp-receive-tab", "transfer-tab", "erp-invoice-tab",
-               "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab"]
+               "bom", "part-conversion-tab", "defectives-tab", "backups-tab", "analytics-tab",
+               "shipnote-tab"]  # 出貨單：倉庫分組，DOM 緊接在海運出貨之後
     HIDDEN = {"alerts-tab", "logs-tab", "st-inventory"}
 
     def setUp(self):

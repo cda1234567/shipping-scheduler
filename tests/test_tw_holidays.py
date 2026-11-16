@@ -215,7 +215,9 @@ class DueDatePathTests(HolidayBase):
         from main import app
 
         client = TestClient(app)
-        with patch("app.routers.holidays.local_now", lambda: datetime(2026, 10, 30, 9, 0)):
+        fake_now = lambda: datetime(2026, 10, 30, 9, 0)
+        # 「不早於今天」也要用同一個假今天，否則實際日期過了 11/13 測試就會壞
+        with patch("app.routers.holidays.local_now", fake_now), patch.object(tw_holidays, "local_now", fake_now):
             r = client.get("/api/holidays/default-due?days=14").json()  # 11/13（週五）
             self.assertEqual((r["date"], r["shifted"]), ("2026-11-13", False))
             r = client.get("/api/holidays/default-due?days=29").json()  # 11/28（週六）→ 11/27

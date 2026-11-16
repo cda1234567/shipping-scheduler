@@ -29,6 +29,8 @@ _EXEMPT_PATHS = {
     "/api/reconcile/st/preview",
     "/api/health",
     "/api/automail/refresh",  # 只讀（重新讀取寄信狀態），不寫入任何東西
+    "/api/shipnote/search",  # 只讀正航，不寫入
+    "/api/shipnote/export",  # 只產生出貨單 xlsx 下載，不改資料
 }
 
 

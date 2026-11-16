@@ -59,3 +59,8 @@ launch_debug.log
 tools/*.png
 templates/*
 !templates/dispatch_form_template.xlsx
+# 出貨單模板（v2026.11.16.1）與淨重主檔
+!templates/OPENTEXT 261113出貨單.xlsx
+!templates/OPENTEXT 261028海運出貨單.xlsx
+!templates/OPENTEXT 261109請款單.xlsx
+!templates/opentext 出貨淨重.xlsx
