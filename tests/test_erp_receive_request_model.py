@@ -17,6 +17,7 @@ BODY = {
     "client_token": "tok",
     "update_cost": True,
     "exch_rate": 32.77,
+    "entry_ccy": "NTD",
 }
 
 
@@ -26,9 +27,11 @@ class ErpReceiveRequestModelTests(unittest.TestCase):
         self.assertEqual(set(req), set(BODY))
         self.assertEqual(set(req["lines"][0]), set(BODY["lines"][0]))
         self.assertEqual(req["exch_rate"], 32.77)
+        self.assertEqual(req["entry_ccy"], "NTD")
 
     def test_exch_rate_defaults_to_none(self):
         self.assertIsNone(ErpReceiveRequest(lines=[]).dict()["exch_rate"])
+        self.assertIsNone(ErpReceiveRequest(lines=[]).dict()["entry_ccy"])
 
 
 class ErpReceiveRouteTests(unittest.TestCase):
@@ -49,6 +52,7 @@ class ErpReceiveRouteTests(unittest.TestCase):
             res = self.client.post("/api/erp-receive/preview", json=BODY)
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(seen["exch_rate"], 32.77)
+        self.assertEqual(seen["entry_ccy"], "NTD")
 
     def test_create_passes_exch_rate_to_service(self):
         seen = {}
@@ -62,6 +66,20 @@ class ErpReceiveRouteTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(seen["exch_rate"], 32.77)
         self.assertIs(seen["confirm"], True)
+        self.assertEqual(seen["entry_ccy"], "NTD")
+
+    def test_old_client_without_entry_ccy_still_accepted(self):
+        seen = {}
+
+        def fake_preview(req):
+            seen.update(req)
+            return {"ok": True}
+
+        body = {k: v for k, v in BODY.items() if k != "entry_ccy"}
+        with patch("app.services.erp_receive.preview_receive", side_effect=fake_preview):
+            res = self.client.post("/api/erp-receive/preview", json=body)
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertIsNone(seen["entry_ccy"])
 
 
 if __name__ == "__main__":

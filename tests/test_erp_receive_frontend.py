@@ -9,9 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "static"
 
 
-class ErpReceiveRateRenderTests(unittest.TestCase):
-    def test_rate_input_repreviews_with_node(self):
-        script = r"""
+# 共用：載入 erp_receive.js 到 vm、最小 DOM、假 apiPost
+HARNESS = r"""
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -37,6 +36,7 @@ function makeDom() {
           c.value = (m[0].match(/\bvalue="([^"]*)"/) || [])[1] ?? '';
           c.disabled = /\sdisabled[\s>]/.test(m[0]);
           c.hidden = /\shidden[\s>]/.test(m[0]);
+          c.checked = /\schecked[\s>]/.test(m[0]);
           els[m[2]] = c;
         }
       } };
@@ -60,6 +60,17 @@ async function setup(respond) {
   return { els, toasts, posts, ctx, run: code => vm.runInContext(code, ctx) };
 }
 const flush = () => new Promise(r => setTimeout(r, 0));
+"""
+
+
+def run_node(body: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["node", "--input-type=module", "-e", HARNESS + body], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8")
+
+
+class ErpReceiveRateRenderTests(unittest.TestCase):
+    def test_rate_input_repreviews_with_node(self):
+        script = r"""
 
 // 線上那份 with JSON 直接 render 不丟例外，換算後單價 / 金額都在畫面上
 {
@@ -145,8 +156,97 @@ for (const how of ['enter', 'change']) {
   assert.ok(t.toasts.some(x => x.msg.includes('發票匯率必須大於 0')));
 }
 """
-        completed = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT,
-                                   capture_output=True, text=True, encoding="utf-8")
+        completed = run_node(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_usd_entry_ccy_choice_with_node(self):
+        # v2026.11.16.5：USD 採購單可選打美金 / 打台幣；切換重新預覽並帶 entry_ccy
+        script = r"""
+// 打美金（foreign、免稅）的預覽：從線上 convert 那份改出來
+const usd = {
+  ...fx.with, mode: 'foreign', currency: 'USD', entry_ccy: 'USD', entry_ccy_default: 'NTD', entry_ccy_choosable: true,
+  tax_type: 1, po_tax_type: 0, tax_label: '免稅（課稅別 1，稅額 0）',
+  lines: fx.with.lines.map(l => ({ ...l, price: 6.6, amount: 19800, tax: 0, ml_price: 216.282, ml_amount: 648846 })),
+  totals: { ...fx.with.totals, sum_amount: 19800, sum_tax: 0, total: 19800, local_amount: 648846, local_tax: 0, local_total: 648846 },
+  warnings: [{ code: 'tax_free', message: '打美金：免稅，進貨單課稅別 1（採購單課稅別 0），稅額 0' }],
+};
+const ntd = { ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true };
+const ntdNoRate = { ...fx.without, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true };
+const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : ntdNoRate);
+
+// USD 單看得到「美金」「台幣」，預設照預覽（課稅別 0 → 台幣）；首次預覽不帶 entry_ccy（用後端預設）
+{
+  const t = await setup(pick);
+  await t.run('handlePreview()');
+  const html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(html.includes('美金') && html.includes('台幣'), '要有美金 / 台幣選項');
+  assert.equal(t.els['erp-receive-ccy-ntd'].checked, true);
+  assert.equal(t.els['erp-receive-ccy-usd'].checked, false);
+  assert.equal(t.posts[0].entry_ccy, null);
+  // 選台幣沒匯率：確認鈕鎖住，按了也不送 create
+  assert.equal(t.els['btn-erp-receive-create'].disabled, true, '台幣沒匯率不能收料');
+  await t.run('handleCreate()');
+  assert.equal(t.posts.length, 1, '沒匯率不能送出');
+  assert.ok(t.toasts.some(x => x.msg.includes('發票匯率')));
+}
+
+// 切到美金：重新預覽並帶 entry_ccy=USD，稅額顯示免稅 / 0；再切回台幣也重新預覽
+{
+  const t = await setup(pick);
+  t.run('_rate = "32.77"; _rateVendor = "P0373";');
+  await t.run('handlePreview()');
+  t.els['erp-receive-ccy-usd'].fire('change');
+  assert.equal(t.els['btn-erp-receive-create'].disabled, true, '切換後重新預覽前鎖住');
+  await flush(); await flush();
+  assert.deepEqual(t.posts.map(b => b.entry_ccy), [null, 'USD']);
+  assert.deepEqual(t.posts.map(b => b.exch_rate), [32.77, 32.77], '匯率照帶');
+  let html = t.els['erp-receive-preview'].innerHTML;
+  assert.equal(t.els['erp-receive-ccy-usd'].checked, true);
+  assert.ok(html.includes('免稅'), '要標明免稅');
+  assert.ok(html.includes('課稅別 1'), '要標明課稅別 1');
+  assert.ok(/稅 0（免稅）/.test(html), '合計稅額 0（免稅）');
+  assert.ok(html.includes('USD 進貨單'));
+  assert.equal(t.els['btn-erp-receive-create'].disabled, false);
+  t.els['erp-receive-ccy-ntd'].fire('change');
+  await flush(); await flush();
+  assert.deepEqual(t.posts.map(b => b.entry_ccy), [null, 'USD', 'NTD']);
+  html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(html.includes('216.282') && html.includes('32,442'), '台幣：換算單價、稅 5%');
+  assert.equal(t.els['erp-receive-ccy-ntd'].checked, true);
+  assert.equal(t.run('buildBody().entry_ccy'), 'NTD');
+}
+
+// 預覽失敗重畫：選擇與匯率都不能被清掉
+{
+  const t = await setup(body => { if (body.entry_ccy === 'USD') throw new Error('逾時'); return pick(body); });
+  t.run('_rate = "32.77"; _rateVendor = "P0373";');
+  await t.run('handlePreview()');
+  t.els['erp-receive-ccy-usd'].fire('change');
+  await flush(); await flush();
+  assert.ok(t.els['erp-receive-preview'].innerHTML.includes('預覽失敗：逾時'));
+  assert.equal(t.els['erp-receive-ccy-usd'].checked, true, '剛選的美金不能被清掉');
+  assert.equal(t.els['erp-receive-rate'].value, '32.77');
+  assert.equal(t.els['btn-erp-receive-create'].disabled, true);
+}
+
+// 換廠商：不沿用上一家的選擇（回到新單預設）
+{
+  const t = await setup(pick);
+  t.run('_entryCcy = "USD"; _entryVendor = "P0373";');
+  assert.equal(t.run('buildBody().entry_ccy'), 'USD');
+  t.run(`_picker.lockedGroup = () => 'P0304';`);
+  assert.equal(t.run('buildBody().entry_ccy'), null);
+}
+
+// 台幣採購單（local）：沒有美金 / 台幣選項
+{
+  const t = await setup(pick);
+  t.run(`renderPreview(${JSON.stringify({ ...fx.with, mode: 'local', currency: 'NTD', po_currency: 'NTD' })})`);
+  const html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(!html.includes('erp-receive-ccy'), '台幣單不出現選項');
+}
+"""
+        completed = run_node(script)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
     def test_module_syntax(self):

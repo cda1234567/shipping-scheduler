@@ -1412,6 +1412,114 @@ class TaxCurrencyTests(ErpCase):
         cust = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "NTD")
         self.assertEqual(cust["CurReceivable"], Decimal(2520 + 6576))
 
+    def test_usd_taxed_po_entry_usd_is_tax_free_like_rm_20261023001(self):
+        # v2026.11.16.5：USD + 課稅別 0（國內廠商）選打美金 → 美金進貨單、免稅、課稅別 1、匯率 = 發票匯率
+        self.usd_setup(0)
+        self.rows("ordBillSub")[0].update(Quantity=Decimal(1010), QtyRemain=Decimal(1010))
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1010}], exch_rate="32.215", entry_ccy="USD")
+        r = er.preview_receive(req)
+        self.assertEqual((r["mode"], r["currency"], r["exch_rate"], r["entry_ccy"], r["entry_ccy_default"]),
+                         ("foreign", "USD", 32.215, "USD", "NTD"))
+        self.assertEqual((r["tax_type"], r["po_tax_type"], r["entry_ccy_choosable"]), (1, 0, True))
+        self.assertIn("免稅", r["tax_label"])
+        self.assertIn("課稅別 1", r["tax_label"])
+        self.assertEqual((r["totals"]["sum_amount"], r["totals"]["sum_tax"], r["totals"]["local_tax"], r["totals"]["local_total"]),
+                         (474.7, 0.0, 0.0, 15292.0))
+        line = r["lines"][0]
+        self.assertEqual((line["price"], line["amount"], line["tax"], line["ml_price"], line["ml_amount"]),
+                         (0.47, 474.7, 0.0, 15.1411, 15292.0))
+        self.assertTrue(any(w["code"] == "tax_free" and "課稅別 1" in w["message"] for w in r["warnings"]))
+        res = er.create_receive(req, "t", "1.2.3.4")
+        n = res["rm_no"]
+        acc = self.acc(n)
+        self.assertEqual((acc["CurrID"], acc["ExchRate"], acc["Total"], acc["Tax"], acc["LocalTotal"], acc["LocalTax"], acc["TaxType"]),
+                         ("USD", Decimal("32.215"), Decimal("474.7"), 0, Decimal(15292), 0, 1))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["SumNum"], stk["TaxType"]), (Decimal("474.7"), Decimal(1010), 1))
+        sub = next(x for x in self.rows("stkBillSub") if x["BillNO"] == n)
+        self.assertEqual(sub["StkMlAmount"], Decimal(15292))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == n)
+        self.assertEqual((rec["Price"], rec["Amount"], rec["TaxAmt"], rec["TaxRate"], rec["MLAmount"], rec["MLTaxAmt"], rec["CostForAcc"]),
+                         (Decimal("0.47"), Decimal("474.7"), 0, Decimal("0.05"), Decimal(15292), 0, Decimal(15292)))
+
+    def test_usd_tax_free_po_entry_ntd_converts_with_5pct(self):
+        # USD + 課稅別 1（國外廠商）選打台幣 → 台幣進貨單、單價 = USD × 匯率、課稅別 0、稅 5%（公式同 RM-20261016002）
+        self._check_entry_ntd("0.05")
+
+    def test_usd_tax_free_po_entry_ntd_zero_tax_rate_still_5pct(self):
+        # 採購單列稅率存 0 時，選打台幣仍照台幣方式 5%
+        self._check_entry_ntd("0")
+
+    def _check_entry_ntd(self, tax_rate):
+        self.usd_setup(1, price="19.3")
+        self.rows("ordBillSub")[0].update(TaxRate=Decimal(tax_rate))
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.45", entry_ccy="NTD")
+        r = er.preview_receive(req)
+        self.assertEqual((r["mode"], r["currency"], r["po_currency"], r["exch_rate"], r["entry_ccy"], r["entry_ccy_default"]),
+                         ("convert", "NTD", "USD", 32.45, "NTD", "USD"))
+        self.assertEqual((r["tax_type"], r["po_tax_type"]), (0, 1))
+        line = r["lines"][0]
+        self.assertEqual((line["src_price"], line["price"], line["amount"], line["tax"], line["tax_rate"]),
+                         (19.3, 626.285, 6263.0, 313.0, 0.05))
+        self.assertEqual((r["totals"]["sum_tax"], r["totals"]["total"]), (313.0, 6576.0))
+        self.assertTrue(any(w["code"] == "tax_by_entry_ccy" for w in r["warnings"]))
+        self.assertFalse(any(w["code"] == "tax_free" for w in r["warnings"]))
+        res = er.create_receive(req, "t", "1.2.3.4")
+        n = res["rm_no"]
+        acc = self.acc(n)
+        self.assertEqual((acc["CurrID"], acc["ExchRate"], acc["Total"], acc["Tax"], acc["LocalTotal"], acc["LocalTax"], acc["TaxType"]),
+                         ("NTD", Decimal(1), Decimal(6263), Decimal(313), Decimal(6263), Decimal(313), 0))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["TaxType"]), (Decimal(6576), 0))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == n)
+        self.assertEqual((rec["Price"], rec["Amount"], rec["TaxAmt"], rec["MLPrice"], rec["MLAmount"]),
+                         (Decimal("626.285"), Decimal(6263), Decimal(313), Decimal("626.285"), Decimal(6263)))
+
+    def test_entry_ccy_omitted_taxed_po_keeps_convert(self):
+        # 沒送 entry_ccy（舊客戶端）：課稅別 0 → convert；送預設值結果完全相同
+        self._check_default(0, "convert", "NTD")
+
+    def test_entry_ccy_omitted_tax_free_po_keeps_foreign(self):
+        self._check_default(1, "foreign", "USD")
+
+    def test_entry_ccy_omitted_tax_type_4_keeps_foreign(self):
+        self._check_default(4, "foreign", "USD")
+
+    def _check_default(self, tax_type, mode, default):
+        self.usd_setup(tax_type, price="19.3")
+        a = er.preview_receive(self.req(exch_rate="32.45"))
+        b = er.preview_receive(self.req(exch_rate="32.45", entry_ccy=default))
+        c = er.preview_receive(self.req(exch_rate="32.45", entry_ccy=""))
+        self.assertEqual((a["mode"], a["tax_type"], a["entry_ccy"], a["entry_ccy_default"]), (mode, tax_type, default, default))
+        for other in (b, c):
+            for k in ("mode", "currency", "exch_rate", "tax_type", "tax_label", "lines", "totals", "warnings"):
+                self.assertEqual(a[k], other[k], k)
+
+    def test_entry_ccy_validation_and_non_usd(self):
+        self.assertEqual(er.normalize_request(self.req(entry_ccy="usd"))["entry_ccy"], "USD")
+        self.assertIsNone(er.normalize_request(self.req(entry_ccy=""))["entry_ccy"])
+        self.assertIsNone(er.normalize_request(self.req())["entry_ccy"])
+        for bad in ("EUR", "美金", "x"):
+            with self.assertRaises(er.ReceiveValidationError) as cm:
+                er.normalize_request(self.req(entry_ccy=bad))
+            self.assertIn("entry_ccy", str(cm.exception))
+        # 台幣採購單送了 entry_ccy：忽略，照 local
+        for ccy in ("USD", "NTD"):
+            r = er.preview_receive(self.req(entry_ccy=ccy))
+            self.assertEqual((r["mode"], r["currency"], r["tax_type"], r["entry_ccy"], r["entry_ccy_choosable"]),
+                             ("local", "NTD", 0, None, False))
+            self.assertEqual(r["totals"]["sum_tax"], 120.0)
+        # 其他外幣（EUR）不開放選擇：照課稅別自動判斷
+        self.set_po(CurrID="EUR", ExchRate=Decimal("35"), TaxType=0)
+        r = er.preview_receive(self.req(exch_rate="35", entry_ccy="USD"))
+        self.assertEqual((r["mode"], r["entry_ccy"], r["entry_ccy_choosable"]), ("convert", None, False))
+
+    def test_entry_ccy_in_fingerprint(self):
+        a = er._fingerprint("CHIComp13", er.normalize_request(self.req(exch_rate="32", entry_ccy="USD")), "")
+        b = er._fingerprint("CHIComp13", er.normalize_request(self.req(exch_rate="32", entry_ccy="NTD")), "")
+        c = er._fingerprint("CHIComp13", er.normalize_request(self.req(exch_rate="32")), "")
+        self.assertEqual(len({a, b, c}), 3)
+
     def test_rate_in_fingerprint_and_validation(self):
         with self.assertRaises(er.ReceiveValidationError):
             er.normalize_request(self.req(exch_rate="0"))

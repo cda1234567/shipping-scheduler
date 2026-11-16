@@ -5422,6 +5422,7 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-receive-preview-date { font-weight: 700; }
 .erp-receive-cost-field { display: inline-flex; align-items: center; gap: 4px; font-size: 14px; font-weight: 600; }
 .erp-receive-cost-off { color: #b91c1c; font-weight: 700; }
+.erp-receive-ccy label { margin-right: 6px; white-space: nowrap; cursor: pointer; }
 .pc-flag-mismatch { color: #dc2626; }
 
 /* 採購單寄信狀態徽章（automail） */

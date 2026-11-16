@@ -422,11 +422,15 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
         exch_rate = ep._to_decimal(raw.get("exch_rate"), "匯率")
         if exch_rate <= 0:
             raise ReceiveValidationError("匯率必須大於 0")
+    entry_ccy = ep._text(raw.get("entry_ccy")).upper() or None
+    if entry_ccy is not None and entry_ccy not in ENTRY_CURRENCIES:
+        raise ReceiveValidationError(f"進貨單幣別（entry_ccy）只能是 USD（打美金）或 NTD（打台幣），收到：{raw.get('entry_ccy')}")
     return {
         "target": ep._text(raw.get("target")),
         "rm_date_raw": raw.get("rm_date"),
         "lines": lines,
         "exch_rate": exch_rate,
+        "entry_ccy": entry_ccy,
         "confirm": raw.get("confirm") is True,
         "client_token": ep._text(raw.get("client_token"))[:80],
         "update_cost": update_cost_default() if raw.get("update_cost") is None else raw.get("update_cost") is True,
@@ -542,10 +546,18 @@ def load_bill_params(wcur, target: str) -> Dict[str, Any]:
 #     例：RM-20261023001 0.47 × 1010 = 474.7 USD、匯率 32.215 → MLPrice 15.141 / MLAmount 15,292 / LocalTotal 15,292。
 #   課稅別 0（國內廠商用美金報價，例 P0304 / P0373 / P0289）→ 正航實務一律開「台幣」進貨單（102 列，匯率 1、稅 5%）：
 #     單價 = round(USD 單價 × 當日匯率, 4)、金額 = round(數量 × 單價, 0)。例：RM-20261016002 P0304 19.3 USD × 32.45 = 626.285。
+# v2026.11.16.5：USD 採購單可選「打美金」（entry_ccy=USD → foreign）或「打台幣」（entry_ccy=NTD → convert）；
+#   沒選 = 照上面依課稅別自動判斷。選台幣：課稅別 0、稅 5%（即使採購單本來免稅）；
+#   選美金：稅額 0，課稅別沿用採購單 1～4，採購單是 0 時改 1（正航手開美金免稅慣例，例 RM-20261023001 W0214 課稅別 1）。
+#   只開放 USD；其他外幣（EUR…）仍自動判斷，台幣採購單不受影響。
 # 匯率：預設 comCurrencySys.BuyInRate（目前 USD 30.385，= 採購單匯率）；預覽畫面可改成當日匯率（Tracy 的單都手 key 當日匯率）。
 LOCAL_CURRENCY = "NTD"
 ML_PRICE_DIGITS = 4  # comProdRec.MLPrice：2023–2026 USD 列 round 4 位 1,253/1,281（3 位 1,174）
 TAX_TYPE_LABELS = {0: "應稅（外加 5%）"}
+ENTRY_CURRENCIES = ("USD", "NTD")  # entry_ccy：USD = 打美金（免稅），NTD = 打台幣（匯率換單價、稅 5%）
+CHOOSABLE_CURRENCY = "USD"  # 只有 USD 採購單可選
+FOREIGN_TAX_FREE_TYPE = 1  # 應稅採購單選美金時進貨單課稅別（Tracy / W0214 手開 130 張都是 1）
+CONVERT_TAX_RATE = Decimal("0.05")
 
 
 def is_local_currency(curr: Any) -> bool:
@@ -561,15 +573,41 @@ def load_currency(wcur, curr: str) -> Optional[Dict[str, Any]]:
                     (curr,))
 
 
-def receive_mode(curr: Any, tax_type: int) -> str:
-    """local = 台幣採購單；foreign = 外幣且免稅 → 外幣進貨單；convert = 外幣但應稅（國內廠商）→ 轉台幣進貨單。"""
+def can_choose_entry_ccy(curr: Any) -> bool:
+    return ep._text(curr).upper() == CHOOSABLE_CURRENCY
+
+
+def default_entry_ccy(curr: Any, tax_type: int) -> Optional[str]:
+    """USD 採購單的預設：課稅別 0 → 打台幣（NTD），≠ 0 → 打美金（USD）；不能選的幣別回 None。"""
+    if not can_choose_entry_ccy(curr):
+        return None
+    return LOCAL_CURRENCY if int(tax_type) == 0 else CHOOSABLE_CURRENCY
+
+
+def receive_mode(curr: Any, tax_type: int, entry_ccy: Optional[str] = None) -> str:
+    """local = 台幣採購單；foreign = 外幣且免稅 → 外幣進貨單；convert = 外幣但應稅（國內廠商）→ 轉台幣進貨單。
+
+    entry_ccy（只對 USD 採購單有效）：USD → foreign、NTD → convert；空 = 依課稅別自動判斷。
+    """
     if is_local_currency(curr):
         return "local"
+    if entry_ccy and can_choose_entry_ccy(curr):
+        return "foreign" if entry_ccy == CHOOSABLE_CURRENCY else "convert"
     return "convert" if int(tax_type) == 0 else "foreign"
 
 
+def bill_tax_type(mode: str, po_tax_type: int) -> int:
+    """進貨單課稅別：台幣採購單照採購單；打台幣 = 0（應稅 5%）；打美金沿用採購單 1～4，採購單是 0 時改 1（免稅）。"""
+    po_tax_type = int(po_tax_type or 0)
+    if mode == "convert":
+        return 0
+    if mode == "foreign" and po_tax_type == 0:
+        return FOREIGN_TAX_FREE_TYPE
+    return po_tax_type
+
+
 def bill_currency(ctx: Dict[str, Any]) -> str:
-    return ctx["curr"] if receive_mode(ctx["curr"], ctx.get("tax_type", 0)) == "foreign" else (
+    return ctx["curr"] if receive_mode(ctx["curr"], ctx.get("tax_type", 0), ctx.get("entry_ccy")) == "foreign" else (
         ctx["curr"] if is_local_currency(ctx["curr"]) else LOCAL_CURRENCY)
 
 
@@ -636,7 +674,7 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         "vendor_name": ep._text(ep._get(cust, "ShortName")) or ep._text(ep._get(cust, "FullName")),
         "trade": trade, "ware": ware, "products": products, "ware_amounts": ware_amounts,
         "curr": po_curr, "tax_type": tax_types.pop(), "currency_row": currency,
-        "req_exch_rate": req.get("exch_rate"), "hint": hint,
+        "req_exch_rate": req.get("exch_rate"), "entry_ccy": req.get("entry_ccy"), "hint": hint,
         "cost_params": cost_params, "all_qty": all_qty, "bill_params": bill_params,
     }
 
@@ -756,8 +794,12 @@ def build_plan(
     first = picked[0]["main"]
     vendor_id, ware, po_curr = ctx["vendor_id"], ctx["ware"], ctx["curr"]
     im_no, qm_no, rm_no = numbers["im_no"], numbers["qm_no"], numbers["rm_no"]
-    tax_type = int(ctx.get("tax_type", 0) or 0)
-    mode = receive_mode(po_curr, tax_type)
+    po_tax_type = int(ctx.get("tax_type", 0) or 0)
+    choosable = can_choose_entry_ccy(po_curr)
+    entry_default = default_entry_ccy(po_curr, po_tax_type)
+    mode = receive_mode(po_curr, po_tax_type, ctx.get("entry_ccy"))
+    tax_type = bill_tax_type(mode, po_tax_type)  # 進貨單課稅別（打美金 / 打台幣時可能與採購單不同）
+    entry_ccy = ({"foreign": CHOOSABLE_CURRENCY, "convert": LOCAL_CURRENCY}.get(mode) if choosable else None)
     curr = bill_currency(ctx)
     po_exch = _dec(ep._get(first, "ExchRate", 1)) or Decimal(1)
     rate_source = ""
@@ -794,6 +836,8 @@ def build_plan(
         src_price = p["price"] if p["price"] is not None else po_price  # 採購單幣別
         discount = calc_discount(src_price, po_price, ep._get(sub, "Discount", 1))
         tax_rate = _dec(ep._get(sub, "TaxRate", 0))
+        if mode == "convert" and po_tax_type != 0 and tax_rate <= 0:
+            tax_rate = CONVERT_TAX_RATE  # 免稅採購單選打台幣：稅照台幣方式 5%
         if mode == "convert":
             price = ep._round(src_price * rate, ML_PRICE_DIGITS)
         else:
@@ -843,7 +887,12 @@ def build_plan(
     if rate_missing:
         warnings.append({"code": "rate_required", "needs_confirm": False,
                          "message": f"採購單為 {po_curr}：請輸入發票上的匯率（發票匯率）後才能寫入；目前金額以匯率 0 試算"})
-    if tax_type != 0:
+    if tax_type != po_tax_type:
+        what = "打美金：免稅" if mode == "foreign" else "打台幣：稅照台幣方式算（外加 5%）"
+        warnings.append({"code": "tax_free" if tax_type != 0 else "tax_by_entry_ccy", "needs_confirm": False,
+                         "message": f"{what}，進貨單課稅別 {tax_type}（採購單課稅別 {po_tax_type}），"
+                                    + ("稅額 0" if tax_type != 0 else "稅 5%")})
+    elif tax_type != 0:
         warnings.append({"code": "tax_free", "needs_confirm": False,
                          "message": f"採購單課稅別 {tax_type}：{tax_type_label(tax_type)}，進貨單照採購單不加營業稅"})
     if mode == "foreign":
@@ -851,8 +900,9 @@ def build_plan(
                          "message": f"{curr} 進貨單：單價 / 金額為 {curr}，匯率 {rate:g}（{rate_text}），台幣金額 = 金額 × 匯率"})
     elif mode == "convert":
         warnings.append({"code": "currency_converted", "needs_confirm": False,
-                         "message": f"採購單為 {po_curr}、課稅別 0（應稅）：照正航慣例開台幣進貨單，"
-                                    f"單價 = {po_curr} 單價 × 匯率 {rate:g}（{rate_text}，4 位小數），稅 5%"})
+                         "message": (f"採購單為 {po_curr}、課稅別 0（應稅）：照正航慣例開台幣進貨單，"
+                                     if po_tax_type == 0 else f"採購單為 {po_curr}、選打台幣：開台幣進貨單，")
+                                    + f"單價 = {po_curr} 單價 × 匯率 {rate:g}（{rate_text}，4 位小數），稅 5%"})
 
     sum_qty = sum((l["qty"] for l in lines), Decimal(0))
     sum_amount = sum((l["amount"] for l in lines), Decimal(0))
@@ -1023,7 +1073,9 @@ def build_plan(
         "po_currency": po_curr, "mode": mode, "exch_rate": exch if mode == "foreign" else rate,
         "rate_source": rate_source, "rate_required": rate_missing,
         "rate_hint": None if mode == "local" else {"po": _jsonable(po_exch), "currency": _jsonable(sys_rate) if sys_rate > 0 else None},
-        "tax_type": tax_type, "tax_label": tax_type_label(tax_type),
+        "tax_type": tax_type,
+        "tax_label": f"免稅（課稅別 {tax_type}，稅額 0）" if mode == "foreign" else tax_type_label(tax_type), "po_tax_type": po_tax_type,
+        "entry_ccy": entry_ccy, "entry_ccy_default": entry_default, "entry_ccy_choosable": choosable,
         "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
         "cost_params": cost_params, "bill_params": ctx["bill_params"], "update_cost": update_cost,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
@@ -1149,6 +1201,8 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
         "po_currency": plan.get("po_currency"), "mode": plan.get("mode"), "exch_rate": _jsonable(plan.get("exch_rate")),
         "rate_source": plan.get("rate_source"), "rate_required": bool(plan.get("rate_required")),
         "rate_hint": plan.get("rate_hint"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
+        "po_tax_type": plan.get("po_tax_type"), "entry_ccy": plan.get("entry_ccy"),
+        "entry_ccy_default": plan.get("entry_ccy_default"), "entry_ccy_choosable": bool(plan.get("entry_ccy_choosable")),
         "lines": _jsonable([
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
                                "price", "src_price", "po_price", "tax_rate", "amount", "tax", "ml_price", "ml_amount")}
@@ -1205,6 +1259,8 @@ def _fingerprint(target: str, req: Dict[str, Any], rm_date_raw: Any) -> str:
     parts: List[Any] = [target, str(rm_date_raw or ""), lines, bool(req.get("update_cost", True))]
     if req.get("exch_rate") is not None:
         parts.append(str(req["exch_rate"]))
+    if req.get("entry_ccy"):
+        parts.append("entry_ccy=" + req["entry_ccy"])
     raw = json.dumps(parts, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
