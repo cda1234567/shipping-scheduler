@@ -11,7 +11,9 @@ let _luckyMounted = false;
 let _suppressNextHook = false;
 let _suppressProgrammaticUpdates = 0;
 let _suppressHeaderFormatHooksUntil = 0;
-let _lastLoadedAt = "";
+// 上次載入的主檔版本：fileVersion 依主檔檔案 mtime/size（後端 mtime_ns/file_size），
+// 舊後端沒這欄才退回比對 loaded_at；null = 不確定，下次切回分頁一定重抓
+let _lastFreshness = null;
 let _partLocations = {};
 let _batchLocations = {};
 let _keyboardScrollBound = false;
@@ -73,6 +75,7 @@ const HEADER_WRAP_ROW_HEIGHT = 80;
 const HEADER_WRAP_VALUE = "2";
 const HEADER_CLIP_VALUE = "0";
 const NEGATIVE_FONT_COLOR = "#FF0000";
+const NORMAL_FONT_COLOR = "#000000";
 const HEADER_DISPLAY_BREAK_MIN_LENGTH = 9;
 let _wrapEnabled = (() => {
   try { return localStorage.getItem(LS_WRAP_KEY) !== "0"; } catch (_) { return true; }
@@ -162,11 +165,11 @@ export function initMainPreviewV2() {
 
 export async function onMainPreviewV2TabActivated() {
   // 已 mount 過 → 快速 check 主檔是否變動，沒變就跳過重 mount
-  if (_luckyMounted && _lastLoadedAt) {
+  if (_luckyMounted && _lastFreshness) {
     try {
-      // meta=1 只回 filename / loaded_at，不再為了比對 loaded_at 重抓整張表
+      // meta=1 只回 filename / loaded_at / mtime_ns / file_size，不重抓整張表
       const payload = await apiJson("/api/main-file/preview?meta=1");
-      if ((payload?.loaded_at || "") === _lastLoadedAt) return;
+      if (isSameMainFile(_lastFreshness, payload)) return;
     } catch (_) {}
   }
   await refreshMainPreviewV2({ eager: true });
@@ -210,7 +213,7 @@ export async function refreshMainPreviewV2({ force = false, sheet = "", eager = 
     renderSheetSelect();
     mountLuckysheet(payload);
     renderMeta(payload.sheet);
-    _lastLoadedAt = payload.loaded_at || "";
+    _lastFreshness = freshnessOf(payload);
   } catch (error) {
     if (token !== _loadToken) return;
     renderStatus(error.message || "讀取主檔失敗");
@@ -340,6 +343,8 @@ function mountLuckysheet(payload) {
         } else if (newValue !== null && newValue !== undefined) {
           value = String(newValue);
         }
+        // 字色只依當下值：改成 >=0 立刻變回黑字，改成 <0 立刻變紅字
+        syncEditedCellFontColor(r, c, newValue);
         setSaveStatus(`R${row}C${col} 儲存中，正在重算後續結餘`, "working");
         apiPatch("/api/main-file/cell", {
           sheet: _activeSheet,
@@ -348,14 +353,18 @@ function mountLuckysheet(payload) {
           value,
         }).then(async json => {
           if (json?.ok) {
+            // 主檔已存檔，mtime 已變：有帶新版本就記下，沒帶就清掉讓下次切回分頁重抓
+            updateFreshnessAfterSave(json);
             const affectedCells = Array.isArray(json.affected_cells) ? json.affected_cells : [];
             if (affectedCells.length > 0 && window.luckysheet?.setCellValue) {
               _suppressProgrammaticUpdates += affectedCells.length;
               for (const cell of affectedCells) {
+                // hook 會被 _suppressProgrammaticUpdates 擋掉，字色必須在這裡一起設（黑字也明確設）
+                const nextValue = cell.value ?? "";
                 window.luckysheet.setCellValue(
                   Number(cell.row || 1) - 1,
                   Number(cell.col || 1) - 1,
-                  cell.value ?? "",
+                  { v: nextValue, fc: fontColorForValue(nextValue) },
                 );
               }
             }
@@ -650,6 +659,66 @@ function setLuckysheetScrollLeft(ls, stage, scrollLeft) {
   }
 }
 
+function parseDisplayNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  // 與畫面顯示一致：允許千分位逗號，其餘非數字文字一律不算數字
+  const text = value.trim().replace(/,/g, "");
+  if (!/^[+-]?(\d+(\.\d*)?|\.\d+)(e[+-]?\d+)?$/i.test(text)) return null;
+  const num = Number(text);
+  return Number.isFinite(num) ? num : null;
+}
+
+function isNonNegativeNumber(value) {
+  const num = parseDisplayNumber(value);
+  return num !== null && num >= 0;
+}
+
+// 紅字只看當下值 < 0；0、正數、非數字一律黑字
+function fontColorForValue(value) {
+  const num = parseDisplayNumber(value);
+  return num !== null && num < 0 ? NEGATIVE_FONT_COLOR : NORMAL_FONT_COLOR;
+}
+
+function syncEditedCellFontColor(r, c, newValue) {
+  const ls = window.luckysheet;
+  if (!ls?.setCellFormat) return;
+  const isObject = newValue && typeof newValue === "object";
+  const current = isObject ? newValue.v ?? newValue.m ?? "" : newValue ?? "";
+  const wanted = fontColorForValue(current);
+  const existing = isObject ? String(newValue.fc || "").toUpperCase() : "";
+  // 原本沒字色又是黑字就不用動；其餘（含舊紅字要變黑）明確設定
+  if (existing === wanted || (!existing && wanted === NORMAL_FONT_COLOR)) return;
+  try {
+    // setCellFormat 不會觸發 cellUpdated hook，只改 fc，不動底色/粗體
+    ls.setCellFormat(r, c, "fc", wanted);
+  } catch (err) {
+    console.error("[main_preview_v2] sync font color failed", err);
+  }
+}
+
+function freshnessOf(payload) {
+  const hasVersion = payload?.mtime_ns !== undefined && payload?.mtime_ns !== null;
+  return {
+    fileVersion: hasVersion ? `${payload.mtime_ns}:${payload.file_size ?? ""}` : "",
+    loadedAt: payload?.loaded_at || "",
+  };
+}
+
+function isSameMainFile(previous, payload) {
+  if (!previous) return false;
+  const current = freshnessOf(payload);
+  // 有主檔檔案版本就只比它；舊後端沒這欄才退回比 loaded_at
+  if (current.fileVersion) return current.fileVersion === previous.fileVersion;
+  return current.loadedAt === previous.loadedAt;
+}
+
+function updateFreshnessAfterSave(json) {
+  if (!_lastFreshness) return;
+  const saved = freshnessOf({ ...json, loaded_at: _lastFreshness.loadedAt });
+  _lastFreshness = saved.fileVersion ? saved : null;
+}
+
 function buildCelldata(sheet) {
   const rows = sheet?.rows || [];
   const result = [];
@@ -667,8 +736,8 @@ function buildCelldata(sheet) {
       if (rowIndex === 0) {
         cellValue.tb = _wrapEnabled ? HEADER_WRAP_VALUE : HEADER_CLIP_VALUE;
       }
-      // 負數紅字只改字色，不動背景/粗體等其他樣式
-      if (cell?.negative) cellValue.fc = NEGATIVE_FONT_COLOR;
+      // 負數紅字只改字色，不動背景/粗體等其他樣式；後端 negative 標記若與當下值不符（值 >=0）不上紅字
+      if (cell?.negative && !isNonNegativeNumber(rawValue)) cellValue.fc = NEGATIVE_FONT_COLOR;
       result.push({
         r: rowIndex,
         c: colIndex,

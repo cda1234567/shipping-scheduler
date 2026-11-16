@@ -375,6 +375,15 @@ async def download_main_file(request: Request):
     )
 
 
+def _main_file_version(main_path: str) -> dict:
+    """主檔檔案的 mtime / size，給前端判斷主檔有沒有被改過。"""
+    try:
+        stat = Path(main_path).stat()
+        return {"mtime_ns": stat.st_mtime_ns, "file_size": stat.st_size}
+    except OSError:
+        return {"mtime_ns": 0, "file_size": 0}
+
+
 @router.get("/main-file/preview")
 async def get_main_preview(
     request: Request,
@@ -386,19 +395,19 @@ async def get_main_preview(
     if not main_path or not Path(main_path).exists():
         raise HTTPException(404, "找不到主檔")
 
+    # loaded_at 只代表上傳／載入時間；mtime_ns / file_size 跟著主檔檔案每次存檔變動
+    file_version = _main_file_version(main_path)
     extra = {
         "filename": db.get_setting("main_filename") or Path(main_path).name,
         "loaded_at": db.get_setting("main_loaded_at"),
+        **file_version,
     }
-    # meta=1：前端切回分頁時只確認主檔是否換過，不傳整張表
+    # meta=1：前端切回分頁時只確認主檔檔案是否變動，不傳整張表
     if meta:
         return JSONResponse(content=extra, headers={"Cache-Control": "no-cache"})
 
     # ETag based on file mtime + sheet → 檔案沒變時回 304，瀏覽器跳過整個 download
-    try:
-        mtime_ns = Path(main_path).stat().st_mtime_ns
-    except OSError:
-        mtime_ns = 0
+    mtime_ns = file_version["mtime_ns"]
     etag_raw = f"{main_path}|{mtime_ns}|{sheet or ''}|{db.list_archived_orders()}|{int(compact)}"
     etag = 'W/"' + hashlib.md5(etag_raw.encode("utf-8")).hexdigest() + '"'
 
@@ -765,4 +774,5 @@ async def edit_main_cell(req: EditCellRequest):
         "supplement_sync_reason": supplement_sync.get("supplement_sync_reason"),
         "batch_context": supplement_sync.get("batch_context"),
         "schedule_refresh_required": schedule_refresh_required,
+        **_main_file_version(main_path),
     }

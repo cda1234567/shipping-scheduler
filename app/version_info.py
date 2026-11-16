@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.16.3"
+APP_VERSION = "v2026.11.16.4"
 APP_RELEASED_AT = "2026-11-16"
-APP_HEADLINE = "出貨單改由 t357 入口，本系統出貨單 API 保留"
+APP_HEADLINE = "主檔預覽紅字改依當下值，補正後變回黑字"
 APP_CHANGELOG = [
+    {"title": "v2026.11.16.4：主檔預覽補正後紅字改回黑字", "items": [
+        "主檔預覽紅字只看格子當下的值：小於 0 紅字，0、正數與文字一律黑字（數字可含千分位逗號）。之前負數補到正數後仍留紅字，現在會變回黑字。",
+        "預覽裡自己改格子，改完立刻依新值換字色；後端重算的結餘格（affected_cells）更新數字時一併設定字色，正數／0 明確設回黑字。底色、粗體等其他樣式不動。",
+        "切回主檔預覽分頁改看主檔檔案有沒有變動（/api/main-file/preview 新增 mtime_ns、file_size，meta=1 與完整／compact 預覽都有），發料、盤點、對帳、改格子後切回來會重抓；loaded_at 仍是上傳／載入時間，舊後端沒這兩欄才退回比 loaded_at。改格子存檔回應也帶 mtime_ns／file_size，前端直接更新，不會誤判。",
+        "Excel 主檔維持只用條件式格式「儲存格值 < 0 → 紅字」，不在任何儲存格寫死紅字，Excel 裡值補正後自動變黑。",
+    ]},
     {"title": "v2026.11.16.3：出貨單改由 t357 入口，API 保留", "items": [
         "倉庫分組拿掉「出貨單」分頁，出貨單改從 t357 操作。",
         "後端 /api/shipnote/config、search、export 全部保留不變（免登入、server_save 仍只在 server_save=1 時才存），給 t357 代理呼叫；-TAB 客供料維持排除。",
