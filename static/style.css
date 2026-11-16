@@ -5588,6 +5588,13 @@ body.desktop-dark .transfer-warning { color: #fbbf24; }
   min-width: 200px;
   white-space: normal;
 }
+.shipnote-table .shipnote-name-input {
+  width: 100%;
+  min-width: 240px;
+}
+.shipnote-table .shipnote-hs {
+  min-width: 120px;
+}
 .shipnote-table .shipnote-unchecked td {
   color: #94a3b8;
 }

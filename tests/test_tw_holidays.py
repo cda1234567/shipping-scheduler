@@ -222,11 +222,14 @@ class DueDatePathTests(HolidayBase):
             self.assertEqual((r["date"], r["shifted"]), ("2026-11-13", False))
             r = client.get("/api/holidays/default-due?days=29").json()  # 11/28（週六）→ 11/27
             self.assertEqual((r["date"], r["original"], r["reason"]), ("2026-11-27", "2026-11-28", "遇假日提前至 11/27"))
-        shifted = client.get("/api/holidays/shift?date=2026-12-26").json()
-        self.assertTrue(shifted["shifted"])
-        self.assertEqual(client.get("/api/holidays/shift?date=nope").status_code, 400)
-        status = client.get("/api/holidays/status").json()
-        self.assertIn("years", status)
+            # shift / status 也用同一個假今天：真實今天過了 12/26 後，「不早於今天」會讓結果變成 clamp
+            shifted = client.get("/api/holidays/shift?date=2026-12-26").json()  # 週六，12/25 行憲紀念日 → 12/24
+            self.assertTrue(shifted["shifted"])
+            self.assertEqual((shifted["date"], shifted["original"]), ("2026-12-24", "2026-12-26"))
+            self.assertEqual(shifted["reason_code"], "holiday")
+            self.assertEqual(client.get("/api/holidays/shift?date=nope").status_code, 400)
+            status = client.get("/api/holidays/status").json()
+            self.assertIn("years", status)
 
 
 if __name__ == "__main__":

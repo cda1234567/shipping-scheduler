@@ -1,4 +1,4 @@
-"""出貨單（v2026.11.16.1）：從正航 S/C 或 Invoice 帶品項，套 OPENTEXT 出貨單模板匯出 xlsx。
+"""出貨單（v2026.11.16.1；v2026.11.16.2 HS 歷史對照）：從正航 S/C 或 Invoice 帶品項，套 OPENTEXT 出貨單模板匯出 xlsx。
 
 正航只讀（erp_stock._connect 唯讀連線，資料庫必須是 CHIComp03），只 SELECT：
 - S/C：TraBillMain（Flag=2）JOIN TraBillSub；客戶 PO 在 TraBillMain.Ref（CustBillNo 是空的）。
@@ -8,8 +8,10 @@
 - 製令 prdMKOrdMain.CustBill 的數量是製令量，不拿來帶品項。
 - -TAB 客供料（料號結尾 -TAB，不分大小寫）一律排除。
 
-品名：淨重主檔有（以料號對到，沿用 sea_freight._find_spec）用主檔名稱，沒有用正航 Description。
-HS code 沿用 sea_freight._infer_harmonized_code，回傳空字串就留空。
+品名：淨重主檔有（以料號對到，沿用 sea_freight._find_spec）用主檔名稱，沒有用正航 Description；畫面上可改，匯出用畫面上的值。
+HS code（v2026.11.16.2）只用歷史出貨單對照表 app/resources/shipnote_hs_lookup.json：
+先以品名（strip、連續空白收成一格）查唯一對照，再以料號（不分大小寫）查唯一對照；
+都沒有或在衝突清單就留空，不猜、不多數決。畫面上每列可改，匯出用畫面上的值。
 
 匯出直接改模板的 sheet XML（不經 openpyxl 重存），欄寬、列高、合併、框線、字型、
 列印設定與嘜頭上的 OPENTEXT 菱形繪圖原樣保留。
@@ -17,10 +19,13 @@ HS code 沿用 sea_freight._infer_harmonized_code，回傳空字串就留空。
 from __future__ import annotations
 
 import io
+import json
 import math
 import re
 import zipfile
 from datetime import date, datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from xml.sax.saxutils import escape
 
@@ -28,13 +33,14 @@ from ..config import BASE_DIR
 from . import erp_stock
 from .erp_stock import ErpError, ErpUnavailable
 from .local_time import local_now
-from .sea_freight import PACKING_SPEC_TEMPLATE, _extract_item_no, _find_spec, _infer_harmonized_code, _load_packing_specs
+from .sea_freight import PACKING_SPEC_TEMPLATE, _extract_item_no, _find_spec, _load_packing_specs
 
 ERP_DATABASE = "CHIComp03"
 CUSTOMER_SUPPLIED_SUFFIX = "-TAB"
 MAX_KEYWORDS = 30
 
 TEMPLATE_DIR = BASE_DIR / "templates"
+HS_LOOKUP_PATH = Path(__file__).resolve().parents[1] / "resources" / "shipnote_hs_lookup.json"
 # 類型 → (模板檔、聯數、標題、檔名字尾、PO 前綴)
 SHIPNOTE_TYPES: Dict[str, Dict[str, Any]] = {
     "general": {"label": "一般", "template": "OPENTEXT 261113出貨單.xlsx", "sections": 3, "suffix": "出貨單", "po_prefix": "PO:"},
@@ -222,6 +228,36 @@ def template_packing_specs(path=PACKING_SPEC_TEMPLATE) -> List[dict]:
     return specs
 
 
+def _norm_name(value: Any) -> str:
+    return re.sub(r"\s+", " ", _text(value))
+
+
+@lru_cache(maxsize=1)
+def hs_lookup() -> Dict[str, Any]:
+    """歷史出貨單 HS 對照：唯一對照（品名、料號）與衝突 key。"""
+    data = json.loads(HS_LOOKUP_PATH.read_text(encoding="utf-8"))
+    return {
+        "names": {_norm_name(k): _text(v) for k, v in (data.get("unique_norm_name_to_hs") or {}).items()},
+        "items": {_text(k).upper(): _text(v) for k, v in (data.get("unique_item_to_hs") or {}).items()},
+        "name_conflicts": {_norm_name(k) for k in (data.get("name_conflicts") or {})},
+        "item_conflicts": {_text(k).upper() for k in (data.get("item_conflicts") or {})},
+    }
+
+
+def lookup_harmonized_code(name: Any, item_no: Any) -> str:
+    """先品名、再料號；沒對到或在衝突清單就回空字串。"""
+    table = hs_lookup()
+    key = _norm_name(name)
+    if key and key in table["name_conflicts"]:
+        return ""
+    if key and key in table["names"]:
+        return table["names"][key]
+    item = _text(item_no).upper()
+    if item and item not in table["item_conflicts"]:
+        return table["items"].get(item, "")
+    return ""
+
+
 def get_packing_specs() -> List[dict]:
     """淨重主檔：系統內的包裝主檔（海運出貨畫面可改）優先，其次 templates 的淨重主檔。"""
     from .. import database as db
@@ -263,7 +299,7 @@ def apply_packing_spec(item: Dict[str, Any], specs: List[dict]) -> Dict[str, Any
     for key in ("per_box_qty", "net_weight", "gross_weight", "volume"):
         value = _num((spec or {}).get(key))
         out[key] = value if spec and value else None  # 主檔沒有就空白讓人填
-    out["harmonized_code"] = _infer_harmonized_code(out.get("item_no") or "", out.get("erp_description") or "")
+    out["harmonized_code"] = lookup_harmonized_code(out["name"], out.get("item_no") or "")
     return out
 
 

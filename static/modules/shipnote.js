@@ -1,4 +1,4 @@
-// 出貨單：正航 S/C / Invoice / 客戶 PO 帶品項，填箱號箱數後匯出 OPENTEXT 出貨單 xlsx
+// 出貨單：正航 S/C / Invoice / 客戶 PO 帶品項，品名、HS code、箱號箱數可改，匯出 OPENTEXT 出貨單 xlsx
 import { apiPost, esc, showToast } from "./api.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 
@@ -9,7 +9,7 @@ const BOX_FIELDS = [
   "carton_no", "box_count", "per_box_qty", "net_weight", "gross_weight", "volume",
   "tail_carton_no", "tail_qty", "tail_net_weight", "tail_gross_weight", "tail_volume",
 ];
-const TEXT_FIELDS = new Set(["carton_no", "tail_carton_no"]);
+const TEXT_FIELDS = new Set(["name", "harmonized_code", "carton_no", "tail_carton_no"]);
 
 function _todayIso() {
   const d = new Date();
@@ -101,7 +101,7 @@ export async function searchItems() {
     const data = await apiPost("/api/shipnote/search", { keywords });
     _items = (data.items || []).map(item => {
       const row = { ...item, checked: true };
-      BOX_FIELDS.forEach(key => { if (row[key] == null) row[key] = ""; });
+      ["name", "harmonized_code", ...BOX_FIELDS].forEach(key => { if (row[key] == null) row[key] = ""; });
       _fillBoxes(row);
       return row;
     });
@@ -131,7 +131,7 @@ function _renderItems() {
   const body = document.getElementById("shipnote-body");
   if (!body) return;
   if (!_items.length) {
-    body.innerHTML = '<tr><td colspan="20" class="shipnote-empty">查無品項</td></tr>';
+    body.innerHTML = '<tr><td colspan="21" class="shipnote-empty">查無品項</td></tr>';
     return;
   }
   body.innerHTML = _items.map((item, index) => `
@@ -141,7 +141,8 @@ function _renderItems() {
       <td title="${esc(item.source)}${item.source === "Invoice" && item.sc_no ? `（S/C ${esc(item.sc_no)}）` : ""}">${esc(item.bill_no)}</td>
       <td>${esc(item.row_no)}</td>
       <td>${esc(item.item_no)}</td>
-      <td class="shipnote-name" title="${esc(item.erp_description || "")}">${esc(item.name || "")}</td>
+      <td class="shipnote-name" title="正航品名：${esc(item.erp_description || "")}">${_input(index, "name", item.name, "shipnote-name-input")}</td>
+      <td>${_input(index, "harmonized_code", item.harmonized_code, "shipnote-hs")}</td>
       <td>${_input(index, "qty", item.qty, "shipnote-qty")}</td>
       <td class="shipnote-num">${esc(item.price)}</td>
       <td class="shipnote-num" data-amount="${index}">${_money(_num(item.qty) * _num(item.price))}</td>
@@ -202,9 +203,9 @@ export async function exportShipnote() {
       const row = {
         cust_po: item.cust_po,
         item_no: item.item_no,
-        name: item.name,
+        name: String(item.name ?? "").trim(),
         erp_description: item.erp_description,
-        harmonized_code: item.harmonized_code,
+        harmonized_code: String(item.harmonized_code ?? "").trim(),
         qty: _num(item.qty),
         price: _num(item.price),
       };

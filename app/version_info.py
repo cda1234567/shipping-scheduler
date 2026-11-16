@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.16.1"
+APP_VERSION = "v2026.11.16.2"
 APP_RELEASED_AT = "2026-11-16"
-APP_HEADLINE = "新增出貨單分頁（正航 S/C／Invoice／客戶 PO 帶品項，匯出 OPENTEXT 出貨單）"
+APP_HEADLINE = "出貨單 HS code 改用歷史對照、品名與 HS 可改；CI 測試修正"
 APP_CHANGELOG = [
+    {"title": "v2026.11.16.2：出貨單 HS 對照與 CI 修正", "items": [
+        "出貨單 HS code 預設只用歷史出貨單對照表（app/resources/shipnote_hs_lookup.json）：先以品名（去頭尾空白、連續空白收成一格）查唯一對照，再以料號（不分大小寫）查唯一對照；都沒有或在衝突清單就留空，不再用海運出貨的推測規則。PCB-A1080（T3IU ADAPTER PCB-A1080）預設 8471.90.0000。",
+        "出貨單每列的品名與 HS code 改成輸入框可直接修改，匯出用畫面上的值；品名預設仍是淨重主檔優先，沒有才用正航品名。-TAB 客供料維持排除。",
+        "測試：出貨單測試改為標準 unittest（不需要 pytest）；假日 API 測試的 shift／status 也凍結今天，不再受實際日期影響。",
+    ]},
     {"title": "v2026.11.16.1：新增出貨單分頁", "items": [
         "倉庫分組新增可見的「出貨單」分頁（海運出貨 Excel 匯入保留不動）。類型：一般、UPS、海運、請款。",
         "輸入正航 S/C 單號、Invoice 單號（ST-）或客戶 PO（可多張），唯讀查正航 CHIComp03 帶出 PO、單號、列號、料號、品名、數量、單價、金額；可勾選、可改數量。-TAB 客供料一律不列也不匯出。",
