@@ -966,6 +966,20 @@ def rollback_dispatch_sessions(sessions: list[dict]) -> dict:
             "請改對要反悔的訂單逐筆精準反悔。",
         )
 
+    from .completed_code_edit import code_changes_restored_by_full_rollback
+
+    code_changes = code_changes_restored_by_full_rollback(normalized_sessions)
+    if code_changes:
+        names = "、".join(
+            f"{item.get('po_number')} {item.get('model')}（{item.get('old_code')} → {item.get('current_code')}）"
+            for item in code_changes
+        )
+        raise HTTPException(
+            409,
+            f"這次發料之後有已發料單改過批次代號：{names}。整檔還原會把主檔標頭還原成舊代號、"
+            "和訂單代號對不上，已停止。請改用精準反悔，或先把代號改回原值再整檔還原。",
+        )
+
     order_ids = [int(session["order_id"]) for session in normalized_sessions]
     code_change_batches = []
     seen_references = set()

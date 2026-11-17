@@ -193,6 +193,11 @@ class RowCodeRequest(BaseModel):
     code: str
 
 
+class CompletedCodeRequest(BaseModel):
+    code: str
+    force: bool = False
+
+
 class UpdateModelRequest(BaseModel):
     model: str
 

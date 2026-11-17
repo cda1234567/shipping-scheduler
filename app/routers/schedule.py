@@ -72,7 +72,7 @@ from ..services.merge_drafts import (
 from ..snapshot_sync import refresh_snapshot_from_main
 from ..models import (
     ReorderRequest, UpdateDeliveryRequest, BatchMergeRequest,
-    BatchDispatchRequest, DecisionRequest, RowCodeRequest, UpdateModelRequest, AlertType,
+    BatchDispatchRequest, DecisionRequest, RowCodeRequest, CompletedCodeRequest, UpdateModelRequest, AlertType,
     SupplementPartRequest, MoveCompletedFolderRequest, CreateOrderRequest, BatchRollbackRequest,
 )
 from ..services import batch_rollback
@@ -1924,6 +1924,17 @@ async def update_order_code(order_id: int, req: RowCodeRequest):
         raise HTTPException(409, "插入單據的編號須與插入位置一致，不能單獨修改")
     db.update_order(order_id, code=req.code)
     return {"ok": True}
+
+
+@router.patch("/schedule/completed/{order_id}/code")
+def update_completed_order_code(order_id: int, req: CompletedCodeRequest):
+    """已發料單改批次代號：orders.code 與主檔批次欄標頭一起改（先備份主檔）。"""
+    from ..services.completed_code_edit import CompletedCodeEditError, change_completed_order_code
+
+    try:
+        return change_completed_order_code(order_id, req.code, force=req.force, backup_dir=str(BACKUP_DIR))
+    except CompletedCodeEditError as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
 
 
 @router.patch("/schedule/orders/{order_id}/model")

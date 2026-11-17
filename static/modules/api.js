@@ -13,7 +13,8 @@ export async function apiFetch(path, opts = {}) {
     let payload = null;
     try {
       payload = await res.clone().json();
-      msg = payload?.detail || msg;
+      const detail = payload?.detail;
+      msg = (detail && typeof detail === "object" && !Array.isArray(detail) ? detail.message : detail) || msg;
     } catch (_) {}
     if (res.status === 403 && payload?.code === "edit_auth_required" && _apiAuthRequiredHandler) {
       try {
@@ -21,7 +22,10 @@ export async function apiFetch(path, opts = {}) {
         if (loggedIn) return apiFetch(path, opts);
       } catch (_) {}
     }
-    throw new Error(msg);
+    const error = new Error(msg);
+    error.status = res.status;
+    error.payload = payload;
+    throw error;
   }
   return res;
 }

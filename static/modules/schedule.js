@@ -3,6 +3,7 @@ import { calculate } from "./calculator.js";
 import { isOrderScopedPart } from "./shortage_rules.js";
 import { desktopDownload, showDownloadToast } from "./desktop_bridge.js";
 import { openShortagePurchase } from "./shortage_po.js";
+import { attachCompletedCodeEditor } from "./completed_code_edit.js";
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let _rows = [];
@@ -4492,7 +4493,10 @@ function buildCompletedCard(r, allFolders) {
   const draftCollapsed = draft ? isCompletedDraftPanelCollapsed(r.id) : true;
   const date = (r.delivery_date || r.ship_date) ? (r.delivery_date || r.ship_date).slice(5).replace("-", "/") : "—";
   const qty = r.order_qty != null ? r.order_qty : "—";
-  const code = r.code ? `<span class="tag tag-pcb" style="font-size:10px;padding:1px 4px">${esc(r.code)}</span>` : "";
+  const codeEditable = r.status === "dispatched";
+  const code = r.code
+    ? `<span class="tag tag-pcb${codeEditable ? " completed-code-tag" : ""}" style="font-size:10px;padding:1px 4px"${codeEditable ? ' title="雙擊修改批次代號"' : ""}>${esc(r.code)}</span>`
+    : "";
   const orderId = normalizeOrderId(r.id);
   const checked = Number.isInteger(orderId) && _completedCheckedIds.has(orderId);
 
@@ -4560,6 +4564,14 @@ function buildCompletedCard(r, allFolders) {
     _completedLastCheckedId = id;
     updateCompletedToolbarState();
   });
+
+  if (codeEditable) {
+    attachCompletedCodeEditor(div.querySelector(".completed-code-tag"), {
+      orderId: r.id,
+      code: r.code,
+      onSaved: () => refreshCompleted(),
+    });
+  }
 
   // 移動資料夾
   div.querySelector(".folder-select").addEventListener("change", async (e) => {

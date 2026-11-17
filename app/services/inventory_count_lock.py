@@ -10,7 +10,7 @@ INVENTORY_COUNT_LOCKED_MESSAGE = (
 )
 
 _SCHEDULE_DYNAMIC_RE = re.compile(
-    r"^/api/schedule/(?:orders/\d+/(?:dispatch|rollback)|drafts/\d+/commit)$"
+    r"^/api/schedule/(?:orders/\d+/(?:dispatch|rollback)|drafts/\d+/commit|completed/\d+/code)$"
 )
 
 

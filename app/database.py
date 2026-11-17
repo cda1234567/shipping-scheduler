@@ -399,6 +399,18 @@ CREATE TABLE IF NOT EXISTS dispatch_precise_rollbacks (
     detail_json     TEXT    NOT NULL DEFAULT '{}'
 );
 
+-- 已發料單改批次代號紀錄（主檔標頭 + orders.code 一起改）；整檔還原用來判斷會不會把標頭還原成舊代號
+CREATE TABLE IF NOT EXISTS order_code_changes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id        INTEGER NOT NULL DEFAULT 0,
+    po_number       TEXT    NOT NULL DEFAULT '',
+    old_code        TEXT    NOT NULL DEFAULT '',
+    new_code        TEXT    NOT NULL DEFAULT '',
+    columns_json    TEXT    NOT NULL DEFAULT '[]',
+    main_backup_path TEXT   NOT NULL DEFAULT '',
+    changed_at      TEXT    NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id     INTEGER NOT NULL REFERENCES orders(id),
@@ -3392,6 +3404,16 @@ def get_precise_rollbacks_crossing(cutoff: str) -> list[dict]:
         rows = conn.execute(
             "SELECT * FROM dispatch_precise_rollbacks WHERE dispatched_at<? AND rolled_back_at>? ORDER BY id",
             (normalized, normalized),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_order_code_changes_after(changed_after: str) -> list[dict]:
+    """changed_after 之後的已發料改批次代號紀錄（舊到新）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM order_code_changes WHERE changed_at>? ORDER BY id",
+            (str(changed_after or "").strip(),),
         ).fetchall()
     return [dict(r) for r in rows]
 
