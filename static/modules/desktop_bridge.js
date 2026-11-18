@@ -533,8 +533,8 @@ function renderDesktopState() {
     if (showServer && serverNoteEl) {
       const dir = _serverDownloadState?.display_path || "";
       serverNoteEl.textContent = _serverDownloadState?.enabled
-        ? `下載檔案會自動儲存到：${dir}`
-        : `開啟後，下載會自動存到伺服器指定的資料夾（${dir}）`;
+        ? `下載檔案會存到你電腦的瀏覽器下載資料夾，伺服器也另存一份到：${dir}`
+        : `開啟後，下載時伺服器會另存一份到指定的資料夾（${dir}），檔案一樣下載到你的電腦`;
     }
   }
 
@@ -542,8 +542,7 @@ function renderDesktopState() {
     folderEl.textContent = "使用瀏覽器預設下載位置";
     folderNoteEl.textContent = "如要每次自行選位置，請在瀏覽器開啟「下載前一律詢問儲存位置」。";
     if (isServerDownloadEnabled()) {
-      folderEl.textContent = _serverDownloadState?.display_path || "伺服器儲存資料夾";
-      folderNoteEl.textContent = "下載時會自動存到伺服器設定的資料夾，不經過瀏覽器。";
+      folderNoteEl.textContent = `下載會到瀏覽器下載資料夾，伺服器也另存一份到 ${_serverDownloadState?.display_path || "伺服器儲存資料夾"}。`;
     }
     downloadModeEl.checked = normalizeDownloadMode(_browserDownloadMode) === DOWNLOAD_MODE_ASK_EACH_TIME;
     downloadModeEl.disabled = !supportsBrowserSavePicker();
@@ -784,45 +783,16 @@ function bindDesktopEvents() {
   });
 }
 
-async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
-  if (isServerDownloadEnabled() && !saveAs) {
-    const sep = path.includes("?") ? "&" : "?";
-    const sRes = await fetch(`${path}${sep}server_save=1`, {
-      method,
-      headers: body == null ? undefined : { "Content-Type": "application/json" },
-      body: body == null ? undefined : JSON.stringify(body),
-    });
-    if (sRes.ok) {
-      const ct = sRes.headers.get("content-type") || "";
-      if (ct.includes("application/json")) {
-        const result = await sRes.json();
-        if (result?.ok) {
-          return result;
-        }
-        throw new Error(result?.detail || result?.message || "伺服器下載沒有回傳儲存結果");
-      }
-      throw new Error("伺服器下載沒有回傳儲存結果，請確認下載資料夾設定。");
-    }
-    let message = `伺服器下載失敗 HTTP ${sRes.status}`;
-    try {
-      const payload = await sRes.json();
-      message = payload.detail || payload.message || message;
-    } catch (_) {}
-    throw new Error(message);
-  }
+async function readDownloadError(response, fallback) {
+  let message = fallback;
+  try {
+    const payload = await response.json();
+    message = payload.detail || payload.message || message;
+  } catch (_) {}
+  return message;
+}
 
-  const response = await fetch(path, {
-    method,
-    headers: body == null ? undefined : { "Content-Type": "application/json" },
-    body: body == null ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    let message = `HTTP ${response.status}`;
-    try {
-      message = (await response.json()).detail || message;
-    } catch (_) {}
-    throw new Error(message);
-  }
+async function deliverResponseToBrowser(response, { filename = "", saveAs = false } = {}) {
   const blob = await response.blob();
   const headerName = parseFilenameFromContentDisposition(response.headers.get("content-disposition"));
   const outputName = filename || headerName || "download.bin";
@@ -850,13 +820,70 @@ async function fallbackBrowserDownload({ path, method = "GET", body = null, file
   return { ok: true, filename: outputName, path: outputName, directory: "", browser_download_started: true };
 }
 
+async function fallbackBrowserDownload({ path, method = "GET", body = null, filename = "", saveAs = false }) {
+  if (isServerDownloadEnabled() && !saveAs) {
+    const sep = path.includes("?") ? "&" : "?";
+    const sRes = await fetch(`${path}${sep}server_save=1`, {
+      method,
+      headers: body == null ? undefined : { "Content-Type": "application/json" },
+      body: body == null ? undefined : JSON.stringify(body),
+    });
+    if (!sRes.ok) {
+      throw new Error(await readDownloadError(sRes, `伺服器下載失敗 HTTP ${sRes.status}`));
+    }
+    const ct = sRes.headers.get("content-type") || "";
+    if (!ct.includes("application/json")) {
+      // 端點沒有伺服器另存功能，直接回檔案 → 交給瀏覽器下載
+      return deliverResponseToBrowser(sRes, { filename, saveAs });
+    }
+    const result = await sRes.json();
+    if (!result?.ok) {
+      throw new Error(result?.detail || result?.message || "伺服器下載沒有回傳儲存結果");
+    }
+    // 伺服器已另存一份，再把同一個檔案抓回來，讓瀏覽器下載到使用者電腦
+    const downloadUrl = result.download_url || `/api/download-file?name=${encodeURIComponent(result.filename || "")}`;
+    const fileRes = await fetch(downloadUrl);
+    if (!fileRes.ok) {
+      throw new Error(await readDownloadError(fileRes, `下載檔案失敗 HTTP ${fileRes.status}`));
+    }
+    const browserResult = await deliverResponseToBrowser(fileRes, { filename, saveAs });
+    return {
+      ...browserResult,
+      server_filename: result.filename || "",
+      server_directory: result.directory || "",
+    };
+  }
+
+  const response = await fetch(path, {
+    method,
+    headers: body == null ? undefined : { "Content-Type": "application/json" },
+    body: body == null ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      message = (await response.json()).detail || message;
+    } catch (_) {}
+    throw new Error(message);
+  }
+  return deliverResponseToBrowser(response, { filename, saveAs });
+}
+
 export function buildDownloadToastMessage(result, noun = "檔案") {
   const label = normalizeDownloadText(noun) || "檔案";
   const filename = normalizeDownloadText(result?.filename);
   const directory = normalizeDownloadText(result?.directory);
   const path = normalizeDownloadText(result?.path);
   const savedWithPicker = Boolean(result?.saved_with_picker);
+  const serverDirectory = normalizeDownloadText(result?.server_directory);
+  const serverFilename = normalizeDownloadText(result?.server_filename);
 
+  if (filename && serverDirectory) {
+    const prefix = savedWithPicker ? `${label}已下載：${filename}
+儲存位置：你剛剛選擇的位置` : `${label}已下載：${filename}`;
+    return `${prefix}
+伺服器另存：${serverDirectory}${serverFilename ? `\\${serverFilename}` : ""}`;
+  }
   if (filename && directory) {
     return `${label}已下載：${filename}\n儲存位置：${directory}`;
   }

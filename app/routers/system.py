@@ -23,7 +23,7 @@ from ..services.edit_auth import (
 )
 from ..services import db_backup
 from ..services.local_time import local_now
-from ..services.server_downloads import is_server_download_available
+from ..services.server_downloads import is_server_download_available, user_download_file_response
 from ..services.st_package_breakdowns import (
     build_missing_moq_package_rows,
     save_missing_moq_package_text,
@@ -232,3 +232,9 @@ async def get_server_download_dir():
 async def update_server_download_dir(req: ServerDownloadDirUpdateRequest):
     db.set_setting("server_download_enabled", "1" if req.enabled else "0")
     return {"ok": True, "enabled": req.enabled}
+
+
+@router.get("/download-file")
+async def download_server_saved_file(name: str):
+    # 伺服器下載資料夾內的檔案交給瀏覽器下載到使用者電腦
+    return user_download_file_response(name)

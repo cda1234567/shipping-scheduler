@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import mimetypes
 import shutil
 import re
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -58,7 +60,36 @@ def save_bytes_to_user_downloads(content: bytes, filename: str) -> str | None:
 
 def _server_save_json(saved_name: str) -> JSONResponse:
     display_path = db.get_setting("server_download_display_path") or "D:\\Download\\excel"
-    return JSONResponse({"ok": True, "filename": saved_name, "directory": display_path})
+    return JSONResponse({
+        "ok": True,
+        "filename": saved_name,
+        "directory": display_path,
+        "download_url": build_user_download_url(saved_name),
+    })
+
+
+def build_user_download_url(saved_name: str) -> str:
+    return f"/api/download-file?name={quote(saved_name)}"
+
+
+def resolve_user_download_file(name: str) -> Path:
+    """只允許下載伺服器下載資料夾第一層內的檔案，防 path traversal。"""
+    raw = str(name or "")
+    if not raw.strip() or raw != _safe_download_filename(raw):
+        raise HTTPException(400, "檔名不合法。")
+    if not SERVER_DOWNLOAD_DIR.is_dir():
+        raise HTTPException(404, "伺服器下載資料夾不可用。")
+    base = SERVER_DOWNLOAD_DIR.resolve()
+    target = (SERVER_DOWNLOAD_DIR / raw).resolve()
+    if target.parent != base or not target.is_file():
+        raise HTTPException(404, "找不到檔案。")
+    return target
+
+
+def user_download_file_response(name: str) -> FileResponse:
+    target = resolve_user_download_file(name)
+    media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    return FileResponse(str(target), filename=target.name, media_type=media_type)
 
 
 def _server_save_requested(request: Request) -> bool:
