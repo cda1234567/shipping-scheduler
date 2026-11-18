@@ -12,6 +12,7 @@
   改代號跨過調撥截止批次會讓待調撥算錯 → 409。
 - 有待插入的單以舊／新代號當插入位置 → 409。
 - 新代號已被別張未封存訂單（不同 PO）使用 → 409（force=True 才改；跨年同代號是正常的）。
+  已發料／已完成的單要主檔還有它的批次欄才算；已取消的不算。
 """
 from __future__ import annotations
 
@@ -82,8 +83,14 @@ def locate_batch_columns(ws, code: str, po_number: str) -> list[int]:
     ]
 
 
-def _find_duplicate_orders(order: dict, new_code: str) -> list[dict]:
-    """別張未封存訂單已用同一代號（同 PO 的另一組不算）。"""
+def _find_duplicate_orders(order: dict, new_code: str, ws) -> list[dict]:
+    """別張未封存訂單已用同一代號（同 PO 的另一組不算）。
+
+    - pending / merged：同代號就算重複。
+    - dispatched / completed：主檔還有它的批次欄（新代號＋它的 PO）才算；
+      舊循環沒封存、但主檔已換期沒有欄位的單不算。
+    - cancelled：不算。
+    """
     po = _digits(order.get("po_number"))
     duplicates = []
     with db.get_conn() as conn:
@@ -94,6 +101,12 @@ def _find_duplicate_orders(order: dict, new_code: str) -> list[dict]:
         ).fetchall()
     for row in rows:
         if po and _digits(row["po_number"]) == po:
+            continue
+        status = str(row["status"] or "")
+        if status in ("dispatched", "completed"):
+            if not locate_batch_columns(ws, new_code, row["po_number"]):
+                continue
+        elif status not in ("pending", "merged"):
             continue
         duplicates.append({
             "id": int(row["id"]),
@@ -237,16 +250,6 @@ def change_completed_order_code(order_id: int, new_code, *, force: bool = False,
     if transfer_reason:
         raise _conflict(transfer_reason)
 
-    duplicates = _find_duplicate_orders(order, new_code)
-    if duplicates and not force:
-        names = "、".join(f"{item['po_number']} {item['model']}" for item in duplicates)
-        raise CompletedCodeEditError(
-            409,
-            f"批次代號 {new_code} 已被其他訂單使用：{names}。主檔可能有舊循環同名批次，確定仍要改嗎？",
-            code="duplicate_code",
-            extra={"duplicates": duplicates},
-        )
-
     main_path = db.resolve_managed_path(str(db.get_setting("main_file_path") or "").strip(), "main_file_path")
     if not main_path or not Path(main_path).exists():
         raise _conflict("找不到主檔")
@@ -254,6 +257,15 @@ def change_completed_order_code(order_id: int, new_code, *, force: bool = False,
     workbook = openpyxl.load_workbook(main_path, keep_vba=is_xlsm)
     try:
         ws = workbook.worksheets[0]
+        duplicates = _find_duplicate_orders(order, new_code, ws)
+        if duplicates and not force:
+            names = "、".join(f"{item['po_number']} {item['model']}" for item in duplicates)
+            raise CompletedCodeEditError(
+                409,
+                f"批次代號 {new_code} 已被其他訂單使用：{names}。主檔可能有舊循環同名批次，確定仍要改嗎？",
+                code="duplicate_code",
+                extra={"duplicates": duplicates},
+            )
         columns = locate_batch_columns(ws, old_code, order.get("po_number"))
         if not columns:
             raise _conflict(f"主檔找不到批次 {old_code}（PO {order.get('po_number')}）的欄位")

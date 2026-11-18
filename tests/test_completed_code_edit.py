@@ -318,6 +318,65 @@ class CompletedCodeEditTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["forced"])
 
+    def test_old_cycle_dispatched_without_main_columns_is_not_duplicate(self):
+        # 2026-08 舊循環 #17 12-7 沒封存，但主檔已換期、沒有 12-7｜4500059105 的欄位
+        # （主檔裡別的 PO 的 12-7 不算它的欄位）
+        self.save_main(_header(("12-7", "4500059999", "T8U"), ("12-13", PO, "TX2-S1")))
+        self.add_order(code="12-7", po="4500059105", model="T356789IU")
+        self.add_order(code="12-7", po="4500059106", model="T7U", status="completed")
+        order_id = self.add_order()
+        response = self.patch_code(order_id, "12-7")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["forced"])
+        self.assertEqual(self.order_code(order_id), "12-7")
+        self.assertEqual(self.header()[4:8], ["12-7", "4500059999", "T8U", "12-7"])
+
+    def test_dispatched_with_main_columns_is_duplicate(self):
+        for status in ("dispatched", "completed"):
+            with self.subTest(status=status):
+                self.save_main(_header(("12-7", "4500059105", "T356789IU"), ("12-13", PO, "TX2-S1")))
+                other = self.add_order(code="12-7", po="4500059105", model="T356789IU", status=status)
+                order_id = self.add_order(model=f"TX2-{status}")
+                response = self.patch_code(order_id, "12-7")
+                self.assertEqual(response.status_code, 409)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["code"], "duplicate_code")
+                self.assertEqual([item["id"] for item in detail["duplicates"]], [other])
+                self.assertEqual(self.order_code(order_id), "12-13")
+                with db.get_conn() as conn:
+                    conn.execute("DELETE FROM orders")
+
+    def test_pending_or_merged_same_code_other_po_is_duplicate(self):
+        # 待排程的單主檔還沒有欄位，照舊只看代號
+        for status in ("pending", "merged"):
+            with self.subTest(status=status):
+                self.save_main(_header(("12-13", PO, "TX2-S1")))
+                other = self.add_order(code="12-7", po="4500059105", model="T356789IU", status=status)
+                order_id = self.add_order()
+                response = self.patch_code(order_id, "12-7")
+                self.assertEqual(response.status_code, 409)
+                detail = response.json()["detail"]
+                self.assertEqual(detail["code"], "duplicate_code")
+                self.assertEqual([item["id"] for item in detail["duplicates"]], [other])
+                self.assertEqual(self.order_code(order_id), "12-13")
+                self.assertEqual(self.header()[4], "12-13")
+
+                response = self.patch_code(order_id, "12-7", force=True)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(response.json()["forced"])
+                self.assertEqual(self.order_code(order_id), "12-7")
+                with db.get_conn() as conn:
+                    conn.execute("DELETE FROM orders")
+
+    def test_cancelled_same_code_is_not_duplicate(self):
+        self.save_main(_header(("12-7", "4500059105", "T356789IU"), ("12-13", PO, "TX2-S1")))
+        self.add_order(code="12-7", po="4500059105", model="T356789IU", status="cancelled")
+        order_id = self.add_order()
+        response = self.patch_code(order_id, "12-7")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["forced"])
+        self.assertEqual(self.order_code(order_id), "12-7")
+
     # ── 調撥 / 插單 ──────────────────────────────────────────────────────
     def test_transferred_batch_is_rejected(self):
         self.save_main(_header(("12-13", PO, "TX2-S1")))
