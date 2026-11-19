@@ -51,7 +51,7 @@ class MergeDraftDetailTests(unittest.TestCase):
             main_sheet.cell(row=1, column=1, value="料號")
             main_sheet.cell(row=1, column=8, value="盤點")
             main_sheet.cell(row=1, column=9, value="1-1")
-            main_sheet.cell(row=1, column=10, value="PO-1-1")
+            main_sheet.cell(row=1, column=10, value="4500059999")
             main_sheet.cell(row=1, column=11, value="MODEL-A")
             main_sheet.cell(row=1, column=12, value="1-2")
             main_sheet.cell(row=1, column=13, value="PO-1-2")
@@ -255,15 +255,19 @@ class MergeDraftDetailTests(unittest.TestCase):
         self.assertEqual(old_supply, {"OC-10990B": 0, "OC-10974B": 0})
         self.assertEqual(old_actual["OC-10990B"], {"usage": 500, "balance": 689})
 
-    def test_committed_main_batch_col_po_without_match_keeps_model_scoring(self):
-        # 舊組表頭 59032 不可誤配 4500059664；這裡把新組 PO 也拿掉，兩組都對不到 PO 時維持原本機種打分（先碰到的）
+    def test_committed_main_batch_col_po_without_match_returns_none(self):
+        # 舊組表頭 59032 不可誤配 4500059664；這裡把新組 PO 也拿掉，兩組都對不到 PO 時不借用別張單的欄，
+        # 改用副檔自己的值（例如 #286 PO 4500059697 不可抓到 #17 PO 4500059105 的 12-7）
         workbook, ws = self._build_duplicate_batch_main_sheet()
         try:
             ws.cell(row=1, column=16, value="4500050000")
-            col, _ = self._committed_values_for_po(ws, "4500059664")
+            col, (carry_overs, supplements, actual) = self._committed_values_for_po(ws, "4500059664")
         finally:
             workbook.close()
-        self.assertEqual(col, 9)
+        self.assertIsNone(col)
+        self.assertEqual(carry_overs, {"OC-10990B": 189, "OC-10974B": 0})
+        self.assertEqual(supplements, {})
+        self.assertEqual(actual, {})
 
         workbook, ws = self._build_duplicate_batch_main_sheet(old_po_header="9664")
         try:
@@ -272,6 +276,43 @@ class MergeDraftDetailTests(unittest.TestCase):
         finally:
             workbook.close()
         self.assertEqual(col, 15)
+
+    def test_committed_main_batch_col_same_po_without_model_match_returns_none(self):
+        # 兩組同代號同 PO，機種表頭都對不上：不猜第一欄，回 None 改用副檔自己的值
+        for po_number in ("4500059664", ""):
+            workbook, ws = self._build_duplicate_batch_main_sheet(old_po_header="4500059664")
+            try:
+                ws.cell(row=1, column=11, value="UNRELATED-X")
+                ws.cell(row=1, column=17, value="UNRELATED-Y")
+                col, (carry_overs, supplements, actual) = self._committed_values_for_po(ws, po_number)
+            finally:
+                workbook.close()
+            self.assertIsNone(col, po_number)
+            self.assertEqual(carry_overs, {"OC-10990B": 189, "OC-10974B": 0})
+            self.assertEqual(supplements, {})
+            self.assertEqual(actual, {})
+
+    def test_committed_main_batch_col_single_candidate_without_model_match(self):
+        # 只剩唯一候選欄時，機種對不上仍採用該欄
+        workbook, ws = self._build_duplicate_batch_main_sheet(old_po_header="4500059664")
+        try:
+            ws.cell(row=1, column=11, value="UNRELATED-X")
+            ws.cell(row=1, column=15, value="12-5")
+            col, (carry_overs, _, actual) = self._committed_values_for_po(ws, "4500059664")
+        finally:
+            workbook.close()
+        self.assertEqual(col, 9)
+        self.assertEqual(carry_overs, {"OC-10990B": 1189, "OC-10974B": 500})
+        self.assertEqual(actual["OC-10990B"], {"usage": 500, "balance": 689})
+
+    def test_committed_main_batch_col_without_order_po_keeps_model_scoring(self):
+        # 舊資料訂單沒有 PO：維持原本機種打分（先碰到的）
+        workbook, ws = self._build_duplicate_batch_main_sheet()
+        try:
+            col, _ = self._committed_values_for_po(ws, "")
+        finally:
+            workbook.close()
+        self.assertEqual(col, 9)
 
     def test_previous_stock_before_col_uses_rightmost_left_value_when_batch_header_blank(self):
         workbook = Workbook()

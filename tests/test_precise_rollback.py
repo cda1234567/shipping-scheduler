@@ -226,6 +226,40 @@ class PreciseRollbackTests(unittest.TestCase):
         with self.assertRaises(PreciseRollbackUnavailable):
             self.apply()
 
+    def _locate_recorded(self, rows, order, group):
+        self.save(rows)
+        wb = load_workbook(self.path)
+        try:
+            return precise._locate_recorded(wb.active, order, _record([group]))
+        finally:
+            wb.close()
+
+    def test_recorded_code_renamed_in_main_is_still_located(self):
+        # 發料紀錄存 12-13，主檔表頭與訂單代號已改成 12-7
+        rows = _base_rows()
+        rows[0][8] = "12-7"
+        located = self._locate_recorded(rows, {**ORDER, "code": "12-7"}, {**GROUP_11, "batch_code": "12-13"})
+        self.assertEqual([(item["start_col"], item["code"]) for item in located], [(9, "12-7")])
+
+    def test_recorded_po_mismatch_never_falls_back_to_code_only(self):
+        rows = _base_rows()
+        rows[0][9] = "PO-X"
+        with self.assertRaises(PreciseRollbackUnavailable):
+            self._locate_recorded(rows, ORDER, GROUP_11)
+        with patch.object(precise, "_locate_legacy") as legacy, self.assertRaises(PreciseRollbackUnavailable):
+            self.apply()
+        legacy.assert_not_called()
+
+    def test_same_code_groups_only_locate_own_po(self):
+        # 同代號 1-1 兩組，數字完全一樣，只靠 PO 區分
+        rows = _base_rows()
+        rows[0][11:14] = ["1-1", "PO-B", "M-A"]
+        rows[1][11:14] = [0, 30, 40]
+        rows[2][11:14] = [10, 20, 30]
+        rows[3][11:14] = [None, None, None]
+        located = self._locate_recorded(rows, ORDER, GROUP_11)
+        self.assertEqual([item["start_col"] for item in located], [9])
+
     def test_build_record_groups_plan_rows(self):
         record = build_dispatch_column_record([
             {"col_h": 9, "col_f": 10, "col_j": 11, "group_batch_code": "1-1", "group_po_number": "PO-A",

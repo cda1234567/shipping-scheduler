@@ -363,6 +363,7 @@ class DispatchGenerationTests(unittest.TestCase):
             wb = openpyxl.Workbook()
             ws = wb.active
             ws.cell(row=1, column=4).value = "6-2"
+            ws.cell(row=1, column=5).value = "4500059234"
             ws.cell(row=2, column=1).value = "EC-80004A"
             ws.cell(row=3, column=1).value = "EC-OK"
             ws.cell(row=3, column=4).value = 100
@@ -488,8 +489,10 @@ class DispatchGenerationTests(unittest.TestCase):
             orders = [
                 {"id": 234, "status": "dispatched", "po_number": "4500059651", "model": "MODEL-A", "code": "11-1"},
                 {"id": 235, "status": "dispatched", "po_number": "4500059651", "model": "MODEL-B", "code": "11-2"},
-                # 沒有任何 PO 表頭相符時，退回使用所有同名批次欄。
+                # 有 PO 但沒有任何 PO 表頭相符時，不借用別張單的同名批次欄。
                 {"id": 900, "status": "dispatched", "po_number": "4500000000", "model": "MODEL-B", "code": "11-2"},
+                # 沒有 PO 的舊資料，維持使用所有同名批次欄。
+                {"id": 901, "status": "dispatched", "po_number": "", "model": "MODEL-B", "code": "11-2"},
             ]
             bom_map = {
                 "MODEL-A": [{"part_number": "EC-40019A"}],
@@ -500,7 +503,8 @@ class DispatchGenerationTests(unittest.TestCase):
 
         self.assertEqual(result[234], {"EC-40019A": 6000})
         self.assertEqual(result[235], {"IC-SP3011": 3000})
-        self.assertEqual(result[900], {"EC-40019A": 9000, "IC-SP3011": 9000})
+        self.assertNotIn(900, result)
+        self.assertEqual(result[901], {"EC-40019A": 9000, "IC-SP3011": 9000})
 
     def test_dispatch_generate_5_1_ec_80004a_current_main_stock_plus_own_dispatch_record_is_enough(self):
         orders = [

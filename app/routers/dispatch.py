@@ -323,6 +323,7 @@ def _load_committed_main_supplements(
         def _cols_for_order(order: dict) -> list[int]:
             # 主檔同一工作表可能殘留舊循環的同名批次（例如舊 11-2），
             # 只取批次欄右側 PO 表頭屬於這張訂單的欄，避免把舊批次補料加總進來。
+            # 訂單有 PO 但沒有任何欄對得上時回 []，不可借用別張單（同代號不同 PO）的欄。
             cols = batch_cols_by_code.get(str(order.get("code") or "").strip()) or []
             po = re.sub(r"\D", "", str(order.get("po_number") or ""))
             if not po:
@@ -332,7 +333,7 @@ def _load_committed_main_supplements(
                 header_po = re.sub(r"\D", "", str(first_row[col] if len(first_row) > col else "") or "")
                 if header_po and (header_po == po or (len(header_po) >= 5 and po.endswith(header_po))):
                     matched.append(col)
-            return matched or cols
+            return matched
 
         order_parts: dict[int, list[str]] = {}
         relevant_parts: set[str] = set()

@@ -1205,6 +1205,7 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
 
     # 主檔同一工作表可能殘留舊循環的同名批次（例如舊 12-4），
     # 規則與 dispatch.py 的 _cols_for_order 相同：只取批次欄右側 PO 表頭屬於這張訂單的欄。
+    # 訂單有 PO 但沒有任何欄對得上時回 None，呼叫端改用副檔自己的值，不可借用別張單的欄。
     po = re.sub(r"\D", "", str(order.get("po_number") or ""))
     if po:
         po_matched = []
@@ -1212,8 +1213,9 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
             header_po = re.sub(r"\D", "", _main_context_header(context, col + 1) or _main_header_text(ws, col + 1))
             if header_po and (header_po == po or (len(header_po) >= 5 and po.endswith(header_po))):
                 po_matched.append(col)
-        if po_matched:
-            candidates = po_matched
+        if not po_matched:
+            return None
+        candidates = po_matched
 
     specific_tokens = _model_tokens(
         file_item.get("model"),
@@ -1235,7 +1237,10 @@ def _find_main_batch_col_for_file(ws, order: dict, file_item: dict, bom: dict | 
             best_score = score
     if best_col is not None:
         return best_col
-    return candidates[0]
+    # 機種對不出來時只在唯一候選欄才採用，多欄時不猜第一欄
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
 
 
 def _main_values_for_committed_file(ws, order: dict, file_item: dict, bom: dict | None, context: dict | None = None) -> tuple[dict[str, float], dict[str, float], dict[str, dict[str, float]]]:
