@@ -266,6 +266,32 @@ def _consumptions(order_ids: List[int], loaded_at: str) -> List[Tuple[str, float
     return out
 
 
+def deducted_since_load(order_ids: Iterable[int]) -> Dict[str, float]:
+    """這些訂單在 ST 快照最後更新時間之後、網站已扣本機 ST 的量（未退回）。{料號大寫: 量}
+
+    這段扣量已反映在本機 ST，還沒被正航同步蓋回；沒有快照時間時視為都已同步，回空。
+    """
+    ids = [int(i) for i in dict.fromkeys(order_ids) if i]
+    loaded_at = str(db.get_setting("st_inventory_loaded_at", "") or "")
+    if not ids or not loaded_at:
+        return {}
+    out: Dict[str, float] = {}
+    with db.get_conn() as conn:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            rows = conn.execute(
+                f"SELECT part_number, SUM(used_qty) AS qty FROM st_dispatch_consumptions "
+                f"WHERE rolled_back_at = '' AND consumed_at > ? AND order_id IN ({','.join('?' * len(chunk))}) "
+                f"GROUP BY part_number",
+                [loaded_at, *chunk],
+            ).fetchall()
+            for r in rows:
+                part = str(r["part_number"] or "").strip().upper()
+                if part:
+                    out[part] = out.get(part, 0.0) + float(r["qty"] or 0)
+    return out
+
+
 def ware_ids() -> Tuple[str, str]:
     st = str(erp_stock.get_settings().get("ware_id") or "001").strip() or "001"
     gl = str(os.environ.get("SHORTAGE_GL_WARE_ID") or "015").strip() or "015"

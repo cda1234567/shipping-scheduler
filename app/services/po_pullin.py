@@ -197,7 +197,7 @@ def build_pullin_list(order_ids: List[int], new_ship_date: Any) -> Dict[str, Any
     sources = part_conversion.sources_by_target(conversions)
     aggregated = sp._aggregate(groups, conversions)
     keys = sorted(aggregated)
-    st_stock = {str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()}
+    st_stock, _ = sp._st_stock_for(ids)  # 加回勾選訂單在 ST 同步後網站已扣的量，避免與需求重扣
     overrides = db.get_part_purchase_categories(keys)
 
     warnings: List[str] = []

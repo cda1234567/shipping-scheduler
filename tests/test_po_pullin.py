@@ -226,6 +226,23 @@ class BuildListTests(Base):
         self.assertEqual(parts["EC-1"]["shortage"], 120)  # 有效庫存 0 + (-10) → 負值不抵
         self.assertEqual(parts["EC-1"]["merged_from"], [{"part": "EC-9", "stock": -10.0}])
 
+    def test_dispatched_after_st_sync_not_double_counted(self):
+        # v2026.11.19.2：ST 同步後才發料，網站已先扣本機 ST 100（剩 0），需求又算 100 → 以前缺 100，現在加回 → 0
+        oid = self.add_order(status="dispatched")
+        sid = self.conn.execute("INSERT INTO dispatch_sessions(order_id, dispatched_at) VALUES(?, ?)",
+                                (oid, "2026-11-19T11:28:50")).lastrowid
+        self.conn.execute(
+            "INSERT INTO st_dispatch_consumptions(dispatch_session_id, order_id, part_number, used_qty, consumed_at)"
+            " VALUES(?,?,?,?,?)", (sid, oid, "EC-1", 100, "2026-11-19T11:28:50"))
+        db.set_setting("st_inventory_loaded_at", "2026-11-19T10:42:50")
+        r = pp.build_pullin_list([oid], NEW_SHIP)
+        self.assertNotIn("EC-1", {p["part_number"] for p in r["parts"]})
+        self.assertNotIn("EC-1", {p["part_number"] for p in r["unordered"]})
+        # 下一次同步（11:42:50）之後就不再加回：本機 ST 0 → 缺 100
+        db.set_setting("st_inventory_loaded_at", "2026-11-19T11:42:50")
+        r = pp.build_pullin_list([oid], NEW_SHIP)
+        self.assertEqual(next(p for p in r["parts"] if p["part_number"] == "EC-1")["shortage"], 100)
+
     def test_allocations_shown_for_site_created_po_lines(self):
         db.save_po_line_allocations(1, "PO1", "T", [
             {"row_no": 1, "part_number": "EC-1", "order_id": 7, "order_code": "6-1", "model": "M", "qty": 100}])

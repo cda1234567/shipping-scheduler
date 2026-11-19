@@ -305,6 +305,41 @@ class ShortageListPendingTests(ComputeBase):
         self.assertEqual((a["st"] - a["pending"], a["shortage"], a["suggested_qty"]), (0, 10000, 10000))
         self.assertEqual((b["st"] - b["pending"], b["shortage"]), (2000, 0))
 
+    def test_selected_order_dispatched_after_sync_not_double_counted(self):
+        # v2026.11.19.2：11-6 在 ST 同步（16:56）之後發料，網站已先扣本機 ST 555；
+        # 需求又算一次 555 → 以前缺 = 555 + 20000 − 19445 = 1110（重扣），現在加回 → 555
+        self.groups = [group(300, "11-6", "2026-12-10", [item("EC-10025A", 555)])]
+        self.st = {"EC-10025A": 20000 - 555}
+        a = {x["part_number"]: x for x in sp.build_shortage_list([300])["parts"]}["EC-10025A"]
+        self.assertEqual((a["need"], a["pending_transfer"], a["st"], a["st_added_back"], a["shortage"]),
+                         (555, 20000, 20000, 555, 555))
+        self.assertEqual(sum(x["qty"] for x in a["allocations"] if x["kind"] == "order"), 555)
+        ctx = sp._allocation_context([300])["EC-10025A"]
+        self.assertEqual((ctx["st"], ctx["shortage"], ctx["suggested_qty"]), (20000, 555, 555))
+
+    def test_selected_order_before_sync_not_added_back(self):
+        # 11-5 在同步之前發料：本機 ST 已被正航值蓋回，不加回
+        a = {x["part_number"]: x for x in sp.build_shortage_list([264])["parts"]}["EC-10025A"]
+        self.assertEqual((a["st"], a["st_added_back"]), (10000, 0))
+
+
+class DeductedSinceLoadTests(ComputeBase):
+    def test_only_post_sync_unrolled_selected(self):
+        self.consume(300, "a-old", 7, at="2026-11-04T18:00:00")
+        self.consume(300, "EC-ROLLED", 9, at="2026-11-04T18:00:00", rolled_back=True)
+        self.consume(264, "EC-20117A", 3, at="2026-11-04T16:56:23")  # 同一秒算同步前（與待調撥 <= 一致）
+        self.assertEqual(spt.deducted_since_load([300, 264]), {"EC-10025A": 555, "A-OLD": 7})
+        self.assertEqual(spt.deducted_since_load([264]), {})
+        self.assertEqual(spt.deducted_since_load([]), {})
+        db.set_setting("st_inventory_loaded_at", "")
+        self.assertEqual(spt.deducted_since_load([300]), {})
+
+    def test_conversion_source_added_back_to_target(self):
+        self.consume(300, "A-OLD", 7, at="2026-11-04T18:00:00")
+        with patch.object(db, "get_st_inventory_stock", lambda: {"A-OLD": -7, "A-NEW": 10}):
+            stock, added = sp._st_stock_for([300])
+        self.assertEqual((stock["A-OLD"], stock["A-NEW"], added["A-OLD"]), (0, 10, 7))
+
 
 class RouterTests(ComputeBase):
     def setUp(self):

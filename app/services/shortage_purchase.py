@@ -223,14 +223,27 @@ def overage_breakdown(qty: float, need_qty: float, suggested_qty: float) -> Dict
     }
 
 
+def _st_stock_for(order_ids: List[int]) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """本機 ST（料號大寫）＋加回勾選訂單在 ST 同步後網站已扣的量。
+
+    勾選的訂單已算在「需求」；同步後發料時網站已先扣本機 ST，不加回就會被扣兩次。
+    回傳 (ST, 加回量)。
+    """
+    st_stock = {
+        str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
+    }
+    added = st_pending_transfer.deducted_since_load(order_ids)
+    for part, qty in added.items():
+        st_stock[part] = st_stock.get(part, 0.0) + qty
+    return st_stock, added
+
+
 def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
     """依勾選的訂單重建每個料號的需求 / 待調撥 / ST / 缺 / MOQ / 建議量（與缺料清單同一套算法）。"""
     from ..routers import dispatch as dispatch_router  # 延遲載入避免循環相依
 
     groups = dispatch_router.build_dispatch_groups(order_ids, {})
-    st_stock = {
-        str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
-    }
+    st_stock, _ = _st_stock_for(order_ids)
     mapping = part_conversion.active_map()
     sources = part_conversion.sources_by_target(mapping)
     pending = st_pending_transfer.compute(order_ids, mapping)["parts"]
@@ -672,9 +685,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     positions = _dispatch_positions(groups, conversions)
     keys = sorted(aggregated)
 
-    st_stock = {
-        str(p or "").strip().upper(): float(q or 0) for p, q in db.get_st_inventory_stock().items()
-    }
+    st_stock, st_added = _st_stock_for(order_ids)
     links = db.active_postprocess_links(keys)
     process_extra = sorted({l["process_part"] for ls in links.values() for l in ls} - set(keys))
     lookups = _erp_lookups(sorted(set(keys) | set(process_extra)), today)
@@ -707,7 +718,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         open_qty, open_date = lookups["on_order"].get(key, (0.0, ""))
         # 待調撥：截止批次之後網站已扣、正航還沒 001→015 調撥的量（超轉只顯示，不影響缺料）
         pend = pending_parts.get(key) or st_pending_transfer.net_pending(0, 0)
-        # 缺 = max(0, 需求 + 待調撥 − ST)；在途僅供參考，不扣除
+        # 缺 = max(0, 需求 + 待調撥 − ST)；ST 已加回勾選訂單同步後網站已扣的量；在途僅供參考，不扣除
         shortage = float(summarize_requested_supply(entry["need"] + pend["pending"], st)["purchase_needed_qty"])
 
         ship = parse_ship_date(entry["earliest"]["ship_date"])
@@ -741,6 +752,7 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
             "need": entry["need"],
             "st": st,
             "st_own": st_own,
+            "st_added_back": sum(st_added.get(p, 0.0) for p in [key, *sources.get(key, [])]),
             "merged_from": merged_from,
             "pending_transfer": pend["pending"],
             "pending_deducted": pend["deducted"],
