@@ -135,8 +135,10 @@ class InvoicePlanTests(unittest.TestCase):
                          (501, "ST-2026001", "S/C", "MO-2607031"))
         self.assertIs(head["MulOriSCFlag"], False)  # 合併多張 S/C 實單仍是 False
         self.assertEqual(head["SumQty"], D(37000))
-        for col in ("BillDate", "ExchRate", "Total", "CloseDate", "OnBoardDate", "InvoStyle", "BillStatus"):
+        for col in ("BillDate", "ExchRate", "Total", "InvoStyle", "BillStatus"):
             self.assertEqual(head[col], 0, col)
+        # CloseDate / OnBoardDate = 開單當天（today），不是發票日（同公司3手開 ST-2026304 / ST-2026293..301）
+        self.assertEqual((head["CloseDate"], head["OnBoardDate"]), (20261110, 20261110))
         for col in ("CustID", "CurrID", "SalesID", "Maker", "DeptID", "VoucherNo", "CVoucherNo"):
             self.assertEqual(head[col], "", col)
         self.assertEqual((head["InvoiceType"], head["NWUnit"], head["VolumeUnit"]), (31, "KG", "CU'FT"))
@@ -468,6 +470,31 @@ class InvoicePlanTests(unittest.TestCase):
         self.assertEqual(inv.choose_warehouse("001", D(100), {"001": D(500), "02": D(9000)}), ("001", False))
         self.assertEqual(inv.choose_warehouse("001", D(100), {"01": D(50), "02": D(50)}), ("01", True))
         self.assertEqual(inv.choose_warehouse("001", D(100), {}), ("001", False))
+
+    def test_verify_header_close_and_onboard_date_must_be_today(self):
+        """讀回表頭 CloseDate / OnBoardDate 不是開單當天就中止（整筆 rollback）。"""
+        plan = plan_of(st_2026288_ctx())
+
+        class Cur:
+            def __init__(self, head):
+                self.head, self.description, self._rows = head, None, []
+
+            def execute(self, sql, params=()):
+                if "FROM TraBillMain" in sql:
+                    self.description = [(k,) for k in self.head]
+                    self._rows = [tuple(self.head.values())]
+                else:  # 表頭之後的檢查不在本測試範圍：給空結果，讓它在下一關失敗
+                    self.description, self._rows = [("x",)], []
+
+            def fetchall(self):
+                return self._rows
+
+        good = {"SumQty": plan["totals"]["sum_qty"], "OriginNo": plan["origin_no"], "CloseDate": 20261110, "OnBoardDate": 20261110}
+        for bad in ({"CloseDate": 0}, {"OnBoardDate": 0}, {"CloseDate": 20261028}):
+            with self.subTest(bad), self.assertRaisesRegex(ep.PoSchemaError, "Invoice 表頭"):
+                inv._verify(Cur({**good, **bad}), plan)
+        with self.assertRaisesRegex(ep.PoSchemaError, "Invoice 明細行數"):  # 表頭通過，進到下一關
+            inv._verify(Cur(good), plan)
 
 
 class ScWritebackTests(unittest.TestCase):

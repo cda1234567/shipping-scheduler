@@ -16,7 +16,9 @@
   ST-{year}% 的最大流水 + 1；寫入前確認不存在，撞號 rollback 重選（最多 3 次）。公司13舊單是 yyyymmddNNN，不影響。
 
 TraBillMain（Flag 501）：表頭的客戶 / 日期 / 幣別 / 金額留空（BillDate=0、CustID=''、CurrID=''、ExchRate=0、Total=0、
-  SalesID=''、Maker=''、CloseDate=0、OnBoardDate=0、InvoStyle=0、BillStatus=0），真正的值在 comBillAccounts。
+  SalesID=''、Maker=''、InvoStyle=0、BillStatus=0），真正的值在 comBillAccounts。
+  CloseDate = OnBoardDate = 開單當天 yyyymmdd（local_now，與 S/C 回寫 Endacasedate 同值，不是發票日；
+  公司3近期手開 45 張有 44 張如此，例 ST-2026304 於 2026-11-20 開 → 20261120）。
   抄第一張被選 S/C：OriginType='S/C'、OriginNo=第一張單號（合併多張也只寫第一張，MulOriSCFlag 仍 False）、IsDirectExport、
   InvoiceType、InvoAddr（空則 Addr）、InvAddress、NWUnit / GWUnit / VolumeUnit、Payment；IsFormal=True、HasCheck=True；
   SumQty = Σ comProdRec.Quantity。
@@ -703,7 +705,8 @@ def build_plan(
         InvoAddr=ep._text(ep._get(first, "InvoAddr")) or ep._text(ep._get(first, "Addr")),
         InvAddress=ep._text(ep._get(first, "InvAddress")), NWUnit=ep._text(ep._get(first, "NWUnit")),
         GWUnit=ep._text(ep._get(first, "GWUnit")), VolumeUnit=ep._text(ep._get(first, "VolumeUnit")),
-        Payment=ep._text(ep._get(first, "Payment")), SumQty=sum_qty, BillStatus=0, InvoStyle=0)))
+        Payment=ep._text(ep._get(first, "Payment")), SumQty=sum_qty, BillStatus=0, InvoStyle=0,
+        CloseDate=today, OnBoardDate=today)))
     for l in lines:
         inserts.append(("TraBillSub", _row(
             "TraBillSub", Flag=INVOICE_FLAG, BillNo=bill_no, RowNo=l["row_no"], SerNo=l["row_no"], BillDate=inv_date,
@@ -824,9 +827,12 @@ def _verify(wcur, plan: Dict[str, Any]) -> Dict[str, Any]:
     def fail(what: str):
         raise ep.PoSchemaError(f"寫入後讀回的{what}與預期不符，已 rollback")
 
-    head = rows(f"SELECT SumQty, OriginNo FROM TraBillMain WHERE Flag = {INVOICE_FLAG} AND BillNo = %s", (no,))
+    head = rows(f"SELECT SumQty, OriginNo, CloseDate, OnBoardDate FROM TraBillMain WHERE Flag = {INVOICE_FLAG} AND BillNo = %s",
+                (no,))
     if not head or not ep._same(ep._get(head[0], "SumQty"), t["sum_qty"]) \
-            or ep._text(ep._get(head[0], "OriginNo")) != plan["origin_no"]:
+            or ep._text(ep._get(head[0], "OriginNo")) != plan["origin_no"] \
+            or not ep._same(ep._get(head[0], "CloseDate"), plan["today"]) \
+            or not ep._same(ep._get(head[0], "OnBoardDate"), plan["today"]):
         fail("Invoice 表頭")
     subs = rows(f"SELECT RowNo, ItemNo, Quantity, DeclareQty, OriginBillNo, OriginRowNo FROM TraBillSub "
                 f"WHERE Flag = {INVOICE_FLAG} AND BillNo = %s ORDER BY RowNo", (no,))

@@ -31,6 +31,8 @@ SUB_OVERRIDE_COLS = [
     "NeedDate",
 ]
 SUB_COLS = SUB_OVERRIDE_COLS + ["Unit", "Warehouse"]
+LOG_COLS = ["ProgID", "ChangeTime", "IPAddr", "UserName", "PKValue", "Action", "Datas", "ComputerName", "WinUser",
+            "Flag", "OldValue", "WinLang", "IsChiDataSet", "ActionName"]
 CUSTOMER = {"Flag": 2, "ID": "P0175", "ShortName": "供應商甲", "FullName": "供應商甲股份有限公司"}
 
 
@@ -127,6 +129,10 @@ class FakeCursor:
             main = [i for i in c.inserted if i[0] == "ordBillMain"][0][1]
             keys = ["BillNO", "SumQty", "SumBTaxAmt", "SumTax", "SumAmtATax"]
             return self._set([tuple(main[k] for k in keys)], keys)
+        if s.startswith("SELECT COUNT(*) FROM comChangeLog"):
+            hits = [i[1] for i in c.inserted if i[0] == "comChangeLog"
+                    and (i[1]["ProgID"], i[1]["PKValue"], i[1]["Action"]) == (params[0], params[1], 1)]
+            return self._set([(len(hits),)])
         if s.startswith("SELECT RowNO, ProdID"):
             keys = ["RowNO", "ProdID", "Quantity", "Price", "Amount", "TaxAmt", "PreInDate"]
             subs = [i[1] for i in c.inserted if i[0] == "ordBillSub"]
@@ -201,7 +207,7 @@ def make_target(db_name="CHIComp01"):
                  "comCustomer": list(CUSTOMER), "comProduct": ["ProdID", "ProdName"],
                  "comWareHouse": ["WareHouseID", "WareHouseName"],
                  "comProductClass": ["ClassID", "Name"], "comDepartment": ["DepartID", "Name"],
-                 "comPerson": ["PersonID", "Name"]}
+                 "comPerson": ["PersonID", "Name"], "comChangeLog": LOG_COLS}
     return t
 
 
@@ -546,6 +552,52 @@ class WriteFlowCase(EnvCase):
         self.assertEqual((len(hist), hist[0]["status"], hist[0]["bill_no"], hist[0]["client_ip"]), (1, "ok", "PO-20261029001", "1.2.3.4"))
         self.assertTrue(any(l["action"] == "erp_po_created" for l in db.get_activity_logs()))
 
+    def test_create_writes_change_log_like_hand_made_po(self):
+        """正航手開採購單都有一筆 comChangeLog（ChiOrder.Purchase / Action=1）；網站開單同一交易寫入。"""
+        with patch.object(ep.socket, "gethostname", return_value="WEB-HOST-NAME-TOO-LONG-1234"):
+            res = ep.create_po({**REQ, "confirm": True}, actor="andy-web", client_ip="192.168.100.200:5")
+        (_, log, names), = self.inserts("comChangeLog")
+        self.assertEqual(names, LOG_COLS)
+        self.assertEqual((log["ProgID"], log["Action"], log["PKValue"]), ("ChiOrder.Purchase", 1, res["bill_no"]))
+        self.assertEqual(log["UserName"], self.inserts("ordBillMain")[0][1]["MakerID"])
+        self.assertEqual(log["UserName"], ep.DEFAULT_MAKER_ID)
+        self.assertIsNone(log["Datas"])
+        self.assertEqual((log["OldValue"], log["ActionName"], log["Flag"], log["WinLang"]), ("", "", 0, 1))
+        self.assertIs(log["IsChiDataSet"], False)
+        self.assertEqual((log["IPAddr"], log["ComputerName"], log["WinUser"]),
+                         ("192.168.100.200", "WEB-HOST-NAME-TOO-LO", "andy-web"))
+        # ChangeTime = 現在的 OLE 日期（2026-10-29 10:00）
+        self.assertAlmostEqual(log["ChangeTime"], (datetime(2026, 10, 29, 10, 0) - datetime(1899, 12, 30)).total_seconds() / 86400)
+        # 在單頭 / 單身之後、讀回之前
+        tables = [t for t, _, _ in self.tgt.inserted]
+        self.assertEqual(tables, ["ordBillMain", "ordBillSub", "comChangeLog"])
+        sqls = [sql for sql, _ in self.tgt.log]
+        log_at = next(i for i, q in enumerate(sqls) if q.startswith("INSERT INTO dbo.comChangeLog"))
+        self.assertLess(log_at, next(i for i, q in enumerate(sqls) if q.startswith("SELECT BillNO, SumQty")))
+        self.assertTrue(any(q.startswith("SELECT COUNT(*) FROM comChangeLog") for q in sqls))
+        self.assertEqual((self.tgt.commits, self.tgt.rollbacks), (1, 0))
+
+    def test_change_log_insert_failure_rolls_back_whole_po(self):
+        self.tgt.fail_insert = "comChangeLog"
+        with self.assertRaises(ep.ErpUnavailable) as cm:
+            ep.create_po({**REQ, "confirm": True})
+        self.assertNotIn("secret-pw", str(cm.exception))
+        self.assertEqual((self.tgt.commits, self.tgt.rollbacks), (0, 1))
+        self.assertEqual(db.list_erp_purchase_orders()[0]["status"], "error")
+
+    def test_change_log_missing_on_read_back_rolls_back(self):
+        real = FakeCursor.execute
+
+        def execute(cur, sql, params=None):
+            if " ".join(sql.split()).startswith("SELECT COUNT(*) FROM comChangeLog"):
+                cur.c.log.append((sql, params))
+                return cur._set([(0,)])
+            return real(cur, sql, params)
+
+        with patch.object(FakeCursor, "execute", execute), self.assertRaises(ep.PoSchemaError):
+            ep.create_po({**REQ, "confirm": True})
+        self.assertEqual((self.tgt.commits, self.tgt.rollbacks), (0, 1))
+
     def test_requires_confirm(self):
         with self.assertRaises(ep.PoValidationError):
             ep.create_po(REQ)
@@ -616,7 +668,7 @@ class WriteFlowCase(EnvCase):
         ep.create_po({**REQ, "confirm": True})
         tables = [i[0] for i in self.tgt.inserted]
         self.assertEqual(tables, ["comCustomer", "comProductClass", "comProduct", "comWareHouse",
-                                  "comDepartment", "comPerson", "ordBillMain", "ordBillSub"])
+                                  "comDepartment", "comPerson", "ordBillMain", "ordBillSub", "comChangeLog"])
         self.assertEqual(self.tgt.commits, 1)
 
     def test_optional_masters_missing_in_source_are_skipped(self):
@@ -631,7 +683,7 @@ class WriteFlowCase(EnvCase):
         self.assertEqual([m["table"] for m in out["masters_to_copy"]], ["comCustomer", "comProduct", "comWareHouse", "comPerson"])
         ep.create_po({**REQ, "confirm": True})
         self.assertEqual([i[0] for i in self.tgt.inserted],
-                         ["comCustomer", "comProduct", "comWareHouse", "comPerson", "ordBillMain", "ordBillSub"])
+                         ["comCustomer", "comProduct", "comWareHouse", "comPerson", "ordBillMain", "ordBillSub", "comChangeLog"])
 
     def _comp13_setup(self):
         """公司13 範例公司：沒有我們的供應商 / 料號 / 倉庫 001 / 人員 017。"""
@@ -664,7 +716,7 @@ class WriteFlowCase(EnvCase):
             self.assertEqual(self.tgt.inserted, [])
             ep.create_po({**REQ, "confirm": True})
         self.assertEqual([i[0] for i in self.tgt.inserted], [
-            "comCustomer", "comProduct", "comWareHouse", "comDepartment", "comPerson", "ordBillMain", "ordBillSub"])
+            "comCustomer", "comProduct", "comWareHouse", "comDepartment", "comPerson", "ordBillMain", "ordBillSub", "comChangeLog"])
         person = next(i[1] for i in self.tgt.inserted if i[0] == "comPerson")
         self.assertEqual((person["PersonID"], person["DepartID"]), ("017", "D9"))
         self.assertEqual(self.tgt.commits, 1)

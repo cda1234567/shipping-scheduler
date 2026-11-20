@@ -222,13 +222,12 @@ def upsert_year_month_avg(cur: Any, ym: int, part: str, ware: str, delta: float 
                                                OnlyCost=False, sBatchID='', **values))
 
 
-def sync_company_avg(cur: Any, ym: int, product: dict, part: str) -> None:
-    """CostByWare=0（公司3）：只同步當月 stkYearMonthAvg（WareID=''）；正航手開調撥不動上月。"""
+def sync_company_avg(cur: Any, ym: int, part: str) -> None:
+    """CostByWare=0（公司3）：當月 stkYearMonthAvg（WareID=''）只同步 AtLastQuan＝全倉庫存合計；正航手開調撥不動上月。
+    MonthCost / AtLastCost 只由會計月成本計算（MatCostAgg）寫入，調撥不動；列不存在時新增，成本欄維持預設 0。"""
     cur.execute('SELECT SUM(Quantity) FROM comWareAmount WHERE ProdID=%s', (part,))
     total = float(cur.fetchone()[0] or 0)
-    upsert_year_month_avg(cur, ym, part, '', AtLastQuan=total,
-                          MonthCost=float(ep._get(product, 'CAvgCost') or 0),
-                          AtLastCost=float(ep._get(product, 'CTotalCost') or 0))
+    upsert_year_month_avg(cur, ym, part, '', AtLastQuan=total)
 
 
 def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
@@ -244,13 +243,11 @@ def ensure_masters(cur: Any, target: str, parts: list[str]) -> None:
             ep._copy_masters(source.cursor(), cur, missing, target)
 
 
-def _lock_rows(cur: Any, rows: list[dict], params: dict) -> dict[str, dict]:
+def _lock_rows(cur: Any, rows: list[dict], params: dict) -> None:
     """鎖定料號與兩倉庫存，確認來源倉夠撥，並以實際鎖定的庫存重算成本（成本變了就要求重新預覽）。"""
-    products: dict[str, dict] = {}
     for r in rows:
         part, ware, qty = r['part'], r.get('ware_out', SOURCE_WARE), r['transfer']
         product = one(cur, 'SELECT * FROM comProduct WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s', (part,))
-        products[part] = product or {}
         outgoing = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (part, ware)) or {}
         incoming = one(cur, 'SELECT * FROM comWareAmount WITH (UPDLOCK, HOLDLOCK) WHERE ProdID=%s AND WareID=%s', (part, TARGET_WARE)) or {}
         if float(ep._get(outgoing, 'Quantity') or 0) < qty:
@@ -259,7 +256,6 @@ def _lock_rows(cur: Any, rows: list[dict], params: dict) -> dict[str, dict]:
         if actual['cost'] != r['cost']:
             raise ep.PoValidationError('資料已變動，請重新預覽')
         r.update(actual)
-    return products
 
 
 def _move_ware(cur: Any, r: dict, ware: str, sign: int, ym: int, params: dict) -> float:
@@ -319,7 +315,7 @@ def _verify_bill(cur: Any, number: str, rows: list[dict], expected: list[tuple[s
 def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'web', client_ip: str = '') -> dict[str, Any]:
     """一個批次開一張調撥單（同一交易，由呼叫端 commit）。
 
-    寫入順序：鎖定重算 → 單頭／單身／異動明細 → 每行來源倉減、015 加 → 月成本檔 → LatestIndate/OutDate
+    寫入順序：鎖定重算 → 單頭／單身／異動明細 → 每行來源倉減、015 加 → 月成本檔（只動 AtLastQuan）→ LatestIndate/OutDate
     → comChangeLog → 回讀檢查。不寫 CAvgCost／CTotalCost；CostByWare=0 時不改各倉 Cost／TotalCost。
     """
     # 未勾選的前批次不會真的改變015成本；以此交易實際鎖定的庫存算入庫平均。
@@ -328,7 +324,7 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'w
         raise ep.PoValidationError('此批次沒有可調撥數量')
     ensure_masters(cur, target, [r['part'] for r in rows])
     params = er.load_cost_params(cur, target)
-    products = _lock_rows(cur, rows, params)
+    _lock_rows(cur, rows, params)
     number = next_number(cur, today)
     for table, records in build_rows(number, today, rows).items():
         for record in records:
@@ -339,8 +335,8 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'w
         for ware, sign in [(r.get('ware_out', SOURCE_WARE), -1), (TARGET_WARE, 1)]:
             expected.append((r['part'], ware, _move_ware(cur, r, ware, sign, ym, params)))
         if not params['cost_by_ware']:
-            # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動，只同步月成本檔。
-            sync_company_avg(cur, ym, products[r['part']], r['part'])
+            # CAvgCost/CTotalCost 的正航調整公式尚未確認，不更動；月成本檔只同步 AtLastQuan。
+            sync_company_avg(cur, ym, r['part'])
         cur.execute('UPDATE comProduct SET LatestIndate=%s, LatestOutDate=%s WHERE ProdID=%s', (today, today, r['part']))
     _write_change_log(cur, number, actor, client_ip)
     _verify_bill(cur, number, rows, expected)

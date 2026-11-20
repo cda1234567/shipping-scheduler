@@ -275,8 +275,9 @@ class TransferWriteEffectsTests(unittest.TestCase):
                     # CostByWare=0：只寫當月 WareID=''，不上月
                     self.assertEqual(set(avgs), {(202611, '')})
                     self.assertEqual(avgs[(202611, '')]['AtLastQuan'], 2000)
-                    self.assertEqual(avgs[(202611, '')]['MonthCost'], 21)
-                    self.assertEqual(avgs[(202611, '')]['AtLastCost'], 42000)
+                    # 列不存在時新增，成本欄維持預設 0（MonthCost / AtLastCost 只由月成本計算寫入）
+                    self.assertEqual(avgs[(202611, '')]['MonthCost'], 0)
+                    self.assertEqual(avgs[(202611, '')]['AtLastCost'], 0)
                     self.assertNotIn((202610, ''), avgs)
                 self.assertEqual(rolls[source_ware]['Quantity'], 1000)
                 self.assertEqual(rolls['015']['Quantity'], 1000)
@@ -336,6 +337,62 @@ class TransferWriteEffectsTests(unittest.TestCase):
         self.assertEqual(avgs[(202610, '')], {'AtLastQuan': 999, 'MonthCost': 1.23, 'AtLastCost': 456})
         self.assertEqual(avgs[(202611, '')]['AtLastQuan'], 2000)
         self.assertTrue(any(t == 'comChangeLog' and v['PKValue'] == 'RM-20261105099' for t, v in inserts))
+
+    def _run_company_avg(self, avgs):
+        """CostByWare=0 調撥 100（001→015），回傳 (avgs, inserts, avg_updates)。"""
+        stocks = {'001': {'Quantity': 500, 'Cost': 0, 'TotalCost': 0},
+                  '015': {'Quantity': 1500, 'Cost': 0, 'TotalCost': 0}}
+        rolls = {'001': {'Quantity': 500}, '015': {'Quantity': 1500}}
+        inserts, avg_updates = [], []
+        cur = Mock()
+        def read(cursor, sql, args):
+            if 'comProduct' in sql: return dict(CAvgCost=21, CTotalCost=42000, ProdName='面板')
+            if 'stkYearMonthAvg' in sql:
+                return copy.deepcopy(avgs.get((args[0], args[2])))
+            if 'StkYearMonthQty' in sql:
+                return copy.deepcopy(rolls.get(args[-1]))
+            return copy.deepcopy(stocks.get(args[-1]))
+        def ins(cursor, table, values):
+            inserts.append((table, values))
+            if table == 'comWareAmount': stocks[values['WareID']] = dict(values)
+            if table == 'StkYearMonthQty': rolls[values['WareID']] = dict(values)
+            if table == 'stkYearMonthAvg': avgs[(values['YearMonth'], values['WareID'])] = dict(values)
+        def update(table, values, where):
+            if table == 'comWareAmount': stocks[where['WareID']].update(values)
+            if table == 'StkYearMonthQty': rolls[where['WareID']].update(values)
+            if table == 'stkYearMonthAvg':
+                avg_updates.append(dict(values))
+                avgs[(where['YearMonth'], where['WareID'])].update(values)
+            return 'UPDATE '+table, tuple(values.values())+tuple(where.values())
+        def execute(sql, args=()):
+            if sql.startswith('SELECT COUNT'): cur.fetchone.return_value = (1,)
+            if sql.startswith('SELECT SUM(Quantity)'): cur.fetchone.return_value = (sum(v['Quantity'] for v in stocks.values()),)
+            if sql.startswith('SELECT SumQty'): cur.fetchone.return_value = (100,)
+            if sql.startswith('SELECT Quantity'): cur.fetchone.return_value = (stocks[args[-1]]['Quantity'],)
+        cur.execute.side_effect = execute
+        batch = dict(rows=[dict(part='P', ware_out='001', name='面板', transfer=100, cost=21)])
+        with patch.object(et, 'one', side_effect=read), patch.object(et, 'insert', side_effect=ins), patch.object(et, 'ensure_masters'), patch.object(et, 'next_number', return_value='RM-20261105099'), patch.object(et.er, 'load_cost_params', return_value=dict(cost_by_ware=False, digits=3, dot=True)), patch.object(et.er, 'build_update', side_effect=update):
+            et.execute_bill(cur, 'CHIComp13', batch, 20261105)
+        return avgs, inserts, avg_updates
+
+    def test_company_avg_existing_row_keeps_month_costs(self):
+        """CostByWare=0：當月列已存在時只更新 AtLastQuan，MonthCost / AtLastCost（月成本計算的結果）不動。"""
+        avgs, inserts, avg_updates = self._run_company_avg(
+            {(202611, ''): {'AtLastQuan': 1, 'MonthCost': 18.5, 'AtLastCost': 37000}})
+        self.assertEqual(avg_updates, [{'AtLastQuan': 2000}])
+        self.assertEqual(avgs[(202611, '')], {'AtLastQuan': 2000, 'MonthCost': 18.5, 'AtLastCost': 37000})
+        self.assertFalse(any(t == 'stkYearMonthAvg' for t, _ in inserts))
+
+    def test_company_avg_missing_row_inserted_with_zero_costs(self):
+        """CostByWare=0：當月列不存在時新增，AtLastQuan＝全倉合計，MonthCost / AtLastCost＝0。"""
+        avgs, inserts, avg_updates = self._run_company_avg({})
+        rows = [v for t, v in inserts if t == 'stkYearMonthAvg']
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]['YearMonth'], rows[0]['WareID'], rows[0]['BatchID']), (202611, '', ''))
+        self.assertEqual(rows[0]['AtLastQuan'], 2000)
+        self.assertEqual(rows[0]['MonthCost'], 0)
+        self.assertEqual(rows[0]['AtLastCost'], 0)
+        self.assertEqual(avg_updates, [])
 
     def test_target_insufficient_aborts_before_bill_writes(self):
 

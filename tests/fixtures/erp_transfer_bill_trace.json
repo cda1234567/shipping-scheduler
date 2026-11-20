@@ -695,9 +695,7 @@
     "update",
     "stkYearMonthAvg",
     {
-     "AtLastQuan": 3000.0,
-     "MonthCost": 21.0,
-     "AtLastCost": 63000.0
+     "AtLastQuan": 3000.0
     },
     {
      "YearMonth": 202611,
@@ -711,8 +709,6 @@
     "UPDATE stkYearMonthAvg",
     [
      3000.0,
-     21.0,
-     63000.0,
      202611,
      "P",
      "",
@@ -885,9 +881,9 @@
      "InOutCost": 0,
      "InOutQuan": 0,
      "AtLastQuan": 80.0,
-     "MonthCost": 0.0,
+     "MonthCost": 0,
      "OnlyCost": false,
-     "AtLastCost": 0.0,
+     "AtLastCost": 0,
      "InQuan": 0,
      "InCost": 0,
      "Labour": 0,
@@ -1055,9 +1051,9 @@
      "InOutCost": 0,
      "InOutQuan": 0,
      "AtLastQuan": 500.0,
-     "MonthCost": 0.5,
+     "MonthCost": 0,
      "OnlyCost": false,
-     "AtLastCost": 250.0,
+     "AtLastCost": 0,
      "InQuan": 0,
      "InCost": 0,
      "Labour": 0,
@@ -1318,8 +1314,8 @@
     },
     "202611|P|": {
      "AtLastQuan": 3000.0,
-     "MonthCost": 21.0,
-     "AtLastCost": 63000.0
+     "MonthCost": 1,
+     "AtLastCost": 1
     },
     "202611|Q-TAB|": {
      "YearMonth": 202611,
@@ -1329,9 +1325,9 @@
      "InOutCost": 0,
      "InOutQuan": 0,
      "AtLastQuan": 80.0,
-     "MonthCost": 0.0,
+     "MonthCost": 0,
      "OnlyCost": false,
-     "AtLastCost": 0.0,
+     "AtLastCost": 0,
      "InQuan": 0,
      "InCost": 0,
      "Labour": 0,
@@ -1352,9 +1348,9 @@
      "InOutCost": 0,
      "InOutQuan": 0,
      "AtLastQuan": 500.0,
-     "MonthCost": 0.5,
+     "MonthCost": 0,
      "OnlyCost": false,
-     "AtLastCost": 250.0,
+     "AtLastCost": 0,
      "InQuan": 0,
      "InCost": 0,
      "Labour": 0,

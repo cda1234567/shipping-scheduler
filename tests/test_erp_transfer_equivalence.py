@@ -185,7 +185,8 @@ class ExecuteBillEquivalenceTests(unittest.TestCase):
         avgs = company["state"]["avgs"]
         self.assertEqual(set(avgs), {"202611|P|", "202610|P|", "202611|Q-TAB|", "202611|R|"})
         self.assertEqual(avgs["202610|P|"], {"AtLastQuan": 999, "MonthCost": 9, "AtLastCost": 9})
-        self.assertEqual(avgs["202611|P|"]["AtLastQuan"], 3000)
+        self.assertEqual(avgs["202611|P|"], {"AtLastQuan": 3000, "MonthCost": 1, "AtLastCost": 1})  # 成本欄只由月成本計算寫
+        self.assertEqual((avgs["202611|R|"]["MonthCost"], avgs["202611|R|"]["AtLastCost"]), (0, 0))
         self.assertEqual(company["state"]["products"]["P"]["CAvgCost"], 21)
         self.assertEqual(company["state"]["products"]["P"]["CTotalCost"], 63000)
         self.assertEqual(company["state"]["stocks"]["P|001"]["TotalCost"], 42000)

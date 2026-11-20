@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.15"
+APP_VERSION = "v2026.11.20.16"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "月平均表當月第一筆改用異動後總庫存（進貨與 Invoice），與正航手開單一致"
+APP_HEADLINE = "調撥不再覆寫月平均成本、Invoice 表頭結案／裝船日填開單日、開採購單補寫異動紀錄，與正航手開單一致"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.16：調撥不動月平均成本欄、Invoice 表頭 CloseDate / OnBoardDate、採購單寫 comChangeLog", "items": [
+        "一鍵調撥（公司3，CostByWare=0）：當月 stkYearMonthAvg（WareID 空白）只更新 AtLastQuan = 所有倉庫庫存合計，不再把 comProduct 的 CAvgCost / CTotalCost 寫進 MonthCost / AtLastCost；當月列不存在時新增，MonthCost / AtLastCost 為 0。依倉庫成本（CostByWare=1，公司13）照舊只加減 AtLastQuan。依據：正航手開調撥單（Flag 400）從不改這兩欄，它們只由會計月成本計算（MatCostAgg）寫入；2026-11-05 成本計算後有手開調撥的 30 個料號仍與月成本計算結果一致，網站調撥卻覆寫了 60 列。",
+        "開 Invoice：TraBillMain（Flag 501）表頭的 CloseDate 與 OnBoardDate 改填開單當天（yyyymmdd，與 S/C 回寫 Endacasedate 同一天），原本寫 0；BillDate 等其他表頭欄位不變，寫入後讀回也比對這兩欄。依據：公司3近期手開 Invoice 45 張有 44 張如此，例 ST-2026304 於 2026-11-20 開 → 20261120、ST-2026293～301 於 2026-11-16 開 → 20261116。",
+        "開採購單：與單頭 / 單身同一交易新增一筆 comChangeLog（ProgID ChiOrder.Purchase、Action 1、PKValue = 採購單號、UserName = 製單人代號 017、ChangeTime = 現在），寫入後讀回確認有這筆，寫入失敗或讀不到就整張 rollback。依據：公司3手開採購單（Flag 4）都有這筆紀錄，網站開的 PO-20261119001 是唯一沒有的。修改舊採購單的流程不變。",
+    ]},
     {"title": "v2026.11.20.15：月平均表 stkYearMonthAvg 當月新增列 AtLastQuan 改為異動後總庫存", "items": [
         "進貨與開 Invoice 出庫時，若該料號當月的 stkYearMonthAvg 列還不存在，新增列的 AtLastQuan 改填異動後的庫存：全公司成本（CostByWare=0，WareID 空白）= 所有倉庫庫存合計 ± 本次數量；依倉庫成本（CostByWare=1）= 該倉異動後數量；查不到合計時照舊填本次數量。同一張單同料號多行合併計算、只新增一次。",
         "依據：正航手開實單當月第一筆會帶上月期末量，例 EC-10355A 上月 7238、出 202 → 當月 AtLastQuan 7036。修正 SP-10019B（RM-20261111002）網站進貨後 AtLastQuan 只寫 300、實際總庫存 489（001 倉 300 + 015 倉 189）的問題。當月列已存在時照舊 ± 數量；StkYearMonthQty、MonthCost / AtLastCost 等其他欄位不變。",

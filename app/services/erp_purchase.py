@@ -6,6 +6,8 @@
 - 寫入目標公司由 ERP_WRITE_TARGET 指定（預設 CHIComp02 測試公司），帳密只放環境變數。
 - INSERT 一律明列欄位，欄位清單取自「目標」資料庫的 sys.columns（兩家公司欄位順序不同）。
 - 整張單（含補主檔）在同一個 transaction 內，寫完讀回比對後才 commit，任何錯誤即 rollback。
+- 同一 transaction 另 INSERT 一筆 comChangeLog（ProgID='ChiOrder.Purchase'、Action=1、PKValue=單號、UserName=MakerID），
+  與正航手開採購單相同；讀回確認有這筆才 commit。
 - 範本單（付款條件 / 地址等）取自來源公司（ERP_SQL_DATABASE，預設 CHIComp03）的最近一張採購單。
 錯誤訊息一律不含帳號密碼。
 """
@@ -16,6 +18,7 @@ import json
 import math
 import os
 import re
+import socket
 import threading
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -1536,8 +1539,31 @@ def _verify(wcur, plan: Dict[str, Any]) -> None:
             raise PoSchemaError(f"寫入後讀回的第 {i} 行明細與預期不符，已 rollback")
 
 
-def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any]) -> Dict[str, Any]:
-    today = date_to_int(local_now().date())
+def _change_log_insert(wcur, bill_no: str, now: datetime, actor: str, client_ip: str) -> Tuple[str, Tuple[Any, ...]]:
+    """正航手開採購單會寫 comChangeLog（ChiOrder.Purchase / Action=1）；欄位與寫法同 erp_receive 的 log()。"""
+    from . import erp_receive as er  # erp_receive 頂層 import 本檔，只能延後載入
+
+    row = er._row(
+        "comChangeLog", ProgID="ChiOrder.Purchase", ChangeTime=er._ole_date(now), IPAddr=(client_ip or "")[:15],
+        UserName=_env("ERP_PO_MAKER_ID", DEFAULT_MAKER_ID), PKValue=bill_no, Action=1,
+        ComputerName=socket.gethostname()[:20], WinUser=(actor or "web")[:20],
+        Flag=0, OldValue="", WinLang=1, IsChiDataSet=False, ActionName="")
+    return build_insert("comChangeLog", table_columns(wcur, "comChangeLog"), row)
+
+
+def _verify_change_log(wcur, bill_no: str) -> None:
+    wcur.execute(
+        "SELECT COUNT(*) FROM comChangeLog WHERE ProgID = %s AND PKValue = %s AND Action = 1",
+        ("ChiOrder.Purchase", bill_no),
+    )
+    row = wcur.fetchone()
+    if not row or int(row[0] or 0) < 1:
+        raise PoSchemaError("寫入後讀回不到採購單異動紀錄（comChangeLog），已 rollback")
+
+
+def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str = "web", client_ip: str = "") -> Dict[str, Any]:
+    now = local_now()
+    today = date_to_int(now.date())
     with _write_lock, _source_session() as src:
         wconn = _connect_write(creds)
         committed = False
@@ -1548,7 +1574,9 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any]) -> Dict[str,
             wcur.execute(*plan["main_insert"])
             for insert in plan["sub_inserts"]:
                 wcur.execute(*insert)
+            wcur.execute(*_change_log_insert(wcur, plan["bill_no"], now, actor, client_ip))
             _verify(wcur, plan)
+            _verify_change_log(wcur, plan["bill_no"])
             _check_db_name(wcur, target)
             try:
                 wconn.commit()
@@ -1610,7 +1638,7 @@ def _create_checked(req: Dict[str, Any], target: str, creds: Dict[str, Any], act
         ),
     }
     try:
-        result = _write(req, target, creds)
+        result = _write(req, target, creds, actor, client_ip)
     except Exception as exc:
         message = _safe_message(exc, creds)
         _safe_log(db, {**base_log, "status": "error", "error": message})
