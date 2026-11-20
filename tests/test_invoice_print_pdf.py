@@ -161,12 +161,17 @@ class PrinterChoiceTest(unittest.TestCase):
         pos = [e["po"] for e in lay["pages"][0]["elements"] if e["type"] == "po"]
         self.assertEqual(pos, ["4500059433", "4500059418", "4500059497-B", "4500059563", "4500059563-A"])
 
-    def test_st_2026304_half_signature_pinned(self):
-        lay = ipp.layout(st_2026304(), "auto")
-        page = lay["pages"][-1]
-        self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 146.5))
-        self.assertAlmostEqual(page["frame_bottom"], ipp.HALF_FRAME_BOTTOM)
-        self.assertAlmostEqual(page["sign_base"], ipp.HALF_SIGN_BASE)
+    def test_st_2026304_half_signature_follows_totals(self):
+        for mode in ("auto", "follow", None):
+            lay = ipp.layout(st_2026304(), mode)
+            page = lay["pages"][-1]
+            self.assertEqual((lay["form"], lay["page_count"]), ("half", 1))
+            self.assertAlmostEqual(page["sign_base"], page["totals_base"] + ipp.SIGN_GAP)
+            self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
+            self.assertLess(page["frame_bottom"], ipp.HALF_FRAME_BOTTOM)  # 框底跟著上移，不再固定 146.5
+            self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
+            self.assertEqual(lay["bottom_mm"], 133.94)
+            self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
 
     def test_st_2026307_half_signature_follows_totals(self):
         lay = ipp.layout(st_2026307(), "auto")
@@ -189,7 +194,7 @@ class PrinterChoiceTest(unittest.TestCase):
 
     def test_half_page_limit_env(self):
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "140"}):
-            lay = ipp.layout(st_2026304())  # 框底 146.5 放不下 → 簽核緊接合計（133.94）仍是半張
+            lay = ipp.layout(st_2026304())  # 簽核緊接合計的框底 133.94 <= 140 → 仍是半張
             self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 133.94))
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "130"}):
             self.assertFalse(ipp.layout(st_2026304())["fits_half_page"])
@@ -283,12 +288,13 @@ class SignModeTest(unittest.TestCase):
 
     def test_half_page_modes(self):
         auto, follow, bottom = (self._last(st_2026304(), m) for m in ("auto", "follow", "bottom"))
-        self.assertAlmostEqual(auto["frame_bottom"], ipp.HALF_FRAME_BOTTOM)
-        self.assertAlmostEqual(auto["sign_base"], ipp.HALF_SIGN_BASE)
-        self.assertEqual((bottom["frame_bottom"], bottom["sign_base"]), (auto["frame_bottom"], auto["sign_base"]))
+        self.assertEqual((auto["frame_bottom"], auto["sign_base"]), (follow["frame_bottom"], follow["sign_base"]))
         self.assertAlmostEqual(follow["sign_base"], follow["totals_base"] + ipp.SIGN_GAP)
         self.assertAlmostEqual(follow["frame_bottom"], follow["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
-        self.assertLess(follow["frame_bottom"], auto["frame_bottom"])
+        # bottom（舊版，需明確指定）才貼框底 146.5
+        self.assertAlmostEqual(bottom["frame_bottom"], ipp.HALF_FRAME_BOTTOM)
+        self.assertAlmostEqual(bottom["sign_base"], ipp.HALF_SIGN_BASE)
+        self.assertLess(follow["frame_bottom"], bottom["frame_bottom"])
         # 合計一律緊接最後一行
         for p in (auto, follow, bottom):
             self.assertAlmostEqual(p["totals_rule"], p["last_base"] + ipp.TOTALS_RULE_GAP)
@@ -305,6 +311,19 @@ class SignModeTest(unittest.TestCase):
         for m in ipp.SIGN_MODES:
             self.assertTrue(ipp.layout(st_2026304(), m)["fits_half_page"])
             self.assertFalse(ipp.layout(st_2026302(), m)["fits_half_page"])
+
+    def test_signature_gap_fixed_for_every_shape(self):
+        # 合計 → 簽核的距離固定（沒有可變的空白），框底 = 簽核 + 固定邊距
+        for data in (st_2026304(), st_2026307(), st_2026302(), synthetic(), synthetic(5),
+                     invoice("ST-2026001", [], 0, 0)):
+            for mode in ("auto", "follow", None):
+                lay = ipp.layout(data, mode)
+                last = lay["pages"][-1]
+                self.assertAlmostEqual(last["sign_base"] - last["totals_base"], ipp.SIGN_GAP)
+                self.assertAlmostEqual(last["frame_bottom"] - last["sign_base"], ipp.SIGN_TO_FRAME_FOLLOW)
+                self.assertEqual(lay["bottom_mm"], round(last["frame_bottom"], 2))
+                if lay["page_count"] == 1:  # 半張判斷 = 整份 follow 版面的框底放得進半張
+                    self.assertEqual(lay["fits_half_page"], last["frame_bottom"] <= lay["half_page_mm"])
 
     def test_env(self):
         for value, expected in (("", "auto"), ("FOLLOW", "follow"), ("bottom", "bottom"), ("x", "auto")):

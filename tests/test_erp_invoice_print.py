@@ -434,6 +434,18 @@ class PrintFrontendTests(unittest.TestCase):
         index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('placeholder="輸入 ST-2026xxx"', index)
 
+    def test_signature_follows_totals_no_spacer(self):
+        # 簽核緊接合計下方、框在簽核下方收尾（同 PDF）：不可有撐開空白的 spacer / 框最小高度 / flex 撐底
+        html = (ROOT / "static" / "erp_invoice_print.html").read_text(encoding="utf-8")
+        js = (ROOT / "static" / "modules" / "erp_invoice_print.js").read_text(encoding="utf-8")
+        for src in (html, js):
+            for s in ("inv-spacer", "flex: 1", "margin-top: auto"):
+                self.assertNotIn(s, src)
+        box = html.split(".inv-box {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("min-height", box)
+        self.assertNotIn("minHeight", js)
+        self.assertRegex(js, r"\$\{totals\}\s*\$\{signs\}\s*</div>")
+
     def test_render_with_node(self):
         script = r"""
 import assert from 'node:assert/strict';

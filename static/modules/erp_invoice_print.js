@@ -116,8 +116,6 @@ function measureLayout(data, root) {
     probe.innerHTML = sheet(data, { no: 1, rows: [], last: false }, 1);
     const s = probe.firstElementChild;
     s.style.cssText = "width:190mm;min-height:0;margin:0;padding:0;box-shadow:none;";
-    const box = s.querySelector(".inv-box");
-    box.style.minHeight = "0";
     const mm = doc.createElement("div");
     mm.style.cssText = "height:100mm;";
     probe.appendChild(mm);
@@ -126,7 +124,6 @@ function measureLayout(data, root) {
     probe.innerHTML = sheet(data, { no: 1, rows: allRows, last: true }, 1);
     const full = probe.firstElementChild;
     full.style.cssText = s.style.cssText;
-    full.querySelector(".inv-box").style.minHeight = "0";
     const rowEls = full.querySelectorAll(".inv-body > div");
     const heights = { po: 0, line: [] };
     allRows.forEach((r, i) => {
@@ -175,7 +172,6 @@ function sheet(data, page, total) {
       </div>
       <div class="inv-body">${body}</div>
       ${totals}
-      <div class="inv-spacer"></div>
       ${signs}
     </div>
   </section>`;

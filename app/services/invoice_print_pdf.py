@@ -11,11 +11,11 @@
 → rm_print.choose_printer(True)（NPI975BEF，A4 紙只印上半張）；否則 A4（M652），可多頁。
 
 簽核列位置（環境變數 INVOICE_PRINT_SIGN_MODE）：
-  auto（預設）：明細 + 合計 + 簽核（緊接合計）的框底 <= 半張上限就用半張；半張內明細留得出空間時框固定高度、
-    簽核在框底 HALF_FRAME_BOTTOM（同正航 ST-2026304 實單），留不出來就簽核緊接合計、框在簽核下方收尾
-    （例 ST-2026307 框底 145.29mm）；A4 長單簽核緊接合計下方、框隨內容收尾。
-  follow：半張判斷同 auto；簽核一律緊接合計下方，框在簽核下方收尾（半張也一樣）。
-  bottom：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 PAGE_BOTTOM_MM），所以半張要簽核貼框底放得下才用。
+  follow / auto（預設，auto = follow）：簽核一律緊接合計下方（固定距離 SIGN_GAP），框在簽核下方收尾
+    （SIGN_TO_FRAME_FOLLOW），半張也一樣；明細 + 合計 + 簽核 + 框底邊距的框底 <= 半張上限就用半張
+    （例 ST-2026304 框底 133.94mm、ST-2026307 框底 145.29mm），否則 A4，可多頁（合計、簽核只在最後一頁）。
+  bottom（舊版，需明確指定）：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 PAGE_BOTTOM_MM），
+    所以半張要簽核貼框底放得下才用。
 print-info 的 bottom_mm 就是 PDF 實際畫的框底（同一份 layout）。
 
 純函式：layout(data) / render_pdf(data) 不連 ERP；資料來自 erp_invoice_print.get_print_data()。
@@ -88,13 +88,13 @@ QTY_UL = (52 * PX, 119 * PX)
 AMOUNT_UL = (612 * PX, 711 * PX)
 SIGN_GAP = 12.0              # 合計基線 → 簽核基線（follow）
 SIGN_TO_FRAME_FOLLOW = 4.5   # 簽核基線 → 框底（follow）
-SIGN_TO_FRAME_PINNED = (544 - 513) * PX  # 簽核貼框底時（同實單）
+SIGN_TO_FRAME_PINNED = (544 - 513) * PX  # 簽核貼框底時（bottom 模式）
 SIGN_X = (30 * PX, 279 * PX, 528 * PX)
 SIGN_UL = ((65 * PX, 190 * PX), (315 * PX, 440 * PX), (565 * PX, 690 * PX))
 SIGN_UL_DY = 0.6
 DEFAULT_SIGNATURES = ("簽核", "審核", "製單")
 
-# 半張：框底固定（實單 150.5mm，整體上移到 146.5mm，印表機只印上 148.5mm）
+# 半張 bottom 模式：框底固定（實單 150.5mm，整體上移到 146.5mm，印表機只印上 148.5mm）
 HALF_FRAME_BOTTOM = 146.5
 HALF_SIGN_BASE = HALF_FRAME_BOTTOM - SIGN_TO_FRAME_PINNED
 A4_SIGN_MAX = PAGE_BOTTOM_MM - SIGN_TO_FRAME_PINNED  # A4 最後一頁合計 + 簽核要放得下
@@ -269,10 +269,12 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
     units = _units(data, measure)
     half_limit = rm_print.half_page_limit()
     last = _last_base(units)
-    # 半張內簽核能否貼框底（明細沒吃到 HALF_SIGN_BASE）；放不放得下半張看簽核緊接合計時的框底
-    pinned = _follow_sign_base(last) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
-    half = pinned if mode == "bottom" else _follow_sign_base(last) + SIGN_TO_FRAME_FOLLOW <= half_limit
-    follow = mode == "follow" or (mode == "auto" and not (half and pinned))
+    # follow / auto：簽核緊接合計，整份（含框底邊距）放得進半張就用半張；bottom：簽核貼框底放得下才用半張
+    follow = mode != "bottom"
+    if follow:
+        half = _follow_sign_base(last) + SIGN_TO_FRAME_FOLLOW <= half_limit
+    else:
+        half = _follow_sign_base(last) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
     groups = [units] if half else _paginate_a4(units)
     pages = []
     for no, group in enumerate(groups, 1):

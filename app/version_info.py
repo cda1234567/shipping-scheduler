@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.10"
+APP_VERSION = "v2026.11.20.11"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 扣總成本倉庫 TotalCost 照減不歸 0（比照 ST-2026304）；Invoice 列印放得進半張就送 M111w（修 ST-2026307）"
+APP_HEADLINE = "Invoice 列印簽核列一律緊接合計下方、不再留空白（PDF 與畫面預覽），半張判斷改看緊接版面"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.11：Invoice 簽核列一律緊接合計下方（PDF 與畫面預覽）", "items": [
+        "Invoice 列印的簽核列（簽核 / 審核 / 製單三格與底線）一律緊接在合計列正下方，中間不再留一大段空白，半張也一樣；外框底跟著上移，框底 = 簽核列 + 固定下邊距。依據：Andy 傳來的 ST-2026303 畫面預覽合計與簽核之間空了一大段，不對。",
+        "半張判斷改看緊接版面：明細 + 合計 + 緊接合計的簽核 + 框底下邊距的框底 <= 半張上限（148.5mm）就用半張、送 M111w，否則 A4 送 M652。ST-2026304 框底由 146.5mm 上移到 133.94mm（仍半張）、ST-2026307 框底 145.29mm（半張）、ST-2026302 照舊 A4；print-info 的 bottom_mm 就是 PDF 實際畫的框底。",
+        "INVOICE_PRINT_SIGN_MODE：未設定或 auto 現在等同 follow（簽核緊接合計）；bottom（簽核貼框底）保留為需明確指定的舊版選項。A4 長單分頁不變，合計與簽核只在最後一頁、簽核緊接合計。",
+        "瀏覽器預覽頁（erp_invoice_print.html）拿掉外框最小高度與撐開空白的 spacer，簽核緊接合計、框在簽核下方收尾，單頁短單與多頁長單都和 PDF 同順序、不留空白。",
+    ]},
     {"title": "v2026.11.20.10：Invoice 倉庫 TotalCost 不再因數量歸 0 而歸 0；列印半張判斷修正", "items": [
         "勾「扣總成本」（update_cost）時，comWareAmount.TotalCost 一律 = 原值 - CostForAcc，倉庫數量剛好扣到 0 也照減、不再強制歸 0。依據：公司3手開實單 ST-2026304 出庫後，001 倉數量 0，TotalCost 仍為 757,640（IC-NB675GL-Z，888,960 - 131,320）與 1,926,423（IC-XC7K70T-1FBG484I，4,467,465 - 2,541,042）。",
         "comProduct.CTotalCost 規則不變：原值 - CostForAcc，全部倉庫的總庫存歸 0 時設為 0（ST-2026304 兩個料號皆為 0.00）。CostByWare=1 時 Cost = 新 TotalCost / 新數量（數量 0 以下不動）、不勾扣總成本時成本全部不動，皆與前版相同。",
