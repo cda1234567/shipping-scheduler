@@ -12,7 +12,7 @@ let _preview = null;
 let _token = "";
 let _rePreviewPending = false;
 let _costTouched = false;
-let _rate = "";            // 預覽畫面輸入的發票匯率；空 = 用正航幣別檔匯率
+let _rate = "";            // 預覽畫面輸入的發票匯率；空 = 用第一張 S/C 匯率（沒有才用正航幣別檔）
 let _rateCustomer = null;  // 匯率是哪個客戶時輸入的；換客戶就不沿用
 let _lastShown = null;     // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
 
@@ -34,7 +34,7 @@ export function invoiceLines(selection) {
   });
 }
 
-/** 匯率輸入值 → 數字；空白或不合法回 null（= 後端用正航幣別檔匯率）。 */
+/** 匯率輸入值 → 數字；空白或不合法回 null（= 後端用第一張 S/C 匯率，沒有才用正航幣別檔）。 */
 export function parseRate(value) {
   const text = String(value ?? "").trim();
   if (!text) return null;
@@ -133,11 +133,11 @@ function bindRateInput() {
 function rateInput(r) {
   if (r.rate_source === "local") return "";
   const h = r.rate_hint || {};
-  const hint = [h.sc ? `S/C ${h.sc}` : "", h.currency ? `正航幣別檔 ${h.currency}` : ""].filter(Boolean).join(" / ");
+  const hint = [h.sc ? `預設＝第一張 S/C 匯率 ${h.sc}` : (h.currency ? "S/C 沒有匯率，預設用正航幣別檔" : ""), h.currency ? `正航幣別檔 ${h.currency}（參考）` : ""].filter(Boolean).join(" / ");
   // 使用者輸入過的匯率優先（預覽失敗重畫時也不會把剛打的數字清掉）
   const typed = currentRate();
   const val = typed !== null ? esc(typed) : (r.rate_required ? "" : esc(r.exch_rate));
-  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.currency)}）<input type="number" id="erp-invoice-rate" class="num" min="0" step="any" style="width:7em" placeholder="照發票填" value="${val}"></label> <span id="erp-invoice-rate-tip" class="erp-po-hint" style="display:inline" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">參考：${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
+  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.currency)}）<input type="number" id="erp-invoice-rate" class="num" min="0" step="any" style="width:7em" placeholder="照發票填" value="${val}"></label> <span id="erp-invoice-rate-tip" class="erp-po-hint" style="display:inline" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
 }
 
 function hidePreview() {

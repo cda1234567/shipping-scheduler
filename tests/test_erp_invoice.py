@@ -190,16 +190,81 @@ class InvoicePlanTests(unittest.TestCase):
         self.assertTrue(plan["needs_confirm"])
         self.assertEqual([c["kind"] for c in plan["confirm_items"]], ["over_remain"])
 
-    def test_invoice_rate_overrides_sc_rate_and_defaults_to_buyinrate(self):
+    def test_invoice_rate_overrides_sc_rate_and_defaults_to_sc_rate(self):
         ctx = st_2026288_ctx()
         ctx["req_exch_rate"] = None
         plan = plan_of(ctx)
-        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("30.385"), "currency"))
-        self.assertEqual(plan["rate_hint"]["sc"], 30.385)
+        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("30.385"), "sc"))
+        self.assertEqual(plan["rate_hint"], {"sc": 30.385, "currency": 30.385})
         ctx["req_exch_rate"] = D("32.77")
         plan = plan_of(ctx)
         self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("32.77"), "manual"))
         self.assertEqual(rows_of(plan, "comBillAccounts")[0]["ExchRate"], D("32.77"))
+
+    @staticmethod
+    def _rate_ctx(sc_rates, picks=None, rate=None):
+        """ST-2026304 情境：S/C 匯率 31.505、正航幣別檔 30.385；sc_rates = {sc_no: ExchRate（None = 沒這欄）}。"""
+        scs = {}
+        for i, (no, r) in enumerate(sc_rates.items(), 1):
+            main = _sc_main(no)
+            if r is None:
+                del main["ExchRate"]
+            else:
+                main["ExchRate"] = r
+            scs[no] = (main, [_sc_sub(no, 1, f"P{i}", 1000, 1000, 1.5)])
+        picks = picks or [(no, 1, 1000, None) for no in sc_rates]
+        products = {f"P{i}": 10.0 for i in range(1, len(sc_rates) + 1)}
+        return make_ctx(scs, picks, products=products, rate=rate)
+
+    def test_default_rate_is_first_sc_rate_like_st_2026304(self):
+        plan = plan_of(self._rate_ctx({"MO-1": 31.505}))
+        self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D("31.505"), "sc", False))
+        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385})
+        line = plan["lines"][0]
+        self.assertEqual((line["amount"], line["ml_amount"]), (D(1500), D(47258)))  # 1500 × 31.505 = 47257.5
+        self.assertEqual(rows_of(plan, "comBillAccounts")[0]["ExchRate"], D("31.505"))
+        self.assertEqual(plan["totals"]["local_total"], D(47258))
+        self.assertEqual([w["code"] for w in plan["warnings"] if w["code"] == "rate_required"], [])
+
+    def test_multi_sc_uses_first_picked_sc_rate(self):
+        rates = {"MO-1": 31.505, "MO-2": 32.0, "MO-3": 30.0}
+        plan = plan_of(self._rate_ctx(rates))
+        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("31.505"), "sc"))
+        # 勾選順序第一張是 MO-2 → 用 MO-2 的匯率，所有行都用同一個匯率
+        picks = [("MO-2", 1, 1000, None), ("MO-1", 1, 1000, None), ("MO-3", 1, 1000, None)]
+        plan = plan_of(self._rate_ctx(rates, picks))
+        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("32"), "sc"))
+        self.assertEqual(plan["rate_hint"]["sc"], 32.0)
+        self.assertEqual([l["ml_amount"] for l in plan["lines"]], [D(48000)] * 3)
+
+    def test_sc_rate_zero_or_missing_falls_back_to_currency(self):
+        for sc_rate in (0, None):
+            plan = plan_of(self._rate_ctx({"MO-1": sc_rate}))
+            self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("30.385"), "currency"), sc_rate)
+            self.assertEqual(plan["rate_hint"], {"sc": None, "currency": 30.385})
+        ctx = self._rate_ctx({"MO-1": 0})
+        ctx["currency_row"].update(BuyInRate=0, FixedRate=31.0)
+        self.assertEqual((plan_of(ctx)["exch_rate"], plan_of(ctx)["rate_source"]), (D("31"), "currency"))
+
+    def test_both_rates_zero_is_missing(self):
+        ctx = self._rate_ctx({"MO-1": 0})
+        ctx["currency_row"].update(BuyInRate=0, FixedRate=0)
+        plan = plan_of(ctx)
+        self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D(0), "missing", True))
+        self.assertEqual(plan["rate_hint"], {"sc": None, "currency": None})
+        self.assertIn("rate_required", [w["code"] for w in plan["warnings"]])
+
+    def test_manual_rate_beats_sc_rate(self):
+        plan = plan_of(self._rate_ctx({"MO-1": 31.505}, rate="32.77"))
+        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("32.77"), "manual"))
+        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385})
+
+    def test_local_currency_rate_is_one(self):
+        ctx = self._rate_ctx({"MO-1": 31.505})
+        ctx["curr"] = "NTD"
+        ctx["currency_row"] = {"CurrencyID": "NTD", "BuyInRate": 1, "FixedRate": 1, "AmountDeciDigits": 0}
+        plan = plan_of(ctx)
+        self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D(1), "local"))
 
     def test_user_price_used(self):
         no = "MO-1"
@@ -359,6 +424,86 @@ class InvoiceTargetTests(unittest.TestCase):
                 patch.object(ep, "_connect_write", side_effect=AssertionError("不可連線")):
             with self.assertRaises(inv.InvoiceValidationError):
                 inv.create_invoice({"target": "CHIComp03", "lines": [{"sc_no": "MO-1", "row_no": 1, "qty": 1}]})
+
+
+class _FakeConn:
+    """假連線：不碰任何 ERP；cursor 只給 _plan / _write 傳遞用（相關查詢全部 patch 掉）。"""
+    def __init__(self):
+        self.committed = False
+
+    def cursor(self):
+        return object()
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class InvoicePreviewCreateRateTests(unittest.TestCase):
+    """預覽與寫入都走 _plan → build_plan：沒帶匯率時兩邊的預設匯率、金額必須相同。"""
+    RAW = {"target": None, "inv_date": 20261028, "lines": [{"sc_no": "MO-1", "row_no": 1, "qty": 1000}]}
+
+    def _ctx(self, req_rate):
+        ctx = InvoicePlanTests._rate_ctx({"MO-1": 31.505, "MO-2": 32.0})
+        ctx["req_exch_rate"] = req_rate
+        return ctx
+
+    def _run(self, raw):
+        executed = []
+        patches = [
+            patch.object(inv, "resolve_target", return_value=("CHIComp13", {})),
+            patch.object(ep, "_connect_write", side_effect=lambda creds: _FakeConn()),
+            patch.object(ep, "_check_db_name"),
+            patch.object(inv, "_load_context", side_effect=lambda wcur, target, req, lock: self._ctx(req.get("exch_rate"))),
+            patch.object(inv, "_load_rollup_state"),
+            patch.object(inv, "next_invoice_serial", return_value=1),
+            patch.object(inv, "existing_numbers", return_value=[]),
+            patch.object(inv.er, "_execute_plan", side_effect=lambda wcur, plan: executed.append(plan)),
+            patch.object(inv, "_verify", return_value={}),
+        ]
+        for pt in patches:
+            pt.start()
+        try:
+            preview = inv.preview_invoice(dict(raw))
+            req = inv.normalize_request(dict(raw, confirm=True))
+            created = inv._write(req, "CHIComp13", {}, "web", "10.0.0.1")
+        finally:
+            for pt in reversed(patches):
+                pt.stop()
+        return preview, created, executed
+
+    def test_preview_and_create_use_same_default_rate(self):
+        preview, created, executed = self._run(self.RAW)
+        self.assertEqual((preview["exch_rate"], preview["rate_source"]), (31.505, "sc"))
+        for key in ("exch_rate", "rate_source", "rate_hint", "totals"):
+            self.assertEqual(created[key], preview[key], key)
+        self.assertEqual([l["ml_amount"] for l in created["lines"]], [l["ml_amount"] for l in preview["lines"]])
+        self.assertEqual(len(executed), 1)
+        self.assertEqual(rows_of(executed[0], "comBillAccounts")[0]["ExchRate"], D("31.505"))
+
+    def test_preview_and_create_same_manual_rate(self):
+        preview, created, _ = self._run({**self.RAW, "exch_rate": 32.77})
+        self.assertEqual((preview["exch_rate"], preview["rate_source"]), (32.77, "manual"))
+        self.assertEqual((created["exch_rate"], created["rate_source"]), (32.77, "manual"))
+
+    def test_fingerprint_is_stable_for_same_request(self):
+        fp = lambda raw: inv._fingerprint("CHIComp13", inv.normalize_request(raw))
+        self.assertEqual(fp(self.RAW), fp(dict(self.RAW)))
+        self.assertEqual(fp({**self.RAW, "exch_rate": 31.505}), fp({**self.RAW, "exch_rate": "31.505"}))
+        self.assertNotEqual(fp({**self.RAW, "exch_rate": 31.505}), fp({**self.RAW, "exch_rate": 32.77}))
+
+    def test_duplicate_submit_still_blocked_without_connecting(self):
+        from app import database as db
+        with patch.object(inv, "resolve_target", return_value=("CHIComp13", {})),                 patch.object(db, "find_recent_erp_invoice", return_value={"bill_no": "ST-2026001"}) as recent,                 patch.object(ep, "_connect_write", side_effect=AssertionError("不可連線")):
+            for raw in (self.RAW, {**self.RAW, "exch_rate": 31.505}):
+                with self.assertRaises(ep.DuplicateSubmitError):
+                    inv.create_invoice(dict(raw))
+        self.assertEqual(recent.call_count, 2)
 
 
 # 與 static/modules/erp_invoice.js buildBody() 送出的欄位一致

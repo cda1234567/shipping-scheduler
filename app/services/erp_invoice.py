@@ -48,7 +48,7 @@ S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數�
   出庫不重算 CAvgCost。
 倉庫：ERP_INVOICE_WAREHOUSE（預設 001，公司3實單全是 001）。預設倉不夠、別倉較多時改用庫存最多的倉並在預覽顯示。
   庫存不足、超開 S/C 剩餘量：預覽警告，沒帶 confirm 不寫入。料號在 comProduct 不存在（例如公司13的 ItemNo='*'）直接報錯。
-匯率：預設 comCurrencySys.BuyInRate（公司3 USD 30.385），預覽可改（請求模型一定要收 exch_rate），顯示 S/C 原匯率當參考。
+匯率：預設第一張勾選 S/C 的 ExchRate（與正航手開 ST-2026304 一致）；S/C 沒有匯率才用 comCurrencySys.BuyInRate（公司3 USD 30.385），預覽可改（請求模型一定要收 exch_rate），幣別檔匯率顯示當參考。
 主檔：測試公司缺客戶（comCustomer Flag=1）/ 料號時從來源公司（ERP_SQL_DATABASE）照抄；正式公司禁止自動抄主檔。
 錯誤訊息一律不含帳號密碼。
 """
@@ -565,6 +565,8 @@ def build_plan(
         rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
     elif local:
         rate, rate_source = Decimal(1), "local"
+    elif sc_rate > 0:  # 與正航手開一致：預設帶第一張 S/C 的匯率（ST-2026304 用 31.505）
+        rate, rate_source = sc_rate, "sc"
     elif sys_rate > 0:
         rate, rate_source = sys_rate, "currency"
     else:
