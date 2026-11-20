@@ -5347,6 +5347,9 @@ body.desktop-dark .frequent-zero-usage li span {
 .erp-po-result.is-ok { background: #dcfce7; color: #166534; }
 .erp-po-result.is-error { background: #fee2e2; color: #b91c1c; }
 .erp-po-history-title { margin: 6px 0 0; font-size: 14px; color: #111827; }
+.erp-invoice-print-box { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+.erp-invoice-print-box input { width: 10em; padding: 4px 6px; }
+.erp-invoice-print-msg { color: #dc2626; }
 .erp-po-row-error { color: #b91c1c; background: #fef2f2; }
 .erp-po-actions .spacer { flex: 1; }
 

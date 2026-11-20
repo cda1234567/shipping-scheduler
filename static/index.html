@@ -474,9 +474,15 @@
         <div id="erp-invoice-preview" class="erp-po-preview" hidden></div>
         <div id="erp-invoice-result" class="erp-po-result" hidden></div>
         <h4 class="erp-po-history-title">Invoice 紀錄（本機）</h4>
+        <div class="erp-invoice-print-box">
+          <label for="erp-invoice-print-no">列印舊 Invoice</label>
+          <input type="text" id="erp-invoice-print-no" class="mono" placeholder="輸入 ST-2026xxx" maxlength="10">
+          <button class="btn" id="btn-erp-invoice-print-no" type="button">列印</button>
+          <span id="erp-invoice-print-msg" class="erp-invoice-print-msg" hidden></span>
+        </div>
         <div class="erp-po-table-wrap">
           <table class="erp-po-table">
-            <thead><tr><th>時間</th><th>Invoice</th><th>公司</th><th>客戶</th><th class="num">合計</th><th class="num">匯率</th><th>狀態</th></tr></thead>
+            <thead><tr><th>時間</th><th>Invoice</th><th>公司</th><th>客戶</th><th class="num">合計</th><th class="num">匯率</th><th>狀態</th><th>列印</th></tr></thead>
             <tbody id="erp-invoice-history"></tbody>
           </table>
         </div>

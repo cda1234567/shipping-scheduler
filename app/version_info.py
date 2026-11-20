@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.3"
+APP_VERSION = "v2026.11.20.4"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 可自填發票單號 3 碼流水號，空白照舊自動編號"
+APP_HEADLINE = "開 Invoice 可列印銷貨單（仿正航 KPM5-INVOICE 格式），舊單輸入單號也能印"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.4：開 Invoice 可列印銷貨單（仿正航 KPM5-INVOICE 格式）", "items": [
+        "新增 Invoice 列印頁（A4 直式，瀏覽器列印）：版面照正航「KPM5-INVOICE」印出的 ST-2026304——公司抬頭、「銷貨單」標題、Page n of N、INVOICE / DATE（Nov.16,2026 格式）、客戶名稱、QTY / DESCRIPTION / UNIT PRICE（下方小字貿易條件，例 FOB）/ TTL AMOUNT，依客戶 PO 分組印 PO#，數量 4 位小數、單價與金額 3 位小數加千分位，合計雙底線，最後一頁印簽核 / 審核 / 製單。",
+        "怎麼用：開 Invoice 分頁的 Invoice 紀錄每列多一顆「列印」；開立成功的訊息旁多一顆「列印 ST-2026xxx」；紀錄上方可直接輸入完整單號（例 ST-2026304）按「列印」或 Enter 印舊單，格式不對會紅字提示。都會開新分頁，按「列印」送印表機或存 PDF。",
+        "料號結尾 -TAB 的列不列印、不算進列印合計；API 會另外列出被排除的列（列號、料號、數量、金額）與全部列的合計，畫面上方也會提示排除幾列，不會悄悄藏掉。",
+        "資料來源：正航實單 TraBillSub 的數量 / 單價是佔位值，所以數量、單價、金額優先取同列號的 comProdRec；表頭日期 / 客戶 / 幣別 / 金額空白時取 comBillAccounts；客戶 PO 取來源 S/C 的 Ref（沒有用 CustBillNo，再沒有用 Invoice 的 Ref）。每個值都標示來源。",
+        "全程唯讀：新 API /api/erp-invoice/print-data?bill_no=ST-2026304 只下 SELECT，結束一律 rollback，不需要開 Invoice 的寫入開關；單號格式不對回 400、找不到回 404、ERP 未設定回 503。預覽與開立 Invoice 的行為都沒動。",
+    ]},
     {"title": "v2026.11.20.3：開 Invoice 可自填發票單號 3 碼流水號，空白照舊自動編號", "items": [
         "開 Invoice 預覽畫面發票日期旁多一個「發票流水號」欄：前綴固定為 ST-{發票年}（例 ST-2026），只填後 3 碼（輸入 305 → ST-2026305、輸入 5 → ST-2026005）；按 Enter 或離開欄位重新預覽，旁邊顯示最後單號，確認視窗也會顯示 Invoice 單號。",
         "空白 = 自動編號（沿用原規則：當年最大流水 + 1，寫入當下被佔用會自動順延）；只接受 1～999 的數字，完整單號 ST-2026305 只在年份與發票日期相同時接受，其他一律回 400 並說明原因。",

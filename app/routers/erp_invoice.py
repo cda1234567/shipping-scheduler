@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 
 from ..models import ErpInvoiceRequest
-from ..services import erp_invoice, erp_purchase
+from ..services import erp_invoice, erp_invoice_print, erp_purchase
 from ..services.erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
 router = APIRouter(prefix="/erp-invoice")
@@ -15,6 +15,8 @@ ACTOR = "web"
 
 def _http_error(exc: Exception) -> HTTPException:
     message = erp_purchase._safe_message(exc)
+    if isinstance(exc, erp_invoice_print.InvoiceNotFound):
+        return HTTPException(404, message)
     if isinstance(exc, erp_purchase.DuplicateSubmitError):
         return HTTPException(409, message)
     if isinstance(exc, erp_purchase.PoValidationError):
@@ -60,3 +62,12 @@ async def invoice_create(req: ErpInvoiceRequest, request: Request):
 @router.get("/history")
 async def invoice_history(limit: int = 50):
     return {"invoices": await run_in_threadpool(erp_invoice.list_history, max(1, min(int(limit), 200)))}
+
+
+@router.get("/print-data")
+async def invoice_print_data(bill_no: str = ""):
+    """列印用資料（唯讀，不看寫入開關）：單號需為完整 ST-yyyynnn。"""
+    try:
+        return await run_in_threadpool(erp_invoice_print.get_print_data, bill_no)
+    except ErpError as exc:
+        raise _http_error(exc) from None

@@ -53,6 +53,28 @@ export function parseSerial(value) {
   return n >= 1 && n <= 999 ? String(n).padStart(3, "0") : null;
 }
 
+/** 列印頁網址：單號需為完整 ST-yyyynnn，否則回 null（純函式）。 */
+export function printUrl(billNo) {
+  const no = String(billNo ?? "").trim().toUpperCase();
+  return /^ST-\d{7}$/.test(no) ? `/static/erp_invoice_print.html?bill=${encodeURIComponent(no)}` : null;
+}
+
+function openPrint(billNo) {
+  const url = printUrl(billNo);
+  if (url) window.open(url, "_blank", "noopener");
+  return Boolean(url);
+}
+
+function printByNumber() {
+  const input = el("erp-invoice-print-no");
+  const msg = el("erp-invoice-print-msg");
+  const ok = openPrint(input?.value);
+  if (msg) {
+    msg.hidden = ok;
+    msg.textContent = ok ? "" : "單號格式不正確，請輸入完整單號，例如 ST-2026304";
+  }
+}
+
 function requireEdit() {
   if (isEditAuthenticated()) return true;
   showToast("目前為唯讀模式，請先登入編輯。");
@@ -329,8 +351,9 @@ async function handleCreate() {
       r = await apiPost("/api/erp-invoice/create", { ...body, confirm: true });
     }
     result.className = "erp-po-result is-ok";
-    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：Invoice <strong class="mono">${esc(r.bill_no)}</strong>，客戶 ${esc(r.customer.id)}，${esc(r.currency)} ${fmt(r.totals.total)}（本幣 ${fmt(r.totals.local_total)}）${r.closed_scs?.length ? `　已結案 S/C：${esc(r.closed_scs.join("、"))}` : ""}`;
+    result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：Invoice <strong class="mono">${esc(r.bill_no)}</strong>，客戶 ${esc(r.customer.id)}，${esc(r.currency)} ${fmt(r.totals.total)}（本幣 ${fmt(r.totals.local_total)}）${r.closed_scs?.length ? `　已結案 S/C：${esc(r.closed_scs.join("、"))}` : ""} <button class="btn btn-sm" id="btn-erp-invoice-print-created" type="button">列印 ${esc(r.bill_no)}</button>`;
     result.hidden = false;
+    el("btn-erp-invoice-print-created")?.addEventListener("click", () => openPrint(r.bill_no));
     hidePreview();
     _picker.clear();
     await _picker.reload();
@@ -357,10 +380,11 @@ async function refreshHistory() {
         <td class="mono">${ok ? esc(o.bill_no) : "—"}</td><td>${esc(o.target_db)}</td>
         <td>${esc(o.customer_id)} ${esc(o.customer_name)}</td>
         <td class="num">${ok ? `${esc(o.currency)} ${fmt(o.total)}` : "—"}</td><td class="num">${ok ? fmt(o.exch_rate) : "—"}</td>
-        <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td></tr>`;
-    }).join("") : '<tr><td colspan="7" class="erp-po-hint">尚無紀錄</td></tr>';
+        <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td>
+        <td>${ok && printUrl(o.bill_no) ? `<button class="btn btn-sm" type="button" data-print-bill="${esc(o.bill_no)}">列印</button>` : ""}</td></tr>`;
+    }).join("") : '<tr><td colspan="8" class="erp-po-hint">尚無紀錄</td></tr>';
   } catch (error) {
-    body.innerHTML = `<tr><td colspan="7" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="8" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
   }
 }
 
@@ -407,6 +431,16 @@ export async function initErpInvoice() {
     onChange: () => hidePreview(),
   });
   el("btn-erp-invoice-preview").addEventListener("click", handlePreview);
+  el("erp-invoice-history")?.addEventListener("click", event => {
+    const btn = event.target.closest("[data-print-bill]");
+    if (btn) openPrint(btn.dataset.printBill);
+  });
+  el("btn-erp-invoice-print-no")?.addEventListener("click", printByNumber);
+  el("erp-invoice-print-no")?.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    printByNumber();
+  });
   el("erp-invoice-date").addEventListener("change", () => { void handleDateChange(); });
   el("erp-invoice-update-cost")?.addEventListener("change", () => { _costTouched = true; void handleDateChange(); });
   await loadConfig();
