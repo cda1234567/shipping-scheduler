@@ -506,6 +506,162 @@ class InvoicePreviewCreateRateTests(unittest.TestCase):
         self.assertEqual(recent.call_count, 2)
 
 
+class _TrackConn(_FakeConn):
+    def __init__(self):
+        super().__init__()
+        self.rollbacks = 0
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+class InvoiceBillSerialTests(unittest.TestCase):
+    """使用者自填 3 碼流水號：空白 = 自動；自填不呼叫 next_invoice_serial；已存在預覽擋、寫入交易內再擋。"""
+    RAW = {"target": None, "inv_date": 20261028, "lines": [{"sc_no": "MO-1", "row_no": 1, "qty": 1000}]}
+
+    def _patches(self, existing, executed, conn, serial=304):
+        ctx = lambda wcur, target, req, lock: InvoicePlanTests._rate_ctx({"MO-1": 31.505})
+        return [
+            patch.object(inv, "resolve_target", return_value=("CHIComp13", {})),
+            patch.object(ep, "_connect_write", side_effect=lambda creds: conn),
+            patch.object(ep, "_check_db_name"),
+            patch.object(inv, "_load_context", side_effect=ctx),
+            patch.object(inv, "_load_rollup_state"),
+            patch.object(inv, "next_invoice_serial", return_value=serial),
+            patch.object(inv, "existing_numbers", side_effect=existing),
+            patch.object(inv.er, "_execute_plan", side_effect=lambda wcur, plan: executed.append(plan)),
+            patch.object(inv, "_verify", return_value={}),
+        ]
+
+    def _run(self, fn, existing=lambda cur, no, lock=True: [], conn=None):
+        executed, conn = [], conn or _TrackConn()
+        patches = self._patches(existing, executed, conn)
+        for pt in patches:
+            pt.start()
+        try:
+            return fn(), executed, conn, inv.next_invoice_serial
+        finally:
+            for pt in reversed(patches):
+                pt.stop()
+
+    def _req(self, serial):
+        return inv.normalize_request({**self.RAW, "bill_serial": serial, "confirm": True})
+
+    def test_parse_serial(self):
+        year = lambda: 2026
+        for value, want in ((None, None), ("", None), ("  ", None), (305, "305"), ("305", "305"), (" 305 ", "305"),
+                            ("05", "005"), (5, "005"), ("5", "005"), ("ST-2026305", "305"), ("st-2026007", "007")):
+            self.assertEqual(inv.parse_bill_serial(value, year), want, value)
+        for bad in (0, "0", "000", 1000, "1000", "abc", "3.5", "-5", "３０５", True, "ST-2025305"):
+            with self.assertRaises(inv.InvoiceValidationError, msg=bad):
+                inv.parse_bill_serial(bad, year)
+
+    def test_normalize_uses_invoice_year_for_full_number(self):
+        self.assertEqual(self._req("ST-2026305")["bill_serial"], "305")
+        self.assertIsNone(self._req("")["bill_serial"])
+        with self.assertRaises(inv.InvoiceValidationError):
+            inv.normalize_request({**self.RAW, "inv_date": 20251231, "bill_serial": "ST-2026305"})
+
+    def test_blank_is_auto_next_number(self):
+        r, _, _, nxt = self._run(lambda: inv.preview_invoice({**self.RAW, "bill_serial": ""}))
+        self.assertEqual((r["bill_no"], r["bill_serial"], r["bill_serial_manual"], r["bill_prefix"]),
+                         ("ST-2026304", "304", False, "ST-2026"))
+        self.assertFalse(r["number_taken"])
+        nxt.assert_called_once()
+
+    def test_typed_serial_skips_next_serial(self):
+        for typed, want in ((305, "ST-2026305"), ("5", "ST-2026005"), ("271", "ST-2026271")):  # 271 = 跳號，可補
+            r, _, _, nxt = self._run(lambda: inv.preview_invoice({**self.RAW, "bill_serial": typed}))
+            self.assertEqual((r["bill_no"], r["bill_serial_manual"]), (want, True), typed)
+            self.assertFalse(r["number_taken"])
+            nxt.assert_not_called()
+            created, executed, conn, nxt = self._run(lambda: inv._write(self._req(typed), "CHIComp13", {}, "web", ""))
+            self.assertEqual(created["bill_no"], want)
+            self.assertEqual(rows_of(executed[0], "TraBillMain")[0]["BillNo"], want)
+            self.assertTrue(conn.committed)
+            nxt.assert_not_called()
+
+    def test_taken_typed_number_preview_blocks(self):
+        r, _, _, _ = self._run(lambda: inv.preview_invoice({**self.RAW, "bill_serial": "304"}),
+                               existing=lambda cur, no, lock=True: ["TraBillMain", "comProdRec"])
+        self.assertTrue(r["number_taken"])
+        self.assertEqual(r["number_taken_in"], ["TraBillMain", "comProdRec"])
+        w = [w for w in r["warnings"] if w["code"] == "number_taken"]
+        self.assertEqual(len(w), 1)
+        self.assertIs(w[0]["blocking"], True)
+        self.assertIs(w[0]["needs_confirm"], False)
+        self.assertIn("ST-2026304", w[0]["message"])
+        self.assertIn("TraBillMain", w[0]["message"])
+        self.assertTrue(r["lines"])  # 明細照樣算出來
+
+    def test_create_with_taken_typed_number_writes_nothing(self):
+        def boom():
+            return inv._write(self._req("304"), "CHIComp13", {}, "web", "")
+        with self.assertRaises(inv.InvoiceValidationError) as cm:
+            self._run(boom, existing=lambda cur, no, lock=True: ["TraBillMain"])
+        self.assertIn("ST-2026304", str(cm.exception))
+
+    def test_race_free_at_preview_taken_at_write(self):
+        existing = lambda cur, no, lock=True: ["comBillAccounts"] if lock else []
+        r, _, _, _ = self._run(lambda: inv.preview_invoice({**self.RAW, "bill_serial": "306"}), existing=existing)
+        self.assertFalse(r["number_taken"])
+        conn, executed = _TrackConn(), []
+        patches = self._patches(existing, executed, conn)
+        for pt in patches:
+            pt.start()
+        try:
+            with self.assertRaises(inv.InvoiceValidationError):
+                inv._write(self._req("306"), "CHIComp13", {}, "web", "")
+            inv.next_invoice_serial.assert_not_called()
+        finally:
+            for pt in reversed(patches):
+                pt.stop()
+        self.assertEqual(executed, [])
+        self.assertFalse(conn.committed)
+        self.assertGreaterEqual(conn.rollbacks, 1)
+
+    def test_duplicate_key_with_typed_serial_does_not_retry(self):
+        conn, calls = _TrackConn(), []
+
+        def dup(wcur, plan):
+            calls.append(plan["bill_no"])
+            raise RuntimeError("Cannot insert duplicate key row")
+
+        patches = self._patches(lambda cur, no, lock=True: [], [], conn)
+        patches[7] = patch.object(inv.er, "_execute_plan", side_effect=dup)
+        for pt in patches:
+            pt.start()
+        try:
+            with patch.object(inv.er, "is_duplicate_key_error", return_value=True):
+                with self.assertRaises(inv.InvoiceValidationError) as cm:
+                    inv._write(self._req("307"), "CHIComp13", {}, "web", "")
+        finally:
+            for pt in reversed(patches):
+                pt.stop()
+        self.assertEqual(calls, ["ST-2026307"])  # 不換號、不重試
+        self.assertIn("ST-2026307", str(cm.exception))
+        self.assertFalse(conn.committed)
+        self.assertGreaterEqual(conn.rollbacks, 1)
+
+    def test_create_invoice_rejects_taken_number_and_logs_error(self):
+        from app import database as db
+        with patch.object(db, "find_erp_invoice_by_token", return_value=None), \
+                patch.object(db, "find_recent_erp_invoice", return_value=None), \
+                patch.object(db, "add_erp_invoice", return_value=1) as add, \
+                patch.object(db, "log_activity"):
+            with self.assertRaises(inv.InvoiceValidationError):
+                self._run(lambda: inv.create_invoice({**self.RAW, "bill_serial": "304", "confirm": True}),
+                          existing=lambda cur, no, lock=True: ["TraBillMain"])
+        self.assertEqual(add.call_args[0][0]["status"], "error")
+
+    def test_fingerprint_includes_serial(self):
+        fp = lambda raw: inv._fingerprint("CHIComp13", inv.normalize_request(raw))
+        self.assertNotEqual(fp(self.RAW), fp({**self.RAW, "bill_serial": "305"}))
+        self.assertEqual(fp(self.RAW), fp({**self.RAW, "bill_serial": " "}))
+        self.assertEqual(fp({**self.RAW, "bill_serial": 5}), fp({**self.RAW, "bill_serial": "005"}))
+        self.assertNotEqual(fp({**self.RAW, "bill_serial": "305"}), fp({**self.RAW, "bill_serial": "306"}))
+
+
 # 與 static/modules/erp_invoice.js buildBody() 送出的欄位一致
 BODY = {
     "target": None,
@@ -515,6 +671,7 @@ BODY = {
     "client_token": "tok",
     "update_cost": True,
     "exch_rate": 32.215,
+    "bill_serial": None,
 }
 
 
@@ -534,6 +691,9 @@ class InvoiceRouteTests(unittest.TestCase):
         self.assertEqual(req["exch_rate"], 32.215)
         self.assertIsNone(ErpInvoiceRequest(lines=[]).dict()["exch_rate"])
         self.assertEqual(ErpInvoiceRequest(lines=[], inv_date="2026-10-28").dict()["inv_date"], "2026-10-28")
+        for typed in (305, "305", " 305 ", "05", "ST-2026305"):
+            got = ErpInvoiceRequest(lines=[], bill_serial=typed).dict()["bill_serial"]
+            self.assertEqual(inv.parse_bill_serial(got, lambda: 2026), "005" if typed == "05" else "305", typed)
 
     def test_preview_passes_exch_rate(self):
         for rate in (32.77, 32.215):
@@ -651,6 +811,11 @@ assert.throws(() => mod.invoiceLines([{ line: { sc_no: 'MO-1', row_no: 2 }, qty:
 assert.equal(mod.parseRate('32.215'), 32.215);
 assert.equal(mod.parseRate(''), null);
 assert.equal(mod.parseRate('0'), null);
+assert.equal(mod.parseSerial(''), '');
+assert.equal(mod.parseSerial(' 305 '), '305');
+assert.equal(mod.parseSerial('5'), '005');
+assert.equal(mod.parseSerial('0'), null);
+assert.equal(mod.parseSerial('abc'), null);
 """
         res = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)

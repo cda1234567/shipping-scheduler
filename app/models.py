@@ -498,6 +498,7 @@ class ErpInvoiceRequest(BaseModel):
     client_token: str = ""  # 前端每次開啟預覽產生，防重複送出
     update_cost: Optional[bool] = None  # 是否扣總成本；空 = 環境變數 ERP_INVOICE_UPDATE_COST（預設 1）
     exch_rate: Optional[float] = None  # 本次發票匯率；空 = 正航幣別檔 BuyInRate
+    bill_serial: Optional[Union[int, str]] = None  # 發票單號 3 碼流水號（ST-{年}xxx）；空 = 自動編號
 
 # ── 缺料採購 ──────────────────────────────────────────────────────────────────
 

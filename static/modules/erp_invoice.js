@@ -14,6 +14,8 @@ let _rePreviewPending = false;
 let _costTouched = false;
 let _rate = "";            // 預覽畫面輸入的發票匯率；空 = 用第一張 S/C 匯率（沒有才用正航幣別檔）
 let _rateCustomer = null;  // 匯率是哪個客戶時輸入的；換客戶就不沿用
+let _serial = "";          // 預覽畫面輸入的發票流水號（3 碼）；空 = 自動編號
+let _serialCustomer = null; // 流水號是哪個客戶時輸入的；換客戶就不沿用
 let _lastShown = null;     // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
@@ -40,6 +42,15 @@ export function parseRate(value) {
   if (!text) return null;
   const n = Number(text);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** 流水號輸入值 → 3 碼字串；空白回 ""（= 自動），不合法回 null。 */
+export function parseSerial(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (!/^[0-9]{1,3}$/.test(text)) return null;
+  const n = Number(text);
+  return n >= 1 && n <= 999 ? String(n).padStart(3, "0") : null;
 }
 
 function requireEdit() {
@@ -80,6 +91,11 @@ function currentRate() {
   return parseRate(_rate);
 }
 
+function currentSerial() {
+  if (!_serial || _picker.lockedGroup() !== _serialCustomer) return "";
+  return _serial;
+}
+
 function currentInvDate() {
   const date = el("erp-invoice-date")?.value || "";
   return date ? Number(date.replaceAll("-", "")) : null;
@@ -97,6 +113,7 @@ function buildBody(confirm = false) {
     client_token: _token,
     update_cost: updateCostChecked(),
     exch_rate: currentRate(),
+    bill_serial: currentSerial() || null,
   };
 }
 
@@ -130,6 +147,39 @@ function bindRateInput() {
   });
 }
 
+// 流水號輸入框：同匯率，change 或 Enter 重新預覽；空白 = 回到自動編號
+function applySerial(value) {
+  const serial = parseSerial(value);
+  if (serial === null) { showToast("發票流水號只能輸入 1～999 的數字（空白 = 自動）", { tone: "error" }); return; }
+  const same = currentSerial() === serial;
+  _serial = serial;
+  _serialCustomer = _picker.lockedGroup();
+  if (_busy) { if (!same) _rePreviewPending = true; return; }
+  if (same && _preview && (_preview.bill_serial_manual ? _preview.bill_serial : "") === serial) return;  // Enter 後又 blur
+  void handlePreview();
+}
+
+function bindSerialInput() {
+  const input = el("erp-invoice-serial");
+  if (!input) return;
+  input.addEventListener("input", () => {
+    const btn = el("btn-erp-invoice-create");
+    if (btn) { btn.disabled = true; btn.title = "流水號已修改，按 Enter 或點別處重新預覽"; }
+  });
+  input.addEventListener("change", event => applySerial(event.target.value));
+  input.addEventListener("keydown", event => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    applySerial(event.target.value);
+  });
+}
+
+function serialInput(r) {
+  const val = currentSerial() || (r.bill_serial_manual ? r.bill_serial : "");
+  const taken = r.number_taken ? ` <strong class="erp-po-warn" style="display:inline">單號 ${esc(r.bill_no)} 已存在（${esc((r.number_taken_in || []).join("、"))}），請改其他流水號或留空</strong>` : "";
+  return `　<label class="erp-receive-rate-label"><strong>發票流水號</strong> <span class="mono">${esc(r.bill_prefix || "")}</span><input type="text" id="erp-invoice-serial" class="num mono" inputmode="numeric" maxlength="3" style="width:4em" placeholder="空白=自動" value="${esc(val)}"></label> <span style="color:#999">→ <span class="mono">${esc(r.bill_no)}</span>${r.bill_serial_manual ? "（自填）" : "（自動）"}</span>${taken}`;
+}
+
 function rateInput(r) {
   if (r.rate_source === "local") return "";
   const h = r.rate_hint || {};
@@ -154,21 +204,22 @@ function renderPreview(r, error = "") {
   const cur = esc(r.currency || "NTD");
   const costText = r.update_cost === false ? '<span class="erp-receive-cost-off">不扣總成本</span>' : "扣總成本";
   const errorBox = error ? `<div id="erp-invoice-preview-error" class="erp-po-result is-error">❌ 預覽失敗：${esc(error)}（下方是上一次的預覽，不能照這份開立；修正後按 Enter 或「預覽」重試）</div>` : "";
-  const blocked = Boolean(error) || r.rate_required;
+  const blocked = Boolean(error) || r.rate_required || r.number_taken;
   p.innerHTML = `${errorBox}
     <div class="erp-po-badge ${r.is_production ? "is-prod" : "is-test"} erp-po-badge-small">寫入：${esc(targetText(r.target_label, r.is_production))}　${costText}</div>
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：<strong class="mono">${esc(r.bill_no)}</strong>　客戶 ${esc(r.customer.id)} ${esc(r.customer.name)}　來源 S/C <span class="mono">${esc((r.sc_nos || []).join("、"))}</span></div>
-    <div class="erp-po-hint">發票日期 ${ymd(r.inv_date)}　幣別 ${cur}${rateInput(r)}</div>
+    <div class="erp-po-hint">發票日期 ${ymd(r.inv_date)}${serialInput(r)}　幣別 ${cur}${rateInput(r)}</div>
     ${warn}
     <div class="erp-po-table-wrap"><table class="erp-po-table">
       <thead><tr><th>#</th><th>S/C</th><th>料號</th><th>品名</th><th class="num">未完成量</th><th class="num">數量</th><th class="num">單價（${cur}）</th><th class="num">金額（${cur}）</th><th class="num">本幣金額</th><th>倉別</th><th class="num">庫存</th></tr></thead>
       <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.sc_no)} #${l.sc_row}</td><td class="mono">${esc(l.prod_id)}</td><td>${esc(l.prod_name)}</td><td class="num">${fmt(l.qty_remain)}</td><td class="num">${fmt(l.qty)}</td><td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.ml_amount)}</td><td class="mono">${esc(l.warehouse)}</td><td class="num">${fmt(l.stock)}</td></tr>`).join("")}</tbody>
     </table></div>
     <div class="erp-po-totals">數量 ${fmt(r.totals.sum_qty)}　<strong>合計 ${cur} ${fmt(r.totals.total)}</strong>　本幣 ${fmt(r.totals.local_total)}（匯率 ${fmt(r.exch_rate)}）</div>
-    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-invoice-create" type="button"${blocked ? ` disabled title="${error ? "預覽失敗，請重新預覽" : "請先輸入發票匯率"}"` : ""}>確認開立</button></div>`;
+    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-invoice-create" type="button"${blocked ? ` disabled title="${error ? "預覽失敗，請重新預覽" : (r.number_taken ? "單號已存在，請改流水號" : "請先輸入發票匯率")}"` : ""}>確認開立</button></div>`;
   p.hidden = false;
   el("btn-erp-invoice-create").addEventListener("click", handleCreate);
   bindRateInput();
+  bindSerialInput();
 }
 
 function showPreviewError(message, last) {
@@ -254,10 +305,19 @@ async function handleCreate() {
     await handlePreview();
     return;
   }
+  if ((_preview.bill_serial_manual ? _preview.bill_serial : "") !== (body.bill_serial || "")) {
+    showToast("發票流水號已變更，已重新預覽，請確認後再按「確認開立」");
+    await handlePreview();
+    return;
+  }
+  if (_preview.number_taken) {
+    showToast(`單號 ${_preview.bill_no} 已存在，請改其他流水號或留空`, { tone: "error" });
+    return;
+  }
   // 寫入時帶預覽用的匯率，確保寫入金額與畫面一致
   body.exch_rate = Number(_preview.exch_rate);
   const tgt = targetText(_preview.target_label || _config?.label, _preview.is_production);
-  if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n確定要在「${tgt}」開立 Invoice 嗎？\n客戶 ${_preview.customer.id} ${_preview.customer.name}　發票日期 ${ymd(body.inv_date)}\n幣別 ${_preview.currency}　匯率 ${_preview.exch_rate}　合計 ${fmt(_preview.totals?.total)}　本幣 ${fmt(_preview.totals?.local_total)}\n寫入後無法從本系統修改或刪除。`)) return;
+  if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n確定要在「${tgt}」開立 Invoice 嗎？\nInvoice 單號 ${_preview.bill_no}${_preview.bill_serial_manual ? "（自填）" : "（自動，寫入當下若被佔用會順延）"}\n客戶 ${_preview.customer.id} ${_preview.customer.name}　發票日期 ${ymd(body.inv_date)}\n幣別 ${_preview.currency}　匯率 ${_preview.exch_rate}　合計 ${fmt(_preview.totals?.total)}　本幣 ${fmt(_preview.totals?.local_total)}\n寫入後無法從本系統修改或刪除。`)) return;
   _busy = true;
   const btn = el("btn-erp-invoice-create");
   if (btn) btn.disabled = true;

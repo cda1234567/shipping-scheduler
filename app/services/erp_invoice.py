@@ -57,6 +57,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import socket
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -247,6 +248,35 @@ def next_invoice_serial(cur, year: int, lock: bool) -> int:
     return top + 1
 
 
+def parse_bill_serial(value: Any, year_of) -> Optional[str]:
+    """使用者輸入的發票流水號：空 = 自動；1～999 補成 3 碼；完整單號 ST-{年}xxx 只在年份與發票年相同時接受。"""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        _bad_serial(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    full = re.fullmatch(r"ST-?(\d{4})(\d{3})", text, flags=re.IGNORECASE)
+    if full:
+        year = year_of()
+        if int(full.group(1)) != year:
+            raise InvoiceValidationError(
+                f"發票單號 {text} 的年份與發票日期年份 {year} 不同，請只輸入 3 碼流水號（單號前綴固定為 {BILL_PREFIX}{year}）")
+        text = full.group(2)
+    if not re.fullmatch(r"[0-9]+", text) or not 1 <= int(text) <= 999:
+        _bad_serial(value)
+    return f"{int(text):03d}"
+
+
+def _bad_serial(value: Any) -> None:
+    raise InvoiceValidationError(f"發票流水號「{value}」不正確：只能輸入 1～999 的數字（空白 = 自動編號）")
+
+
+def number_taken_message(bill_no: str, taken: List[str]) -> str:
+    return f"單號 {bill_no} 已存在於正航（{'、'.join(taken)}），請改用其他流水號或留空自動編號"
+
+
 def existing_numbers(cur, bill_no: str, lock: bool = True) -> List[str]:
     """寫入前確認單號在正航都還不存在；回傳已存在的表（空 = 可以寫）。"""
     hint = _HINT if lock else ""
@@ -292,11 +322,14 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
         exch_rate = ep._to_decimal(raw.get("exch_rate"), "匯率")
         if exch_rate <= 0:
             raise InvoiceValidationError("匯率必須大於 0")
+    bill_serial = parse_bill_serial(
+        raw.get("bill_serial"), lambda: parse_inv_date(raw.get("inv_date"), er.date_to_int(local_now().date())) // 10000)
     return {
         "target": ep._text(raw.get("target")),
         "inv_date_raw": raw.get("inv_date"),
         "lines": lines,
         "exch_rate": exch_rate,
+        "bill_serial": bill_serial,
         "confirm": raw.get("confirm") is True,
         "client_token": ep._text(raw.get("client_token"))[:80],
         "update_cost": update_cost_default() if raw.get("update_cost") is None else raw.get("update_cost") is True,
@@ -825,7 +858,9 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
     out = {
         "target": target, "target_label": ep.target_label(target), "is_test": ep.is_test(target),
         "is_production": target == ep.PRODUCTION_TARGET, "update_cost": plan["update_cost"],
-        "bill_no": plan["bill_no"], "today": plan["today"], "inv_date": plan["inv_date"],
+        "bill_no": plan["bill_no"], "bill_serial": plan["bill_serial"], "bill_serial_manual": plan["bill_serial_manual"],
+        "bill_prefix": plan["bill_prefix"], "number_taken": plan["number_taken"], "number_taken_in": plan["number_taken_in"],
+        "today": plan["today"], "inv_date": plan["inv_date"],
         "customer": plan["customer"], "currency": plan["currency"], "exch_rate": _jsonable(plan["exch_rate"]),
         "rate_source": plan["rate_source"], "rate_required": plan["rate_required"], "rate_hint": plan["rate_hint"],
         "origin_no": plan["origin_no"], "sc_nos": plan["sc_nos"], "default_warehouse": plan["default_warehouse"],
@@ -856,11 +891,20 @@ def _plan(wcur, target: str, req: Dict[str, Any], lock: bool, client_ip: str = "
     ctx = _load_context(wcur, target, req, lock)
     _load_rollup_state(wcur, ctx, inv_date // 100)
     year = inv_date // 10000
-    bill_no = make_bill_no(year, next_invoice_serial(wcur, year, lock))
-    return build_plan(
+    manual = req.get("bill_serial")  # 使用者自填的 3 碼流水號；空 = 自動取最大 + 1
+    serial = int(manual) if manual else next_invoice_serial(wcur, year, lock)
+    bill_no = make_bill_no(year, serial)
+    plan = build_plan(
         ctx, target=target, today=today, inv_date=inv_date, bill_no=bill_no,
         maker=ep._env("ERP_PO_MAKER", ep.DEFAULT_MAKER), maker_id=ep._env("ERP_PO_MAKER_ID", ep.DEFAULT_MAKER_ID),
         client_ip=client_ip, actor=actor, now=now, update_cost=req.get("update_cost", True))
+    taken = existing_numbers(wcur, bill_no, lock=lock) if manual else []
+    plan.update(bill_serial=f"{serial:03d}", bill_serial_manual=bool(manual), bill_prefix=f"{BILL_PREFIX}{year}",
+                number_taken=bool(taken), number_taken_in=taken)
+    if taken:
+        plan["warnings"].append({"code": "number_taken", "needs_confirm": False, "blocking": True,
+                                 "message": number_taken_message(bill_no, taken)})
+    return plan
 
 
 def preview_invoice(raw_req: Dict[str, Any]) -> Dict[str, Any]:
@@ -883,11 +927,14 @@ def _fingerprint(target: str, req: Dict[str, Any]) -> str:
     lines = sorted([l["sc_no"], l["row_no"], str(l["qty"]), str(l["price"])] for l in req["lines"])
     parts: List[Any] = [target, str(req.get("inv_date_raw") or ""), lines, bool(req.get("update_cost", True)),
                         str(req.get("exch_rate"))]
+    if req.get("bill_serial"):
+        parts.append("serial:" + req["bill_serial"])  # 空白（自動）時不加，指紋與舊版相同
     return hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, client_ip: str) -> Dict[str, Any]:
-    """寫入正航（單一交易）。單號撞號時 rollback、重選單號再試，最多 MAX_NUMBER_ATTEMPTS 次。"""
+    """寫入正航（單一交易）。自動單號撞號時 rollback、重選單號再試，最多 MAX_NUMBER_ATTEMPTS 次；
+    使用者自填流水號撞號時直接 rollback 報錯，不換號、不重試。"""
     with ep._write_lock:
         wconn = ep._connect_write(creds)
         committed = False
@@ -898,12 +945,17 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
             for attempt in range(1, MAX_NUMBER_ATTEMPTS + 1):
                 try:
                     plan = _plan(wcur, target, req, lock=True, client_ip=client_ip, actor=actor)
+                    manual = plan["bill_serial_manual"]
+                    if plan["number_taken"]:  # 自填單號在交易內（鎖定）重查已存在：不寫入
+                        raise InvoiceValidationError(number_taken_message(plan["bill_no"], plan["number_taken_in"]))
                     if plan["rate_required"]:
                         raise InvoiceValidationError(f"{plan['currency']}：請輸入發票匯率（大於 0）後再寫入")
                     if plan["needs_confirm"] and not req["confirm"]:
                         raise InvoiceConfirmWarning(plan["confirm_items"])  # 尚未寫入任何東西
                     taken = existing_numbers(wcur, plan["bill_no"], lock=True)
                     if taken:
+                        if manual:
+                            raise InvoiceValidationError(number_taken_message(plan["bill_no"], taken))
                         raise NumberCollision(f"單號 {plan['bill_no']} 已存在（{'、'.join(taken)}）")
                     try:
                         if plan["missing_masters"]:
@@ -912,6 +964,10 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
                         er._execute_plan(wcur, plan)
                     except Exception as exc:
                         if er.is_duplicate_key_error(exc):
+                            if manual:
+                                wconn.rollback()
+                                raise InvoiceValidationError(
+                                    number_taken_message(plan["bill_no"], ["寫入時重複索引"])) from None
                             raise NumberCollision(f"寫入時單號重複：{ep._safe_message(exc, creds)}") from None
                         raise
                     readback = _verify(wcur, plan)

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.2"
+APP_VERSION = "v2026.11.20.3"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 搜尋也找得到客戶 PO，明細顯示客戶 PO"
+APP_HEADLINE = "開 Invoice 可自填發票單號 3 碼流水號，空白照舊自動編號"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.3：開 Invoice 可自填發票單號 3 碼流水號，空白照舊自動編號", "items": [
+        "開 Invoice 預覽畫面發票日期旁多一個「發票流水號」欄：前綴固定為 ST-{發票年}（例 ST-2026），只填後 3 碼（輸入 305 → ST-2026305、輸入 5 → ST-2026005）；按 Enter 或離開欄位重新預覽，旁邊顯示最後單號，確認視窗也會顯示 Invoice 單號。",
+        "空白 = 自動編號（沿用原規則：當年最大流水 + 1，寫入當下被佔用會自動順延）；只接受 1～999 的數字，完整單號 ST-2026305 只在年份與發票日期相同時接受，其他一律回 400 並說明原因。",
+        "自填的單號預覽時就查正航 TraBillMain、TraBillSub、comProdRec、comBillAccounts（Flag 501），已存在會紅字提示、「確認開立」鎖住；寫入時在同一個交易內再查一次，已存在或寫入時撞到重複索引都直接 rollback 報錯，不會偷換別的單號、也不重試。中間跳號（例 271 沒用過）可以自填補上。",
+        "API：/api/erp-invoice/preview 與 /create 多收 bill_serial；回應多帶 bill_serial、bill_serial_manual、bill_prefix、number_taken、number_taken_in。防重複送出的指紋會把自填流水號算進去，金額、匯率與其他寫入規則都沒動。",
+    ]},
     {"title": "v2026.11.20.2：開 Invoice 搜尋也找得到客戶 PO，明細顯示客戶 PO", "items": [
         "開 Invoice 挑 S/C 明細的搜尋框，除了客戶、料號、S/C 單號、品名，也會搜 S/C 上的客戶 PO（TraBillMain.Ref）與 CustBillNo。實例：搜 4500059564 以前找不到任何明細，現在會找到 MO-2608006（客戶 C0152、USD）的 7 列未完成明細。",
         "明細表的 S/C 單號下方多一行小字「PO 客戶 PO」，沒有客戶 PO 就不顯示；搜尋框提示改成「搜尋客戶 / 客戶 PO / 料號 / S/C 單號 / 品名」。",
