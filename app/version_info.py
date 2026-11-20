@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.11"
+APP_VERSION = "v2026.11.20.12"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "Invoice 列印簽核列一律緊接合計下方、不再留空白（PDF 與畫面預覽），半張判斷改看緊接版面"
+APP_HEADLINE = "開 Invoice 出庫只在 comProduct 寫最近銷貨日，comWareAmount 的 LatestSalesDate 不動（同正航手開實單）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.12：Invoice 出庫 LatestSalesDate 只寫 comProduct、倉庫不動", "items": [
+        "開 Invoice 出庫時，comWareAmount（倉庫庫存）只改 Quantity / BCQty（勾扣總成本時另改 TotalCost / Cost，規則不變），不再寫 LatestSalesDate；倉庫列不存在要新增時 LatestSalesDate 也留預設值。comProduct.LatestSalesDate 照舊 = 發票日。依據：正航手開實單 ST-2026299 / 300 / 301 / 302 / 304 / 308 的 comWareAmount.LatestSalesDate 都維持原日期或 0，只有 comProduct.LatestSalesDate 變成發票日。LatestOutDate 規則（SET_LATEST_OUT_DATE）不變。",
+    ]},
     {"title": "v2026.11.20.11：Invoice 簽核列一律緊接合計下方（PDF 與畫面預覽）", "items": [
         "Invoice 列印的簽核列（簽核 / 審核 / 製單三格與底線）一律緊接在合計列正下方，中間不再留一大段空白，半張也一樣；外框底跟著上移，框底 = 簽核列 + 固定下邊距。依據：Andy 傳來的 ST-2026303 畫面預覽合計與簽核之間空了一大段，不對。",
         "半張判斷改看緊接版面：明細 + 合計 + 緊接合計的簽核 + 框底下邊距的框底 <= 半張上限（148.5mm）就用半張、送 M111w，否則 A4 送 M652。ST-2026304 框底由 146.5mm 上移到 133.94mm（仍半張）、ST-2026307 框底 145.29mm（半張）、ST-2026302 照舊 A4；print-info 的 bottom_mm 就是 PDF 實際畫的框底。",

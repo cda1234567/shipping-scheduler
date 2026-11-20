@@ -39,8 +39,8 @@ comBillAccounts（Flag 501、SysID 4、CustFlag 1）：BillDate / PrepayDay / En
 S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數量（允許變負：公司3 MO-2608013 #2 2500 開 2575 → -75）；
   NotTranPackingQty、TransedQty、InvNO / InvFromNo 不動。TraBillMain：全部列 QtyRemain<=0 → BillStatus=1（Endacasedate=今天，
   公司3實單 = 開單當天）；還有列 >0 且原本 BillStatus=1 → 改回 0（Endacasedate=0）；其他狀態不動。
-庫存（出庫）：comWareAmount.Quantity / BCQty 減、LatestSalesDate=發票日；StkYearMonthQty 當月減；
-  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）；comProduct.LatestSalesDate=發票日。
+庫存（出庫）：comWareAmount.Quantity / BCQty 減（LatestSalesDate 不動，同手開實單 ST-2026299..304/308）；StkYearMonthQty 當月減；
+  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）；LatestSalesDate 只寫 comProduct（=發票日），comWareAmount 不動。
   LatestOutDate：公司3三張實單的 comWareAmount / comProduct.LatestOutDate 都是 0（只有 LatestSalesDate 被改），
   所以預設不動（SET_LATEST_OUT_DATE 改 True 才會寫）。
   update_cost（預設 ERP_INVOICE_UPDATE_COST=1）：comWareAmount.TotalCost = 原值 - CostForAcc，倉庫數量歸 0 也照減、
@@ -727,8 +727,10 @@ def build_plan(
     ym = inv_date // 100
     by_ware = params["cost_by_ware"]
     dates: Dict[str, Any] = {"LatestSalesDate": inv_date}
+    ware_dates: Dict[str, Any] = {}  # comWareAmount 不寫 LatestSalesDate（同正航手開實單）
     if SET_LATEST_OUT_DATE:
         dates["LatestOutDate"] = inv_date
+        ware_dates["LatestOutDate"] = inv_date
     for prod, agg in by_prod.items():
         q, cost = agg["qty"], agg["cost"]
         ware = ctx["wares"][prod]
@@ -736,9 +738,9 @@ def build_plan(
         new_q = (_dec(ep._get(wa, "Quantity")) if wa is not None else Decimal(0)) - q
         if wa is None:
             updates.append({"op": "insert", "table": "comWareAmount", "values": _row(
-                "comWareAmount", ProdID=prod, WareID=ware, Quantity=new_q, BCQty=new_q, **dates)})
+                "comWareAmount", ProdID=prod, WareID=ware, Quantity=new_q, BCQty=new_q, **ware_dates)})
         else:
-            ware_set: Dict[str, Any] = {"Quantity": new_q, "BCQty": new_q, **dates}
+            ware_set: Dict[str, Any] = {"Quantity": new_q, "BCQty": new_q, **ware_dates}
             if update_cost:
                 new_total = _dec(ep._get(wa, "TotalCost")) - cost
                 ware_set["TotalCost"] = new_total

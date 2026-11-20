@@ -298,11 +298,28 @@ class InvoicePlanTests(unittest.TestCase):
         self.assertEqual([c["kind"] for c in plan["confirm_items"]], ["stock_short"])
         ware = [u for u in plan["updates"] if u["table"] == "comWareAmount"][0]
         self.assertEqual((ware["set"]["Quantity"], ware["set"]["BCQty"]), (D(-60), D(-60)))
-        self.assertEqual(ware["set"]["LatestSalesDate"], 20261028)
+        self.assertNotIn("LatestSalesDate", ware["set"])  # 手開實單 ST-2026299..304/308：倉庫不動
+        prod = [u for u in plan["updates"] if u["table"] == "comProduct"][0]
+        self.assertEqual(prod["set"]["LatestSalesDate"], 20261028)
         ym = [u for u in plan["updates"] if u["table"] == "StkYearMonthQty"][0]
         self.assertEqual(ym["values"]["Quantity"], D(-100))
         avg = [u for u in plan["updates"] if u["table"] == "stkYearMonthAvg"][0]
         self.assertEqual((avg["values"]["WareID"], avg["values"]["AtLastQuan"]), ("", D(-100)))  # CostByWare=0
+
+    def test_ware_insert_has_no_latest_sales_date(self):
+        no = "MO-1"
+        scs = {no: (_sc_main(no), [_sc_sub(no, 1, "P1", 100, 100, 1.0)])}
+        ctx = make_ctx(scs, [(no, 1, 100, None)], products={"P1": 2.0}, stocks={"P1": {"001": D(40)}}, rate=32)
+        ctx["ware_amounts"].pop("P1")
+        plan = plan_of(ctx)
+        ware = [u for u in plan["updates"] if u["table"] == "comWareAmount"][0]
+        self.assertEqual(ware["op"], "insert")
+        self.assertEqual((ware["values"]["Quantity"], ware["values"]["BCQty"]), (D(-100), D(-100)))
+        default = inv.schema.defaults("comWareAmount")
+        self.assertEqual(ware["values"].get("LatestSalesDate"), default.get("LatestSalesDate"))  # 留預設、不寫發票日
+        self.assertNotEqual(ware["values"].get("LatestSalesDate"), 20261028)
+        prod = [u for u in plan["updates"] if u["table"] == "comProduct"][0]
+        self.assertEqual(prod["set"]["LatestSalesDate"], 20261028)
 
     def _cost_plan(self, issue, stocks, *, params=COMP03_PARAMS, ware_total=D(888960), **kw):
         no = "MO-1"
