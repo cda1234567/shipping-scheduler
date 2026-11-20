@@ -44,9 +44,11 @@
   .inv-line, .inv-po { font-size: 10pt; line-height: 1.35; padding-top: .4mm; padding-bottom: .4mm; }
   .inv-po .c-desc { font-weight: bold; }
   /* 品名最多 3 行，超過直接裁掉（不加省略號，同正航） */
-  /* 字距 / 詞距微調讓折行同正航（ST-2026304：品名 1 折 3 行、品名 2 折 2 行），欄寬 339-345px 都會折得一樣 */
+  /* 字距 / 詞距微調讓折行同正航（ST-2026304：品名 1 折 3 行、品名 2 折 2 行），標點改正常字距後欄寬 340-344px 都會折得一樣 */
   .inv-clamp { max-height: calc(1.35em * 3); overflow: hidden; overflow-wrap: break-word; white-space: normal;
-    letter-spacing: -0.07em; word-spacing: 0.15em; }
+    letter-spacing: -0.07em; word-spacing: 0.05em; }
+  /* 標點與中文用正常字距（"---" 才看得出是三個 -），只有英數字縮字距 */
+  .inv-ls { letter-spacing: normal; }
   .inv-totals { border-top: 1px solid #000; padding-top: 1mm; margin-top: 1mm; font-size: 10pt; }
   .inv-dbl { display: inline-block; border-bottom: 3px double #000; padding-bottom: .3mm; }
   .inv-spacer { flex: 1 1 auto; min-height: 10mm; }

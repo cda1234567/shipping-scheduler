@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.6"
+APP_VERSION = "v2026.11.20.7"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "列印 Invoice 的貿易條件 FOB 改由正航 Term 代碼帶出；品名欄寬與折行比照正航實單"
+APP_HEADLINE = "列印 Invoice 的「---」看得出三個 -；依實際高度分頁，PO 標題不落單、合計只在最後一頁"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.7：列印 Invoice 破折號正常顯示、依實際高度分頁；暫時性診斷 page_probe", "items": [
+        "品名的標點與中文改用正常字距，只有英數字維持縮字距：ST-2026304 的「---代購料」三個 - 不再黏成一條長線；品名折行仍與正航實單相同（品名 1 折 3 行到「(3mm x」、品名 2 折 2 行，第 2 行「---代購料」），詞距由 0.15em 微調為 0.05em。",
+        "分頁改在瀏覽器依實際高度計算（A4 直式，每頁明細區約 789px，約 37 個單行明細），不再用固定 12 行估計：PO 標題一定和它的第一列明細在同一頁；同一個 PO 跨頁時新頁會重印 PO 標題；合計與簽核只印在最後一頁，放不下時把最後一列移到下一頁，最後一頁不會只剩合計；Page n of N 用實際頁數，每張對應一張 A4。",
+        "實測：ST-2026304 1 頁（版面同前）、ST-2026302（7 列、5 個 PO）1 頁、60 列假資料 4 頁，PDF 頁數與張數相同。後端回的 pages 只是估計（每頁改估 37 行），列印頁不再使用。",
+        "暫時性診斷：/api/erp-invoice/print-data 多回 page_probe（全程唯讀 SELECT），列出 Invoice 表頭的備註 / 表頭表尾等白名單欄位（文字最多 200 字）與 MasterMark 長度（只回長度），並掃名稱開頭 Tra / com / ord / inv 的表裡 BillNo / FundBillNo / OriginBillNo 等於本單或來源 S/C 的筆數（只回表名、欄名、筆數）；單張表查不到只記錯誤、不影響列印。用來查正航為何把 ST-2026304 印成 Page 1 of 2，找到原因後移除。",
+    ]},
     {"title": "v2026.11.20.6：列印 Invoice 貿易條件改用 Term 代碼；移除暫時診斷；品名欄寬與裁切比照正航", "items": [
         "貿易條件（單價欄下方小字）取值順序改為：Invoice 的 TradeWay → Invoice 的 TermContent → Invoice 的 Term 數字代碼（0 = FOB，依 ST-2026304 實單推定：正航印 FOB，但所有文字欄位都沒有 FOB，只有 Term=0）。來源標示為「TraBillMain.Term=0 (inferred FOB)」。",
         "Term 是其他數字時不猜，留空並在 API 回 trade_term_unmapped_term（例 2），方便之後對照正航實單補上對應；Shipment / Way 是運輸方式（例 Air），不再當貿易條件，來源 S/C 的值也不再拿來用（仍回 transport_way 與 raw_sc 供對照）。",

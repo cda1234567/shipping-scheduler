@@ -11,6 +11,7 @@
 - 貿易條件：Invoice TradeWay → Invoice TermContent → Invoice Term（數字列舉，0 = FOB，由 ST-2026304 實單推定）；
   其他 Term 值不猜，留空並回 trade_term_unmapped_term。Way / Shipment 是運輸方式（Air 等），不當貿易條件。
 - 料號結尾 -TAB 的列不印、不算進列印合計，但列在 excluded_tab_rows / excluded_tab_qty / excluded_tab_amount。
+- pages 只是估計（瀏覽器依實際高度分頁）；page_probe 是暫時性診斷（找正航為何把 ST-2026304 印成 Page 1 of 2），之後移除。
 """
 from __future__ import annotations
 
@@ -31,7 +32,9 @@ BILL_RE = re.compile(r"^ST-\d{7}$")
 TITLE = "銷貨單"
 SIGNATURES = ["簽核", "審核", "製單"]
 MONTHS = ["Jan.", "Feb.", "Mar.", "Apr.", "May.", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
-LINES_PER_PAGE = 12      # 每頁明細行數（PO 標題 1 行、每個品名依折行數計，最多 3 行）
+# 每頁明細行數估計（PO 標題 1 行、每個品名依折行數計，最多 3 行）。只是估計：列印頁在瀏覽器依實際高度分頁、不看 pages。
+# 由 Playwright 實量（v2026.11.20.7）：每頁明細區約 789px，單行明細 / PO 標題約 21px → 約 37 行
+LINES_PER_PAGE = 37
 DESC_CHARS_PER_LINE = 50  # DESCRIPTION 欄（約 342px、10pt，同正航實單）每行約可放的半形字數；全形字算 2
 DESC_MAX_LINES = 3
 COMPANY_CACHE_SECONDS = 600
@@ -407,6 +410,103 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
     }
 
 
+# ── 暫時性診斷 page_probe（TEMPORARY：查正航為何 ST-2026304 印「Page 1 of 2」，找到原因後整段移除）──────────
+
+PROBE_MAIN_FIELDS = ("Mark", "SubDesc", "Summary", "Memo", "TopTale", "EndTale", "TopTale2", "EndTale2", "SumPlus",
+                     "IsDeduct", "IsBack", "IsCase", "InvoicePaperType", "PackingNo", "CIQManualNO", "UserDef1", "UserDef2")
+PROBE_TABLE_PREFIXES = ("tra", "com", "ord", "inv")
+PROBE_COLUMNS = ("billno", "fundbillno", "originbillno")
+PROBE_MAX_TABLES = 200
+PROBE_TEXT_MAX = 200
+_NAME_RE = re.compile(r"^\w+$", re.ASCII)
+
+
+def _probe_value(value: Any) -> Any:
+    value = _json_value(value)
+    return value[:PROBE_TEXT_MAX] if isinstance(value, str) else value
+
+
+def probe_main_fields(cur, bill_no: str) -> Dict[str, Any]:
+    """TEMPORARY：Invoice 表頭（TraBillMain Flag 501）白名單欄位 + MasterMark 的 DATALENGTH（只回長度，不回內容）。"""
+    cols = {_s(ep._get(r, "COLUMN_NAME")).lower(): _s(ep._get(r, "COLUMN_NAME"))
+            for r in _query(cur, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'TraBillMain'")}
+    fields = [cols[f.lower()] for f in PROBE_MAIN_FIELDS if f.lower() in cols and _NAME_RE.match(cols[f.lower()])]
+    select = [f"[{c}]" for c in fields]
+    if "mastermark" in cols:
+        select.append("DATALENGTH([MasterMark]) AS MasterMarkLength")
+    out: Dict[str, Any] = {"fields": {}, "missing": [f for f in PROBE_MAIN_FIELDS if f.lower() not in cols],
+                           "master_mark_datalength": None}
+    if not select:
+        return out
+    rows = _query(cur, f"SELECT TOP 1 {', '.join(select)} FROM TraBillMain WHERE Flag = {INVOICE_FLAG} AND BillNo = %s",
+                  (bill_no,))
+    row = rows[0] if rows else {}
+    out["fields"] = {c: _probe_value(ep._get(row, c)) for c in fields}
+    length = ep._get(row, "MasterMarkLength")
+    out["master_mark_datalength"] = int(length) if length is not None else None
+    return out
+
+
+def probe_tables(cur) -> List[Tuple[str, str]]:
+    """TEMPORARY：名稱開頭 Tra / com / ord / inv（不分大小寫）、有 BillNo / BillNO / FundBillNo / OriginBillNo 欄位的實體表（最多 200 張）。"""
+    rows = _query(cur, "SELECT c.TABLE_NAME, c.COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS c "
+                       "JOIN INFORMATION_SCHEMA.TABLES t ON t.TABLE_NAME = c.TABLE_NAME AND t.TABLE_SCHEMA = c.TABLE_SCHEMA "
+                       "WHERE t.TABLE_TYPE = 'BASE TABLE' AND c.COLUMN_NAME IN ('BillNo', 'BillNO', 'FundBillNo', 'OriginBillNo') "
+                       "ORDER BY c.TABLE_NAME, c.COLUMN_NAME")
+    pairs: Dict[str, List[str]] = {}
+    for r in rows:
+        table, col = _s(ep._get(r, "TABLE_NAME")), _s(ep._get(r, "COLUMN_NAME"))
+        if not (_NAME_RE.match(table) and _NAME_RE.match(col)):
+            continue
+        if not table.lower().startswith(PROBE_TABLE_PREFIXES) or col.lower() not in PROBE_COLUMNS:
+            continue
+        if table not in pairs and len(pairs) >= PROBE_MAX_TABLES:
+            continue
+        if col not in pairs.setdefault(table, []):
+            pairs[table].append(col)
+    return [(t, c) for t, cols in pairs.items() for c in cols]
+
+
+def probe_counts(cur, pairs: List[Tuple[str, str]], values: List[str], creds=None) -> Dict[str, Any]:
+    """TEMPORARY：每張表 SELECT COUNT(*) ... WHERE [欄] IN (單號...)，只回 count > 0 的表名 / 欄名 / 筆數；單張表失敗只記錯誤。"""
+    found: Dict[str, List[Dict[str, Any]]] = {v: [] for v in values}
+    errors: List[Dict[str, str]] = []
+    if values:
+        marks = ", ".join(["%s"] * len(values))
+        by_key = {v.upper(): v for v in values}
+        for table, col in pairs:
+            try:
+                rows = _query(cur, f"SELECT [{col}] AS v, COUNT(*) AS n FROM [{table}] WHERE [{col}] IN ({marks}) "
+                                   f"GROUP BY [{col}]", tuple(values))
+            except Exception as exc:
+                errors.append({"table": table, "error": ep._safe_message(exc, creds)[:100]})
+                continue
+            for r in rows:
+                value, n = by_key.get(_s(ep._get(r, "v")).upper()), int(ep._get(r, "n") or 0)
+                if value is not None and n > 0:
+                    found[value].append({"table": table, "column": col, "count": n})
+    return {"found": found, "errors": errors}
+
+
+def page_probe(cur, bill_no: str, sc_nos: List[str], creds=None) -> Dict[str, Any]:
+    """TEMPORARY：唯讀診斷。任何一段失敗只記錯誤，不影響列印。"""
+    out: Dict[str, Any] = {"temporary": True}
+    try:
+        out["invoice"] = probe_main_fields(cur, bill_no)
+    except Exception as exc:
+        out["invoice"] = {"error": ep._safe_message(exc, creds)[:100]}
+    try:
+        pairs = probe_tables(cur)
+        counts = probe_counts(cur, pairs, [bill_no] + [n for n in sc_nos if n != bill_no], creds)
+        out["tables_scanned"] = len({t for t, _ in pairs})
+        out["bill_tables"] = counts["found"].get(bill_no, [])
+        out["sc_tables"] = {n: counts["found"].get(n, []) for n in sc_nos}
+        out["errors"] = counts["errors"]
+    except Exception as exc:
+        out.update(tables_scanned=0, bill_tables=[], sc_tables={}, errors=[{"table": "", "error": ep._safe_message(exc, creds)[:100]}])
+    return out
+
+
 def get_print_data(bill_no: Any) -> Dict[str, Any]:
     """讀一張 Invoice 的列印資料（唯讀，結束一律 rollback + close）。"""
     bill_no = normalize_bill_no(bill_no)
@@ -417,10 +517,13 @@ def get_print_data(bill_no: Any) -> Dict[str, Any]:
         ep._check_db_name(cur, target)
         raw = _load(cur, bill_no)
         company = lookup_company(cur, target)
+        probe = page_probe(cur, bill_no, _sc_order(raw["subs"]), creds)  # TEMPORARY 診斷
     except ErpError:
         raise
     except Exception as exc:
         raise ErpUnavailable(f"ERP 查詢失敗：{ep._safe_message(exc, creds)}") from None
     finally:
         ep._close_quietly(conn, rollback=True)
-    return build_print_data(raw, bill_no=bill_no, target=target, company=company)
+    data = build_print_data(raw, bill_no=bill_no, target=target, company=company)
+    data["page_probe"] = probe  # TEMPORARY 診斷，找到原因後移除
+    return data

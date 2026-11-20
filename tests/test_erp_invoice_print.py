@@ -280,8 +280,14 @@ class PaginationTests(unittest.TestCase):
     def _lines(n, po="PO1", desc="x"):
         return [{"row_no": i + 1, "po": po, "print_description": desc} for i in range(n)]
 
+    def test_estimate_capacity(self):
+        # 只是估計（瀏覽器依實際高度分頁）；Playwright 實量每頁約 37 個單行明細
+        self.assertEqual(prt.LINES_PER_PAGE, 37)
+        self.assertEqual(len(prt.paginate(self._lines(30))), 1)  # 1 + 30
+        self.assertEqual(len(prt.paginate(self._lines(40))), 2)
+
     def test_25_lines_three_pages(self):
-        pages = prt.paginate(self._lines(25))
+        pages = prt.paginate(self._lines(25), per_page=12)
         self.assertEqual(len(pages), 3)
         self.assertEqual([p["last"] for p in pages], [False, False, True])
         self.assertEqual([p["of"] for p in pages], [3, 3, 3])
@@ -302,10 +308,108 @@ class PaginationTests(unittest.TestCase):
 
     def test_po_header_not_orphaned(self):
         lines = self._lines(11, "P1") + self._lines(1, "P2")
-        pages = prt.paginate(lines)  # 1 + 11 = 12 滿一頁，P2 標題與它的明細一起到下一頁
+        pages = prt.paginate(lines, per_page=12)  # 1 + 11 = 12 滿一頁，P2 標題與它的明細一起到下一頁
         self.assertEqual(len(pages), 2)
         self.assertEqual(pages[1]["rows"][0], {"type": "po", "po": "P2", "height": 1})
 
+
+
+class _ProbeCur:
+    """page_probe 用的假 cursor：表欄位清單 / Invoice 表頭 / 各表 COUNT；記下 (SQL, 參數)。"""
+
+    def __init__(self, main_cols, pairs, counts, main_row=None, fail=()):
+        self.main_cols, self.pairs, self.counts, self.main_row, self.fail = main_cols, pairs, counts, main_row or {}, fail
+        self.calls, self.description, self._rows = [], [], []
+
+    def execute(self, sql, params=()):
+        self.calls.append((sql, params))
+        if "JOIN INFORMATION_SCHEMA.TABLES" in sql:
+            self._dicts([{"TABLE_NAME": t, "COLUMN_NAME": c} for t, c in self.pairs])
+        elif "INFORMATION_SCHEMA.COLUMNS" in sql:
+            self._dicts([{"COLUMN_NAME": c} for c in self.main_cols])
+        elif "FROM TraBillMain" in sql:
+            self._dicts([self.main_row])
+        elif "COUNT(*)" in sql:
+            table = sql.split("FROM [", 1)[1].split("]", 1)[0]
+            if table in self.fail:
+                raise RuntimeError("permission denied " + "x" * 300)
+            self._dicts([{"v": v, "n": n} for v, n in self.counts.get(table, {}).items() if v in params])
+        else:
+            raise AssertionError(f"unexpected SQL {sql}")
+
+    def _dicts(self, rows):
+        cols = list(rows[0].keys()) if rows else ["x"]
+        self.description = [(c,) for c in cols]
+        self._rows = [tuple(r.get(c) for c in cols) for r in rows]
+
+    def fetchall(self):
+        return list(self._rows)
+
+
+class PageProbeTests(unittest.TestCase):
+    """TEMPORARY 診斷 page_probe：只 SELECT、白名單、表名驗證、單張表失敗不影響其他。"""
+
+    def test_main_fields_whitelist(self):
+        cols = ["BillNo", "Mark", "Memo", "TopTale", "MasterMark", "Password", "UserDef1"]
+        row = {"Mark": "  M  ", "Memo": "y" * 500, "TopTale": None, "UserDef1": 3, "MasterMarkLength": 1234,
+               "Password": "secret", "MasterMark": b"bytes"}
+        cur = _ProbeCur(cols, [], {}, main_row=row)
+        out = prt.probe_main_fields(cur, "ST-2026304")
+        self.assertEqual(out["fields"], {"Mark": "M", "Memo": "y" * 200, "TopTale": None, "UserDef1": 3})
+        self.assertEqual(out["master_mark_datalength"], 1234)
+        self.assertIn("TopTale2", out["missing"])
+        self.assertNotIn("secret", str(out))
+        sql, params = cur.calls[-1]
+        self.assertIn("DATALENGTH([MasterMark]) AS MasterMarkLength", sql)
+        self.assertNotIn("[MasterMark],", sql)
+        self.assertNotIn("Password", sql)
+        self.assertIn(f"Flag = {inv.INVOICE_FLAG}", sql)
+        self.assertEqual(params, ("ST-2026304",))
+
+    def test_table_scan(self):
+        pairs = [("TraBillMain", "BillNo"), ("comProdRec", "BillNO"), ("comBillAccounts", "FundBillNo"),
+                 ("TraBillSub", "OriginBillNo"), ("ordBillMain", "BillNo"), ("INVLog", "BillNo"), ("BadTable", "BillNo"),
+                 ("Tra]; DROP TABLE x--", "BillNo"), ("TraBill Sub", "BillNo"), ("salBill", "BillNo"), ("TraX", "Other"),
+                 ("comPrinter", "BillNo")]
+        counts = {"TraBillMain": {"ST-2026304": 1, "MO-2610001": 1}, "comProdRec": {"ST-2026304": 3},
+                  "comBillAccounts": {"ST-2026304": 1}, "TraBillSub": {"MO-2610001": 2}, "INVLog": {"ST-2026304": 0}}
+        cur = _ProbeCur([], pairs, counts, fail=("comPrinter",))
+        out = prt.page_probe(cur, "ST-2026304", ["MO-2610001"])
+        self.assertTrue(out["temporary"])
+        self.assertEqual(out["tables_scanned"], 7)  # 名稱不合規 / 前綴不對 / 欄位不對的都不掃
+        self.assertEqual(out["bill_tables"], [{"table": "TraBillMain", "column": "BillNo", "count": 1},
+                                              {"table": "comProdRec", "column": "BillNO", "count": 3},
+                                              {"table": "comBillAccounts", "column": "FundBillNo", "count": 1}])
+        self.assertEqual(out["sc_tables"], {"MO-2610001": [{"table": "TraBillMain", "column": "BillNo", "count": 1},
+                                                           {"table": "TraBillSub", "column": "OriginBillNo", "count": 2}]})
+        self.assertEqual([e["table"] for e in out["errors"]], ["comPrinter"])
+        self.assertLessEqual(len(out["errors"][0]["error"]), 100)
+        for sql, params in cur.calls:
+            self.assertTrue(sql.startswith("SELECT"), sql)
+            self.assertNotIn("DROP", sql)
+            self.assertNotIn("ST-2026304", sql)  # 單號一律參數化
+            self.assertNotIn("BadTable", sql)
+            if "COUNT(*)" in sql:
+                self.assertEqual(params, ("ST-2026304", "MO-2610001"))
+
+    def test_table_cap(self):
+        pairs = [(f"Tra{i:03d}", "BillNo") for i in range(250)]
+        cur = _ProbeCur([], pairs, {})
+        out = prt.page_probe(cur, "ST-2026304", [])
+        self.assertEqual(out["tables_scanned"], prt.PROBE_MAX_TABLES)
+        self.assertEqual(sum(1 for sql, _ in cur.calls if "COUNT(*)" in sql), 200)
+        self.assertEqual((out["bill_tables"], out["sc_tables"]), ([], {}))
+
+    def test_in_print_data_and_failure_isolated(self):
+        r, cur, conn = run_print(sample_data())
+        self.assertTrue(r["page_probe"]["temporary"])
+        self.assertIn("MO-2610001", r["page_probe"]["sc_tables"])
+        self.assertTrue(conn.rolled_back)
+        with patch.object(prt, "probe_tables", side_effect=RuntimeError("boom")),                 patch.object(prt, "probe_main_fields", side_effect=RuntimeError("boom")):
+            r, _, _ = run_print(sample_data())
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["page_probe"]["errors"][0]["error"], "RuntimeError：boom")
+        self.assertIn("error", r["page_probe"]["invoice"])
 
 class CompanyLookupTests(unittest.TestCase):
     def setUp(self):
@@ -403,13 +507,16 @@ class PrintFrontendTests(unittest.TestCase):
         html = (ROOT / "static" / "erp_invoice_print.html").read_text(encoding="utf-8")
         for s in ("@page { size: A4 portrait; margin: 10mm; }", 'id="btn-print"', ">列印<", ">關閉<", "page-break-after",
                   "max-height: calc(1.35em * 3)", "3px double",
-                  "grid-template-columns: 146fr 5fr 342fr 110fr 94fr", "letter-spacing: -0.07em; word-spacing: 0.15em;", '/static/modules/erp_invoice_print.js'):
+                  "grid-template-columns: 146fr 5fr 342fr 110fr 94fr", "letter-spacing: -0.07em; word-spacing: 0.05em;", ".inv-ls { letter-spacing: normal; }",
+                  '/static/modules/erp_invoice_print.js'):
             self.assertIn(s, html)
         self.assertNotIn("line-clamp", html)  # 不用 line-clamp（會加省略號），超過 3 行直接裁掉
         js = (ROOT / "static" / "modules" / "erp_invoice_print.js").read_text(encoding="utf-8")
         for s in ("export function renderInvoicePrint(data, root)", "window.__INVOICE_PRINT_DATA__",
-                  "/api/erp-invoice/print-data", 'params.get("auto") === "1"', "window.print()", "客戶名稱"):
+                  "/api/erp-invoice/print-data", 'params.get("auto") === "1"', "window.print()", "客戶名稱",
+                  "export function paginateUnits", "getBoundingClientRect", "document.fonts", "PAGE_HEIGHT_MM = 277"):
             self.assertIn(s, js)
+        self.assertNotIn("data.pages", js)  # 後端 pages 只是估計，前端不用
         page = (ROOT / "static" / "modules" / "erp_invoice.js").read_text(encoding="utf-8")
         for s in ('window.open(url, "_blank", "noopener")', "data-print-bill", "列印 ${esc(r.bill_no)}"):
             self.assertIn(s, page)
@@ -431,12 +538,54 @@ const data = { bill_no: 'ST-2026304', title: '銷貨單', date_display: 'Nov.16,
 const root = { innerHTML: '' };
 assert.equal(mod.renderInvoicePrint(data, root), 1);
 for (const s of ['Page 1 of 1', 'INVOICE:&nbsp;&nbsp;ST-2026304', 'DATE:&nbsp;&nbsp;Nov.16,2026', '客戶名稱:&nbsp;Open Text Inc',
-  'PO#4500059700', '5,000.0000', '0.880', '4,400.000', 'USD 4,400.000', 'A &lt;b&gt;', '簽核', 'FOB']) assert.ok(root.innerHTML.includes(s), s);
+  'PO#4500059700', '5,000.0000', '0.880', '4,400.000', 'USD 4,400.000', 'A <span class="inv-ls">&lt;</span>b<span class="inv-ls">&gt;</span>',
+  '簽核', 'FOB']) assert.ok(root.innerHTML.includes(s), s);
+// 品名切段：英數字 / 空白縮字距，"---"、標點、中文用正常字距；HTML 跳脫
+assert.deepEqual(mod.descRuns('XC7K70T-1FBG484I. ---代購料'), [
+  { text: 'XC7K70T', narrow: true }, { text: '-', narrow: false }, { text: '1FBG484I', narrow: true },
+  { text: '.', narrow: false }, { text: ' ', narrow: true }, { text: '---代購料', narrow: false }]);
+assert.deepEqual(mod.descRuns('(3mm x'), [{ text: '(', narrow: false }, { text: '3mm x', narrow: true }]);
+assert.deepEqual(mod.descRuns(''), []);
+assert.equal(mod.descHtml(`a"<'/;:`), `a<span class="inv-ls">&quot;&lt;'/;:</span>`);
+assert.equal(mod.descHtml('A & B'), 'A <span class="inv-ls">&amp;</span> B');
+// 後端 pages 不用：兩頁的假 pages 仍只畫一頁
 const two = { ...data, pages: [{ no: 1, rows: [{ type: 'line', line: 0 }], last: false }, { no: 2, rows: [], last: true }] };
-assert.equal(mod.renderInvoicePrint(two, root), 2);
-assert.equal((root.innerHTML.match(/class="inv-sheet"/g) || []).length, 2);
+assert.equal(mod.renderInvoicePrint(two, root), 1);
+// PO 單位：PO 換了才帶標題
+const lines = ['P1', 'P1', 'P2', '', 'P2'].map(po => ({ po, print_description: 'x' }));
+assert.deepEqual(mod.buildUnits(lines).map(u => u.header), [true, false, true, false, true]);
+// 依高度分頁：容量 100、PO 標題 10、每列 20
+const H = n => ({ po: 10, line: Array(n).fill(20) });
+const P = (units, cap, reserve, n) => mod.paginateUnits(mod.buildUnits(units), H(n), cap, reserve);
+const many = Array.from({ length: 9 }, () => ({ po: 'P1' }));
+let pages = P(many, 100, 0, 9);  // 頁 1：PO + 4 列 = 90；頁 2 重印 PO 標題
+assert.equal(pages.length, 3);
+assert.deepEqual(pages[0].rows.map(r => r.type), ['po', 'line', 'line', 'line', 'line']);
+assert.deepEqual(pages[1].rows[0], { type: 'po', po: 'P1' });
+assert.deepEqual(pages.map(p => [p.no, p.of, p.last]), [[1, 3, false], [2, 3, false], [3, 3, true]]);
+assert.equal(pages.flatMap(p => p.rows).filter(r => r.type === 'line').length, 9);
+// PO 標題不單獨留在頁尾：P1 3 列（10+60=70），P2 標題 + 第 1 列要 30 → 整組到下一頁
+pages = P([{ po: 'P1' }, { po: 'P1' }, { po: 'P1' }, { po: 'P2' }], 90, 0, 4);
+assert.equal(pages.length, 2);
+assert.equal(pages[0].rows[pages[0].rows.length - 1].type, 'line');
+assert.deepEqual(pages[1].rows, [{ type: 'po', po: 'P2' }, { type: 'line', line: 3 }]);
+// 合計 + 簽核放不下：最後一個單位移到下一頁（最後一頁不會只有合計）
+pages = P([{ po: 'P1' }, { po: 'P1' }, { po: 'P1' }, { po: 'P1' }], 100, 25, 4);
+assert.equal(pages.length, 2);
+assert.deepEqual(pages[1].rows, [{ type: 'po', po: 'P1' }, { type: 'line', line: 3 }]);
+assert.equal(P([{ po: 'P1' }, { po: 'P1' }], 100, 25, 2).length, 1);
+// 沒有 PO 的列不印標題；空清單仍是一頁
+assert.deepEqual(P([{ po: '' }], 100, 0, 1)[0].rows, [{ type: 'line', line: 0 }]);
+assert.equal(mod.paginateUnits([], { po: 0, line: [] }, 100, 10).length, 1);
+// 沒有 DOM（Node）時用估計：60 列 → 多頁，合計 / 簽核只在最後一頁，Page n of N 一致
+const big = { ...data, lines: Array.from({ length: 60 }, (_, i) => ({ ...data.lines[0], po: `PO${Math.floor(i / 7)}` })) };
+const n = mod.renderInvoicePrint(big, root);
+assert.ok(n > 1, String(n));
+assert.equal((root.innerHTML.match(/class="inv-sheet"/g) || []).length, n);
+assert.equal((root.innerHTML.match(/inv-totals/g) || []).length, 1);
 assert.equal((root.innerHTML.match(/inv-sign-item/g) || []).length, 3);
-assert.ok(root.innerHTML.includes('Page 2 of 2'));
+assert.ok(root.innerHTML.includes(`Page ${n} of ${n}`));
+assert.ok(root.innerHTML.lastIndexOf('inv-totals') > root.innerHTML.lastIndexOf('class="inv-sheet"'));
 const page = fs.readFileSync('./static/modules/erp_invoice.js', 'utf8').replace(/^import .*;\r?\n/gm, '');
 const inv = await import('data:text/javascript,' + encodeURIComponent(page));
 assert.equal(inv.printUrl(' st-2026304 '), '/static/erp_invoice_print.html?bill=ST-2026304');
