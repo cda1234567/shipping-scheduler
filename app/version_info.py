@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.4"
+APP_VERSION = "v2026.11.20.5"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 可列印銷貨單（仿正航 KPM5-INVOICE 格式），舊單輸入單號也能印"
+APP_HEADLINE = "列印 Invoice 的貿易條件不再拿運輸方式（Air）當成 FOB；加暫時性診斷欄位找 FOB 存放位置"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.5：列印 Invoice 貿易條件不再用運輸方式；暫時性診斷欄位", "items": [
+        "單價欄下方的貿易條件不再拿 TraBillMain.Way（那是運輸方式，例 Air）。例：ST-2026304 正航印 FOB，之前系統錯印 Air。",
+        "取值順序改為：Invoice 的 TradeWay → Invoice 的 Shipment → 第一張來源 S/C 的 TradeWay → 第一張 S/C 的 Shipment → 留空；仍回傳 trade_term_source 標示來源，運輸方式另外回 transport_way。",
+        "暫時性診斷：/api/erp-invoice/print-data 多回 trade_term_probe（全程唯讀 SELECT），掃 Invoice 表頭、來源 S/C、客戶、comBillAccounts、前 3 列明細、comCustTrade（有這張表才查），只列出值像 FOB / CIF / EXW 等貿易條件的欄位；密碼類欄位一律不回，單張表查不到只記錯誤、不影響列印。另回 raw_sc（來源 S/C 的條件類欄位）。找到 FOB 存放位置後會移除。",
+    ]},
     {"title": "v2026.11.20.4：開 Invoice 可列印銷貨單（仿正航 KPM5-INVOICE 格式）", "items": [
         "新增 Invoice 列印頁（A4 直式，瀏覽器列印）：版面照正航「KPM5-INVOICE」印出的 ST-2026304——公司抬頭、「銷貨單」標題、Page n of N、INVOICE / DATE（Nov.16,2026 格式）、客戶名稱、QTY / DESCRIPTION / UNIT PRICE（下方小字貿易條件，例 FOB）/ TTL AMOUNT，依客戶 PO 分組印 PO#，數量 4 位小數、單價與金額 3 位小數加千分位，合計雙底線，最後一頁印簽核 / 審核 / 製單。",
         "怎麼用：開 Invoice 分頁的 Invoice 紀錄每列多一顆「列印」；開立成功的訊息旁多一顆「列印 ST-2026xxx」；紀錄上方可直接輸入完整單號（例 ST-2026304）按「列印」或 Enter 印舊單，格式不對會紅字提示。都會開新分頁，按「列印」送印表機或存 PDF。",
