@@ -314,102 +314,13 @@ class PaginationTests(unittest.TestCase):
 
 
 
-class _ProbeCur:
-    """page_probe 用的假 cursor：表欄位清單 / Invoice 表頭 / 各表 COUNT；記下 (SQL, 參數)。"""
-
-    def __init__(self, main_cols, pairs, counts, main_row=None, fail=()):
-        self.main_cols, self.pairs, self.counts, self.main_row, self.fail = main_cols, pairs, counts, main_row or {}, fail
-        self.calls, self.description, self._rows = [], [], []
-
-    def execute(self, sql, params=()):
-        self.calls.append((sql, params))
-        if "JOIN INFORMATION_SCHEMA.TABLES" in sql:
-            self._dicts([{"TABLE_NAME": t, "COLUMN_NAME": c} for t, c in self.pairs])
-        elif "INFORMATION_SCHEMA.COLUMNS" in sql:
-            self._dicts([{"COLUMN_NAME": c} for c in self.main_cols])
-        elif "FROM TraBillMain" in sql:
-            self._dicts([self.main_row])
-        elif "COUNT(*)" in sql:
-            table = sql.split("FROM [", 1)[1].split("]", 1)[0]
-            if table in self.fail:
-                raise RuntimeError("permission denied " + "x" * 300)
-            self._dicts([{"v": v, "n": n} for v, n in self.counts.get(table, {}).items() if v in params])
-        else:
-            raise AssertionError(f"unexpected SQL {sql}")
-
-    def _dicts(self, rows):
-        cols = list(rows[0].keys()) if rows else ["x"]
-        self.description = [(c,) for c in cols]
-        self._rows = [tuple(r.get(c) for c in cols) for r in rows]
-
-    def fetchall(self):
-        return list(self._rows)
-
-
-class PageProbeTests(unittest.TestCase):
-    """TEMPORARY 診斷 page_probe：只 SELECT、白名單、表名驗證、單張表失敗不影響其他。"""
-
-    def test_main_fields_whitelist(self):
-        cols = ["BillNo", "Mark", "Memo", "TopTale", "MasterMark", "Password", "UserDef1"]
-        row = {"Mark": "  M  ", "Memo": "y" * 500, "TopTale": None, "UserDef1": 3, "MasterMarkLength": 1234,
-               "Password": "secret", "MasterMark": b"bytes"}
-        cur = _ProbeCur(cols, [], {}, main_row=row)
-        out = prt.probe_main_fields(cur, "ST-2026304")
-        self.assertEqual(out["fields"], {"Mark": "M", "Memo": "y" * 200, "TopTale": None, "UserDef1": 3})
-        self.assertEqual(out["master_mark_datalength"], 1234)
-        self.assertIn("TopTale2", out["missing"])
-        self.assertNotIn("secret", str(out))
-        sql, params = cur.calls[-1]
-        self.assertIn("DATALENGTH([MasterMark]) AS MasterMarkLength", sql)
-        self.assertNotIn("[MasterMark],", sql)
-        self.assertNotIn("Password", sql)
-        self.assertIn(f"Flag = {inv.INVOICE_FLAG}", sql)
-        self.assertEqual(params, ("ST-2026304",))
-
-    def test_table_scan(self):
-        pairs = [("TraBillMain", "BillNo"), ("comProdRec", "BillNO"), ("comBillAccounts", "FundBillNo"),
-                 ("TraBillSub", "OriginBillNo"), ("ordBillMain", "BillNo"), ("INVLog", "BillNo"), ("BadTable", "BillNo"),
-                 ("Tra]; DROP TABLE x--", "BillNo"), ("TraBill Sub", "BillNo"), ("salBill", "BillNo"), ("TraX", "Other"),
-                 ("comPrinter", "BillNo")]
-        counts = {"TraBillMain": {"ST-2026304": 1, "MO-2610001": 1}, "comProdRec": {"ST-2026304": 3},
-                  "comBillAccounts": {"ST-2026304": 1}, "TraBillSub": {"MO-2610001": 2}, "INVLog": {"ST-2026304": 0}}
-        cur = _ProbeCur([], pairs, counts, fail=("comPrinter",))
-        out = prt.page_probe(cur, "ST-2026304", ["MO-2610001"])
-        self.assertTrue(out["temporary"])
-        self.assertEqual(out["tables_scanned"], 7)  # 名稱不合規 / 前綴不對 / 欄位不對的都不掃
-        self.assertEqual(out["bill_tables"], [{"table": "TraBillMain", "column": "BillNo", "count": 1},
-                                              {"table": "comProdRec", "column": "BillNO", "count": 3},
-                                              {"table": "comBillAccounts", "column": "FundBillNo", "count": 1}])
-        self.assertEqual(out["sc_tables"], {"MO-2610001": [{"table": "TraBillMain", "column": "BillNo", "count": 1},
-                                                           {"table": "TraBillSub", "column": "OriginBillNo", "count": 2}]})
-        self.assertEqual([e["table"] for e in out["errors"]], ["comPrinter"])
-        self.assertLessEqual(len(out["errors"][0]["error"]), 100)
-        for sql, params in cur.calls:
-            self.assertTrue(sql.startswith("SELECT"), sql)
-            self.assertNotIn("DROP", sql)
-            self.assertNotIn("ST-2026304", sql)  # 單號一律參數化
-            self.assertNotIn("BadTable", sql)
-            if "COUNT(*)" in sql:
-                self.assertEqual(params, ("ST-2026304", "MO-2610001"))
-
-    def test_table_cap(self):
-        pairs = [(f"Tra{i:03d}", "BillNo") for i in range(250)]
-        cur = _ProbeCur([], pairs, {})
-        out = prt.page_probe(cur, "ST-2026304", [])
-        self.assertEqual(out["tables_scanned"], prt.PROBE_MAX_TABLES)
-        self.assertEqual(sum(1 for sql, _ in cur.calls if "COUNT(*)" in sql), 200)
-        self.assertEqual((out["bill_tables"], out["sc_tables"]), ([], {}))
-
-    def test_in_print_data_and_failure_isolated(self):
-        r, cur, conn = run_print(sample_data())
-        self.assertTrue(r["page_probe"]["temporary"])
-        self.assertIn("MO-2610001", r["page_probe"]["sc_tables"])
-        self.assertTrue(conn.rolled_back)
-        with patch.object(prt, "probe_tables", side_effect=RuntimeError("boom")),                 patch.object(prt, "probe_main_fields", side_effect=RuntimeError("boom")):
-            r, _, _ = run_print(sample_data())
+class PrintDataResponseTests(unittest.TestCase):
+    def test_no_page_probe(self):
+        r, _, conn = run_print(sample_data())
         self.assertTrue(r["ok"])
-        self.assertEqual(r["page_probe"]["errors"][0]["error"], "RuntimeError：boom")
-        self.assertIn("error", r["page_probe"]["invoice"])
+        self.assertNotIn("page_probe", r)
+        self.assertTrue(conn.rolled_back)
+
 
 class CompanyLookupTests(unittest.TestCase):
     def setUp(self):

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.7"
+APP_VERSION = "v2026.11.20.8"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "列印 Invoice 的「---」看得出三個 -；依實際高度分頁，PO 標題不落單、合計只在最後一頁"
+APP_HEADLINE = "列印 Invoice 移除暫時性診斷欄位 page_probe，其他不變"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.8：列印 Invoice 移除暫時性診斷 page_probe", "items": [
+        "/api/erp-invoice/print-data 不再回傳暫時性診斷欄位 page_probe，列印時也不再多查診斷用的表；其他一律不變（分頁、破折號、貿易條件、raw_sc、transport_way、版面）。",
+    ]},
     {"title": "v2026.11.20.7：列印 Invoice 破折號正常顯示、依實際高度分頁；暫時性診斷 page_probe", "items": [
         "品名的標點與中文改用正常字距，只有英數字維持縮字距：ST-2026304 的「---代購料」三個 - 不再黏成一條長線；品名折行仍與正航實單相同（品名 1 折 3 行到「(3mm x」、品名 2 折 2 行，第 2 行「---代購料」），詞距由 0.15em 微調為 0.05em。",
         "分頁改在瀏覽器依實際高度計算（A4 直式，每頁明細區約 789px，約 37 個單行明細），不再用固定 12 行估計：PO 標題一定和它的第一列明細在同一頁；同一個 PO 跨頁時新頁會重印 PO 標題；合計與簽核只印在最後一頁，放不下時把最後一列移到下一頁，最後一頁不會只剩合計；Page n of N 用實際頁數，每張對應一張 A4。",
