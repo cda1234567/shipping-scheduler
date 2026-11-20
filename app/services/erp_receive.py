@@ -1066,8 +1066,16 @@ def build_plan(
                             "set": {"Quantity": _dec(ep._get(yq, "Quantity")) + q}})
         ya = ctx["ym_avg"].get(prod)
         if ya is None:
+            # 當月第一筆：AtLastQuan = 進貨後庫存（同正航手開單，帶上月期末量），不是只寫本次數量。
+            # 全公司成本 = 所有倉庫合計 + 數量（例 SP-10019B：001 倉 300 + 015 倉 189 → 489）；
+            # 依倉庫成本 = 該倉進貨後數量；全公司合計查不到時退回本次數量
+            if cost_params["cost_by_ware"]:
+                at_last = (_dec(ep._get(wa, "Quantity")) + q) if wa is not None else q
+            else:
+                all_q = ctx["all_qty"].get(prod)
+                at_last = all_q + q if all_q is not None else q
             updates.append({"op": "insert", "table": "stkYearMonthAvg", "values": _row(
-                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=avg_ware, BatchID="", AtLastQuan=q)})
+                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=avg_ware, BatchID="", AtLastQuan=at_last)})
         else:
             updates.append({"op": "update", "table": "stkYearMonthAvg",
                             "where": {"YearMonth": ym, "ProdID": prod, "WareID": avg_ware, "BatchID": ""},

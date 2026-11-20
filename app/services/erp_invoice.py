@@ -40,7 +40,8 @@ S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數�
   NotTranPackingQty、TransedQty、InvNO / InvFromNo 不動。TraBillMain：全部列 QtyRemain<=0 → BillStatus=1（Endacasedate=今天，
   公司3實單 = 開單當天）；還有列 >0 且原本 BillStatus=1 → 改回 0（Endacasedate=0）；其他狀態不動。
 庫存（出庫）：comWareAmount.Quantity / BCQty 減；StkYearMonthQty 當月減；
-  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）。
+  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）；當月還沒有列時新增，
+  AtLastQuan = 出庫後庫存（CostByWare=0 為所有倉庫合計 - 數量、=1 為該倉出庫後數量；同手開實單 EC-10355A 7238-202=7036）。
   LatestSalesDate：comProduct = 發票日；comWareAmount = 同料號同倉「其他單號」Flag 500/501 comProdRec 的最大 BillDate
   （上一筆銷貨日，寫入本單明細前查、不含本單），查無則保留原值；新增倉庫列留預設（同手開實單 ST-2026293..304/308）。
   LatestOutDate：公司3三張實單的 comWareAmount / comProduct.LatestOutDate 都是 0（只有 LatestSalesDate 被改），
@@ -776,8 +777,15 @@ def build_plan(
         avg_ware = ware if by_ware else ""
         ya = ctx["ym_avg"].get(prod)
         if ya is None:
+            # 當月第一筆：AtLastQuan = 出庫後庫存（同正航手開單，例 EC-10355A 上月 7238 出 202 → 7036），不是只寫 -數量。
+            # 全公司成本 = 所有倉庫合計 - 數量；依倉庫成本 = 該倉出庫後數量；全公司合計查不到時退回 -數量
+            if by_ware:
+                at_last = new_q
+            else:
+                all_q = ctx["all_qty"].get(prod)
+                at_last = all_q - q if all_q is not None else -q
             updates.append({"op": "insert", "table": "stkYearMonthAvg", "values": _row(
-                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=avg_ware, BatchID="", AtLastQuan=-q)})
+                "stkYearMonthAvg", YearMonth=ym, ProdID=prod, WareID=avg_ware, BatchID="", AtLastQuan=at_last)})
         else:
             updates.append({"op": "update", "table": "stkYearMonthAvg",
                             "where": {"YearMonth": ym, "ProdID": prod, "WareID": avg_ware, "BatchID": ""},

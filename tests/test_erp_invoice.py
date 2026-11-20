@@ -304,7 +304,42 @@ class InvoicePlanTests(unittest.TestCase):
         ym = [u for u in plan["updates"] if u["table"] == "StkYearMonthQty"][0]
         self.assertEqual(ym["values"]["Quantity"], D(-100))
         avg = [u for u in plan["updates"] if u["table"] == "stkYearMonthAvg"][0]
-        self.assertEqual((avg["values"]["WareID"], avg["values"]["AtLastQuan"]), ("", D(-100)))  # CostByWare=0
+        self.assertEqual((avg["values"]["WareID"], avg["values"]["AtLastQuan"]), ("", D(-60)))  # CostByWare=0：40 - 100
+
+    def _avg_plan(self, picks_qty, stocks, *, ym_avg=None, ym_qty=None, params=COMP03_PARAMS):
+        no = "MO-1"
+        subs = [_sc_sub(no, i + 1, "SP-10019B", 1000, 1000, 1.0) for i in range(len(picks_qty))]
+        ctx = make_ctx({no: (_sc_main(no), subs)}, [(no, i + 1, q, None) for i, q in enumerate(picks_qty)],
+                       products={"SP-10019B": 2.0}, stocks={"SP-10019B": stocks}, rate=32, params=params)
+        ctx["ym_avg"] = ym_avg or {}
+        ctx["ym_qty"] = ym_qty or {}
+        plan = plan_of(ctx, inv_date=20261120)
+        return ([u for u in plan["updates"] if u["table"] == "stkYearMonthAvg"],
+                [u for u in plan["updates"] if u["table"] == "StkYearMonthQty"])
+
+    def test_month_avg_insert_uses_total_stock_after_issue(self):
+        # 當月沒有列：AtLastQuan = 所有倉庫合計 489（001 300 + 015 189）- 189 = 300（同手開單帶上月期末量）
+        avg, ymq = self._avg_plan([189], {"001": D(300), "015": D(189)})
+        self.assertEqual(len(avg), 1)
+        self.assertEqual((avg[0]["op"], avg[0]["values"]["YearMonth"], avg[0]["values"]["WareID"],
+                          avg[0]["values"]["BatchID"], avg[0]["values"]["AtLastQuan"]), ("insert", 202611, "", "", D(300)))
+        self.assertEqual(ymq[0]["values"]["Quantity"], D(-189))  # StkYearMonthQty 照舊 = 當月淨異動
+
+    def test_month_avg_existing_row_update_unchanged(self):
+        avg, ymq = self._avg_plan([189], {"001": D(300), "015": D(189)},
+                                  ym_avg={"SP-10019B": {"AtLastQuan": D(500)}}, ym_qty={"SP-10019B": {"Quantity": D(40)}})
+        self.assertEqual((avg[0]["op"], avg[0]["set"]["AtLastQuan"]), ("update", D(311)))  # 500 - 189
+        self.assertEqual(ymq[0]["set"]["Quantity"], D(-149))  # 40 - 189
+
+    def test_month_avg_insert_multi_line_same_item_once(self):
+        avg, ymq = self._avg_plan([100, 89], {"001": D(300), "015": D(189)})
+        self.assertEqual(len(avg), 1)
+        self.assertEqual(avg[0]["values"]["AtLastQuan"], D(300))  # 489 - (100 + 89)
+        self.assertEqual([u["values"]["Quantity"] for u in ymq], [D(-189)])
+
+    def test_month_avg_insert_by_ware_uses_ware_qty_after_issue(self):
+        avg, _ = self._avg_plan([189], {"001": D(300), "015": D(189)}, params=COMP13_PARAMS)
+        self.assertEqual((avg[0]["values"]["WareID"], avg[0]["values"]["AtLastQuan"]), ("001", D(111)))  # 300 - 189
 
     def test_ware_insert_has_no_latest_sales_date(self):
         no = "MO-1"

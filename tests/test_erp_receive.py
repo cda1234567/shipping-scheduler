@@ -624,7 +624,7 @@ class CreateTests(ErpCase):
         self.assertEqual((ym["AC-1"], ym["AC-2"]), (Decimal(100), Decimal(30)))
         avg = self.rows("stkYearMonthAvg")
         self.assertEqual({(x["ProdID"], x["WareID"], x["BatchID"], x["AtLastQuan"]) for x in avg},
-                         {("AC-1", "001", "", Decimal(100)), ("AC-2", "001", "", Decimal(20))})
+                         {("AC-1", "001", "", Decimal(100)), ("AC-2", "001", "", Decimal(30))})  # 依倉庫：進貨後該倉數量
         trade = next(x for x in self.rows("comCustTrade") if x["ID"] == "CS007")
         self.assertEqual(trade["LatelyTradeDate"], 20261030)
         acct = self.rows("comCustAccounts")[0]
@@ -966,8 +966,30 @@ class CostTests(ErpCase):
         w = self.ware("AC-1")
         self.assertEqual((w["Quantity"], w["TotalCost"], w["Cost"]), (Decimal(1600), Decimal(39000), Decimal(7)))  # Cost 不維護
         self.assertEqual(self.ware("AC-1", "002")["Quantity"], Decimal(265))
-        self.assertEqual({(x["WareID"], x["AtLastQuan"]) for x in self.rows("stkYearMonthAvg")}, {("", Decimal(1500))})
+        # 當月第一筆：AtLastQuan = 所有倉庫合計 365 + 1500
+        self.assertEqual({(x["WareID"], x["AtLastQuan"]) for x in self.rows("stkYearMonthAvg")}, {("", Decimal(1865))})
         self.assertEqual(self.rows("StkYearMonthQty")[0]["WareID"], "001")  # 月庫存仍依倉庫
+
+    def test_company_wide_month_avg_insert_uses_total_stock(self):
+        # SP-10019B / RM-20261111002：當月沒有列、001 倉 0 + 015 倉 189，進 300 → AtLastQuan 489（不是 300）
+        self.setup_params(0, 3, 1)
+        self.stock_company("SP-10019B", 0, 0.0, {"001": 0, "015": 189})
+        self.receive("SP-10019B", 300, 1)
+        avg = self.rows("stkYearMonthAvg")
+        self.assertEqual([(x["ProdID"], x["WareID"], x["BatchID"], x["AtLastQuan"]) for x in avg],
+                         [("SP-10019B", "", "", Decimal(489))])
+        self.assertEqual([(x["WareID"], x["Quantity"]) for x in self.rows("StkYearMonthQty")], [("001", Decimal(300))])
+
+    def test_company_wide_month_avg_existing_row_update_unchanged(self):
+        self.setup_params(0, 3, 1)
+        self.stock_company("SP-10019B", 0, 0.0, {"001": 0, "015": 189})
+        self.erp.tables["stkYearMonthAvg"] = [{"YearMonth": 202610, "ProdID": "SP-10019B", "WareID": "", "BatchID": "",
+                                               "AtLastQuan": Decimal(189)}]
+        self.erp.tables["StkYearMonthQty"] = [{"YearMonth": 202610, "ProdID": "SP-10019B", "WareID": "001",
+                                               "Quantity": Decimal(7)}]
+        self.receive("SP-10019B", 300, 1)
+        self.assertEqual([x["AtLastQuan"] for x in self.rows("stkYearMonthAvg")], [Decimal(489)])  # 189 + 300
+        self.assertEqual([x["Quantity"] for x in self.rows("StkYearMonthQty")], [Decimal(307)])  # 7 + 300
 
     def test_company_wide_new_ware_row_cost_zero_and_avg_row_accumulates(self):
         self.setup_params(0, 3, 1)
@@ -1001,6 +1023,9 @@ class CostTests(ErpCase):
         self.assertEqual(self.product("AC-1")["CAvgCost"], 13.846)
         self.assertEqual([x["CostAvg"] for x in self.rows("comProdRec")], [13.846, 13.846])
         self.assertEqual(len([u for u in self.erp.executed if u[0].startswith("UPDATE dbo.comProduct")]), 1)
+        # 月平均表只新增一次，AtLastQuan = 100 + 10 + 20；月庫存 = 本單淨異動 30
+        self.assertEqual([x["AtLastQuan"] for x in self.rows("stkYearMonthAvg")], [Decimal(130)])
+        self.assertEqual([x["Quantity"] for x in self.rows("StkYearMonthQty")], [Decimal(30)])
 
     def test_per_ware_cost_and_company_avg_untouched(self):
         self.setup_params(1, 5, 0)
@@ -1011,7 +1036,7 @@ class CostTests(ErpCase):
         self.assertEqual(self.product("AC-2")["CTotalCost"], Decimal(5927))
         self.assertEqual(self.ware("AC-2")["Cost"], 580 / 30)
         self.assertEqual(self.rec("AC-2")["CostAvg"], 580 / 30)
-        self.assertEqual({(x["WareID"], x["AtLastQuan"]) for x in self.rows("stkYearMonthAvg")}, {("001", Decimal(20))})
+        self.assertEqual({(x["WareID"], x["AtLastQuan"]) for x in self.rows("stkYearMonthAvg")}, {("001", Decimal(30))})
         self.assertEqual(r["cost_params"], {"cost_by_ware": True, "digits": 5, "dot": False})
 
     def test_per_ware_new_row_and_rounding(self):
