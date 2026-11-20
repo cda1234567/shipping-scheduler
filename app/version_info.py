@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.9"
+APP_VERSION = "v2026.11.20.10"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "Invoice 列印改由伺服器產生 PDF、自動選印表機直接送印（同進貨單列印）"
+APP_HEADLINE = "開 Invoice 扣總成本倉庫 TotalCost 照減不歸 0（比照 ST-2026304）；Invoice 列印放得進半張就送 M111w（修 ST-2026307）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.10：Invoice 倉庫 TotalCost 不再因數量歸 0 而歸 0；列印半張判斷修正", "items": [
+        "勾「扣總成本」（update_cost）時，comWareAmount.TotalCost 一律 = 原值 - CostForAcc，倉庫數量剛好扣到 0 也照減、不再強制歸 0。依據：公司3手開實單 ST-2026304 出庫後，001 倉數量 0，TotalCost 仍為 757,640（IC-NB675GL-Z，888,960 - 131,320）與 1,926,423（IC-XC7K70T-1FBG484I，4,467,465 - 2,541,042）。",
+        "comProduct.CTotalCost 規則不變：原值 - CostForAcc，全部倉庫的總庫存歸 0 時設為 0（ST-2026304 兩個料號皆為 0.00）。CostByWare=1 時 Cost = 新 TotalCost / 新數量（數量 0 以下不動）、不勾扣總成本時成本全部不動，皆與前版相同。",
+        "Invoice 列印半張判斷修正：整張（明細 + 合計 + 簽核緊接合計）框底 <= 半張上限（148.5mm）就用半張、送 M111w。半張內明細留得出空間時簽核照舊貼框底（146.5mm，同 ST-2026304），留不出來就簽核緊接合計、框在簽核下方收尾。修正 ST-2026307：框底 145.29mm 放得下半張，卻因簽核貼框底會壓到合計被判成 A4、送到 M652。print-info 的 bottom_mm 與 PDF 實際框底一致；ST-2026302 這類長單照舊 A4；follow 模式半張判斷同 auto，bottom 模式（簽核一律貼框底）與 A4 多頁規則不變。",
+    ]},
     {"title": "v2026.11.20.9：Invoice 列印改成伺服器 PDF 直接送印（同進貨單列印）", "items": [
         "開 Invoice 的三個「列印」（Invoice 紀錄每列、開立成功後的「列印 ST-…」、輸入 ST 單號列印舊單）改成跟進貨單列印一樣：伺服器產生 PDF、自動選印表機、直接送到列印小幫手，不再跳出瀏覽器列印視窗；畫面會提示「半張（上半頁）／A4 n 頁 → 印表機」，送印成功顯示印表機與 job 編號，失敗顯示原因。自動送印未啟用（RM_PRINT_HELPER_ENABLED）時改開 PDF 分頁，並提示要選哪台印表機。",
         "印表機自動選：整張內容（含合計與簽核）放得進 A4 上半張 → NPI975BEF（HP LaserJet M111w，只印上半張）；放不下 → A4 印到 M652，可多頁。與進貨單共用同一套規則與環境變數（RM_PRINT_PRINTER_HALF / RM_PRINT_PRINTER_FULL / RM_PRINT_HALF_PAGE_MM）。例：ST-2026304 半張 → M111w；ST-2026302（7 列、5 個 PO）A4 1 頁 → M652。",

@@ -65,6 +65,17 @@ def st_2026302():
     return invoice("ST-2026302", [_line(*row) for row in LINES_302], 1304, 79548.32)
 
 
+def st_2026307():
+    """正航 ST-2026307 的 print-data 明細（4 列、3 個 PO）：簽核貼框底會壓到合計，緊接合計則放得進半張。"""
+    contact = "APXA0VX2X-003 P/N:1-2090-1 M99, (QPL) Contact, BNC, KN, F"
+    return invoice("ST-2026307", [
+        _line("W058361", "A0C01V001-000 P/N:2-1940, SHV Plug SUB-ASSY", 2000, 4.3, 8600),
+        _line("W058376", contact, 10, 0.75, 7.5),
+        _line("W058376", contact, 2690, 0.75, 2017.5),
+        _line("W058993", "ABXAAA001-012 P/N:1-7807-10 M06, Body, KGP, BNC, M", 860, 0.53, 455.8),
+    ], 5560, 11080.8)
+
+
 def synthetic(n=60):
     descs = ["SHORT PART", "PCB-A1080 T3iu A+B -REV-1.2+1.0 Forensic SATA Imaging Bay", UNATTACHED]
     lines = [_line(f"PO{i // 8}", f"P{i:02d} {descs[i % 3]}", 10, 1.5, 15) for i in range(n)]
@@ -150,8 +161,37 @@ class PrinterChoiceTest(unittest.TestCase):
         pos = [e["po"] for e in lay["pages"][0]["elements"] if e["type"] == "po"]
         self.assertEqual(pos, ["4500059433", "4500059418", "4500059497-B", "4500059563", "4500059563-A"])
 
+    def test_st_2026304_half_signature_pinned(self):
+        lay = ipp.layout(st_2026304(), "auto")
+        page = lay["pages"][-1]
+        self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 146.5))
+        self.assertAlmostEqual(page["frame_bottom"], ipp.HALF_FRAME_BOTTOM)
+        self.assertAlmostEqual(page["sign_base"], ipp.HALF_SIGN_BASE)
+
+    def test_st_2026307_half_signature_follows_totals(self):
+        lay = ipp.layout(st_2026307(), "auto")
+        page = lay["pages"][-1]
+        self.assertGreater(page["totals_base"] + ipp.SIGN_GAP, ipp.HALF_SIGN_BASE)  # 貼框底會壓到合計
+        self.assertTrue(lay["fits_half_page"])
+        self.assertEqual((lay["form"], lay["page_count"]), ("half", 1))
+        self.assertAlmostEqual(page["sign_base"], page["totals_base"] + ipp.SIGN_GAP)
+        self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
+        self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
+        self.assertLessEqual(lay["bottom_mm"], 148.5)
+        self.assertEqual(lay["bottom_mm"], 145.29)
+        self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
+        self.assertTrue(ipp.layout(st_2026307(), "follow")["fits_half_page"])
+        self.assertFalse(ipp.layout(st_2026307(), "bottom")["fits_half_page"])  # bottom 要簽核貼框底才用半張
+
+    def test_st_2026302_a4(self):
+        lay = ipp.layout(st_2026302(), "auto")
+        self.assertEqual((lay["form"], lay["fits_half_page"], lay["bottom_mm"]), ("a4", False, 196.47))
+
     def test_half_page_limit_env(self):
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "140"}):
+            lay = ipp.layout(st_2026304())  # 框底 146.5 放不下 → 簽核緊接合計（133.94）仍是半張
+            self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 133.94))
+        with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "130"}):
             self.assertFalse(ipp.layout(st_2026304())["fits_half_page"])
 
     def test_tab_rows_not_printed(self):
@@ -276,7 +316,7 @@ class SignModeTest(unittest.TestCase):
 class RenderTest(unittest.TestCase):
     def test_pdf_valid_and_page_count(self):
         _fonts_or_skip(self)
-        for data in (st_2026304(), st_2026302(), synthetic()):
+        for data in (st_2026304(), st_2026307(), st_2026302(), synthetic()):
             pdf, info = ipp.render_pdf(data)
             self.assertTrue(pdf.startswith(b"%PDF"))
             self.assertEqual(pdf_page_count(pdf), info["page_count"])

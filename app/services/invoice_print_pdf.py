@@ -11,10 +11,12 @@
 → rm_print.choose_printer(True)（NPI975BEF，A4 紙只印上半張）；否則 A4（M652），可多頁。
 
 簽核列位置（環境變數 INVOICE_PRINT_SIGN_MODE）：
-  auto（預設）：半張表單框固定高度、簽核在框底（同正航 ST-2026304 實單）；A4 長單簽核緊接合計下方、框隨內容收尾。
-  follow：一律緊接合計下方，框在簽核下方收尾（半張也一樣）。
-  bottom：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 PAGE_BOTTOM_MM）。
-半張與否只看內容放不放得下（三種模式相同），模式只影響簽核與框底位置。
+  auto（預設）：明細 + 合計 + 簽核（緊接合計）的框底 <= 半張上限就用半張；半張內明細留得出空間時框固定高度、
+    簽核在框底 HALF_FRAME_BOTTOM（同正航 ST-2026304 實單），留不出來就簽核緊接合計、框在簽核下方收尾
+    （例 ST-2026307 框底 145.29mm）；A4 長單簽核緊接合計下方、框隨內容收尾。
+  follow：半張判斷同 auto；簽核一律緊接合計下方，框在簽核下方收尾（半張也一樣）。
+  bottom：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 PAGE_BOTTOM_MM），所以半張要簽核貼框底放得下才用。
+print-info 的 bottom_mm 就是 PDF 實際畫的框底（同一份 layout）。
 
 純函式：layout(data) / render_pdf(data) 不連 ERP；資料來自 erp_invoice_print.get_print_data()。
 """
@@ -267,8 +269,10 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
     units = _units(data, measure)
     half_limit = rm_print.half_page_limit()
     last = _last_base(units)
-    half_frame = _follow_sign_base(last) + SIGN_TO_FRAME_FOLLOW if mode == "follow" else HALF_FRAME_BOTTOM
-    half = _follow_sign_base(last) <= HALF_SIGN_BASE and half_frame <= half_limit
+    # 半張內簽核能否貼框底（明細沒吃到 HALF_SIGN_BASE）；放不放得下半張看簽核緊接合計時的框底
+    pinned = _follow_sign_base(last) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
+    half = pinned if mode == "bottom" else _follow_sign_base(last) + SIGN_TO_FRAME_FOLLOW <= half_limit
+    follow = mode == "follow" or (mode == "auto" and not (half and pinned))
     groups = [units] if half else _paginate_a4(units)
     pages = []
     for no, group in enumerate(groups, 1):
@@ -277,7 +281,7 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
         if page["last"]:
             page["totals_rule"] = last + TOTALS_RULE_GAP
             page["totals_base"] = _totals_base(last)
-            if mode == "follow" or (not half and mode == "auto"):
+            if follow:
                 page["sign_base"] = _follow_sign_base(last)
                 page["frame_bottom"] = page["sign_base"] + SIGN_TO_FRAME_FOLLOW
             else:

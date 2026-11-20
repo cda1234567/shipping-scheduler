@@ -43,8 +43,10 @@ S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數�
   stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）；comProduct.LatestSalesDate=發票日。
   LatestOutDate：公司3三張實單的 comWareAmount / comProduct.LatestOutDate 都是 0（只有 LatestSalesDate 被改），
   所以預設不動（SET_LATEST_OUT_DATE 改 True 才會寫）。
-  update_cost（預設 ERP_INVOICE_UPDATE_COST=1）：comWareAmount.TotalCost 與 comProduct.CTotalCost 減 CostForAcc
-  （數量歸 0 時總成本歸 0，與公司3實單相符）；CostByWare=1 時 Cost = 新 TotalCost / 新 Quantity（數量 <= 0 則不動）。
+  update_cost（預設 ERP_INVOICE_UPDATE_COST=1）：comWareAmount.TotalCost = 原值 - CostForAcc，倉庫數量歸 0 也照減、
+  不歸 0（與公司3手開實單 ST-2026304 相符：數量 0 時倉庫 TotalCost 仍為 757,640 / 1,926,423）；
+  comProduct.CTotalCost = 原值 - CostForAcc，但全部倉庫的總庫存歸 0 時設為 0（ST-2026304 的 CTotalCost 為 0.00）；
+  CostByWare=1 時 Cost = 新 TotalCost / 新 Quantity（數量 <= 0 則不動）。
   出庫不重算 CAvgCost。
 倉庫：ERP_INVOICE_WAREHOUSE（預設 001，公司3實單全是 001）。預設倉不夠、別倉較多時改用庫存最多的倉並在預覽顯示。
   庫存不足、超開 S/C 剩餘量：預覽警告，沒帶 confirm 不寫入。料號在 comProduct 不存在（例如公司13的 ItemNo='*'）直接報錯。
@@ -738,7 +740,7 @@ def build_plan(
         else:
             ware_set: Dict[str, Any] = {"Quantity": new_q, "BCQty": new_q, **dates}
             if update_cost:
-                new_total = Decimal(0) if new_q == 0 else _dec(ep._get(wa, "TotalCost")) - cost
+                new_total = _dec(ep._get(wa, "TotalCost")) - cost
                 ware_set["TotalCost"] = new_total
                 if by_ware and new_q > 0:
                     ware_set["Cost"] = er._round_cost(new_total / new_q, params)

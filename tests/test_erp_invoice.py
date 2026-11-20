@@ -304,6 +304,42 @@ class InvoicePlanTests(unittest.TestCase):
         avg = [u for u in plan["updates"] if u["table"] == "stkYearMonthAvg"][0]
         self.assertEqual((avg["values"]["WareID"], avg["values"]["AtLastQuan"]), ("", D(-100)))  # CostByWare=0
 
+    def _cost_plan(self, issue, stocks, *, params=COMP03_PARAMS, ware_total=D(888960), **kw):
+        no = "MO-1"
+        scs = {no: (_sc_main(no), [_sc_sub(no, 1, "P1", issue, issue, 1.0)])}
+        ctx = make_ctx(scs, [(no, 1, issue, None)], products={"P1": 2.0}, stocks={"P1": stocks}, params=params, rate=32)
+        ctx["ware_amounts"]["P1"]["TotalCost"] = ware_total
+        plan = plan_of(ctx, **kw)
+        ware = [u for u in plan["updates"] if u["table"] == "comWareAmount"][0]["set"]
+        prod = [u for u in plan["updates"] if u["table"] == "comProduct"][0]["set"]
+        cost = rows_of(plan, "comProdRec")[0]["CostForAcc"]
+        return ware, prod, cost
+
+    def test_update_cost_ware_qty_zero_keeps_total_minus_cost(self):
+        # ST-2026304：倉庫數量歸 0，倉庫 TotalCost = 原值 - CostForAcc（不歸 0）；全倉總庫存 0 → CTotalCost = 0
+        ware, prod, cost = self._cost_plan(40, {"001": D(40)})
+        self.assertEqual(ware["Quantity"], D(0))
+        self.assertGreater(cost, 0)
+        self.assertEqual(ware["TotalCost"], D(888960) - cost)
+        self.assertEqual(prod["CTotalCost"], D(0))
+        ware13, _, _ = self._cost_plan(40, {"001": D(40)}, params=COMP13_PARAMS)
+        self.assertNotIn("Cost", ware13)  # 數量 0：Cost 不動
+
+    def test_update_cost_qty_remains_both_minus_cost(self):
+        ware, prod, cost = self._cost_plan(40, {"001": D(100), "002": D(50)})
+        self.assertEqual(ware["Quantity"], D(60))
+        self.assertEqual(ware["TotalCost"], D(888960) - cost)
+        self.assertEqual(prod["CTotalCost"], D(2.0) * 10 ** 6 - cost)
+        ware13, _, _ = self._cost_plan(40, {"001": D(100)}, params=COMP13_PARAMS)
+        self.assertIn("Cost", ware13)  # CostByWare=1 且數量 > 0：Cost = 新 TotalCost / 新 Quantity
+
+    def test_update_cost_false_leaves_costs(self):
+        for stocks in ({"001": D(40)}, {"001": D(100)}):
+            ware, prod, _ = self._cost_plan(40, stocks, params=COMP13_PARAMS, update_cost=False)
+            self.assertNotIn("TotalCost", ware)
+            self.assertNotIn("Cost", ware)
+            self.assertNotIn("CTotalCost", prod)
+
     def test_choose_warehouse_switches_when_default_empty(self):
         self.assertEqual(inv.choose_warehouse("001", D(700), {"02": D(6735)}), ("02", True))
         self.assertEqual(inv.choose_warehouse("001", D(100), {"001": D(500), "02": D(9000)}), ("001", False))
