@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.1"
+APP_VERSION = "v2026.11.20.2"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 發票匯率預設改帶第一張勾選 S/C 的匯率（與正航手開一致）"
+APP_HEADLINE = "開 Invoice 搜尋也找得到客戶 PO，明細顯示客戶 PO"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.2：開 Invoice 搜尋也找得到客戶 PO，明細顯示客戶 PO", "items": [
+        "開 Invoice 挑 S/C 明細的搜尋框，除了客戶、料號、S/C 單號、品名，也會搜 S/C 上的客戶 PO（TraBillMain.Ref）與 CustBillNo。實例：搜 4500059564 以前找不到任何明細，現在會找到 MO-2608006（客戶 C0152、USD）的 7 列未完成明細。",
+        "明細表的 S/C 單號下方多一行小字「PO 客戶 PO」，沒有客戶 PO 就不顯示；搜尋框提示改成「搜尋客戶 / 客戶 PO / 料號 / S/C 單號 / 品名」。",
+        "API：/api/erp-invoice/open-lines 的每列多帶 customer_po；其他欄位、開 Invoice 計算與寫入正航的規則都沒動，只改讀取查詢。",
+    ]},
     {"title": "v2026.11.20.1：開 Invoice 發票匯率預設改帶第一張勾選 S/C 的匯率（與正航手開一致）", "items": [
         "開 Invoice 沒輸入匯率時，預設匯率改成使用者勾選順序第一張 S/C 的匯率（TraBillMain.ExchRate），與正航手開的預設一致。實例：ST-2026304 用第一張 S/C 的 31.505，以前系統預設帶正航幣別檔 30.385。",
         "合併多張 S/C、各張匯率不同時，整張 Invoice 仍只用第一張勾選 S/C 的匯率；第一張 S/C 沒有匯率（或為 0）才退回正航幣別檔匯率（BuyInRate，沒有再用 FixedRate），都沒有就要求輸入。",

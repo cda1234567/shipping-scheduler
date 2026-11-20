@@ -572,6 +572,47 @@ class InvoiceRouteTests(unittest.TestCase):
         self.assertIn("groupKey: l => l.customer_id", js)
         self.assertIn("qtyOf: l => l.qty_remain", js)
         self.assertIn('from "/static/modules/open_line_picker.js"', js)
+        self.assertEqual(line["customer_po"], "")  # 舊 14 欄 tuple 不會壞
+
+    def _open_lines_with_fake_cursor(self, rows, **kwargs):
+        seen = {}
+
+        class _Cur:
+            def execute(self, sql, params):
+                seen["sql"], seen["params"] = sql, params
+
+            def fetchall(self):
+                return rows
+
+        class _Conn(_FakeConn):
+            def cursor(self):
+                return _Cur()
+
+        with patch.object(inv, "resolve_target", return_value=("CHIComp13", {})),                 patch.object(ep, "_connect_write", side_effect=lambda creds: _Conn()),                 patch.object(ep, "_check_db_name"):
+            result = inv.list_open_lines(**kwargs)
+        return result, seen
+
+    def test_open_lines_q_searches_customer_po_ref_and_cust_bill_no(self):
+        row = ("MO-2608006", 1, 20260815, "C0152", "客戶", "", "BPJ01", "desc", 100, 100, 1.5, "USD", 31.5, "PCS",
+               " 4500059564 ")
+        result, seen = self._open_lines_with_fake_cursor([row], q="4500059564")
+        sql = seen["sql"]
+        self.assertIn("m.Ref LIKE %s", sql)
+        self.assertIn("m.CustBillNo LIKE %s", sql)
+        self.assertIn("s.Unit, m.Ref FROM", sql)
+        self.assertEqual(sql.count("%s"), len(seen["params"]))
+        self.assertEqual(seen["params"], ("%4500059564%",) * 8)
+        line = result["lines"][0]
+        self.assertEqual((line["sc_no"], line["customer_po"], line["unit"]), ("MO-2608006", "4500059564", "PCS"))
+
+    def test_open_lines_customer_and_q_param_count(self):
+        _, seen = self._open_lines_with_fake_cursor([], customer="C0152", q="a_b")
+        self.assertEqual(seen["sql"].count("%s"), len(seen["params"]))
+        self.assertEqual(seen["params"][0], "C0152")
+        self.assertEqual(len(seen["params"]), 9)
+        js = (ROOT / "static" / "modules" / "erp_invoice.js").read_text(encoding="utf-8")
+        self.assertIn("PO ${esc(l.customer_po)}", js)
+        self.assertIn("搜尋客戶 / 客戶 PO / 料號 / S/C 單號 / 品名", js)
 
 
 class InvoiceDatabaseTests(unittest.TestCase):

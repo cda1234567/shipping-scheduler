@@ -329,7 +329,7 @@ export async function initErpInvoice() {
     groupKey: l => l.customer_id,
     groupLabel: l => `${l.customer_id} ${l.customer_name}`,
     columns: [
-      { label: "S/C 單號", render: l => `<span class="mono">${esc(l.sc_no)}</span>` },
+      { label: "S/C 單號", render: l => `<span class="mono">${esc(l.sc_no)}</span>${l.customer_po ? `<br><small class="mono" style="color:#888">PO ${esc(l.customer_po)}</small>` : ""}` },
       { label: "列", align: "num", render: l => esc(l.row_no) },
       { label: "客戶", render: l => esc(`${l.customer_id} ${l.customer_name}`) },
       { label: "料號", render: l => `<span class="mono">${esc(l.part_number)}</span>` },
@@ -340,7 +340,7 @@ export async function initErpInvoice() {
     ],
     qtyOf: l => l.qty_remain,
     priceOf: l => l.price,
-    searchPlaceholder: "搜尋客戶 / 料號 / S/C 單號 / 品名",
+    searchPlaceholder: "搜尋客戶 / 客戶 PO / 料號 / S/C 單號 / 品名",
     emptyText: "沒有未完成的 S/C 明細",
     otherGroupText: "已隱藏其他客戶 {n} 筆",
     multiGroupText: "目前顯示多個客戶，請先在搜尋框輸入客戶 / 單號縮小到單一客戶再全選（不可混客戶）",

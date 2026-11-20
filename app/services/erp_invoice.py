@@ -319,11 +319,11 @@ def list_open_lines(
     if ep._text(q):
         pat = f"%{ep._like_escape(ep._text(q))}%"
         where.append("(m.CustID LIKE %s OR c.ShortName LIKE %s OR c.FullName LIKE %s OR s.ItemNo LIKE %s "
-                     "OR s.Description LIKE %s OR m.BillNo LIKE %s)")
-        params += [pat] * 6
+                     "OR s.Description LIKE %s OR m.BillNo LIKE %s OR m.Ref LIKE %s OR m.CustBillNo LIKE %s)")
+        params += [pat] * 8
     sql = (
         f"SELECT TOP {limit + 1} m.BillNo, s.RowNo, m.BillDate, m.CustID, c.ShortName, c.FullName, s.ItemNo, "
-        "s.Description, s.Quantity, s.QtyRemain, s.Price, m.CurrID, m.ExchRate, s.Unit "
+        "s.Description, s.Quantity, s.QtyRemain, s.Price, m.CurrID, m.ExchRate, s.Unit, m.Ref "
         "FROM TraBillSub s JOIN TraBillMain m ON m.Flag = s.Flag AND m.BillNo = s.BillNo "
         f"LEFT JOIN comCustomer c ON c.Flag = {CUSTOMER_FLAG} AND c.ID = m.CustID "
         f"WHERE {' AND '.join(where)} ORDER BY m.CustID, m.BillDate, m.BillNo, s.RowNo"
@@ -353,6 +353,7 @@ def open_line(r: Tuple[Any, ...]) -> Dict[str, Any]:
         "part_number": ep._text(r[6]), "part_name": ep._text(r[7]),
         "qty": float(r[8] or 0), "qty_remain": float(r[9] or 0), "price": float(r[10] or 0),
         "currency": ep._text(r[11]), "sc_exch_rate": float(r[12] or 0), "unit": ep._text(r[13]),
+        "customer_po": ep._text(r[14]) if len(r) > 14 else "",  # 客戶 PO（TraBillMain.Ref）
     }
 
 
