@@ -21,6 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 DESC1 = ("IC, BUCK CONVERTER, 4.5V-16V INPUT, 6A, ADJUSTABLE OUTPUT, SYNCHRONOUS, WITH INTERNAL COMPENSATION, "
          "REFERENCE, MPS NB675GL-Z, QFN21 (3mm x 4mm)")
 DESC2 = "IC, FBG484. Xilinx XC7K70T-1FBG484I. ---代購料"
+# ST-2026304 正航實單的品名（Description 本身就截在 "(3mm x"）；正航列印折成 3 行 / 2 行
+REAL_DESC1 = ("IC-NB675GL-Z IC, 10A, 5V-24V INPUT SYNCHRONOUS BUCK CONVERTER WITH 1.5A LDO AND LOW-NOISE "
+              "REFERENCE, MPS NB675GL-Z, QFN21 (3mm x")
+REAL_DESC2 = "IC-XC7K70T-1FBG484I IC, FBG484. Xilinx XC7K70T-1FBG484I. ---代購料"
 
 
 def _main(**kw):
@@ -49,14 +53,6 @@ class _Cur:
         if sql.startswith("SELECT DB_NAME()"):
             rows, cols = [("CHIComp03",)], ["db"]
             self._set(cols, rows)
-            return
-        for name in d.get("fail_star", ()):
-            if "*" in sql and f"FROM {name} " in sql:
-                raise RuntimeError(f"Invalid object name '{name}'")
-        if "comCustTrade" in sql or "comCustTrade" in tuple(params or ()):
-            key = ("ct_tables" if "INFORMATION_SCHEMA.TABLES" in sql else
-                   "ct_cols" if "INFORMATION_SCHEMA.COLUMNS" in sql else "ct_rows")
-            self._dicts(d.get(key, []))
             return
         if "INFORMATION_SCHEMA" in sql:
             if self.fail_company:
@@ -198,7 +194,9 @@ class PrintDataTests(unittest.TestCase):
         self.assertEqual(set(r["raw_sc"][0]), set(prt.RAW_SC_FIELDS))
         self.assertEqual((r["raw_sc"][0]["BillNo"], r["raw_sc"][0]["Ref"]), ("MO-2610001", "4500059700"))
         self.assertEqual(r["transport_way"], "")
-        self.assertTrue(r["trade_term_probe"]["temporary"])
+        self.assertNotIn("trade_term_probe", r)
+        self.assertNotIn("trade_term_sc_no", r)
+        self.assertNotIn("trade_term_unmapped_term", r)
         self.assertTrue(conn.rolled_back and conn.closed and not conn.committed)
 
     def test_tab_rows_excluded_and_reported(self):
@@ -231,31 +229,38 @@ class PrintDataTests(unittest.TestCase):
 
     def test_customer_name_and_header_from_main(self):
         main = _main(CustName="Open Text Inc.", CustID="C0152", BillDate=20260301, CurrID="NTD", Total=85415,
-                     TradeWay="", Way="", Shipment="CIF HONG KONG")
+                     TradeWay="", Way="", Shipment="", TermContent="CIF HONG KONG")
         r, _, _ = run_print(sample_data(main=main))
         self.assertEqual((r["customer"]["name"], r["customer"]["name_source"]), ("Open Text Inc.", "TraBillMain.CustName"))
         self.assertEqual((r["date_display"], r["currency"]), ("Mar.1,2026", "NTD"))
-        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("CIF HONG KONG", "TraBillMain.Shipment"))
+        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("CIF HONG KONG", "TraBillMain.TermContent"))
         r2, _, _ = run_print(sample_data(customers=[{"ID": "C0152", "ShortName": "Open Text", "FullName": ""}]))
         self.assertEqual((r2["customer"]["name"], r2["customer"]["name_source"]), ("Open Text", "comCustomer.ShortName"))
 
-    def test_trade_term_order_ignores_way(self):
-        main = _main(TradeWay="", Shipment="", Way="Air")
-        subs = [_sub(1, "A", 1, 1, 1, sc="MO-2"), _sub(2, "B", 1, 1, 1, sc="MO-1")]
-        scs = [{"BillNo": "MO-1", "Ref": "", "CustBillNo": "", "TradeWay": "CIF", "Shipment": ""},
-               {"BillNo": "MO-2", "Ref": "", "CustBillNo": "", "TradeWay": "FOB", "Shipment": "CFR X"}]
-        r, _, _ = run_print(sample_data(main=main, subs=subs, recs=[], scs=scs))
-        self.assertEqual((r["trade_term"], r["trade_term_source"], r["trade_term_sc_no"]), ("FOB", "sc.TradeWay", "MO-2"))
+    def test_trade_term_from_term_enum(self):
+        sc = [{"BillNo": "MO-2610001", "Ref": "4500059700", "CustBillNo": "", "TradeWay": "CIF", "Shipment": "CFR X",
+               "TermContent": "DAP"}]
+        # ST-2026304 實單：TradeWay / Shipment / TermContent 都空、Way=Air、Term=0 → 正航印 FOB
+        r, _, _ = run_print(sample_data(main=_main(TradeWay="", Shipment="", TermContent="", Way="Air", Term=0), scs=sc))
+        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("FOB", "TraBillMain.Term=0 (inferred FOB)"))
+        self.assertNotIn("trade_term_unmapped_term", r)
         self.assertEqual(r["transport_way"], "Air")
-        self.assertEqual([x["BillNo"] for x in r["raw_sc"]], ["MO-2", "MO-1"])
-        scs[1]["TradeWay"] = ""
-        r, _, _ = run_print(sample_data(main=main, subs=subs, recs=[], scs=scs))
-        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("CFR X", "sc.Shipment"))
-        r, _, _ = run_print(sample_data(main=_main(TradeWay="", Shipment="EXW", Way="Air"), subs=subs, recs=[], scs=scs))
-        self.assertEqual((r["trade_term"], r["trade_term_source"], r["trade_term_sc_no"]), ("EXW", "TraBillMain.Shipment", ""))
-        scs[1]["Shipment"] = ""
-        r, _, _ = run_print(sample_data(main=main, subs=subs, recs=[], scs=scs))  # 第一張 S/C 空白，不改用第二張
-        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("", "none"))
+        self.assertEqual(r["raw_sc"][0]["TradeWay"], "CIF")  # S/C 值只回 raw_sc，不拿來當貿易條件
+
+    def test_trade_term_priority(self):
+        r, _, _ = run_print(sample_data(main=_main(TradeWay="CIF", TermContent="DAP", Term=0)))
+        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("CIF", "TraBillMain.TradeWay"))
+        r, _, _ = run_print(sample_data(main=_main(TradeWay="  ", TermContent="EXW TAIPEI", Term=0)))
+        self.assertEqual((r["trade_term"], r["trade_term_source"]), ("EXW TAIPEI", "TraBillMain.TermContent"))
+
+    def test_trade_term_unmapped_and_way_shipment_ignored(self):
+        main = _main(TradeWay="", TermContent="", Shipment="CIF HONG KONG", Way="Air", Term=2)
+        r, _, _ = run_print(sample_data(main=main))
+        self.assertEqual((r["trade_term"], r["trade_term_source"], r["trade_term_unmapped_term"]), ("", "none", 2))
+        for term in (None, ""):
+            r, _, _ = run_print(sample_data(main=_main(TradeWay="", Shipment="FOB", Way="FOB", Term=term)))
+            self.assertEqual((r["trade_term"], r["trade_term_source"]), ("", "none"))
+            self.assertNotIn("trade_term_unmapped_term", r)
 
     def test_only_select_statements(self):
         _, cur, _ = run_print(sample_data())
@@ -268,54 +273,6 @@ class PrintDataTests(unittest.TestCase):
     def test_not_found(self):
         with self.assertRaises(prt.InvoiceNotFound):
             run_print(sample_data(main=None))
-
-
-class TradeTermProbeTests(unittest.TestCase):
-    def test_hits_matching_and_secret_columns_excluded(self):
-        main = _main(TradeWay="", Way="Air", Memo="fob (taipei)", EndTale="FOBX", TopTale="  FOB-KEELUNG ")
-        main["UserPassword"] = "FOB"
-        main["ApiToken"] = "CIF"
-        scs = [{"BillNo": "MO-2610001", "Ref": "", "CustBillNo": "", "Term": "CIF"}]
-        customers = [{"ID": "C0152", "ShortName": "Open Text", "FullName": "Open Text Inc", "TradeTerm": "DAP",
-                      "LoginPwd": "DDP"}]
-        r, _, _ = run_print(sample_data(main=main, scs=scs, customers=customers))
-        p = r["trade_term_probe"]
-        self.assertEqual(p["errors"], [])
-        got = {(m["table"], m["key"], m["column"], m["value"]) for m in p["matches"]}
-        self.assertEqual(got, {("TraBillMain", "ST-2026304", "Memo", "fob (taipei)"),
-                               ("TraBillMain", "ST-2026304", "TopTale", "FOB-KEELUNG"),
-                               ("TraBillMain(S/C)", "MO-2610001", "Term", "CIF"),
-                               ("comCustomer", "C0152", "TradeTerm", "DAP")})
-        self.assertEqual(r["trade_term"], "")  # Way=Air 不再當貿易條件
-        self.assertEqual({x["table"] for x in p["scanned"]},
-                         {"TraBillMain", "TraBillMain(S/C)", "comCustomer", "comBillAccounts", "TraBillSub", "comCustTrade"})
-
-    def test_cust_trade_table_when_present(self):
-        data = sample_data(ct_tables=[{"TABLE_NAME": "comCustTrade"}],
-                           ct_cols=[{"COLUMN_NAME": "Flag"}, {"COLUMN_NAME": "CustID"}, {"COLUMN_NAME": "TradeWay"}],
-                           ct_rows=[{"CustID": "C0152", "TradeWay": "FOB", "SecretKey": "FOB"}])
-        r, cur, _ = run_print(data)
-        self.assertIn({"table": "comCustTrade", "key": "CustID=C0152#1", "column": "TradeWay", "value": "FOB"},
-                      r["trade_term_probe"]["matches"])
-        self.assertFalse(any(m["column"] == "SecretKey" for m in r["trade_term_probe"]["matches"]))
-        self.assertIn("SELECT TOP 50 * FROM [comCustTrade] WHERE [CustID] = %s", cur.sqls)
-
-    def test_cust_trade_absent_not_queried(self):
-        _, cur, _ = run_print(sample_data())
-        self.assertFalse(any("FROM [comCustTrade]" in s for s in cur.sqls))
-
-    def test_failing_table_isolated(self):
-        r, cur, conn = run_print(sample_data(fail_star=("comCustomer", "TraBillSub")))
-        p = r["trade_term_probe"]
-        self.assertEqual({e["table"] for e in p["errors"]}, {"comCustomer", "TraBillSub"})
-        for e in p["errors"]:
-            self.assertLessEqual(len(e["error"]), 120)
-            self.assertIn("RuntimeError", e["error"])
-        self.assertIn("comBillAccounts", {x["table"] for x in p["scanned"]})
-        self.assertEqual(r["trade_term"], "FOB")
-        self.assertTrue(conn.rolled_back and conn.closed and not conn.committed)
-        for sql in cur.sqls:
-            self.assertTrue(sql.lstrip().upper().startswith("SELECT"), sql)
 
 
 class PaginationTests(unittest.TestCase):
@@ -334,6 +291,14 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual(len(prt.paginate(self._lines(2))), 1)
         self.assertEqual(prt.desc_line_count("x" * 1000), 3)
         self.assertEqual(prt.desc_line_count("IC-XC7K70T-1FBG484I " + DESC2), 2)
+
+    def test_st_2026304_real_heights(self):
+        lines = [{"row_no": 1, "po": "4500059700", "print_description": REAL_DESC1},
+                 {"row_no": 2, "po": "4500059703", "print_description": REAL_DESC2}]
+        pages = prt.paginate(lines)
+        self.assertEqual(len(pages), 1)
+        self.assertEqual([(r["type"], r["height"]) for r in pages[0]["rows"]],
+                         [("po", 1), ("line", 3), ("po", 1), ("line", 2)])
 
     def test_po_header_not_orphaned(self):
         lines = self._lines(11, "P1") + self._lines(1, "P2")
@@ -437,8 +402,10 @@ class PrintFrontendTests(unittest.TestCase):
     def test_files_contain_key_strings(self):
         html = (ROOT / "static" / "erp_invoice_print.html").read_text(encoding="utf-8")
         for s in ("@page { size: A4 portrait; margin: 10mm; }", 'id="btn-print"', ">列印<", ">關閉<", "page-break-after",
-                  "-webkit-line-clamp: 3", "3px double", '/static/modules/erp_invoice_print.js'):
+                  "max-height: calc(1.35em * 3)", "3px double",
+                  "grid-template-columns: 146fr 5fr 342fr 110fr 94fr", "letter-spacing: -0.07em; word-spacing: 0.15em;", '/static/modules/erp_invoice_print.js'):
             self.assertIn(s, html)
+        self.assertNotIn("line-clamp", html)  # 不用 line-clamp（會加省略號），超過 3 行直接裁掉
         js = (ROOT / "static" / "modules" / "erp_invoice_print.js").read_text(encoding="utf-8")
         for s in ("export function renderInvoicePrint(data, root)", "window.__INVOICE_PRINT_DATA__",
                   "/api/erp-invoice/print-data", 'params.get("auto") === "1"', "window.print()", "客戶名稱"):

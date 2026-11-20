@@ -66,7 +66,7 @@ function sheet(data, page, total) {
       <div class="inv-row-b">客戶名稱:&nbsp;${esc(data.customer?.name)}</div>
       <div class="inv-cols inv-head">
         <div class="c-qty-head">QTY</div><div></div><div class="c-desc">DESCRIPTION</div>
-        <div class="c-price">UNIT PRICE${data.trade_term ? `<div class="inv-term"><span>${esc(data.trade_term)}</span></div>` : ""}</div>
+        <div class="c-price"><div class="inv-price-head">UNIT PRICE${data.trade_term ? `<div class="inv-term"><span>${esc(data.trade_term)}</span></div>` : ""}</div></div>
         <div class="c-amt">TTL AMOUNT</div>
       </div>
       <div class="inv-body">${body}</div>

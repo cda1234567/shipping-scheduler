@@ -19,7 +19,7 @@
     box-shadow: 0 2px 10px rgba(0, 0, 0, .3); }
   .inv-company { text-align: center; }
   .inv-company-name { font-size: 18pt; }
-  .inv-company-line { font-size: 9pt; }
+  .inv-company-line { font-size: 9.5pt; }
   .inv-title { text-align: center; margin: 3mm 0 1mm; font-size: 15pt; }
   .inv-title span { text-decoration: underline; }
   .inv-pageno { text-align: right; font-size: 8.5pt; margin-bottom: 1mm; }
@@ -28,21 +28,26 @@
   .inv-row-a > div { padding: 1.5mm 2mm; }
   .inv-row-a > div + div { border-left: 1px solid #000; }
   .inv-row-b { padding: 1.5mm 2mm; border-bottom: 1px solid #000; }
-  /* 欄寬（700 等分）：QTY 0-130、DESCRIPTION 135-505、UNIT PRICE 505-600、TTL AMOUNT 600-700 */
-  .inv-cols { display: grid; grid-template-columns: 130fr 5fr 370fr 95fr 100fr; padding: 0 2mm; }
+  /* 欄寬對照正航實單（框寬 700 等分：QTY 0-153、DESCRIPTION 158-490、UNIT PRICE 490-600、TTL AMOUNT 600-700），
+     fr 以框內寬約 697px 計，DESCRIPTION 約 342px */
+  .inv-cols { display: grid; grid-template-columns: 146fr 5fr 342fr 110fr 94fr; padding: 0 2mm; }
   .inv-head { border-bottom: 1px solid #000; padding-top: 1mm; padding-bottom: .5mm; }
   .c-qty-head { text-align: left; }
   .c-qty { text-align: right; padding-right: 2.1%; }
   .c-price, .c-amt { text-align: right; }
   .c-sum { grid-column: 4 / 6; text-align: right; }
+  /* 貿易條件小字置中在「UNIT PRICE」字下方（標題本身靠右） */
+  .inv-price-head { display: inline-block; text-align: center; }
   .inv-term { text-align: center; font-size: 8.5pt; }
   .inv-term span { text-decoration: underline; }
   .inv-body { padding-top: 1mm; }
-  .inv-line, .inv-po { line-height: 1.35; padding-top: .4mm; padding-bottom: .4mm; }
+  .inv-line, .inv-po { font-size: 10pt; line-height: 1.35; padding-top: .4mm; padding-bottom: .4mm; }
   .inv-po .c-desc { font-weight: bold; }
-  .inv-clamp { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical;
-    overflow: hidden; overflow-wrap: break-word; white-space: normal; }
-  .inv-totals { border-top: 1px solid #000; padding-top: 1mm; margin-top: 1mm; }
+  /* 品名最多 3 行，超過直接裁掉（不加省略號，同正航） */
+  /* 字距 / 詞距微調讓折行同正航（ST-2026304：品名 1 折 3 行、品名 2 折 2 行），欄寬 339-345px 都會折得一樣 */
+  .inv-clamp { max-height: calc(1.35em * 3); overflow: hidden; overflow-wrap: break-word; white-space: normal;
+    letter-spacing: -0.07em; word-spacing: 0.15em; }
+  .inv-totals { border-top: 1px solid #000; padding-top: 1mm; margin-top: 1mm; font-size: 10pt; }
   .inv-dbl { display: inline-block; border-bottom: 3px double #000; padding-bottom: .3mm; }
   .inv-spacer { flex: 1 1 auto; min-height: 10mm; }
   .inv-sign { display: grid; grid-template-columns: 250fr 250fr 200fr; padding: 0 2mm 4mm 4.3%; }

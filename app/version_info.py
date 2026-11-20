@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.5"
+APP_VERSION = "v2026.11.20.6"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "列印 Invoice 的貿易條件不再拿運輸方式（Air）當成 FOB；加暫時性診斷欄位找 FOB 存放位置"
+APP_HEADLINE = "列印 Invoice 的貿易條件 FOB 改由正航 Term 代碼帶出；品名欄寬與折行比照正航實單"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.6：列印 Invoice 貿易條件改用 Term 代碼；移除暫時診斷；品名欄寬與裁切比照正航", "items": [
+        "貿易條件（單價欄下方小字）取值順序改為：Invoice 的 TradeWay → Invoice 的 TermContent → Invoice 的 Term 數字代碼（0 = FOB，依 ST-2026304 實單推定：正航印 FOB，但所有文字欄位都沒有 FOB，只有 Term=0）。來源標示為「TraBillMain.Term=0 (inferred FOB)」。",
+        "Term 是其他數字時不猜，留空並在 API 回 trade_term_unmapped_term（例 2），方便之後對照正航實單補上對應；Shipment / Way 是運輸方式（例 Air），不再當貿易條件，來源 S/C 的值也不再拿來用（仍回 transport_way 與 raw_sc 供對照）。",
+        "移除 v2026.11.20.5 的暫時性診斷欄位 trade_term_probe（已找到 FOB 來源），列印時不再多查診斷用的表；trade_term_sc_no 一併移除。",
+        "列印版面比照正航實單：DESCRIPTION 欄改為框寬約 158～490／700（約 47%），明細字體約 10pt、公司地址與 TEL/FAX 約 9.5pt；ST-2026304 的品名 1 折成 3 行（第 3 行到「(3mm x」）、品名 2 折成 2 行（第 2 行「---代購料」），與正航一致。",
+        "品名超過 3 行改成直接裁掉、不再加「…」；單價欄下方的貿易條件小字改為置中在「UNIT PRICE」字下方並加底線。分頁行數估算與頁數邏輯不變。",
+    ]},
     {"title": "v2026.11.20.5：列印 Invoice 貿易條件不再用運輸方式；暫時性診斷欄位", "items": [
         "單價欄下方的貿易條件不再拿 TraBillMain.Way（那是運輸方式，例 Air）。例：ST-2026304 正航印 FOB，之前系統錯印 Air。",
         "取值順序改為：Invoice 的 TradeWay → Invoice 的 Shipment → 第一張來源 S/C 的 TradeWay → 第一張 S/C 的 Shipment → 留空；仍回傳 trade_term_source 標示來源，運輸方式另外回 transport_way。",

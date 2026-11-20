@@ -8,8 +8,8 @@
 - 表頭日期 / 客戶 / 幣別 / 金額：TraBillMain 有值就用，空（0 / ''）才用 comBillAccounts（Flag 501、FundBillNo=單號），回傳 header_sources。
 - 數量 / 單價 / 金額：同列號（RowNO）的 comProdRec（Flag 501）優先，沒有才用 TraBillSub 本身，回傳 qty_source。
 - 客戶 PO：S/C（TraBillMain Flag 2，單號 = OriginBillNo，空則 FromNO / POBillNO）的 Ref → CustBillNo → 本張 Invoice 的 Ref。
-- 貿易條件：Invoice TradeWay → Invoice Shipment → 第一張 S/C TradeWay → 第一張 S/C Shipment；Way 是運輸方式（transport_way），不當貿易條件。
-- trade_term_probe：暫時性診斷欄位（唯讀），找出正航印的 FOB 存在哪個欄位，找到後移除。
+- 貿易條件：Invoice TradeWay → Invoice TermContent → Invoice Term（數字列舉，0 = FOB，由 ST-2026304 實單推定）；
+  其他 Term 值不猜，留空並回 trade_term_unmapped_term。Way / Shipment 是運輸方式（Air 等），不當貿易條件。
 - 料號結尾 -TAB 的列不印、不算進列印合計，但列在 excluded_tab_rows / excluded_tab_qty / excluded_tab_amount。
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ TITLE = "銷貨單"
 SIGNATURES = ["簽核", "審核", "製單"]
 MONTHS = ["Jan.", "Feb.", "Mar.", "Apr.", "May.", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
 LINES_PER_PAGE = 12      # 每頁明細行數（PO 標題 1 行、每個品名依折行數計，最多 3 行）
-DESC_CHARS_PER_LINE = 55  # DESCRIPTION 欄（約 370px、9.5pt）每行約可放的半形字數；全形字算 2
+DESC_CHARS_PER_LINE = 50  # DESCRIPTION 欄（約 342px、10pt，同正航實單）每行約可放的半形字數；全形字算 2
 DESC_MAX_LINES = 3
 COMPANY_CACHE_SECONDS = 600
 
@@ -56,11 +56,8 @@ RAW_SC_FIELDS = ("BillNo", "Ref", "TradeWay", "Way", "Shipment", "Term", "TermCo
                  "LoadPort", "DestPort", "Via", "Tariff", "Insurance", "Freight", "CurrID")
 SC_FIELDS = tuple(dict.fromkeys(RAW_SC_FIELDS + ("CustBillNo",)))
 
-# 暫時性診斷（trade_term_probe）：找正航把 ST-2026304 印的「FOB」存在哪；找到後要移除
-TRADE_TERMS = ("FOB", "CIF", "CFR", "CNF", "EXW", "FCA", "CPT", "CIP", "DAP", "DDP", "DAT", "FAS")
-TRADE_TERM_RE = re.compile(r"^(?:%s)(?=$|[\s\-(])" % "|".join(TRADE_TERMS))
-PROBE_SECRET_WORDS = ("pass", "pwd", "secret", "token")
-CUST_TRADE_ID_COLS = ("ID", "CustID", "CustomerID")
+# TraBillMain.Term 數字列舉 → 貿易條件；只放有實單佐證的值（ST-2026304：Term=0 印 FOB）
+TERM_ENUM = {0: "FOB"}
 
 
 class InvoiceNotFound(ErpError):
@@ -128,7 +125,7 @@ def print_description(item_no: Any, description: Any, sub_desc: Any) -> str:
 
 
 def desc_line_count(text: str) -> int:
-    """估計品名在 DESCRIPTION 欄折成幾行（全形字算 2 個半形寬），最多 3 行（列印時 line-clamp 3）。"""
+    """估計品名在 DESCRIPTION 欄折成幾行（全形字算 2 個半形寬），最多 3 行（列印時超過 3 行直接裁掉）。"""
     width = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text or "")
     return max(1, min(DESC_MAX_LINES, math.ceil(width / DESC_CHARS_PER_LINE)))
 
@@ -297,77 +294,28 @@ def _sc_order(subs: List[Dict[str, Any]]) -> List[str]:
     return [n for n in dict.fromkeys(_sc_no(s) for s in subs) if n]
 
 
-# ── 暫時性診斷：trade_term_probe（找到 FOB 的存放欄位後整段移除）────────────────
-
-def _probe_hits(table: str, key: str, row: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """一列裡值像貿易條件（FOB / CIF ... 開頭）的文字欄位；欄名含 Pass / Pwd / Secret / Token 一律略過。"""
-    hits = []
-    for col, value in row.items():
-        if not isinstance(value, str) or any(w in str(col).lower() for w in PROBE_SECRET_WORDS):
-            continue
-        text = value.strip()
-        if TRADE_TERM_RE.match(text.upper()):
-            hits.append({"table": table, "key": key, "column": str(col), "value": text})
-    return hits
-
-
-def _probe_cust_trade(cur, cust_id: str) -> Tuple[List[Dict[str, Any]], str]:
-    """comCustTrade 存在才查（INFORMATION_SCHEMA 確認表與客戶欄名）；回傳 (rows, 客戶欄名)，不存在回 ([], '')。"""
-    if not _query(cur, "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = %s", ("comCustTrade",)):
-        return [], ""
-    cols = {_s(ep._get(r, "COLUMN_NAME")).lower(): _s(ep._get(r, "COLUMN_NAME"))
-            for r in _query(cur, "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = %s",
-                            ("comCustTrade",))}
-    col = next((cols[c.lower()] for c in CUST_TRADE_ID_COLS if c.lower() in cols), "")
-    if not col or not cust_id or not re.match(r"^\w+$", col):
-        return [], col
-    return _query(cur, f"SELECT TOP 50 * FROM [comCustTrade] WHERE [{col}] = %s", (cust_id,)), col
-
-
-def probe_trade_term(cur, raw: Dict[str, Any], bill_no: str, creds: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """暫時性診斷（唯讀 SELECT *）：掃 Invoice 表頭、來源 S/C、客戶、comBillAccounts、前 3 列明細、comCustTrade，
-    只回值像貿易條件的 (table, key, column, value)。每張表各自 try/except，失敗只記 {"table", "error"}，絕不丟例外。"""
-    cust_id = raw.get("cust_id") or ""
-    sc_nos = _sc_order(raw.get("subs") or [])
-    scans = [
-        ("TraBillMain", lambda: [(bill_no, r) for r in _query(
-            cur, f"SELECT * FROM TraBillMain WHERE Flag = {INVOICE_FLAG} AND BillNo = %s", (bill_no,))]),
-        ("TraBillMain(S/C)", lambda: [(_s(ep._get(r, "BillNo")), r) for r in _query(
-            cur, f"SELECT * FROM TraBillMain WHERE Flag = {SC_FLAG} AND BillNo IN ({', '.join(['%s'] * len(sc_nos))})",
-            tuple(sc_nos))] if sc_nos else []),
-        ("comCustomer", lambda: [(cust_id, r) for r in _query(
-            cur, f"SELECT * FROM comCustomer WHERE Flag = {CUSTOMER_FLAG} AND ID = %s", (cust_id,))] if cust_id else []),
-        ("comBillAccounts", lambda: [(f"{bill_no}#{i}", r) for i, r in enumerate(_query(
-            cur, f"SELECT * FROM comBillAccounts WHERE Flag = {INVOICE_FLAG} AND FundBillNo = %s", (bill_no,)), 1)]),
-        ("TraBillSub", lambda: [(f"{bill_no}#{_s(ep._get(r, 'RowNo'))}", r) for r in _query(
-            cur, f"SELECT TOP 3 * FROM TraBillSub WHERE Flag = {INVOICE_FLAG} AND BillNo = %s ORDER BY RowNo, SerNo",
-            (bill_no,))[:3]]),
-    ]
-
-    def cust_trade():
-        rows, col = _probe_cust_trade(cur, cust_id)
-        return [(f"{col}={cust_id}#{i}", r) for i, r in enumerate(rows, 1)]
-
-    scans.append(("comCustTrade", cust_trade))
-    matches: List[Dict[str, Any]] = []
-    errors: List[Dict[str, Any]] = []
-    scanned: List[Dict[str, Any]] = []
-    for table, scan in scans:
-        try:
-            keyed = scan()
-        except Exception as exc:  # 單張表失敗不影響其他表與列印
-            errors.append({"table": table, "error": ep._safe_message(exc, creds)[:120]})
-            continue
-        scanned.append({"table": table, "rows": len(keyed)})
-        for key, row in keyed:
-            matches.extend(_probe_hits(table, key, row))
-    return {"temporary": True, "matches": matches, "errors": errors, "scanned": scanned}
-
-
 def _sc_no(sub: Dict[str, Any]) -> str:
     text, _ = first_text([("OriginBillNo", ep._get(sub, "OriginBillNo")), ("FromNO", ep._get(sub, "FromNO")),
                           ("POBillNO", ep._get(sub, "POBillNO"))])
     return text
+
+
+def resolve_trade_term(main: Dict[str, Any]) -> Tuple[str, str, Optional[int]]:
+    """Invoice TradeWay → TermContent → Term 列舉（TERM_ENUM）。回傳 (貿易條件, 來源, 對不到的 Term 值或 None)。"""
+    text, source = first_text([("TraBillMain.TradeWay", ep._get(main, "TradeWay")),
+                               ("TraBillMain.TermContent", ep._get(main, "TermContent"))])
+    if text:
+        return text, source, None
+    raw_term = ep._get(main, "Term")
+    try:
+        term = int(raw_term) if _s(raw_term) else None
+    except (TypeError, ValueError):
+        term = None
+    if term is None:
+        return "", "none", None
+    if term in TERM_ENUM:
+        return TERM_ENUM[term], f"TraBillMain.Term={term} (inferred {TERM_ENUM[term]})", None
+    return "", "none", term
 
 
 # ── 組裝（純函式，測試直接餵假資料）───────────────────────────────────────────
@@ -391,13 +339,9 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
     cust_name, name_source = first_text([("TraBillMain.CustName", g(main, "CustName")),
                                          ("comCustomer.FullName", g(cust, "FullName")),
                                          ("comCustomer.ShortName", g(cust, "ShortName"))])
-    # 貿易條件（單價欄下方小字）：Way 是運輸方式（例 Air）不是貿易條件，不拿來用，另外回 transport_way
+    # 貿易條件（單價欄下方小字）：Way / Shipment 是運輸方式（例 Air）不是貿易條件，不拿來用，另外回 transport_way
     sc_order = _sc_order(raw["subs"])
-    first_sc = raw["scs"].get(sc_order[0], {}) if sc_order else {}
-    trade_term, term_source = first_text([("TraBillMain.TradeWay", g(main, "TradeWay")),
-                                          ("TraBillMain.Shipment", g(main, "Shipment")),
-                                          ("sc.TradeWay", g(first_sc, "TradeWay")),
-                                          ("sc.Shipment", g(first_sc, "Shipment"))])
+    trade_term, term_source, unmapped_term = resolve_trade_term(main)
     inv_ref = _s(g(main, "Ref"))
     recs = {int(g(r, "RowNO") or 0): r for r in raw["recs"]}
 
@@ -443,7 +387,7 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
         "customer": {"id": raw["cust_id"], "name": cust_name, "name_source": name_source or "none"},
         "customer_name_source": name_source or "none",
         "trade_term": trade_term, "trade_term_source": term_source or "none",
-        "trade_term_sc_no": sc_order[0] if term_source.startswith("sc.") else "",
+        **({"trade_term_unmapped_term": unmapped_term} if unmapped_term is not None else {}),
         "transport_way": _s(g(main, "Way")),
         "currency": currency, "header_sources": sources,
         "lines": lines,
@@ -473,13 +417,10 @@ def get_print_data(bill_no: Any) -> Dict[str, Any]:
         ep._check_db_name(cur, target)
         raw = _load(cur, bill_no)
         company = lookup_company(cur, target)
-        probe = probe_trade_term(cur, raw, bill_no, creds)  # 暫時性診斷，絕不丟例外
     except ErpError:
         raise
     except Exception as exc:
         raise ErpUnavailable(f"ERP 查詢失敗：{ep._safe_message(exc, creds)}") from None
     finally:
         ep._close_quietly(conn, rollback=True)
-    data = build_print_data(raw, bill_no=bill_no, target=target, company=company)
-    data["trade_term_probe"] = probe  # 暫時性診斷欄位，找到 FOB 存放位置後移除
-    return data
+    return build_print_data(raw, bill_no=bill_no, target=target, company=company)
