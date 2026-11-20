@@ -249,6 +249,80 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : nt
         completed = run_node(script)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
+    def test_price_ntd_checkbox_with_node(self):
+        # v2026.11.20.14：USD 採購單打台幣時可勾「單價是台幣」：不用匯率、確認鈕不鎖、送 price_ntd
+        script = r"""
+const LABEL = '\u55ae\u50f9\u662f\u53f0\u5e63\uff08\u73fe\u8ca8\u5831\u50f9\u53f0\u5e63\uff0c\u4e0d\u7528\u532f\u7387\uff09';
+const ntdNoRate = { ...fx.without, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: false };
+const ntdPrice = {
+  ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: true,
+  exch_rate: 1, rate_source: 'ntd_price', rate_required: false,
+  lines: fx.with.lines.map(l => ({ ...l, price: 8.5, src_price: 6.6, amount: 25500, tax: 1275, ml_price: 8.5, ml_amount: 25500 })),
+  totals: { ...fx.with.totals, sum_amount: 25500, sum_tax: 1275, total: 26775, local_amount: 25500, local_tax: 1275, local_total: 26775 },
+  warnings: [{ code: 'price_ntd', message: '單價直接輸入台幣' }],
+};
+const usd = { ...fx.with, mode: 'foreign', currency: 'USD', entry_ccy: 'USD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, tax_type: 1 };
+const pick = body => (body.entry_ccy === 'USD' ? usd : body.price_ntd ? ntdPrice : ntdNoRate);
+
+// USD + 打台幣：有勾選框；勾了重新預覽、帶 price_ntd、不要匯率，確認鈕可按，送出不被擋
+{
+  const t = await setup(pick);
+  t.run(`_picker.clear = () => {}; _picker.reload = async () => {}; window.confirm = m => { globalThis._msg = m; return true; };`);
+  await t.run('handlePreview()');
+  let html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(html.includes('id="erp-receive-price-ntd"'), '台幣要有勾選框');
+  assert.ok(html.includes(LABEL), '勾選框文字');
+  assert.equal(t.els['erp-receive-price-ntd'].checked, false);
+  assert.equal(t.els['btn-erp-receive-create'].disabled, true, '沒勾、沒匯率仍鎖住');
+  const box = t.els['erp-receive-price-ntd'];
+  box.checked = true; box.fire('change');
+  assert.equal(t.els['btn-erp-receive-create'].disabled, true, '重新預覽前鎖住');
+  await flush(); await flush();
+  assert.deepEqual(t.posts.map(b => b.price_ntd), [false, true]);
+  assert.equal(t.posts[1].exch_rate, null);
+  html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(!html.includes('id="erp-receive-rate"'), '勾了就不顯示匯率欄');
+  assert.ok(html.includes('單價（NTD，直接打台幣）') && html.includes('採購單單價（USD）'), '欄位標題');
+  assert.ok(html.includes('8.5') && html.includes('26,775'));
+  assert.equal(t.els['erp-receive-price-ntd'].checked, true);
+  assert.equal(t.els['btn-erp-receive-create'].disabled, false, '不用匯率也能收料');
+  const body = t.run('buildBody()');
+  assert.equal(body.price_ntd, true);
+  await t.run('handleCreate()');
+  assert.equal(t.posts.length, 3, '送出 create 不被匯率擋');
+  assert.equal(t.posts[2].price_ntd, true);
+  assert.ok(!t.toasts.some(x => x.msg.includes('發票匯率')), JSON.stringify(t.toasts));
+  assert.ok(t.run('globalThis._msg').includes('單價是台幣，不用匯率'));
+}
+
+// 切到打美金：勾選框不出現、price_ntd 不送；換廠商也不沿用
+{
+  const t = await setup(pick);
+  await t.run('handlePreview()');
+  t.els['erp-receive-price-ntd'].checked = true; t.els['erp-receive-price-ntd'].fire('change');
+  await flush(); await flush();
+  t.els['erp-receive-ccy-usd'].fire('change');
+  await flush(); await flush();
+  assert.equal(t.posts.at(-1).entry_ccy, 'USD');
+  assert.equal(t.posts.at(-1).price_ntd, false);
+  assert.ok(!t.els['erp-receive-preview'].innerHTML.includes('erp-receive-price-ntd'), '美金不出現勾選框');
+  t.els['erp-receive-ccy-ntd'].fire('change');
+  await flush(); await flush();
+  assert.equal(t.posts.at(-1).price_ntd, true, '切回台幣保留勾選');
+  t.run(`_picker.lockedGroup = () => 'P0304';`);
+  assert.equal(t.run('buildBody().price_ntd'), false);
+}
+
+// 台幣採購單：沒有勾選框
+{
+  const t = await setup(pick);
+  t.run(`renderPreview(${JSON.stringify({ ...fx.with, mode: 'local', currency: 'NTD', po_currency: 'NTD' })})`);
+  assert.ok(!t.els['erp-receive-preview'].innerHTML.includes('erp-receive-price-ntd'));
+}
+"""
+        completed = run_node(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_module_syntax(self):
         for name in ("erp_receive.js", "open_line_picker.js"):
             completed = subprocess.run(["node", "--check", str(STATIC / "modules" / name)], capture_output=True, text=True)

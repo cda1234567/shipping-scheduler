@@ -425,12 +425,16 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
     entry_ccy = ep._text(raw.get("entry_ccy")).upper() or None
     if entry_ccy is not None and entry_ccy not in ENTRY_CURRENCIES:
         raise ReceiveValidationError(f"進貨單幣別（entry_ccy）只能是 USD（打美金）或 NTD（打台幣），收到：{raw.get('entry_ccy')}")
+    price_ntd = raw.get("price_ntd") is True
+    if price_ntd and entry_ccy == CHOOSABLE_CURRENCY:
+        raise ReceiveValidationError("price_ntd requires entry_ccy NTD：單價是台幣只能搭配打台幣（entry_ccy=NTD）")
     return {
         "target": ep._text(raw.get("target")),
         "rm_date_raw": raw.get("rm_date"),
         "lines": lines,
         "exch_rate": exch_rate,
         "entry_ccy": entry_ccy,
+        "price_ntd": price_ntd,
         "confirm": raw.get("confirm") is True,
         "client_token": ep._text(raw.get("client_token"))[:80],
         "update_cost": update_cost_default() if raw.get("update_cost") is None else raw.get("update_cost") is True,
@@ -550,6 +554,12 @@ def load_bill_params(wcur, target: str) -> Dict[str, Any]:
 #   沒選 = 照上面依課稅別自動判斷。選台幣：課稅別 0、稅 5%（即使採購單本來免稅）；
 #   選美金：稅額 0，課稅別沿用採購單 1～4，採購單是 0 時改 1（正航手開美金免稅慣例，例 RM-20261023001 W0214 課稅別 1）。
 #   只開放 USD；其他外幣（EUR…）仍自動判斷，台幣採購單不受影響。
+# v2026.11.20.14：USD 採購單打台幣（convert）時可勾「單價是台幣」（price_ntd=true，現貨廠商直接報台幣價）：
+#   使用者輸入的單價直接當台幣單價（round 4 位），不乘匯率、也不需要輸入匯率（rate_source = ntd_price、匯率 1）；
+#   金額 = round(數量 × 單價, 0)、課稅別 0、稅 5%，表頭 CurrID NTD / ExchRate 1 / LocalTotal = Total，寫法與 convert 完全相同。
+#   採購單單價維持美金不回寫，只扣 QtyRemain；DisCount = round(採購單 Discount × 台幣單價 ÷ (採購單單價 × 採購單匯率), 4)。
+#   依據：CHIComp03 手開實單 RM-20220712001 / RM-20221004002（USD 採購單 PO-20220414005、廠商 P0304）。
+#   只對 USD 採購單且最後是 convert 有效；台幣採購單、打美金一律忽略（明確送 entry_ccy=USD 搭 price_ntd 會回錯誤）。
 # 匯率：預設 comCurrencySys.BuyInRate（目前 USD 30.385，= 採購單匯率）；預覽畫面可改成當日匯率（Tracy 的單都手 key 當日匯率）。
 LOCAL_CURRENCY = "NTD"
 ML_PRICE_DIGITS = 4  # comProdRec.MLPrice：2023–2026 USD 列 round 4 位 1,253/1,281（3 位 1,174）
@@ -674,7 +684,8 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         "vendor_name": ep._text(ep._get(cust, "ShortName")) or ep._text(ep._get(cust, "FullName")),
         "trade": trade, "ware": ware, "products": products, "ware_amounts": ware_amounts,
         "curr": po_curr, "tax_type": tax_types.pop(), "currency_row": currency,
-        "req_exch_rate": req.get("exch_rate"), "entry_ccy": req.get("entry_ccy"), "hint": hint,
+        "req_exch_rate": req.get("exch_rate"), "entry_ccy": req.get("entry_ccy"), "price_ntd": bool(req.get("price_ntd")),
+        "hint": hint,
         "cost_params": cost_params, "all_qty": all_qty, "bill_params": bill_params,
     }
 
@@ -802,6 +813,7 @@ def build_plan(
     entry_ccy = ({"foreign": CHOOSABLE_CURRENCY, "convert": LOCAL_CURRENCY}.get(mode) if choosable else None)
     curr = bill_currency(ctx)
     po_exch = _dec(ep._get(first, "ExchRate", 1)) or Decimal(1)
+    price_ntd = bool(ctx.get("price_ntd")) and choosable and mode == "convert"  # 單價直接打台幣（不用匯率）
     rate_source = ""
     if mode == "local":
         exch = po_exch  # 台幣採購單匯率 1
@@ -810,7 +822,9 @@ def build_plan(
         cur_row = ctx.get("currency_row") or {}
         sys_rate = _dec(ep._get(cur_row, "BuyInRate", 0)) or _dec(ep._get(cur_row, "FixedRate", 0))
         # v2026.11.04.2：匯率一律用發票上的匯率（使用者手動輸入），不自動帶幣別檔 / 採購單匯率
-        if ctx.get("req_exch_rate"):
+        if price_ntd:
+            rate, rate_source = Decimal(1), "ntd_price"
+        elif ctx.get("req_exch_rate"):
             rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
         else:
             rate, rate_source = Decimal(0), "missing"
@@ -834,11 +848,23 @@ def build_plan(
         remain = _dec(ep._get(sub, "QtyRemain"))
         po_price = _dec(ep._get(sub, "Price"))
         src_price = p["price"] if p["price"] is not None else po_price  # 採購單幣別
-        discount = calc_discount(src_price, po_price, ep._get(sub, "Discount", 1))
+        if price_ntd:
+            if p["price"] is None or p["price"] == po_price:
+                raise ReceiveValidationError(
+                    f"第 {i} 行：{p['po_no']} 第 {p['row_no']} 列已勾「單價是台幣」，請輸入台幣單價"
+                    f"（目前是採購單美金單價 {po_price:g}）")
+            src_price = po_price  # 原單價欄 = 採購單美金單價
+            # DisCount 只是比率紀錄：台幣單價 ÷ (採購單單價 × 採購單匯率)
+            discount = calc_discount(ep._round(p["price"], ML_PRICE_DIGITS), po_price * _dec(ep._get(p["main"], "ExchRate", 0)),
+                                     ep._get(sub, "Discount", 1))
+        else:
+            discount = calc_discount(src_price, po_price, ep._get(sub, "Discount", 1))
         tax_rate = _dec(ep._get(sub, "TaxRate", 0))
         if mode == "convert" and po_tax_type != 0 and tax_rate <= 0:
             tax_rate = CONVERT_TAX_RATE  # 免稅採購單選打台幣：稅照台幣方式 5%
-        if mode == "convert":
+        if price_ntd:
+            price = ep._round(p["price"], ML_PRICE_DIGITS)  # 使用者輸入的台幣單價，不乘匯率
+        elif mode == "convert":
             price = ep._round(src_price * rate, ML_PRICE_DIGITS)
         else:
             price = src_price
@@ -867,7 +893,7 @@ def build_plan(
         warnings.append({"code": "over_receive", "needs_confirm": True, "items": over,
                          "message": "收料量超過採購單剩餘量：" + "、".join(
                              f"{o['po_no']}#{o['row_no']} {o['part_number']} 超收 {o['over']:g}" for o in over)})
-    diff = [l for l in lines if l["src_price"] != l["po_price"]]
+    diff = [] if price_ntd else [l for l in lines if l["src_price"] != l["po_price"]]  # 台幣單價與美金採購價不比
     if diff:
         warnings.append({"code": "price_diff", "needs_confirm": False,
                          "message": "單價與採購單不同：" + "、".join(
@@ -882,7 +908,7 @@ def build_plan(
         warnings.append({"code": "terms_mismatch", "needs_confirm": False,
                          "message": "各採購單付款條件不同，進貨單以第一張採購單的條件為準"})
 
-    rate_text = {"manual": "發票匯率"}.get(rate_source, "")
+    rate_text = {"manual": "發票匯率", "ntd_price": "單價直接打台幣，不用匯率"}.get(rate_source, "")
     rate_missing = rate_source == "missing"
     if rate_missing:
         warnings.append({"code": "rate_required", "needs_confirm": False,
@@ -898,6 +924,10 @@ def build_plan(
     if mode == "foreign":
         warnings.append({"code": "foreign_currency", "needs_confirm": False,
                          "message": f"{curr} 進貨單：單價 / 金額為 {curr}，匯率 {rate:g}（{rate_text}），台幣金額 = 金額 × 匯率"})
+    elif price_ntd:
+        warnings.append({"code": "price_ntd", "needs_confirm": False,
+                         "message": f"採購單為 {po_curr}、打台幣：單價直接輸入台幣（現貨報台幣價），不使用匯率，"
+                                    f"稅 5%；採購單單價維持 {po_curr} 不回寫"})
     elif mode == "convert":
         warnings.append({"code": "currency_converted", "needs_confirm": False,
                          "message": (f"採購單為 {po_curr}、課稅別 0（應稅）：照正航慣例開台幣進貨單，"
@@ -1076,7 +1106,7 @@ def build_plan(
         "tax_type": tax_type,
         "tax_label": f"免稅（課稅別 {tax_type}，稅額 0）" if mode == "foreign" else tax_type_label(tax_type), "po_tax_type": po_tax_type,
         "entry_ccy": entry_ccy, "entry_ccy_default": entry_default, "entry_ccy_choosable": choosable,
-        "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
+        "price_ntd": price_ntd, "lines": lines, "totals": totals, "warnings": warnings, "over_receive": over,
         "cost_params": cost_params, "bill_params": ctx["bill_params"], "update_cost": update_cost,
         "needs_confirm": bool(over), "closed_pos": closed_pos, "inserts": inserts, "updates": updates,
         "change_logs": logs,
@@ -1203,6 +1233,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
         "rate_hint": plan.get("rate_hint"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
         "po_tax_type": plan.get("po_tax_type"), "entry_ccy": plan.get("entry_ccy"),
         "entry_ccy_default": plan.get("entry_ccy_default"), "entry_ccy_choosable": bool(plan.get("entry_ccy_choosable")),
+        "price_ntd": bool(plan.get("price_ntd")),
         "lines": _jsonable([
             {k: l[k] for k in ("row_no", "po_no", "po_row", "prod_id", "prod_name", "unit", "qty", "qty_remain",
                                "price", "src_price", "po_price", "tax_rate", "amount", "tax", "ml_price", "ml_amount")}
@@ -1261,6 +1292,8 @@ def _fingerprint(target: str, req: Dict[str, Any], rm_date_raw: Any) -> str:
         parts.append(str(req["exch_rate"]))
     if req.get("entry_ccy"):
         parts.append("entry_ccy=" + req["entry_ccy"])
+    if req.get("price_ntd"):
+        parts.append("price_ntd")
     raw = json.dumps(parts, ensure_ascii=False)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 

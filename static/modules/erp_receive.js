@@ -15,6 +15,8 @@ let _rate = "";          // 預覽畫面輸入的發票匯率（外幣採購單�
 let _rateVendor = null;  // 匯率是哪家廠商時輸入的；換廠商就不沿用
 let _entryCcy = "";      // USD 採購單選「美金」(USD) / 「台幣」(NTD)；空 = 照課稅別預設
 let _entryVendor = null; // 選擇是哪家廠商時做的；換廠商就回到新單的預設
+let _priceNtd = false;   // USD 採購單打台幣時勾「單價是台幣」（現貨報台幣價，不用匯率）
+let _priceNtdVendor = null; // 勾選是哪家廠商時做的；換廠商就不沿用
 let _lastShown = null;   // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
@@ -74,9 +76,31 @@ function buildBody(confirm = false) {
     confirm,
     client_token: _token,
     update_cost: updateCostChecked(),
-    exch_rate: currentRate(),
+    exch_rate: currentPriceNtd() ? null : currentRate(),
     entry_ccy: currentEntryCcy(),
+    price_ntd: currentPriceNtd(),
   };
+}
+
+// 「單價是台幣」只在打台幣時有效；切到打美金就不送
+function currentPriceNtd() {
+  return _priceNtd && _picker.lockedGroup() === _priceNtdVendor && currentEntryCcy() !== "USD";
+}
+
+// 勾 / 取消「單價是台幣」：一改就重新預覽（單價、匯率都會變）
+function applyPriceNtd(checked) {
+  const same = currentPriceNtd() === Boolean(checked);
+  _priceNtd = Boolean(checked);
+  _priceNtdVendor = _picker.lockedGroup();
+  const btn = el("btn-erp-receive-create");
+  if (btn) { btn.disabled = true; btn.title = "已改「單價是台幣」，重新預覽中"; }
+  if (_busy) { if (!same) _rePreviewPending = true; return; }
+  if (same && _preview && Boolean(_preview.price_ntd) === Boolean(checked)) { if (btn && !_preview.rate_required) { btn.disabled = false; btn.title = ""; } return; }
+  void handlePreview();
+}
+
+function bindPriceNtdInput() {
+  el("erp-receive-price-ntd")?.addEventListener("change", event => applyPriceNtd(event.target.checked));
 }
 
 function currentEntryCcy() {
@@ -114,7 +138,10 @@ function entryCcyInput(r) {
   // 使用者選過的優先（預覽失敗重畫時不能被清掉）
   const chosen = currentEntryCcy() || previewEntryCcy(r);
   const opt = (value, text, id) => `<label><input type="radio" name="erp-receive-ccy" id="${id}" value="${value}"${chosen === value ? " checked" : ""}> ${text}</label>`;
-  return `　<span class="erp-receive-ccy"><strong>打</strong> ${opt("USD", "美金", "erp-receive-ccy-usd")} ${opt("NTD", "台幣", "erp-receive-ccy-ntd")}<span style="color:#999">（美金免稅；台幣用匯率換單價、稅 5%）</span></span>`;
+  const ntdBox = chosen === "NTD"
+    ? ` <label><input type="checkbox" id="erp-receive-price-ntd"${currentPriceNtd() ? " checked" : ""}> \u55ae\u50f9\u662f\u53f0\u5e63\uff08\u73fe\u8ca8\u5831\u50f9\u53f0\u5e63\uff0c\u4e0d\u7528\u532f\u7387\uff09</label>`
+    : "";
+  return `　<span class="erp-receive-ccy"><strong>打</strong> ${opt("USD", "美金", "erp-receive-ccy-usd")} ${opt("NTD", "台幣", "erp-receive-ccy-ntd")}<span style="color:#999">（美金免稅；台幣用匯率換單價、稅 5%）</span>${ntdBox}</span>`;
 }
 
 function currentRate() {
@@ -159,12 +186,14 @@ function currencyBlock(r) {
   if (!r.mode || r.mode === "local") return `<div class="erp-po-hint">幣別 ${esc(r.currency)}　課稅別：${tax}</div>`;
   const what = r.mode === "foreign"
     ? `<strong>${esc(r.currency)} 進貨單</strong>（單價 / 金額為 ${esc(r.currency)}，台幣 = 金額 × 匯率）`
-    : `採購單幣別 <strong>${esc(r.po_currency)}</strong> → 開<strong>台幣</strong>進貨單（單價 = ${esc(r.po_currency)} 單價 × 匯率）`;
+    : r.price_ntd
+      ? `採購單幣別 <strong>${esc(r.po_currency)}</strong> → 開<strong>台幣</strong>進貨單（單價直接打台幣，不用匯率）`
+      : `採購單幣別 <strong>${esc(r.po_currency)}</strong> → 開<strong>台幣</strong>進貨單（單價 = ${esc(r.po_currency)} 單價 × 匯率）`;
   return `<div class="erp-po-hint erp-receive-currency">${what}　課稅別：${tax}</div>`;
 }
 
 function rateInput(r) {
-  if (!r.mode || r.mode === "local") return "";
+  if (!r.mode || r.mode === "local" || currentPriceNtd()) return "";
   const h = r.rate_hint || {};
   const hint = [h.po ? `採購單 ${h.po}` : "", h.currency ? `正航幣別檔 ${h.currency}` : ""].filter(Boolean).join(" / ");
   // 使用者輸入過的匯率優先（預覽失敗重畫時也不會把剛打的數字清掉）
@@ -187,6 +216,8 @@ function renderPreview(r, error = "") {
   const cur = esc(r.currency || "NTD");
   const foreign = r.mode === "foreign";
   const conv = r.mode === "convert";
+  const srcHead = r.price_ntd ? `採購單單價（${esc(r.po_currency)}）` : `原單價（${esc(r.po_currency)}）`;
+  const priceHead = r.price_ntd ? `單價（${cur}，直接打台幣）` : `單價（${cur}）`;
   const costText = r.update_cost === false
     ? '<span class="erp-receive-cost-off">不更新平均成本</span>'
     : "更新平均成本";
@@ -200,7 +231,7 @@ function renderPreview(r, error = "") {
     ${currencyBlock(r)}
     ${warn}
     <div class="erp-po-table-wrap"><table class="erp-po-table">
-      <thead><tr><th>#</th><th>採購單</th><th>料號</th><th class="num">數量</th>${conv ? `<th class="num">原單價（${esc(r.po_currency)}）</th>` : ""}<th class="num">單價（${cur}）</th><th class="num">未稅金額（${cur}）</th><th class="num">稅額</th>${foreign ? '<th class="num">台幣金額</th>' : ""}</tr></thead>
+      <thead><tr><th>#</th><th>採購單</th><th>料號</th><th class="num">數量</th>${conv ? `<th class="num">${srcHead}</th>` : ""}<th class="num">${priceHead}</th><th class="num">未稅金額（${cur}）</th><th class="num">稅額</th>${foreign ? '<th class="num">台幣金額</th>' : ""}</tr></thead>
       <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.po_no)} #${l.po_row}</td><td class="mono">${esc(l.prod_id)}</td><td class="num">${fmt(l.qty)}</td>${conv ? `<td class="num">${fmt(l.src_price)}</td>` : ""}<td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.tax)}</td>${foreign ? `<td class="num">${fmt(l.ml_amount)}</td>` : ""}</tr>`).join("")}</tbody>
     </table></div>
     <div class="erp-po-totals">幣別 ${cur}　數量 ${fmt(r.totals.sum_qty)}　未稅 ${fmt(r.totals.sum_amount)}　稅 ${fmt(r.totals.sum_tax)}${Number(r.tax_type || 0) !== 0 ? "（免稅）" : ""}　<strong>${Number(r.tax_type || 0) !== 0 ? "合計" : "含稅合計"} ${cur} ${fmt(r.totals.total)}</strong>${foreign ? `　台幣 ${fmt(r.totals.local_total)}` : ""}</div>
@@ -209,6 +240,7 @@ function renderPreview(r, error = "") {
   el("btn-erp-receive-create").addEventListener("click", handleCreate);
   bindRateInput();
   bindEntryCcyInput();
+  bindPriceNtdInput();
 }
 
 // 預覽失敗：不再整塊清掉（以前畫面會直接「不見」），改在預覽區顯示錯誤；
@@ -291,7 +323,12 @@ async function handleCreate() {
     await handlePreview();
     return;
   }
-  if (_preview.mode && _preview.mode !== "local" && (body.exch_rate === null || _preview.rate_required)) {
+  if (Boolean(_preview.price_ntd) !== body.price_ntd) {
+    showToast("已改「單價是台幣」，已重新預覽，請確認後再按「確認收料」");
+    await handlePreview();
+    return;
+  }
+  if (!body.price_ntd && _preview.mode && _preview.mode !== "local" && (body.exch_rate === null || _preview.rate_required)) {
     showToast("請先輸入發票匯率（大於 0）", { tone: "error" });
     return;
   }
@@ -307,7 +344,7 @@ async function handleCreate() {
   }
   const tgt = targetText(_preview.target_label || _config?.label, _preview.is_production);
   const ccyText = previewEntryCcy(_preview) ? `打${previewEntryCcy(_preview) === "USD" ? "美金" : "台幣"}　` : "";
-  const curLine = `${ccyText}幣別 ${_preview.currency || "NTD"}${_preview.mode && _preview.mode !== "local" ? `　發票匯率 ${_preview.exch_rate}` : ""}　${_preview.tax_label || ""}　合計 ${fmt(_preview.totals?.total)}`;
+  const curLine = `${ccyText}幣別 ${_preview.currency || "NTD"}${_preview.price_ntd ? "　單價是台幣，不用匯率" : _preview.mode && _preview.mode !== "local" ? `　發票匯率 ${_preview.exch_rate}` : ""}　${_preview.tax_label || ""}　合計 ${fmt(_preview.totals?.total)}`;
   if (!window.confirm(`寫入：${tgt}${_preview.is_production ? "\n⚠ 這是正式公司（正航正式帳），會直接寫入正式資料。" : ""}\n平均成本：${body.update_cost ? "更新" : "不更新"}\n確定要在「${tgt}」建立收料 / 驗收 / 進貨嗎？\n發票日期（進貨日）：${ymd(body.rm_date)}　帳款月份 ${_preview.terms?.AccMonth ?? ""}\n${curLine}\n寫入後無法從本系統修改或刪除。`)) return;
   _busy = true;
   const btn = el("btn-erp-receive-create");

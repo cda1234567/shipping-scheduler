@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.13"
+APP_VERSION = "v2026.11.20.14"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 出庫時，倉庫 comWareAmount 的 LatestSalesDate 改填同料號同倉的上一筆銷貨日（同正航手開實單）"
+APP_HEADLINE = "一次收料：USD 採購單打台幣時可勾「單價是台幣」，直接輸入現貨台幣單價，不用填匯率"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.14：一次收料 USD 採購單可直接打台幣單價（現貨報台幣價，不用匯率）", "items": [
+        "一次收料：USD 採購單選「打台幣」時，旁邊多一個勾選框「單價是台幣（現貨報價台幣，不用匯率）」。勾了之後輸入的單價直接當台幣單價，不乘匯率、匯率欄隱藏、不用填匯率也能確認收料；勾 / 取消都會重新預覽，切到打美金就不生效、換廠商不沿用。",
+        "寫法與打台幣相同：台幣進貨單（匯率 1）、課稅別 0、稅 5%，金額 = 數量 × 單價四捨五入；採購單單價維持美金不回寫，只扣剩餘量；DisCount = 台幣單價 ÷ (採購單單價 × 採購單匯率)。例：PO-20260904003 #1 EC-40013A 18,000 × 8.5 → 未稅 153,000、稅 7,650、合計 160,650。依據：正航手開實單 RM-20220712001 / RM-20221004002（USD 採購單 PO-20220414005、廠商 P0304）。",
+        "勾了但單價沒改（還是採購單的美金單價）或沒填會擋下並提示輸入台幣單價。API：/api/erp-receive/preview、create 新增可選欄位 price_ntd（預設 false，舊客戶端相容）；台幣採購單忽略，搭 entry_ccy=USD 會回錯誤。沒勾時行為完全不變。",
+    ]},
     {"title": "v2026.11.20.13：Invoice 出庫 comWareAmount.LatestSalesDate = 上一筆銷貨日", "items": [
         "開 Invoice 出庫時，comWareAmount.LatestSalesDate 改填同料號、同倉庫「其他單號」的銷貨明細（comProdRec Flag 500 / 501）最大 BillDate，也就是本單之前的上一筆銷貨日；寫入本單明細之前查、本單自己的明細不算，同一張單同料號多行用同一個日期。查不到任何其他銷貨紀錄時保留原值（ST-2026304：0 維持 0）；倉庫列不存在要新增時照舊留預設。comProduct.LatestSalesDate 照舊 = 發票日；TotalCost / CTotalCost / Cost 規則不變。依據：公司3手開實單 ST-2026293～302 / 304 / 308 共 25 列全部吻合。",
     ]},

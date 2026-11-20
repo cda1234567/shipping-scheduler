@@ -480,6 +480,7 @@ class ErpReceiveRequest(BaseModel):
     update_cost: Optional[bool] = None  # 是否更新平均成本；空 = 環境變數 ERP_RECEIVE_UPDATE_COST（預設 1）
     exch_rate: Optional[float] = None  # 發票匯率（外幣採購單轉台幣進貨時手動輸入）；空 = 自動判斷
     entry_ccy: Optional[str] = None  # USD 採購單：USD = 打美金（免稅）、NTD = 打台幣（匯率換單價、稅 5%）；空 = 依課稅別預設
+    price_ntd: bool = False  # USD 採購單打台幣時：true = 單價直接是台幣（現貨報台幣價），不用匯率
 
 
 

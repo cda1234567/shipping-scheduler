@@ -1475,6 +1475,98 @@ class TaxCurrencyTests(ErpCase):
         self.assertEqual((rec["Price"], rec["Amount"], rec["TaxAmt"], rec["MLPrice"], rec["MLAmount"]),
                          (Decimal("626.285"), Decimal(6263), Decimal(313), Decimal("626.285"), Decimal(6263)))
 
+    # v2026.11.20.14：USD 採購單打台幣、單價直接是台幣（現貨報台幣價），不用匯率（同 RM-20220712001 / RM-20221004002）
+    def _ntd_price_setup(self, tax_type):
+        self.usd_setup(tax_type, price="0.11")
+        self.set_po(ExchRate=Decimal("30.39"))
+        self.rows("ordBillSub")[0].update(Quantity=Decimal(18000), QtyRemain=Decimal(18000), Discount=Decimal(1))
+
+    def _ntd_price_req(self, **kw):
+        return self.req([{"po_no": "PO-1", "row_no": 1, "qty": 18000, "price": 8.5}], price_ntd=True, **kw)
+
+    def _check_ntd_price(self, r):
+        self.assertEqual((r["mode"], r["currency"], r["po_currency"], r["exch_rate"], r["rate_source"], r["rate_required"],
+                          r["price_ntd"], r["tax_type"]), ("convert", "NTD", "USD", 1.0, "ntd_price", False, True, 0))
+        line = r["lines"][0]
+        self.assertEqual((line["price"], line["src_price"], line["po_price"], line["amount"], line["tax"], line["ml_price"],
+                          line["ml_amount"]), (8.5, 0.11, 0.11, 153000.0, 7650.0, 8.5, 153000.0))
+        self.assertEqual((r["totals"]["sum_amount"], r["totals"]["sum_tax"], r["totals"]["total"], r["totals"]["local_total"]),
+                         (153000.0, 7650.0, 160650.0, 160650.0))
+        codes = [w["code"] for w in r["warnings"]]
+        self.assertIn("price_ntd", codes)
+        for absent in ("rate_required", "price_diff", "currency_converted"):
+            self.assertNotIn(absent, codes)
+
+    def test_price_ntd_entry_ntd_without_rate(self):
+        self._ntd_price_setup(1)
+        req = self._ntd_price_req(entry_ccy="NTD")
+        self._check_ntd_price(er.preview_receive(req))
+        res = er.create_receive(req, "t", "1.2.3.4")
+        n = res["rm_no"]
+        acc = self.acc(n)
+        self.assertEqual((acc["CurrID"], acc["ExchRate"], acc["Total"], acc["Tax"], acc["LocalTotal"], acc["TaxType"]),
+                         ("NTD", Decimal(1), Decimal(153000), Decimal(7650), Decimal(153000), 0))
+        stk = next(x for x in self.rows("stkBillMain") if x["BillNO"] == n)
+        self.assertEqual((stk["SumAmtATax"], stk["TaxType"]), (Decimal(160650), 0))
+        rec = next(x for x in self.rows("comProdRec") if x["BillNO"] == n)
+        self.assertEqual((rec["Price"], rec["MLPrice"], rec["Amount"], rec["MLAmount"], rec["TaxAmt"], rec["TaxRate"]),
+                         (Decimal("8.5"), Decimal("8.5"), Decimal(153000), Decimal(153000), Decimal(7650), Decimal("0.05")))
+        self.assertEqual(rec["DisCount"], round(Decimal(1) * Decimal("8.5") / (Decimal("0.11") * Decimal("30.39")), 4))
+        sub = self.rows("ordBillSub")[0]
+        self.assertEqual((sub["QtyRemain"], sub["Price"]), (0, Decimal("0.11")))  # 採購單單價維持美金
+
+    def test_price_ntd_taxed_po_default_convert(self):
+        self._ntd_price_setup(0)
+        self.rows("ordBillSub")[0].update(TaxRate=Decimal("0.05"))
+        r = er.preview_receive(self._ntd_price_req())
+        self._check_ntd_price(r)
+        self.assertEqual(r["entry_ccy"], "NTD")
+        res = er.create_receive(self._ntd_price_req(), "t", "1.2.3.4")
+        self.assertEqual(self.acc(res["rm_no"])["ExchRate"], Decimal(1))
+
+    def test_price_ntd_requires_ntd_price(self):
+        self._ntd_price_setup(0)
+        before = len(self.rows("comBillAccounts"))
+        for lines in ([{"po_no": "PO-1", "row_no": 1, "qty": 18000}], [{"po_no": "PO-1", "row_no": 1, "qty": 18000, "price": 0.11}]):
+            req = self.req(lines, price_ntd=True, entry_ccy="NTD")
+            with self.assertRaises(er.ReceiveValidationError) as cm:
+                er.preview_receive(req)
+            self.assertIn("台幣單價", str(cm.exception))
+            with self.assertRaises(er.ReceiveValidationError):
+                er.create_receive(req, "t", "1.2.3.4")
+        self.assertEqual(len(self.rows("comBillAccounts")), before)
+
+    def test_price_ntd_with_entry_usd_rejected(self):
+        with self.assertRaises(er.ReceiveValidationError) as cm:
+            er.normalize_request(self.req(price_ntd=True, entry_ccy="USD"))
+        self.assertIn("price_ntd requires entry_ccy NTD", str(cm.exception))
+
+    def test_price_ntd_false_unchanged(self):
+        self._ntd_price_setup(0)
+        lines = [{"po_no": "PO-1", "row_no": 1, "qty": 18000, "price": 8.5}]
+        a = er.preview_receive(self.req(lines, entry_ccy="NTD"))
+        b = er.preview_receive(self.req(lines, entry_ccy="NTD", price_ntd=False))
+        self.assertTrue(a["rate_required"])
+        self.assertIn("rate_required", [w["code"] for w in a["warnings"]])
+        self.assertFalse(a["price_ntd"])
+        for k in ("mode", "exch_rate", "rate_source", "lines", "totals", "warnings"):
+            self.assertEqual(a[k], b[k], k)
+        with self.assertRaises(er.ReceiveValidationError) as cm:
+            er.create_receive(self.req(lines, entry_ccy="NTD"), "t", "1.2.3.4")
+        self.assertIn("發票匯率", str(cm.exception))
+
+    def test_price_ntd_ignored_for_ntd_po(self):
+        a = er.preview_receive(self.req())
+        b = er.preview_receive(self.req(price_ntd=True))
+        self.assertEqual((b["mode"], b["price_ntd"]), ("local", False))
+        for k in ("lines", "totals", "warnings", "exch_rate"):
+            self.assertEqual(a[k], b[k], k)
+
+    def test_price_ntd_in_fingerprint(self):
+        a = er._fingerprint("CHIComp13", er.normalize_request(self.req(entry_ccy="NTD", price_ntd=True)), "")
+        b = er._fingerprint("CHIComp13", er.normalize_request(self.req(entry_ccy="NTD")), "")
+        self.assertNotEqual(a, b)
+
     def test_entry_ccy_omitted_taxed_po_keeps_convert(self):
         # 沒送 entry_ccy（舊客戶端）：課稅別 0 → convert；送預設值結果完全相同
         self._check_default(0, "convert", "NTD")
