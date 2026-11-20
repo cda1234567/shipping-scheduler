@@ -429,7 +429,7 @@ class PrintFrontendTests(unittest.TestCase):
             self.assertIn(s, js)
         self.assertNotIn("data.pages", js)  # 後端 pages 只是估計，前端不用
         page = (ROOT / "static" / "modules" / "erp_invoice.js").read_text(encoding="utf-8")
-        for s in ('window.open(url, "_blank", "noopener")', "data-print-bill", "列印 ${esc(r.bill_no)}"):
+        for s in ("data-print-bill", "列印 ${esc(r.bill_no)}", "/api/erp-invoice/print-info"):
             self.assertIn(s, page)
         index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('placeholder="輸入 ST-2026xxx"', index)

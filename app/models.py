@@ -490,6 +490,10 @@ class ErpInvoiceLine(BaseModel):
     price: Optional[float] = None  # 空 = 沿用 S/C 單價
 
 
+class ErpInvoicePrintRequest(BaseModel):
+    bill_no: str = ""  # 完整單號 ST-yyyynnn
+
+
 class ErpInvoiceRequest(BaseModel):
     target: Optional[str] = None  # 空 = ERP_INVOICE_TARGET（預設 CHIComp13）
     inv_date: Optional[Union[int, str]] = None  # 發票日 yyyymmdd 或 YYYY-MM-DD，空 = 今天

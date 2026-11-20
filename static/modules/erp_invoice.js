@@ -53,22 +53,49 @@ export function parseSerial(value) {
   return n >= 1 && n <= 999 ? String(n).padStart(3, "0") : null;
 }
 
-/** 列印頁網址：單號需為完整 ST-yyyynnn，否則回 null（純函式）。 */
+/** 螢幕預覽頁網址（列印改走伺服器 PDF）：單號需為完整 ST-yyyynnn，否則回 null（純函式）。 */
 export function printUrl(billNo) {
   const no = String(billNo ?? "").trim().toUpperCase();
   return /^ST-\d{7}$/.test(no) ? `/static/erp_invoice_print.html?bill=${encodeURIComponent(no)}` : null;
 }
 
-function openPrint(billNo) {
-  const url = printUrl(billNo);
-  if (url) window.open(url, "_blank", "noopener");
-  return Boolean(url);
+/** 列印：伺服器產生 PDF、自動選印表機送到列印小幫手（同進貨單 printReceipt）；單號格式不對回 false。 */
+function printInvoice(billNo, btn) {
+  const no = String(billNo ?? "").trim().toUpperCase();
+  if (!printUrl(no)) return false;
+  void sendInvoicePrint(no, btn);
+  return true;
+}
+
+async function sendInvoicePrint(no, btn) {
+  if (btn) btn.disabled = true;
+  // 先同步開分頁（避免被瀏覽器擋彈出視窗），之後再決定內容
+  const win = window.open("", "_blank");
+  try {
+    const info = await apiJson(`/api/erp-invoice/print-info?bill_no=${encodeURIComponent(no)}`);
+    const where = `${info.fits_half_page ? "半張（上半頁）" : `A4${info.page_count > 1 ? ` ${info.page_count} 頁` : ""}`} → 印表機「${info.printer}」`;
+    if (info.helper_enabled) {
+      if (win) win.close();
+      if (!isEditAuthenticated()) { openEditAuthModal(); return; }
+      showToast(`Invoice ${no}：${where}，送印中…`, { tone: "info" });
+      const r = await apiPost("/api/erp-invoice/print", { bill_no: no });
+      showToast(r.sent ? `已送印 ${no} → ${r.printer}${r.job ? `（job ${r.job}）` : ""}` : (r.message || "未送印"), { tone: r.sent ? "success" : "warning" });
+      return;
+    }
+    if (win) win.location.href = info.pdf_url; else window.open(info.pdf_url, "_blank");
+    showToast(`Invoice ${no}：${where}（自動送印未啟用，請在 PDF 視窗列印時選這台；縮放選「實際大小」）`, { tone: "info", duration: 12000 });
+  } catch (error) {
+    if (win) win.close();
+    showToast(`列印失敗：${error.message}`, { tone: "error", duration: 10000 });
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function printByNumber() {
   const input = el("erp-invoice-print-no");
   const msg = el("erp-invoice-print-msg");
-  const ok = openPrint(input?.value);
+  const ok = printInvoice(input?.value, el("btn-erp-invoice-print-no"));
   if (msg) {
     msg.hidden = ok;
     msg.textContent = ok ? "" : "單號格式不正確，請輸入完整單號，例如 ST-2026304";
@@ -353,7 +380,7 @@ async function handleCreate() {
     result.className = "erp-po-result is-ok";
     result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：Invoice <strong class="mono">${esc(r.bill_no)}</strong>，客戶 ${esc(r.customer.id)}，${esc(r.currency)} ${fmt(r.totals.total)}（本幣 ${fmt(r.totals.local_total)}）${r.closed_scs?.length ? `　已結案 S/C：${esc(r.closed_scs.join("、"))}` : ""} <button class="btn btn-sm" id="btn-erp-invoice-print-created" type="button">列印 ${esc(r.bill_no)}</button>`;
     result.hidden = false;
-    el("btn-erp-invoice-print-created")?.addEventListener("click", () => openPrint(r.bill_no));
+    el("btn-erp-invoice-print-created")?.addEventListener("click", event => printInvoice(r.bill_no, event.currentTarget));
     hidePreview();
     _picker.clear();
     await _picker.reload();
@@ -381,7 +408,7 @@ async function refreshHistory() {
         <td>${esc(o.customer_id)} ${esc(o.customer_name)}</td>
         <td class="num">${ok ? `${esc(o.currency)} ${fmt(o.total)}` : "—"}</td><td class="num">${ok ? fmt(o.exch_rate) : "—"}</td>
         <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td>
-        <td>${ok && printUrl(o.bill_no) ? `<button class="btn btn-sm" type="button" data-print-bill="${esc(o.bill_no)}">列印</button>` : ""}</td></tr>`;
+        <td>${ok && printUrl(o.bill_no) ? `<button class="btn btn-sm" type="button" data-print-bill="${esc(o.bill_no)}">列印</button> <a class="btn btn-sm btn-secondary" href="${esc(printUrl(o.bill_no))}" target="_blank" rel="noopener">預覽</a>` : ""}</td></tr>`;
     }).join("") : '<tr><td colspan="8" class="erp-po-hint">尚無紀錄</td></tr>';
   } catch (error) {
     body.innerHTML = `<tr><td colspan="8" class="erp-po-hint">讀取失敗：${esc(error.message)}</td></tr>`;
@@ -433,7 +460,7 @@ export async function initErpInvoice() {
   el("btn-erp-invoice-preview").addEventListener("click", handlePreview);
   el("erp-invoice-history")?.addEventListener("click", event => {
     const btn = event.target.closest("[data-print-bill]");
-    if (btn) openPrint(btn.dataset.printBill);
+    if (btn) printInvoice(btn.dataset.printBill, btn);
   });
   el("btn-erp-invoice-print-no")?.addEventListener("click", printByNumber);
   el("erp-invoice-print-no")?.addEventListener("keydown", event => {

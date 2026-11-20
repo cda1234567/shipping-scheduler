@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.8"
+APP_VERSION = "v2026.11.20.9"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "列印 Invoice 移除暫時性診斷欄位 page_probe，其他不變"
+APP_HEADLINE = "Invoice 列印改由伺服器產生 PDF、自動選印表機直接送印（同進貨單列印）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.9：Invoice 列印改成伺服器 PDF 直接送印（同進貨單列印）", "items": [
+        "開 Invoice 的三個「列印」（Invoice 紀錄每列、開立成功後的「列印 ST-…」、輸入 ST 單號列印舊單）改成跟進貨單列印一樣：伺服器產生 PDF、自動選印表機、直接送到列印小幫手，不再跳出瀏覽器列印視窗；畫面會提示「半張（上半頁）／A4 n 頁 → 印表機」，送印成功顯示印表機與 job 編號，失敗顯示原因。自動送印未啟用（RM_PRINT_HELPER_ENABLED）時改開 PDF 分頁，並提示要選哪台印表機。",
+        "印表機自動選：整張內容（含合計與簽核）放得進 A4 上半張 → NPI975BEF（HP LaserJet M111w，只印上半張）；放不下 → A4 印到 M652，可多頁。與進貨單共用同一套規則與環境變數（RM_PRINT_PRINTER_HALF / RM_PRINT_PRINTER_FULL / RM_PRINT_HALF_PAGE_MM）。例：ST-2026304 半張 → M111w；ST-2026302（7 列、5 個 PO）A4 1 頁 → M652。",
+        "版面照正航實單 ST-2026304 量的位置：公司抬頭、「銷貨單」標題、Page n of N、粗外框、INVOICE / DATE / 客戶名稱、QTY / DESCRIPTION / UNIT PRICE（下方貿易條件）/ TTL AMOUNT；英數用 Arial 相容字型、中文同進貨單。品名依正航的螢幕字寬折行，ST-2026304 的折行與實單完全相同（品名 1 折 3 行到「(3mm x」、品名 2 折 2 行「---代購料」）。",
+        "合計一律緊接最後一列明細下方（雙底線）；長單分頁時每頁重印表頭與欄位標題，PO 標題一定和它的第一列在同一頁，同一個 PO 跨頁時新頁重印 PO 標題；合計與簽核只在最後一頁，放不下時把最後一列移到下一頁，最後一頁不會只剩合計；非最後一頁在最後一列下方收框。",
+        "新增環境變數 INVOICE_PRINT_SIGN_MODE：auto（預設，半張簽核在框底同實單、A4 簽核緊接合計）／follow（一律緊接合計）／bottom（一律貼框底）。新 API：GET /api/erp-invoice/print.pdf、GET /api/erp-invoice/print-info（?bill_no=ST-yyyynnn）、POST /api/erp-invoice/print；全程唯讀正航。原本的螢幕預覽頁保留，Invoice 紀錄每列多一顆「預覽」。",
+    ]},
     {"title": "v2026.11.20.8：列印 Invoice 移除暫時性診斷 page_probe", "items": [
         "/api/erp-invoice/print-data 不再回傳暫時性診斷欄位 page_probe，列印時也不再多查診斷用的表；其他一律不變（分頁、破折號、貿易條件、raw_sc、transport_way、版面）。",
     ]},
