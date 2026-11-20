@@ -321,6 +321,76 @@ class InvoicePlanTests(unittest.TestCase):
         prod = [u for u in plan["updates"] if u["table"] == "comProduct"][0]
         self.assertEqual(prod["set"]["LatestSalesDate"], 20261028)
 
+    def _prior_plan(self, picks, prior):
+        no = "MO-1"
+        subs = [_sc_sub(no, r, "P1", q, q, 1.0) for r, q in picks]
+        scs = {no: (_sc_main(no), subs)}
+        ctx = make_ctx(scs, [(no, r, q, None) for r, q in picks], products={"P1": 2.0}, rate=32)
+        ctx["prior_sales"] = prior
+        plan = plan_of(ctx)
+        wares = [u for u in plan["updates"] if u["table"] == "comWareAmount"]
+        prod = [u for u in plan["updates"] if u["table"] == "comProduct"][0]["set"]
+        return wares, prod
+
+    def test_ware_latest_sales_date_is_prior_sale(self):
+        # 手開實單 ST-2026293..304/308：倉庫 LatestSalesDate = 上一筆銷貨日（不是發票日）；comProduct = 發票日
+        wares, prod = self._prior_plan([(1, 100)], {"P1": 20261015})
+        self.assertEqual(len(wares), 1)
+        self.assertEqual(wares[0]["set"]["LatestSalesDate"], 20261015)
+        self.assertEqual(prod["LatestSalesDate"], 20261028)
+
+    def test_ware_latest_sales_date_kept_when_no_prior(self):
+        wares, prod = self._prior_plan([(1, 100)], {})
+        self.assertNotIn("LatestSalesDate", wares[0]["set"])  # ST-2026304：0 維持 0
+        self.assertEqual(prod["LatestSalesDate"], 20261028)
+
+    def test_ware_latest_sales_date_same_for_multi_lines(self):
+        wares, prod = self._prior_plan([(1, 100), (2, 50)], {"P1": 20261001})
+        self.assertEqual(len(wares), 1)  # 同料號同倉合併成一筆更新、同一個日期
+        self.assertEqual(wares[0]["set"]["LatestSalesDate"], 20261001)
+        self.assertEqual(wares[0]["set"]["Quantity"], D(10 ** 6) - 150)
+        self.assertEqual(prod["LatestSalesDate"], 20261028)
+
+    def test_prior_sales_query_excludes_own_bill(self):
+        class _Cur:
+            description = ()
+
+            def __init__(self):
+                self.calls = []
+
+            def fetchall(self):
+                return []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                sql, params = self.calls[-1]
+                if "comProdRec" not in sql:
+                    return None
+                # 假資料：本單號自己的明細（20261028）不算，其他單號最大 20261020
+                rows = [("ST-2026001", 20261028), ("ST-2025999", 20261020), ("ST-2025900", 20260901)]
+                found = [d for no, d in rows if no != params[2]]
+                return (max(found) if found else None,)
+
+        no = "MO-1"
+        scs = {no: (_sc_main(no), [_sc_sub(no, 1, "P1", 100, 100, 1.0)])}
+        ctx = make_ctx(scs, [(no, 1, 100, None)], products={"P1": 2.0}, rate=32)
+        cur = _Cur()
+        inv._load_rollup_state(cur, ctx, 202610, "ST-2026001")
+        sql, params = [c for c in cur.calls if "comProdRec" in c[0]][0]
+        self.assertIn("MAX(BillDate)", sql)
+        self.assertIn("Flag IN (500, 501)", sql)
+        self.assertIn("BillNO <> %s", sql)
+        self.assertEqual(sql.count("%s"), len(params))
+        self.assertEqual(params, ("P1", "001", "ST-2026001"))
+        self.assertEqual(ctx["prior_sales"], {"P1": 20261020})
+        cur2 = _Cur()
+        ctx2 = make_ctx(scs, [(no, 1, 100, None)], products={"P1": 2.0}, rate=32)
+        cur2.fetchone = lambda: (None,)
+        inv._load_rollup_state(cur2, ctx2, 202610, "ST-2026001")
+        self.assertEqual(ctx2["prior_sales"], {})  # 查無 → 不寫、保留原值
+
     def _cost_plan(self, issue, stocks, *, params=COMP03_PARAMS, ware_total=D(888960), **kw):
         no = "MO-1"
         scs = {no: (_sc_main(no), [_sc_sub(no, 1, "P1", issue, issue, 1.0)])}
@@ -347,6 +417,7 @@ class InvoicePlanTests(unittest.TestCase):
         self.assertEqual(ware["Quantity"], D(60))
         self.assertEqual(ware["TotalCost"], D(888960) - cost)
         self.assertEqual(prod["CTotalCost"], D(2.0) * 10 ** 6 - cost)
+        self.assertNotIn("Cost", ware)  # CostByWare=0：倉庫 Cost 不動
         ware13, _, _ = self._cost_plan(40, {"001": D(100)}, params=COMP13_PARAMS)
         self.assertIn("Cost", ware13)  # CostByWare=1 且數量 > 0：Cost = 新 TotalCost / 新 Quantity
 

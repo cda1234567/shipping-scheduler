@@ -39,8 +39,10 @@ comBillAccounts（Flag 501、SysID 4、CustFlag 1）：BillDate / PrepayDay / En
 S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數量（允許變負：公司3 MO-2608013 #2 2500 開 2575 → -75）；
   NotTranPackingQty、TransedQty、InvNO / InvFromNo 不動。TraBillMain：全部列 QtyRemain<=0 → BillStatus=1（Endacasedate=今天，
   公司3實單 = 開單當天）；還有列 >0 且原本 BillStatus=1 → 改回 0（Endacasedate=0）；其他狀態不動。
-庫存（出庫）：comWareAmount.Quantity / BCQty 減（LatestSalesDate 不動，同手開實單 ST-2026299..304/308）；StkYearMonthQty 當月減；
-  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）；LatestSalesDate 只寫 comProduct（=發票日），comWareAmount 不動。
+庫存（出庫）：comWareAmount.Quantity / BCQty 減；StkYearMonthQty 當月減；
+  stkYearMonthAvg.AtLastQuan 當月減（CostByWare=0 WareID=''、=1 以倉庫為鍵）。
+  LatestSalesDate：comProduct = 發票日；comWareAmount = 同料號同倉「其他單號」Flag 500/501 comProdRec 的最大 BillDate
+  （上一筆銷貨日，寫入本單明細前查、不含本單），查無則保留原值；新增倉庫列留預設（同手開實單 ST-2026293..304/308）。
   LatestOutDate：公司3三張實單的 comWareAmount / comProduct.LatestOutDate 都是 0（只有 LatestSalesDate 被改），
   所以預設不動（SET_LATEST_OUT_DATE 改 True 才會寫）。
   update_cost（預設 ERP_INVOICE_UPDATE_COST=1）：comWareAmount.TotalCost = 原值 - CostForAcc，倉庫數量歸 0 也照減、
@@ -517,11 +519,18 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
     }
 
 
-def _load_rollup_state(wcur, ctx: Dict[str, Any], ym: int) -> None:
+def _load_rollup_state(wcur, ctx: Dict[str, Any], ym: int, bill_no: str) -> None:
     hint = ctx["hint"]
     by_ware = ctx["cost_params"]["cost_by_ware"]
-    ctx["ym_qty"], ctx["ym_avg"] = {}, {}
+    ctx["ym_qty"], ctx["ym_avg"], ctx["prior_sales"] = {}, {}, {}
     for prod, ware in ctx["wares"].items():
+        # 上一筆銷貨日（Flag 500/501，不含本單）：comWareAmount.LatestSalesDate 用，同手開實單
+        wcur.execute(f"SELECT MAX(BillDate) FROM comProdRec{hint} WHERE Flag IN (500, {INVOICE_FLAG}) "
+                     "AND ProdID = %s AND WareID = %s AND BillNO <> %s", (prod, ware, bill_no))
+        found = wcur.fetchone()
+        last = int(found[0] or 0) if found else 0
+        if last > 0:
+            ctx["prior_sales"][prod] = last
         ctx["ym_qty"][prod] = _one_row(
             wcur, f"SELECT * FROM StkYearMonthQty{hint} WHERE YearMonth = %s AND ProdID = %s AND WareID = %s",
             (ym, prod, ware))
@@ -727,7 +736,7 @@ def build_plan(
     ym = inv_date // 100
     by_ware = params["cost_by_ware"]
     dates: Dict[str, Any] = {"LatestSalesDate": inv_date}
-    ware_dates: Dict[str, Any] = {}  # comWareAmount 不寫 LatestSalesDate（同正航手開實單）
+    ware_dates: Dict[str, Any] = {}  # comWareAmount.LatestSalesDate 不寫發票日：用上一筆銷貨日（見下方）
     if SET_LATEST_OUT_DATE:
         dates["LatestOutDate"] = inv_date
         ware_dates["LatestOutDate"] = inv_date
@@ -741,6 +750,9 @@ def build_plan(
                 "comWareAmount", ProdID=prod, WareID=ware, Quantity=new_q, BCQty=new_q, **ware_dates)})
         else:
             ware_set: Dict[str, Any] = {"Quantity": new_q, "BCQty": new_q, **ware_dates}
+            prior = ctx.get("prior_sales", {}).get(prod)
+            if prior:  # 同料號同倉上一筆銷貨日；查無則保留原值
+                ware_set["LatestSalesDate"] = prior
             if update_cost:
                 new_total = _dec(ep._get(wa, "TotalCost")) - cost
                 ware_set["TotalCost"] = new_total
@@ -893,11 +905,11 @@ def _plan(wcur, target: str, req: Dict[str, Any], lock: bool, client_ip: str = "
     today = er.date_to_int(now.date())
     inv_date = parse_inv_date(req["inv_date_raw"], today)
     ctx = _load_context(wcur, target, req, lock)
-    _load_rollup_state(wcur, ctx, inv_date // 100)
     year = inv_date // 10000
     manual = req.get("bill_serial")  # 使用者自填的 3 碼流水號；空 = 自動取最大 + 1
     serial = int(manual) if manual else next_invoice_serial(wcur, year, lock)
     bill_no = make_bill_no(year, serial)
+    _load_rollup_state(wcur, ctx, inv_date // 100, bill_no)
     plan = build_plan(
         ctx, target=target, today=today, inv_date=inv_date, bill_no=bill_no,
         maker=ep._env("ERP_PO_MAKER", ep.DEFAULT_MAKER), maker_id=ep._env("ERP_PO_MAKER_ID", ep.DEFAULT_MAKER_ID),

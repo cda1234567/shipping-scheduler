@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.12"
+APP_VERSION = "v2026.11.20.13"
 APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "開 Invoice 出庫只在 comProduct 寫最近銷貨日，comWareAmount 的 LatestSalesDate 不動（同正航手開實單）"
+APP_HEADLINE = "開 Invoice 出庫時，倉庫 comWareAmount 的 LatestSalesDate 改填同料號同倉的上一筆銷貨日（同正航手開實單）"
 APP_CHANGELOG = [
+    {"title": "v2026.11.20.13：Invoice 出庫 comWareAmount.LatestSalesDate = 上一筆銷貨日", "items": [
+        "開 Invoice 出庫時，comWareAmount.LatestSalesDate 改填同料號、同倉庫「其他單號」的銷貨明細（comProdRec Flag 500 / 501）最大 BillDate，也就是本單之前的上一筆銷貨日；寫入本單明細之前查、本單自己的明細不算，同一張單同料號多行用同一個日期。查不到任何其他銷貨紀錄時保留原值（ST-2026304：0 維持 0）；倉庫列不存在要新增時照舊留預設。comProduct.LatestSalesDate 照舊 = 發票日；TotalCost / CTotalCost / Cost 規則不變。依據：公司3手開實單 ST-2026293～302 / 304 / 308 共 25 列全部吻合。",
+    ]},
     {"title": "v2026.11.20.12：Invoice 出庫 LatestSalesDate 只寫 comProduct、倉庫不動", "items": [
         "開 Invoice 出庫時，comWareAmount（倉庫庫存）只改 Quantity / BCQty（勾扣總成本時另改 TotalCost / Cost，規則不變），不再寫 LatestSalesDate；倉庫列不存在要新增時 LatestSalesDate 也留預設值。comProduct.LatestSalesDate 照舊 = 發票日。依據：正航手開實單 ST-2026299 / 300 / 301 / 302 / 304 / 308 的 comWareAmount.LatestSalesDate 都維持原日期或 0，只有 comProduct.LatestSalesDate 變成發票日。LatestOutDate 規則（SET_LATEST_OUT_DATE）不變。",
     ]},
