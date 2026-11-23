@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.23.2"
+APP_VERSION = "v2026.11.23.3"
 APP_RELEASED_AT = "2026-11-23"
-APP_HEADLINE = "Invoice 瀏覽器預覽改用伺服器 PDF 同一份分頁：ST-2026019 14 / 6 列、每頁簽核、金額靠左，print-data 頁數 = PDF"
+APP_HEADLINE = "Invoice 半張整頁上移 4mm：放得進上半張的單改走半張印表機 M111w（ST-2026307 框底 151.32 → 147.32mm）；A4 版面不變"
 APP_CHANGELOG = [
+    {"title": "v2026.11.23.3：Invoice 半張版面整頁上移 4mm，放得進上半張的單改印半張（ST-2026307 框底 151.32 → 147.32mm）", "items": [
+        "半張 Invoice 整頁（公司表頭、標題、Page X of Y、外框 / 內框、明細、合計、簽核列）一起往上移 4.0mm；字型、字級、左右位置、行距都不變，簽核列照舊緊接合計下方。",
+        "半張判斷改為「上移後的框底 <= A4 上半張上限（148.5mm）」：ST-2026307 框底由 151.32mm 變 147.32mm，由 A4（M652）改印半張（M111w）；ST-2026304 仍是半張（框底 132.44 → 128.44mm）。用 107 張正式站 Invoice 檢查，改印半張的只有 ST-2026307 與 ST-2026226（151.55 → 147.55mm）。print-info 的 bottom_mm 是上移後實際畫的框底。",
+        "A4 版面完全不變（ST-2026019 仍是 14 / 6 列、位置相同，其他 A4 單的 PDF 逐位元相同）。瀏覽器預覽頁（print_pages / print_geometry）的半張座標同樣上移，和 PDF 一致。全程唯讀，ERP 讀取行為不變。",
+    ]},
     {"title": "v2026.11.23.2：Invoice 瀏覽器預覽頁改用 PDF 同一份分頁與座標（ST-2026019 14 / 6 列、每頁簽核、金額靠左）", "items": [
         "瀏覽器預覽頁（erp_invoice_print.html）不再自己估高度分頁：/api/erp-invoice/print-data 多回 print_pages（每頁印哪些明細、PO# / 明細基線、PDF 折好的品名行、簽核 / 合計 / 框底位置）、print_form（half / a4）與 print_geometry（版面座標），都由伺服器 PDF 同一份 layout 算出，預覽頁照著畫。ST-2026019 由 16 / 4 列改為同 PDF 與正航的 14 / 6 列（第 1 頁到 AHXAAAX24-000 86.0000）。",
         "預覽頁每頁改成一張 A4（210 × 297mm）的向量圖，位置用 PDF 的 mm 座標：簽核列每一頁都印（非最後一頁在頁底、最後一頁緊接合計）；TTL AMOUNT 數值改為靠左（x = 176.5mm，同 PDF / 正航）；表頭 UNIT PRICE 下的 FOB 與底線、外粗框 + 內細框一路到底、合計雙底線、品名折行都和 PDF 相同；客戶名稱照原樣印（連續空白保留）。",

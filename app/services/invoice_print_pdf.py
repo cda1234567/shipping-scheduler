@@ -20,10 +20,12 @@ ST-2026304 "IC-NB675GL-Z IC, 10A, 5V-24V INPUT SYNCHRONOUS BUCK" 367px 要折。
 最後一列下面不畫收尾線。最後一頁 / 半張的簽核位置（環境變數 INVOICE_PRINT_SIGN_MODE）：
   follow / auto（預設，auto = follow）：簽核一律緊接合計下方（固定距離 SIGN_GAP），框在簽核下方收尾
     （SIGN_TO_FRAME_FOLLOW），半張也一樣；明細 + 合計 + 簽核 + 框底邊距的框底 <= 半張上限就用半張
-    （例 ST-2026304 框底 132.44mm），否則 A4，可多頁（合計只在最後一頁）。
+    （例 ST-2026304 框底 128.44mm），否則 A4，可多頁（合計只在最後一頁）。
+    半張整頁（表頭、標題、頁碼、框、明細、合計、簽核）一起上移 HALF_SHIFT_MM，上移後框底 <= 半張上限就用半張
+    （ST-2026307 框底 151.32 → 147.32mm）；A4 不移。
   bottom（舊版，需明確指定）：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 A4_FRAME_BOTTOM），
     所以半張要簽核貼框底放得下才用。
-print-info 的 bottom_mm 就是 PDF 實際畫的框底（同一份 layout）。
+print-info 的 bottom_mm 就是 PDF 實際畫的框底（同一份 layout，半張是上移後的位置）。
 
 純函式：layout(data) / render_pdf(data) 不連 ERP；資料來自 erp_invoice_print.get_print_data()。
 """
@@ -112,6 +114,7 @@ DEFAULT_SIGNATURES = ("簽核", "審核", "製單")
 # 半張 bottom 模式：框底固定（實單 150.5mm，整體上移到 146.5mm，印表機只印上 148.5mm）
 HALF_FRAME_BOTTOM = 146.5
 HALF_SIGN_BASE = HALF_FRAME_BOTTOM - SIGN_TO_FRAME_PINNED
+HALF_SHIFT_MM = 4.0  # 半張 follow：整頁上移（印表機只印上半張）
 A4_SIGN_MAX = FOOTER_SIGN_BASE  # A4 最後一頁：緊接合計的簽核不能低於頁尾簽核位置
 
 SIGN_MODES = ("auto", "follow", "bottom")
@@ -245,10 +248,11 @@ def _next_base(line_base: float, n_lines: int) -> float:
     return line_base + max(LINE_TO_NEXT_MIN, (n_lines - 1) * DESC_PITCH + LAST_DESC_TO_NEXT)
 
 
-def _place_page(units: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float, float]:
-    """依序排一頁的單位 → (元素, 最後一個 band 底, 最後一行基線)。空頁：band 底 = BODY_TOP、最後一行 = 貿易條件列。"""
+def _place_page(units: List[Dict[str, Any]], shift: float = 0.0) -> Tuple[List[Dict[str, Any]], float, float]:
+    """依序排一頁的單位 → (元素, 最後一個 band 底, 最後一行基線)。空頁：band 底 = BODY_TOP、最後一行 = 貿易條件列。
+    shift：整頁上移量（mm，半張 HALF_SHIFT_MM）。"""
     elements: List[Dict[str, Any]] = []
-    top, last = BODY_TOP, TERM_BASE
+    top, last = BODY_TOP - shift, TERM_BASE - shift
     for u in units:
         y = top + BAND_TO_BASE
         if u["header"]:
@@ -291,17 +295,21 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
     units = _units(data, measure)
     half_limit = rm_print.half_page_limit()
     bottom = _band_bottom(units)
-    # follow / auto：簽核緊接合計，整份（含框底邊距）放得進半張就用半張；bottom：簽核貼框底放得下才用半張
+    # follow / auto：簽核緊接合計，整份（含框底邊距）上移 HALF_SHIFT_MM 後放得進半張就用半張；
+    # bottom：簽核貼框底放得下才用半張（框底固定 HALF_FRAME_BOTTOM，不上移）
     follow = mode != "bottom"
     if follow:
-        half = _follow_sign_base(bottom) + SIGN_TO_FRAME_FOLLOW <= half_limit
+        half = _follow_sign_base(bottom) + SIGN_TO_FRAME_FOLLOW - HALF_SHIFT_MM <= half_limit
     else:
         half = _follow_sign_base(bottom) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
+    shift = HALF_SHIFT_MM if half and follow else 0.0
     groups = [units] if half else _paginate_a4(units)
     pages = []
     for no, group in enumerate(groups, 1):
-        elements, bottom, last = _place_page(group)
-        page = {"no": no, "elements": elements, "last": no == len(groups), "last_base": last, "band_bottom": bottom}
+        elements, bottom, last = _place_page(group, shift)
+        # 頁上的 y 都是實際畫的位置（已上移 shift）；表頭固定座標由畫圖 / 預覽依 shift 上移
+        page = {"no": no, "elements": elements, "last": no == len(groups), "last_base": last, "band_bottom": bottom,
+                "shift": shift}
         if page["last"]:
             page["totals_rule"] = bottom + TOTALS_RULE_GAP
             page["totals_base"] = _totals_base(bottom)
@@ -318,7 +326,7 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
         pages.append(page)
     frame_bottom = pages[-1]["frame_bottom"]
     return {"pages": pages, "page_count": len(pages), "bottom_mm": round(frame_bottom, 2), "fits_half_page": half,
-            "form": "half" if half else "a4", "sign_mode": mode, "half_page_mm": half_limit,
+            "form": "half" if half else "a4", "sign_mode": mode, "half_page_mm": half_limit, "shift_mm": shift,
             "bill_no": data.get("bill_no") or ""}
 
 
@@ -355,28 +363,35 @@ def _plain_width(text: str, size: float = SIZE) -> float:
     return sum(size if _wide(ch) else stringWidth(ch, "Helvetica", size) for ch in text) * PT_MM
 
 
-def preview_geometry(data: Dict[str, Any]) -> Dict[str, Any]:
-    """預覽頁用的版面常數（mm，字級也換成 mm），和 PDF 的 _header / _body / _footer 同一組數字。"""
+def preview_geometry(data: Dict[str, Any], shift: float = 0.0) -> Dict[str, Any]:
+    """預覽頁用的版面常數（mm，字級也換成 mm），和 PDF 的 _header / _body / _footer 同一組數字。
+    shift：整頁上移量（layout 的 shift_mm），表頭的 y 座標都減掉，同 PDF。"""
     term = data.get("trade_term") or ""
     term_x = PRICE_RIGHT - _plain_width(term + " ") if term else None
+
+    def y(v: float) -> float:
+        return _mm(v - shift) if shift else v
+
     return {
         "size": SIZE * PT_MM, "company_size": COMPANY_SIZE * PT_MM, "title_size": TITLE_SIZE * PT_MM,
         "line_w": LINE_W * PT_MM, "frame_line_w": FRAME_LINE_W * PT_MM,
-        "company": [COMPANY_CX, COMPANY_BASE], "address": [ADDRESS_CX, ADDRESS_BASE], "tel": [TEL_CX, TEL_BASE],
-        "title": [TITLE_CX, TITLE_BASE], "title_ul": list(TITLE_UL), "page_no": [PAGE_NO_RIGHT, PAGE_NO_BASE],
-        "frame_x": list(FRAME_X), "frame_top": FRAME_TOP, "inner_x": list(INNER_X), "inner_top": INNER_TOP,
-        "inner_bottom_pad": INNER_BOTTOM_PAD, "row_a_bottom": ROW_A_BOTTOM, "row_a_div": ROW_A_DIV,
-        "row_b_bottom": ROW_B_BOTTOM, "head_bottom": HEAD_BOTTOM, "head_vlines": list(HEAD_VLINES),
+        "company": [COMPANY_CX, y(COMPANY_BASE)], "address": [ADDRESS_CX, y(ADDRESS_BASE)],
+        "tel": [TEL_CX, y(TEL_BASE)], "title": [TITLE_CX, y(TITLE_BASE)],
+        "title_ul": [TITLE_UL[0], TITLE_UL[1], y(TITLE_UL[2])], "page_no": [PAGE_NO_RIGHT, y(PAGE_NO_BASE)],
+        "frame_x": list(FRAME_X), "frame_top": y(FRAME_TOP), "inner_x": list(INNER_X), "inner_top": y(INNER_TOP),
+        "inner_bottom_pad": INNER_BOTTOM_PAD, "row_a_bottom": y(ROW_A_BOTTOM), "row_a_div": ROW_A_DIV,
+        "row_b_bottom": y(ROW_B_BOTTOM), "head_bottom": y(HEAD_BOTTOM), "head_vlines": list(HEAD_VLINES),
         "text_x": TEXT_X, "invoice_value_x": INVOICE_VALUE_X, "date_x": DATE_X, "date_value_x": DATE_VALUE_X,
-        "row_a_base": ROW_A_BASE, "row_b_base": ROW_B_BASE, "head_base": HEAD_BASE, "head_desc_x": HEAD_DESC_X,
+        "row_a_base": y(ROW_A_BASE), "row_b_base": y(ROW_B_BASE), "head_base": y(HEAD_BASE),
+        "head_desc_x": HEAD_DESC_X,
         "head_price_right": HEAD_PRICE_RIGHT, "head_amount_cx": HEAD_AMOUNT_CX,
         "customer_max_w": INNER_X[1] - TEXT_X - 1.0,
-        "term_x": term_x, "term_base": TERM_BASE, "term_ul_y": TERM_UL_Y,
+        "term_x": term_x, "term_base": y(TERM_BASE), "term_ul_y": y(TERM_UL_Y),
         "qty_right": QTY_RIGHT, "po_x": PO_X, "desc_x": DESC_X, "desc_max_w": DESC_MAX_W, "desc_pitch": DESC_PITCH,
         "price_right": PRICE_RIGHT, "amount_x": AMOUNT_X,
         "amount_base_dy": AMOUNT_BASE_DY, "double_ul": list(DOUBLE_UL), "amount_double_ul": list(AMOUNT_DOUBLE_UL),
         "qty_ul": list(QTY_UL), "amount_ul": list(AMOUNT_UL), "currency_cx": sum(CURRENCY_FIELD) / 2,
-        "sign_x": list(SIGN_X), "sign_underscores": SIGN_UNDERSCORES,
+        "sign_x": list(SIGN_X), "sign_underscores": SIGN_UNDERSCORES, "shift": shift,
     }
 
 
@@ -399,6 +414,7 @@ class _Painter:
     def __init__(self, c, fonts):
         self.c = c
         self.fonts = fonts
+        self.dy = 0.0  # 整頁上移量（mm），畫表頭固定座標時用
 
     def _runs(self, s: str) -> List[Tuple[bool, str]]:
         out: List[Tuple[bool, str]] = []
@@ -427,7 +443,7 @@ class _Painter:
             return x, x
         natural = self.width(s, size, bold)
         scale = max_width / natural if max_width and natural > max_width else 1.0
-        cx, y = x, (PAGE_H - base) / PT_MM
+        cx, y = x, (PAGE_H - base + self.dy) / PT_MM
         for lat, run in self._runs(s):
             font = self._font(lat, bold)
             # 水平縮放（Tz）會延續到下一段文字，所以每段都明確設定
@@ -447,12 +463,15 @@ class _Painter:
         return self.text(cx - self.width(s, size) / 2, base, s, size)
 
     def hline(self, x0: float, x1: float, y: float) -> None:
+        y -= self.dy
         self.c.line(x0 / PT_MM, (PAGE_H - y) / PT_MM, x1 / PT_MM, (PAGE_H - y) / PT_MM)
 
     def vline(self, x: float, y0: float, y1: float) -> None:
+        y0, y1 = y0 - self.dy, y1 - self.dy
         self.c.line(x / PT_MM, (PAGE_H - y0) / PT_MM, x / PT_MM, (PAGE_H - y1) / PT_MM)
 
     def box(self, x0: float, x1: float, y0: float, y1: float) -> None:
+        y0, y1 = y0 - self.dy, y1 - self.dy
         self.c.rect(x0 / PT_MM, (PAGE_H - y1) / PT_MM, (x1 - x0) / PT_MM, (y1 - y0) / PT_MM, stroke=1, fill=0)
 
 
@@ -544,7 +563,10 @@ def render_pdf(data: Dict[str, Any], mode: Optional[str] = None) -> Tuple[bytes,
         c.setLineWidth(LINE_W)
         c.setStrokeColorRGB(0, 0, 0)
         c.setFillColorRGB(0, 0, 0)
-        _header(p, data, page["no"], lay["page_count"], page["frame_bottom"])
+        # 表頭是固定座標：整頁上移 shift 畫（框底是 layout 已上移的位置，先加回來）
+        p.dy = page["shift"]
+        _header(p, data, page["no"], lay["page_count"], page["frame_bottom"] + page["shift"])
+        p.dy = 0.0
         _body(p, page)
         _footer(p, data, page)
         c.showPage()

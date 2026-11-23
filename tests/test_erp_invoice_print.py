@@ -326,7 +326,7 @@ class PaginationTests(unittest.TestCase):
                 for i in range(n)]
 
     def test_page_count_equals_pdf(self):
-        for bill_no, form, count in (("ST-2026019", "a4", 2), ("ST-2026304", "half", 1), ("ST-2026307", "a4", 1)):
+        for bill_no, form, count in (("ST-2026019", "a4", 2), ("ST-2026304", "half", 1), ("ST-2026307", "half", 1)):
             data = prt.add_print_layout(_fixture(bill_no))
             lay = ipp.layout(data)
             self.assertEqual((data["print_form"], len(data["pages"]), len(data["print_pages"])), (form, count, count), bill_no)
@@ -363,6 +363,25 @@ class PaginationTests(unittest.TestCase):
         self.assertEqual([(r["type"], r["height"]) for r in data["pages"][0]["rows"]],
                          [("po", 1), ("line", 3), ("po", 1), ("line", 2)])
         self.assertLessEqual(data["print_pages"][0]["frame_bottom"], 148.5)
+
+    def test_half_sheet_preview_carries_shift(self):
+        # 半張預覽 = PDF：print_pages / print_geometry 的 y 都是上移 HALF_SHIFT_MM 後實際畫的位置；A4 不移
+        for bill_no, bottom in (("ST-2026307", 147.32), ("ST-2026304", 128.44)):
+            data = prt.add_print_layout(_fixture(bill_no))
+            page, g = data["print_pages"][0], data["print_geometry"]
+            self.assertEqual(data["print_form"], "half", bill_no)
+            self.assertEqual(round(page["frame_bottom"], 2), bottom)
+            self.assertEqual(g["shift"], ipp.HALF_SHIFT_MM)
+            self.assertEqual(g["frame_top"], round(ipp.FRAME_TOP - 4.0, 3))
+            self.assertEqual(g["company"][1], round(ipp.COMPANY_BASE - 4.0, 3))
+            self.assertEqual(g["page_no"][1], round(ipp.PAGE_NO_BASE - 4.0, 3))
+            self.assertEqual(g["head_base"], round(ipp.HEAD_BASE - 4.0, 3))
+            self.assertEqual(g["term_base"], round(ipp.TERM_BASE - 4.0, 3))
+            pdf = ipp.layout(data)["pages"][0]
+            self.assertEqual(page["lines"][0]["po_base"], round(pdf["elements"][0]["base"], 3))
+            self.assertEqual(page["lines"][0]["po_base"], round(ipp.BODY_TOP + ipp.BAND_TO_BASE - 4.0, 3))
+        g19 = prt.add_print_layout(_fixture("ST-2026019"))["print_geometry"]
+        self.assertEqual((g19["shift"], g19["frame_top"], g19["company"][1]), (0.0, ipp.FRAME_TOP, ipp.COMPANY_BASE))
 
     def test_paginate_matches_layout(self):
         for n in (2, 20, 40, 60):

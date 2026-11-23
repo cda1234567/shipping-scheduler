@@ -151,7 +151,7 @@ def add_print_layout(data: Dict[str, Any]) -> Dict[str, Any]:
     data["pages"] = pages_from_layout(lay, invoice_print_pdf.print_lines(data))
     data["print_pages"] = invoice_print_pdf.preview_pages(lay)
     data["print_form"] = lay["form"]
-    data["print_geometry"] = invoice_print_pdf.preview_geometry(data)
+    data["print_geometry"] = invoice_print_pdf.preview_geometry(data, lay["shift_mm"])
     return data
 
 

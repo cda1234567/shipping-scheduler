@@ -191,7 +191,8 @@ class PrinterChoiceTest(unittest.TestCase):
         lines = [e["desc"] for e in lay["pages"][0]["elements"] if e["type"] == "line"]
         self.assertEqual(lines, WRAPS_304)
         pos = [(e["type"], round(e["base"], 1)) for e in lay["pages"][0]["elements"]]
-        self.assertEqual(pos, [("po", 80.9), ("line", 86.8), ("po", 100.3), ("line", 106.1)])  # 正航 band 模型
+        # 正航 band 模型（80.9 / 86.8 / 100.3 / 106.1），半張整頁上移 HALF_SHIFT_MM
+        self.assertEqual(pos, [("po", 76.9), ("line", 82.8), ("po", 96.3), ("line", 102.1)])
 
     def test_st_2026302_a4_one_page(self):
         lay = ipp.layout(st_2026302())
@@ -215,11 +216,11 @@ class PrinterChoiceTest(unittest.TestCase):
             self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
             self.assertLess(page["frame_bottom"], ipp.HALF_FRAME_BOTTOM)  # 框底跟著上移，不再固定 146.5
             self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
-            self.assertEqual(lay["bottom_mm"], 132.44)
+            self.assertEqual(lay["bottom_mm"], 128.44)  # 132.44 上移 4.0
             self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
 
     def test_st_2026307_signature_follows_totals(self):
-        # 4 列都印 PO#（W058376 兩列各一個）+ 兩列品名 373px 折 2 行：框底 151.32 > 半張 148.5 → A4
+        # 4 列都印 PO#（W058376 兩列各一個）+ 兩列品名 373px 折 2 行：框底 151.32，整頁上移 4.0 → 147.32 <= 148.5 → 半張
         lay = ipp.layout(st_2026307(), "auto")
         page = lay["pages"][-1]
         self.assertEqual(sum(e["type"] == "po" for e in page["elements"]), 4)
@@ -227,10 +228,28 @@ class PrinterChoiceTest(unittest.TestCase):
         self.assertAlmostEqual(page["sign_base"], page["totals_base"] + ipp.SIGN_GAP)
         self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
         self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
-        self.assertEqual(lay["bottom_mm"], 151.32)
-        self.assertEqual((lay["form"], lay["page_count"], lay["fits_half_page"]), ("a4", 1, False))
+        self.assertEqual(lay["bottom_mm"], 147.32)
+        self.assertEqual((lay["form"], lay["page_count"], lay["fits_half_page"]), ("half", 1, True))
+        self.assertEqual(lay["shift_mm"], ipp.HALF_SHIFT_MM)
+        self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
         self.assertFalse(ipp.layout(st_2026307(), "bottom")["fits_half_page"])
-        self.assertEqual(ipp.layout(fixture("ST-2026307"), "auto")["bottom_mm"], 151.32)  # 正式站資料同結果
+        self.assertEqual(ipp.layout(fixture("ST-2026307"), "auto")["bottom_mm"], 147.32)  # 正式站資料同結果
+
+    def test_half_shift_moves_every_y(self):
+        # 半張上移 = 不上移的半張版面每個 y 都少 HALF_SHIFT_MM（RM_PRINT_HALF_PAGE_MM 放寬讓兩邊都選半張）
+        with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "160"}):
+            with mock.patch.object(ipp, "HALF_SHIFT_MM", 0.0):
+                flat = ipp.layout(fixture("ST-2026307"))
+            lay = ipp.layout(fixture("ST-2026307"))
+        self.assertEqual((flat["form"], lay["form"], flat["shift_mm"], lay["shift_mm"]), ("half", "half", 0.0, 4.0))
+        self.assertAlmostEqual(lay["bottom_mm"], flat["bottom_mm"] - 4.0)
+        a, b = flat["pages"][0], lay["pages"][0]
+        for key in ("last_base", "band_bottom", "totals_rule", "totals_base", "sign_base", "frame_bottom"):
+            self.assertAlmostEqual(b[key], a[key] - 4.0, msg=key)
+        for ea, eb in zip(a["elements"], b["elements"]):
+            for key in ("base", "band_top", "band_bottom"):
+                if key in ea:
+                    self.assertAlmostEqual(eb[key], ea[key] - 4.0, msg=key)
 
     def test_st_2026302_a4(self):
         lay = ipp.layout(st_2026302(), "auto")
@@ -238,9 +257,9 @@ class PrinterChoiceTest(unittest.TestCase):
 
     def test_half_page_limit_env(self):
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "140"}):
-            lay = ipp.layout(st_2026304())  # 簽核緊接合計的框底 132.44 <= 140 → 仍是半張
-            self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 132.44))
-        with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "130"}):
+            lay = ipp.layout(st_2026304())  # 簽核緊接合計、上移後的框底 128.44 <= 140 → 仍是半張
+            self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 128.44))
+        with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "128"}):
             self.assertFalse(ipp.layout(st_2026304())["fits_half_page"])
 
     def test_tab_rows_not_printed(self):
@@ -427,7 +446,7 @@ class ZhenghangSt2026019Test(unittest.TestCase):
 
     def test_half_page_fixture_st_2026304(self):
         lay = ipp.layout(fixture("ST-2026304"))
-        self.assertEqual((lay["form"], lay["page_count"], lay["bottom_mm"]), ("half", 1, 132.44))
+        self.assertEqual((lay["form"], lay["page_count"], lay["bottom_mm"], lay["shift_mm"]), ("half", 1, 128.44, 4.0))
 
 
 class DrawTest(unittest.TestCase):
@@ -465,6 +484,59 @@ class DrawTest(unittest.TestCase):
                 self.assertEqual({b for _, b, _ in signs}, {base})
             else:
                 self.assertLess(signs[0][1], 200)  # 最後一頁緊接合計，不在頁底
+
+    def _drawn(self, data, shift):
+        """PDF 實際畫的座標（reportlab 層：線、框、文字起點，mm、原點左上）。"""
+        _fonts_or_skip(self)
+        from reportlab.pdfgen.canvas import Canvas
+        from reportlab.pdfgen.textobject import PDFTextObject
+        out = []
+        orig_line, orig_rect, orig_origin = Canvas.line, Canvas.rect, PDFTextObject.setTextOrigin
+        mm = lambda v: round(v * rm_print.PT_MM, 3)
+        top = lambda v: round(rm_print.PAGE_H - v * rm_print.PT_MM, 3)
+
+        def line(c, x1, y1, x2, y2):
+            out.append(("line", mm(x1), top(y1), mm(x2), top(y2)))
+            return orig_line(c, x1, y1, x2, y2)
+
+        def rect(c, x, y, w, h, **kw):
+            out.append(("rect", mm(x), top(y + h), mm(w), mm(h)))
+            return orig_rect(c, x, y, w, h, **kw)
+
+        def origin(t, x, y):
+            if (x, y) != (0, 0):  # beginText() 先設 (0, 0)，不是畫的位置
+                out.append(("text", mm(x), top(y)))
+            return orig_origin(t, x, y)
+
+        env = {"INVOICE_PRINT_SIGN_MODE": "", "RM_PRINT_HALF_PAGE_MM": "160"}
+        with mock.patch.object(Canvas, "line", line), mock.patch.object(Canvas, "rect", rect), \
+                mock.patch.object(PDFTextObject, "setTextOrigin", origin), mock.patch.dict(os.environ, env), \
+                mock.patch.object(ipp, "HALF_SHIFT_MM", shift):
+            _, info = ipp.render_pdf(data)
+        return out, info
+
+    def test_half_sheet_drawn_4mm_higher(self):
+        # ST-2026307 半張：表頭、標題、頁碼、框、明細、合計、簽核全部比不上移的版面高 4.0mm，x 不變
+        flat, _ = self._drawn(fixture("ST-2026307"), 0.0)
+        moved, info = self._drawn(fixture("ST-2026307"), 4.0)
+        self.assertEqual(info["bottom_mm"], 147.32)
+        self.assertEqual(len(flat), len(moved))
+        self.assertGreater(len(flat), 40)
+        for a, b in zip(flat, moved):
+            self.assertEqual(a[0], b[0])
+            if a[0] == "line":
+                self.assertEqual((a[1], a[3]), (b[1], b[3]))
+                self.assertAlmostEqual(b[2], a[2] - 4.0, places=2)
+                self.assertAlmostEqual(b[4], a[4] - 4.0, places=2)
+            elif a[0] == "rect":
+                self.assertEqual((a[1], a[3], a[4]), (b[1], b[3], b[4]))
+                self.assertAlmostEqual(b[2], a[2] - 4.0, places=2)
+            else:
+                self.assertEqual(a[1], b[1])
+                self.assertAlmostEqual(b[2], a[2] - 4.0, places=2)
+        # 外框底 = bottom_mm（實際畫的位置）
+        frame = [r for r in moved if r[0] == "rect"][0]
+        self.assertAlmostEqual(frame[2] + frame[4], 147.32, places=2)
 
     def test_customer_name_printed(self):
         data = fixture("ST-2026019")
