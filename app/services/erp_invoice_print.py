@@ -13,20 +13,19 @@
 - 貿易條件：Invoice TradeWay → Invoice TermContent → Invoice Term（數字列舉，0 = FOB，由 ST-2026304 實單推定）；
   其他 Term 值不猜，留空並回 trade_term_unmapped_term。Way / Shipment 是運輸方式（Air 等），不當貿易條件。
 - 料號結尾 -TAB 的列不印、不算進列印合計，但列在 excluded_tab_rows / excluded_tab_qty / excluded_tab_amount。
-- pages 只是估計（瀏覽器依實際高度分頁）。
+- 分頁同伺服器 PDF（invoice_print_pdf.layout）：pages（舊形狀，頁數 = PDF page_count）、print_pages / print_form /
+  print_geometry（瀏覽器預覽頁照這些畫，不自己估高度）。
 """
 from __future__ import annotations
 
-import math
 import re
 import threading
 import time
-import unicodedata
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import erp_purchase as ep
-from . import erp_stock
+from . import erp_stock, invoice_print_pdf
 from .erp_invoice import CUSTOMER_FLAG, INVOICE_FLAG, SC_FLAG, InvoiceValidationError, get_invoice_target
 from .erp_stock import ErpError, ErpNotConfigured, ErpUnavailable
 
@@ -34,11 +33,6 @@ BILL_RE = re.compile(r"^ST-\d{7}$")
 TITLE = "銷貨單"
 SIGNATURES = ["簽核", "審核", "製單"]
 MONTHS = ["Jan.", "Feb.", "Mar.", "Apr.", "May.", "Jun.", "Jul.", "Aug.", "Sep.", "Oct.", "Nov.", "Dec."]
-# 每頁明細行數估計（PO 標題 1 行、每個品名依折行數計，最多 3 行）。只是估計：列印頁在瀏覽器依實際高度分頁、不看 pages。
-# 由 Playwright 實量（v2026.11.20.7）：每頁明細區約 789px，單行明細 / PO 標題約 21px → 約 37 行
-LINES_PER_PAGE = 37
-DESC_CHARS_PER_LINE = 50  # DESCRIPTION 欄（約 342px、10pt，同正航實單）每行約可放的半形字數；全形字算 2
-DESC_MAX_LINES = 3
 COMPANY_CACHE_SECONDS = 600
 
 FALLBACK_COMPANY = {
@@ -129,35 +123,36 @@ def print_description(item_no: Any, description: Any, sub_desc: Any) -> str:
     return text
 
 
-def desc_line_count(text: str) -> int:
-    """估計品名在 DESCRIPTION 欄折成幾行（全形字算 2 個半形寬），最多 3 行（列印時超過 3 行直接裁掉）。"""
-    width = sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text or "")
-    return max(1, min(DESC_MAX_LINES, math.ceil(width / DESC_CHARS_PER_LINE)))
-
-
-def paginate(lines: List[Dict[str, Any]], per_page: int = LINES_PER_PAGE) -> List[Dict[str, Any]]:
-    """依客戶 PO 分組排版：PO 換了才印一行 PO#；PO 標題不單獨留在頁尾。合計 / 簽核只在最後一頁（last=True）。"""
-    blocks: List[List[Dict[str, Any]]] = []
-    prev_po: Optional[str] = None
-    for i, line in enumerate(lines):
+def pages_from_layout(lay: Dict[str, Any], lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """invoice_print_pdf.layout() → 舊 pages 形狀 [{no, of, rows, last}]（PO 非空的每一列都有 PO 列，同 PDF）。"""
+    total = lay["page_count"]
+    pages = []
+    for page in lay["pages"]:
         rows: List[Dict[str, Any]] = []
-        if i == 0 or line["po"] != prev_po:
-            if line["po"]:
-                rows.append({"type": "po", "po": line["po"], "height": 1})
-        prev_po = line["po"]
-        rows.append({"type": "line", "line": i, "row_no": line["row_no"], "height": desc_line_count(line["print_description"])})
-        blocks.append(rows)
-    pages: List[List[Dict[str, Any]]] = [[]]
-    used = 0
-    for rows in blocks:
-        need = sum(r["height"] for r in rows)
-        if used and used + need > per_page:
-            pages.append([])
-            used = 0
-        pages[-1].extend(rows)
-        used += need
-    total = len(pages)
-    return [{"no": n, "of": total, "rows": rows, "last": n == total} for n, rows in enumerate(pages, 1)]
+        for el in page["elements"]:
+            if el["type"] == "po":
+                rows.append({"type": "po", "po": el["po"], "height": 1})
+            else:
+                rows.append({"type": "line", "line": el["index"], "row_no": lines[el["index"]].get("row_no"),
+                             "height": len(el["desc"]) or 1})
+        pages.append({"no": page["no"], "of": total, "rows": rows, "last": page["last"]})
+    return pages
+
+
+def paginate(lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """分頁同伺服器 PDF（頁數 = PDF page_count）。合計只在最後一頁（last=True）。"""
+    data = {"lines": lines}
+    return pages_from_layout(invoice_print_pdf.layout(data), invoice_print_pdf.print_lines(data))
+
+
+def add_print_layout(data: Dict[str, Any]) -> Dict[str, Any]:
+    """依 PDF 同一份 layout 補上 pages / print_pages / print_form / print_geometry（預覽頁照畫）。"""
+    lay = invoice_print_pdf.layout(data)
+    data["pages"] = pages_from_layout(lay, invoice_print_pdf.print_lines(data))
+    data["print_pages"] = invoice_print_pdf.preview_pages(lay)
+    data["print_form"] = lay["form"]
+    data["print_geometry"] = invoice_print_pdf.preview_geometry(data)
+    return data
 
 
 def _json_value(value: Any) -> Any:
@@ -398,7 +393,7 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
         })
     tab_qty = sum((_d(e["qty"]) for e in excluded), Decimal(0))
     tab_amount = sum((_d(e["amount"]) for e in excluded), Decimal(0))
-    return {
+    return add_print_layout({
         "ok": True, "bill_no": bill_no, "target": ep.target_label(target), "target_db": target,
         "company": company, "title": TITLE,
         "date_display": format_date(bill_date), "date_raw": bill_date,
@@ -417,12 +412,11 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
             "main_total": float(main_total), "matches_main_total": abs(full_amount - main_total) <= Decimal("0.0005"),
         },
         "full_total_qty": float(full_qty), "full_total_amount": float(full_amount),
-        "pages": paginate(lines),
         "signatures": list(SIGNATURES),
         "raw_header": {k: _json_value(g(main, k)) for k in RAW_HEADER_FIELDS},
         "raw_sc": [{k: _json_value(g(raw["scs"].get(n, {}), k)) for k in RAW_SC_FIELDS} | {"BillNo": n}
                    for n in sc_order],
-    }
+    })
 
 
 def get_print_data(bill_no: Any) -> Dict[str, Any]:

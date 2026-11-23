@@ -226,7 +226,7 @@ def print_lines(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _units(data: Dict[str, Any], measure=None) -> List[Dict[str, Any]]:
     """一列明細 = 一個單位；PO 非空的每一列都帶 PO 標題（同一 PO 連續多列也每列都印，同正航；
-    同 erp_invoice_print.js buildUnits）。"""
+    瀏覽器預覽頁照 preview_pages 畫）。"""
     units = []
     for i, line in enumerate(print_lines(data)):
         po = str(line.get("po") or "").strip()
@@ -320,6 +320,64 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
     return {"pages": pages, "page_count": len(pages), "bottom_mm": round(frame_bottom, 2), "fits_half_page": half,
             "form": "half" if half else "a4", "sign_mode": mode, "half_page_mm": half_limit,
             "bill_no": data.get("bill_no") or ""}
+
+
+def _mm(value: float) -> float:
+    return round(value, 3)
+
+
+def preview_pages(lay: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """瀏覽器預覽頁（erp_invoice_print.js）照畫的分頁：每頁的明細（PO# 基線、明細基線、PDF 折好的品名行）、
+    簽核 / 合計 / 框底位置（mm），和 PDF 同一份 layout。"""
+    pages = []
+    for page in lay["pages"]:
+        lines, po_base = [], None
+        for el in page["elements"]:
+            if el["type"] == "po":
+                po_base = el["base"]
+                continue
+            lines.append({"index": el["index"], "po": el["po"], "po_base": _mm(po_base) if el["header"] else None,
+                          "base": _mm(el["base"]), "desc": list(el["desc"]),
+                          "qty": el["qty"], "price": el["price"], "amount": el["amount"]})
+            po_base = None
+        out = {"no": page["no"], "of": lay["page_count"], "last": page["last"], "lines": lines,
+               "sign_base": _mm(page["sign_base"]), "frame_bottom": _mm(page["frame_bottom"])}
+        if page["last"]:
+            out["totals_rule"] = _mm(page["totals_rule"])
+            out["totals_base"] = _mm(page["totals_base"])
+        pages.append(out)
+    return pages
+
+
+def _plain_width(text: str, size: float = SIZE) -> float:
+    """不需註冊字型的字寬（mm）：英數用 Helvetica（= Arial / Liberation Sans 字寬），全形字算 1 em。"""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    return sum(size if _wide(ch) else stringWidth(ch, "Helvetica", size) for ch in text) * PT_MM
+
+
+def preview_geometry(data: Dict[str, Any]) -> Dict[str, Any]:
+    """預覽頁用的版面常數（mm，字級也換成 mm），和 PDF 的 _header / _body / _footer 同一組數字。"""
+    term = data.get("trade_term") or ""
+    term_x = PRICE_RIGHT - _plain_width(term + " ") if term else None
+    return {
+        "size": SIZE * PT_MM, "company_size": COMPANY_SIZE * PT_MM, "title_size": TITLE_SIZE * PT_MM,
+        "line_w": LINE_W * PT_MM, "frame_line_w": FRAME_LINE_W * PT_MM,
+        "company": [COMPANY_CX, COMPANY_BASE], "address": [ADDRESS_CX, ADDRESS_BASE], "tel": [TEL_CX, TEL_BASE],
+        "title": [TITLE_CX, TITLE_BASE], "title_ul": list(TITLE_UL), "page_no": [PAGE_NO_RIGHT, PAGE_NO_BASE],
+        "frame_x": list(FRAME_X), "frame_top": FRAME_TOP, "inner_x": list(INNER_X), "inner_top": INNER_TOP,
+        "inner_bottom_pad": INNER_BOTTOM_PAD, "row_a_bottom": ROW_A_BOTTOM, "row_a_div": ROW_A_DIV,
+        "row_b_bottom": ROW_B_BOTTOM, "head_bottom": HEAD_BOTTOM, "head_vlines": list(HEAD_VLINES),
+        "text_x": TEXT_X, "invoice_value_x": INVOICE_VALUE_X, "date_x": DATE_X, "date_value_x": DATE_VALUE_X,
+        "row_a_base": ROW_A_BASE, "row_b_base": ROW_B_BASE, "head_base": HEAD_BASE, "head_desc_x": HEAD_DESC_X,
+        "head_price_right": HEAD_PRICE_RIGHT, "head_amount_cx": HEAD_AMOUNT_CX,
+        "customer_max_w": INNER_X[1] - TEXT_X - 1.0,
+        "term_x": term_x, "term_base": TERM_BASE, "term_ul_y": TERM_UL_Y,
+        "qty_right": QTY_RIGHT, "po_x": PO_X, "desc_x": DESC_X, "desc_max_w": DESC_MAX_W, "desc_pitch": DESC_PITCH,
+        "price_right": PRICE_RIGHT, "amount_x": AMOUNT_X,
+        "amount_base_dy": AMOUNT_BASE_DY, "double_ul": list(DOUBLE_UL), "amount_double_ul": list(AMOUNT_DOUBLE_UL),
+        "qty_ul": list(QTY_UL), "amount_ul": list(AMOUNT_UL), "currency_cx": sum(CURRENCY_FIELD) / 2,
+        "sign_x": list(SIGN_X), "sign_underscores": SIGN_UNDERSCORES,
+    }
 
 
 def info_from_layout(lay: Dict[str, Any], fonts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

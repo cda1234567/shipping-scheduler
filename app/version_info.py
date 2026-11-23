@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.23.1"
+APP_VERSION = "v2026.11.23.2"
 APP_RELEASED_AT = "2026-11-23"
-APP_HEADLINE = "Invoice 列印對齊正航 ST-2026019 實印：每列印 PO#、每頁印簽核、客戶印英文名稱、分頁與位置一致"
+APP_HEADLINE = "Invoice 瀏覽器預覽改用伺服器 PDF 同一份分頁：ST-2026019 14 / 6 列、每頁簽核、金額靠左，print-data 頁數 = PDF"
 APP_CHANGELOG = [
+    {"title": "v2026.11.23.2：Invoice 瀏覽器預覽頁改用 PDF 同一份分頁與座標（ST-2026019 14 / 6 列、每頁簽核、金額靠左）", "items": [
+        "瀏覽器預覽頁（erp_invoice_print.html）不再自己估高度分頁：/api/erp-invoice/print-data 多回 print_pages（每頁印哪些明細、PO# / 明細基線、PDF 折好的品名行、簽核 / 合計 / 框底位置）、print_form（half / a4）與 print_geometry（版面座標），都由伺服器 PDF 同一份 layout 算出，預覽頁照著畫。ST-2026019 由 16 / 4 列改為同 PDF 與正航的 14 / 6 列（第 1 頁到 AHXAAAX24-000 86.0000）。",
+        "預覽頁每頁改成一張 A4（210 × 297mm）的向量圖，位置用 PDF 的 mm 座標：簽核列每一頁都印（非最後一頁在頁底、最後一頁緊接合計）；TTL AMOUNT 數值改為靠左（x = 176.5mm，同 PDF / 正航）；表頭 UNIT PRICE 下的 FOB 與底線、外粗框 + 內細框一路到底、合計雙底線、品名折行都和 PDF 相同；客戶名稱照原樣印（連續空白保留）。",
+        "print-data 的 pages（舊欄位，形狀不變）改由同一份 layout 產生，頁數 = PDF 的 page_count：ST-2026019 2 頁、ST-2026304 半張 1 頁、ST-2026307 A4 1 頁。原本「每頁約 37 行」的估計拿掉。全程唯讀，ERP 讀取行為不變。",
+    ]},
     {"title": "v2026.11.23.1：Invoice 列印對齊正航 ST-2026019 實印（PO# 每列都印、每頁簽核、客戶英文名稱、分頁位置）", "items": [
         "PO# 每一列都印：明細每一列上方都印粗體「PO#…」，同一個 PO 連續多列也每列各印一次（正航 ST-2026019 的 PO#70003767 連印 10 次）；PO 空白的列照舊不印。伺服器 PDF 與瀏覽器預覽頁一致。",
         "簽核列每一頁都印：非最後一頁的簽核 / 審核 / 製單（標籤後接底線）印在頁底的頁尾區，外框畫到頁底，最後一列下面不再畫收尾線，同正航。最後一頁維持 2026-11-20 的規則：簽核緊接合計下方、框在簽核下方收尾；半張判斷規則不變。",

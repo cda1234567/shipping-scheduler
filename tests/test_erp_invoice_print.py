@@ -4,8 +4,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +17,7 @@ from app.services import erp_invoice_print as prt
 from app.services import erp_invoice_schema as schema
 from app.services import erp_purchase as ep
 from app.services import erp_stock
+from app.services import invoice_print_pdf as ipp
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -221,7 +224,8 @@ class PrintDataTests(unittest.TestCase):
                          [("PO-A", "sc.Ref"), ("PO-A", "sc.Ref"), ("CB-2", "sc.CustBillNo"),
                           ("INV-REF", "invoice.Ref"), ("CB-2", "sc.CustBillNo")])
         rows = r["pages"][0]["rows"]
-        self.assertEqual([x.get("po") for x in rows if x["type"] == "po"], ["PO-A", "CB-2", "INV-REF", "CB-2"])
+        # 同 PDF / 正航：PO 非空的每一列都印 PO#（同一 PO 連續多列也每列都印）
+        self.assertEqual([x.get("po") for x in rows if x["type"] == "po"], ["PO-A", "PO-A", "CB-2", "INV-REF", "CB-2"])
         self.assertEqual(r["lines"][0]["qty_source"], "TraBillSub")
 
     def test_amount_computed_and_ordering(self):
@@ -304,43 +308,76 @@ class PrintDataTests(unittest.TestCase):
             run_print(sample_data(main=None))
 
 
+def _fixture(bill_no):
+    return json.loads((ROOT / "tests" / "fixtures" / f"{bill_no}.json").read_text(encoding="utf-8"))
+
+
 class PaginationTests(unittest.TestCase):
+    """pages / print_pages 同伺服器 PDF（invoice_print_pdf.layout）：頁數 = PDF page_count。"""
+
+    def setUp(self):
+        patcher = patch.dict(os.environ, {"INVOICE_PRINT_SIGN_MODE": "", "RM_PRINT_HALF_PAGE_MM": "148.5"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     @staticmethod
     def _lines(n, po="PO1", desc="x"):
-        return [{"row_no": i + 1, "po": po, "print_description": desc} for i in range(n)]
+        return [{"row_no": i + 1, "po": po, "print_description": desc, "qty": 1, "price": 1, "amount": 1}
+                for i in range(n)]
 
-    def test_estimate_capacity(self):
-        # 只是估計（瀏覽器依實際高度分頁）；Playwright 實量每頁約 37 個單行明細
-        self.assertEqual(prt.LINES_PER_PAGE, 37)
-        self.assertEqual(len(prt.paginate(self._lines(30))), 1)  # 1 + 30
-        self.assertEqual(len(prt.paginate(self._lines(40))), 2)
+    def test_page_count_equals_pdf(self):
+        for bill_no, form, count in (("ST-2026019", "a4", 2), ("ST-2026304", "half", 1), ("ST-2026307", "a4", 1)):
+            data = prt.add_print_layout(_fixture(bill_no))
+            lay = ipp.layout(data)
+            self.assertEqual((data["print_form"], len(data["pages"]), len(data["print_pages"])), (form, count, count), bill_no)
+            self.assertEqual(lay["page_count"], count, bill_no)
+            self.assertEqual([p["of"] for p in data["pages"]], [count] * count)
+            self.assertEqual([p["last"] for p in data["pages"]], [False] * (count - 1) + [True])
 
-    def test_25_lines_three_pages(self):
-        pages = prt.paginate(self._lines(25), per_page=12)
-        self.assertEqual(len(pages), 3)
-        self.assertEqual([p["last"] for p in pages], [False, False, True])
-        self.assertEqual([p["of"] for p in pages], [3, 3, 3])
-        self.assertEqual(sum(1 for p in pages for r in p["rows"] if r["type"] == "line"), 25)
+    def test_st_2026019_print_pages(self):
+        data = prt.add_print_layout(_fixture("ST-2026019"))
+        pages = data["print_pages"]
+        self.assertEqual([len(p["lines"]) for p in pages], [14, 6])
+        self.assertEqual([sum(r["type"] == "po" for r in p["rows"]) for p in data["pages"]], [14, 6])
+        last1 = pages[0]["lines"][-1]
+        self.assertEqual((last1["desc"], last1["qty"]), (["AHXAAAX24-000 P/N:381-0001, Outer Contact (BeCu consign)"], "86.0000"))
+        pdf_po = [[round(e["base"], 3) for e in p["elements"] if e["type"] == "po"] for p in ipp.layout(data)["pages"]]
+        self.assertEqual([[l["po_base"] for l in p["lines"]] for p in pages], pdf_po)  # 同 PDF 的 PO# 基線
+        self.assertEqual(pages[1]["lines"][0]["desc"], ["70MB0V27X-006 P/N: 330-0253-02 CONNECTOR, Press-In",
+                                                         "SMA(F), Solder dipped and 24AWG wire installed, with Lead", 'L=0.4"'])
+        # 簽核每一頁都有位置：非最後一頁在頁尾 band，最後一頁緊接合計；合計只在最後一頁
+        self.assertEqual((pages[0]["sign_base"], pages[0]["frame_bottom"], pages[0]["last"]), (273.85, 282.8, False))
+        self.assertNotIn("totals_base", pages[0])
+        self.assertTrue(pages[1]["last"])
+        self.assertAlmostEqual(pages[1]["sign_base"], pages[1]["totals_base"] + ipp.SIGN_GAP, places=2)
+        self.assertEqual([l["index"] for p in pages for l in p["lines"]], list(range(20)))
+        g = data["print_geometry"]
+        self.assertEqual((g["amount_x"], g["price_right"], g["qty_right"], g["desc_x"]), (176.5, 170.74, 32.65, 44.07))
+        self.assertAlmostEqual(g["size"], 9.96 * 25.4 / 72)
+        self.assertAlmostEqual(g["term_x"], ipp.PRICE_RIGHT - ipp._plain_width("FOB "))
 
-    def test_two_lines_one_page_and_clamp(self):
-        self.assertEqual(len(prt.paginate(self._lines(2))), 1)
-        self.assertEqual(prt.desc_line_count("x" * 1000), 3)
-        self.assertEqual(prt.desc_line_count("IC-XC7K70T-1FBG484I " + DESC2), 2)
-
-    def test_st_2026304_real_heights(self):
-        lines = [{"row_no": 1, "po": "4500059700", "print_description": REAL_DESC1},
-                 {"row_no": 2, "po": "4500059703", "print_description": REAL_DESC2}]
-        pages = prt.paginate(lines)
-        self.assertEqual(len(pages), 1)
-        self.assertEqual([(r["type"], r["height"]) for r in pages[0]["rows"]],
+    def test_st_2026304_half_wraps_like_pdf(self):
+        data = prt.add_print_layout(_fixture("ST-2026304"))
+        self.assertEqual(data["print_form"], "half")
+        self.assertEqual([len(l["desc"]) for l in data["print_pages"][0]["lines"]], [3, 2])
+        self.assertEqual([(r["type"], r["height"]) for r in data["pages"][0]["rows"]],
                          [("po", 1), ("line", 3), ("po", 1), ("line", 2)])
+        self.assertLessEqual(data["print_pages"][0]["frame_bottom"], 148.5)
+
+    def test_paginate_matches_layout(self):
+        for n in (2, 20, 40, 60):
+            lines = self._lines(n)
+            pages = prt.paginate(lines)
+            self.assertEqual(len(pages), ipp.layout({"lines": lines})["page_count"], n)
+            self.assertEqual(sum(1 for p in pages for r in p["rows"] if r["type"] == "line"), n)
+            self.assertEqual([r["row_no"] for p in pages for r in p["rows"] if r["type"] == "line"], list(range(1, n + 1)))
+        self.assertEqual(len(prt.paginate(self._lines(2))), 1)
+        self.assertGreater(len(prt.paginate(self._lines(40))), 1)
 
     def test_po_header_not_orphaned(self):
-        lines = self._lines(11, "P1") + self._lines(1, "P2")
-        pages = prt.paginate(lines, per_page=12)  # 1 + 11 = 12 滿一頁，P2 標題與它的明細一起到下一頁
-        self.assertEqual(len(pages), 2)
-        self.assertEqual(pages[1]["rows"][0], {"type": "po", "po": "P2", "height": 1})
-
+        for p in prt.paginate(self._lines(11, "P1") + self._lines(30, "P2")):
+            self.assertEqual(p["rows"][-1]["type"], "line")
+            self.assertEqual(p["rows"][0]["type"], "po")
 
 
 class PrintDataResponseTests(unittest.TestCase):
@@ -445,107 +482,81 @@ class PrintRouteTests(unittest.TestCase):
 class PrintFrontendTests(unittest.TestCase):
     def test_files_contain_key_strings(self):
         html = (ROOT / "static" / "erp_invoice_print.html").read_text(encoding="utf-8")
-        for s in ("@page { size: A4 portrait; margin: 10mm; }", 'id="btn-print"', ">列印<", ">關閉<", "page-break-after",
-                  "max-height: calc(1.35em * 3)", "3px double",
-                  "grid-template-columns: 146fr 5fr 342fr 110fr 94fr", "letter-spacing: -0.07em; word-spacing: 0.05em;", ".inv-ls { letter-spacing: normal; }",
-                  '/static/modules/erp_invoice_print.js'):
+        for s in ("@page { size: A4 portrait; margin: 0; }", 'id="btn-print"', ">列印<", ">關閉<", "page-break-after",
+                  "height: 297mm", "white-space: pre", '/static/modules/erp_invoice_print.js'):
             self.assertIn(s, html)
-        self.assertNotIn("line-clamp", html)  # 不用 line-clamp（會加省略號），超過 3 行直接裁掉
         js = (ROOT / "static" / "modules" / "erp_invoice_print.js").read_text(encoding="utf-8")
         for s in ("export function renderInvoicePrint(data, root)", "window.__INVOICE_PRINT_DATA__",
                   "/api/erp-invoice/print-data", 'params.get("auto") === "1"', "window.print()", "客戶名稱",
-                  "export function paginateUnits", "getBoundingClientRect", "document.fonts", "PAGE_HEIGHT_MM = 277"):
+                  "data.print_pages", "data.print_geometry", 'viewBox="0 0 210 297"', "getComputedTextLength",
+                  "document.fonts"):
             self.assertIn(s, js)
-        self.assertNotIn("data.pages", js)  # 後端 pages 只是估計，前端不用
+        # 不再自己估高度分頁（分頁、折行都照後端 print_pages = 伺服器 PDF）
+        for s in ("paginateUnits", "estimateHeights", "measureLayout", "PAGE_HEIGHT_MM", "data.pages"):
+            self.assertNotIn(s, js)
         page = (ROOT / "static" / "modules" / "erp_invoice.js").read_text(encoding="utf-8")
         for s in ("data-print-bill", "列印 ${esc(r.bill_no)}", "/api/erp-invoice/print-info"):
             self.assertIn(s, page)
         index = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
         self.assertIn('placeholder="輸入 ST-2026xxx"', index)
 
-    def test_signature_follows_totals_no_spacer(self):
-        # 簽核緊接合計下方、框在簽核下方收尾（同 PDF）：不可有撐開空白的 spacer / 框最小高度 / flex 撐底
-        html = (ROOT / "static" / "erp_invoice_print.html").read_text(encoding="utf-8")
-        js = (ROOT / "static" / "modules" / "erp_invoice_print.js").read_text(encoding="utf-8")
-        for src in (html, js):
-            for s in ("inv-spacer", "flex: 1", "margin-top: auto"):
-                self.assertNotIn(s, src)
-        box = html.split(".inv-box {", 1)[1].split("}", 1)[0]
-        self.assertNotIn("min-height", box)
-        self.assertNotIn("minHeight", js)
-        self.assertRegex(js, r"\$\{totals\}\s*\$\{signs\}\s*</div>")
-
     def test_render_with_node(self):
+        with patch.dict(os.environ, {"INVOICE_PRINT_SIGN_MODE": "", "RM_PRINT_HALF_PAGE_MM": "148.5"}):
+            fixtures = {b: prt.add_print_layout(_fixture(b)) for b in ("ST-2026019", "ST-2026304")}
         script = r"""
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const src = fs.readFileSync('./static/modules/erp_invoice_print.js', 'utf8');
 const mod = await import('data:text/javascript,' + encodeURIComponent(src));
+const fx = JSON.parse(fs.readFileSync(process.env.INV_FIXTURES, 'utf8'));
 assert.equal(mod.fmtNum(5000, 4), '5,000.0000');
 assert.equal(mod.fmtNum(85400, 3), '85,400.000');
-const data = { bill_no: 'ST-2026304', title: '銷貨單', date_display: 'Nov.16,2026', currency: 'USD', trade_term: 'FOB',
-  company: { name: 'Songtech Enterprise Co., Ltd.', address: 'addr', tel: '1', fax: '2' }, customer: { name: 'Open Text Inc' },
-  lines: [{ qty: 5000, price: 0.88, amount: 4400, print_description: 'A <b>', po: '4500059700' }],
-  totals: { qty: 5000, amount: 4400 }, signatures: ['簽核', '審核', '製單'] };
 const root = { innerHTML: '' };
-assert.equal(mod.renderInvoicePrint(data, root), 1);
-for (const s of ['Page 1 of 1', 'INVOICE:&nbsp;&nbsp;ST-2026304', 'DATE:&nbsp;&nbsp;Nov.16,2026', '客戶名稱:&nbsp;Open Text Inc',
-  'PO#4500059700', '5,000.0000', '0.880', '4,400.000', 'USD 4,400.000', 'A <span class="inv-ls">&lt;</span>b<span class="inv-ls">&gt;</span>',
-  '簽核', 'FOB']) assert.ok(root.innerHTML.includes(s), s);
-// 品名切段：英數字 / 空白縮字距，"---"、標點、中文用正常字距；HTML 跳脫
-assert.deepEqual(mod.descRuns('XC7K70T-1FBG484I. ---代購料'), [
-  { text: 'XC7K70T', narrow: true }, { text: '-', narrow: false }, { text: '1FBG484I', narrow: true },
-  { text: '.', narrow: false }, { text: ' ', narrow: true }, { text: '---代購料', narrow: false }]);
-assert.deepEqual(mod.descRuns('(3mm x'), [{ text: '(', narrow: false }, { text: '3mm x', narrow: true }]);
-assert.deepEqual(mod.descRuns(''), []);
-assert.equal(mod.descHtml(`a"<'/;:`), `a<span class="inv-ls">&quot;&lt;'/;:</span>`);
-assert.equal(mod.descHtml('A & B'), 'A <span class="inv-ls">&amp;</span> B');
-// 後端 pages 不用：兩頁的假 pages 仍只畫一頁
-const two = { ...data, pages: [{ no: 1, rows: [{ type: 'line', line: 0 }], last: false }, { no: 2, rows: [], last: true }] };
-assert.equal(mod.renderInvoicePrint(two, root), 1);
-// PO 單位：PO 非空的每一列都帶標題（同一 PO 連續多列也每列都印，同正航 / 伺服器 PDF）
-const lines = ['P1', 'P1', 'P2', '', 'P2'].map(po => ({ po, print_description: 'x' }));
-assert.deepEqual(mod.buildUnits(lines).map(u => u.header), [true, true, true, false, true]);
-// 依高度分頁：容量 100、PO 標題 10、每列 20
-const H = n => ({ po: 10, line: Array(n).fill(20) });
-const P = (units, cap, reserve, n) => mod.paginateUnits(mod.buildUnits(units), H(n), cap, reserve);
-const many = Array.from({ length: 9 }, () => ({ po: 'P1' }));
-let pages = P(many, 100, 0, 9);  // 每列 PO + 明細 = 30：每頁 3 列
-assert.equal(pages.length, 3);
-assert.deepEqual(pages[0].rows.map(r => r.type), ['po', 'line', 'po', 'line', 'po', 'line']);
-assert.deepEqual(pages[1].rows[0], { type: 'po', po: 'P1' });
-assert.deepEqual(pages.map(p => [p.no, p.of, p.last]), [[1, 3, false], [2, 3, false], [3, 3, true]]);
-assert.equal(pages.flatMap(p => p.rows).filter(r => r.type === 'line').length, 9);
-// PO 標題不單獨留在頁尾：P1 3 列（10+60=70），P2 標題 + 第 1 列要 30 → 整組到下一頁
-pages = P([{ po: 'P1' }, { po: 'P1' }, { po: 'P1' }, { po: 'P2' }], 90, 0, 4);
-assert.equal(pages.length, 2);
-assert.equal(pages[0].rows[pages[0].rows.length - 1].type, 'line');
-assert.deepEqual(pages[1].rows, [{ type: 'po', po: 'P2' }, { type: 'line', line: 3 }]);
-// 合計 + 簽核放不下：最後一個單位移到下一頁（最後一頁不會只有合計）
-pages = P([{ po: 'P1' }, { po: 'P1' }, { po: 'P1' }, { po: 'P1' }], 100, 25, 4);
-assert.equal(pages.length, 2);
-assert.deepEqual(pages[1].rows, [{ type: 'po', po: 'P1' }, { type: 'line', line: 3 }]);
-assert.equal(P([{ po: 'P1' }, { po: 'P1' }], 100, 25, 2).length, 1);
-// 沒有 PO 的列不印標題；空清單仍是一頁
-assert.deepEqual(P([{ po: '' }], 100, 0, 1)[0].rows, [{ type: 'line', line: 0 }]);
-assert.equal(mod.paginateUnits([], { po: 0, line: [] }, 100, 10).length, 1);
-// 沒有 DOM（Node）時用估計：60 列 → 多頁，合計 / 簽核只在最後一頁，Page n of N 一致
-const big = { ...data, lines: Array.from({ length: 60 }, (_, i) => ({ ...data.lines[0], po: `PO${Math.floor(i / 7)}` })) };
-const n = mod.renderInvoicePrint(big, root);
-assert.ok(n > 1, String(n));
-assert.equal((root.innerHTML.match(/class="inv-sheet"/g) || []).length, n);
-assert.equal((root.innerHTML.match(/inv-totals/g) || []).length, 1);
-assert.equal((root.innerHTML.match(/inv-sign-item/g) || []).length, 3);
-assert.ok(root.innerHTML.includes(`Page ${n} of ${n}`));
-assert.ok(root.innerHTML.lastIndexOf('inv-totals') > root.innerHTML.lastIndexOf('class="inv-sheet"'));
+const sheets = html => html.split('<section class="inv-sheet"').slice(1);
+const count = (s, re) => (s.match(re) || []).length;
+// ST-2026019：照 print_pages 畫 2 頁（14 / 6 個 PO#），簽核每一頁都有，合計只在最後一頁
+const d19 = fx['ST-2026019'];
+assert.equal(mod.renderInvoicePrint(d19, root), 2);
+const [p1, p2] = sheets(root.innerHTML);
+assert.equal(count(p1, /class="inv-po"/g), 14);
+assert.equal(count(p2, /class="inv-po"/g), 6);
+for (const p of [p1, p2]) {
+  assert.equal(count(p, /class="inv-sign"/g), 3);
+  for (const s of ['簽核 ', '審核 ', '製單 ', '_'.repeat(18), '客戶名稱: NEXTEK  LLC', 'UNIT PRICE', 'TTL AMOUNT', '>FOB<']) assert.ok(p.includes(s), s);
+}
+assert.ok(p1.includes('y="273.85" font-size') && p1.includes('Page 1 of 2'));
+assert.ok(p2.includes('Page 2 of 2') && p2.includes('USD') && p2.includes('22,141.0000') && p2.includes('30,176.670'));
+assert.ok(!p1.includes('22,141.0000'));
+assert.ok(p1.includes('>AHXAAAX24-000 P/N:381-0001, Outer Contact (BeCu consign)<') && p1.includes('>86.0000<'));
+assert.ok(p2.includes('>L=0.4&quot;<'));  // PDF 折好的第 3 行
+// TTL AMOUNT 靠左 x=176.5（不是靠右）；單價 / 數量靠右
+assert.ok(p1.includes('<text x="176.5" y="86.78" font-size="3.5137" class="inv-amt">6,388.480</text>'.replace('3.5137', String(d19.print_geometry.size))));
+assert.ok(!/class="inv-amt"[^>]*text-anchor/.test(root.innerHTML) && !/text-anchor="end"[^>]*class="inv-amt"/.test(root.innerHTML));
+assert.ok(/x="170.74"[^>]*text-anchor="end"[^>]*class="inv-price">4.960</.test(p1));
+// 外粗框 + 內細框到框底；非最後一頁框到 282.8，最後一頁框在簽核下方收尾
+assert.ok(p1.includes(`height="${282.8 - 53.6}"`));
+assert.equal(count(p1, /<rect /g), 2);
+// HTML 跳脫
+const bad = { ...d19, customer: { name: 'A <b>&' } };
+mod.renderInvoicePrint(bad, root);
+assert.ok(root.innerHTML.includes('客戶名稱: A &lt;b&gt;&amp;'));
+// ST-2026304：半張 1 頁，品名照 PDF 折成 3 行 / 2 行
+assert.equal(mod.renderInvoicePrint(fx['ST-2026304'], root), 1);
+assert.equal(count(root.innerHTML, /class="inv-desc"/g), 5);
+assert.ok(root.innerHTML.includes('>---代購料<'));
+// 沒有 print_pages（舊伺服器）就報錯，不自己估
+assert.throws(() => mod.renderInvoicePrint({ ...d19, print_pages: undefined }, root), /print_pages/);
 const page = fs.readFileSync('./static/modules/erp_invoice.js', 'utf8').replace(/^import .*;\r?\n/gm, '');
 const inv = await import('data:text/javascript,' + encodeURIComponent(page));
 assert.equal(inv.printUrl(' st-2026304 '), '/static/erp_invoice_print.html?bill=ST-2026304');
 assert.equal(inv.printUrl('ST-202630'), null);
 assert.equal(inv.printUrl(''), null);
 """
-        res = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True,
-                             encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fixtures.json"
+            path.write_text(json.dumps(fixtures, ensure_ascii=False), encoding="utf-8")
+            res = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True,
+                                 encoding="utf-8", env={**os.environ, "INV_FIXTURES": str(path)})
         self.assertEqual(res.returncode, 0, res.stderr)
 
 

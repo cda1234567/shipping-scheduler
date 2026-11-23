@@ -1,4 +1,6 @@
 // 開 Invoice 列印：仿正航「KPM5-INVOICE」格式（A4，window.print）。
+// 分頁、品名折行、所有座標都照後端 print-data 的 print_pages / print_geometry（= 伺服器 PDF invoice_print_pdf.layout），
+// 每頁一張 210×297mm 的 SVG（單位 mm、y 為文字基線），不自己估高度。
 // renderInvoicePrint(data, root) 是純函式（只動 root），離線測試可先設 window.__INVOICE_PRINT_DATA__ 再載入本模組，就不會 fetch。
 
 export const BILL_RE = /^ST-\d{7}$/i;
@@ -14,171 +16,112 @@ export function fmtNum(value, places) {
   return n.toLocaleString("en-US", { minimumFractionDigits: places, maximumFractionDigits: places });
 }
 
-/** 品名切段：英數字與空白（窄字距）/ 其他標點與中文（正常字距，例 "---" 才不會黏成一條長線）。 */
-export function descRuns(text) {
-  return (String(text ?? "").match(/[A-Za-z0-9\s]+|[^A-Za-z0-9\s]+/g) || [])
-    .map(t => ({ text: t, narrow: /^[A-Za-z0-9\s]/.test(t) }));
+const DEFAULT_SIGNATURES = ["簽核", "審核", "製單"];
+
+/** SVG 文字：anchor = start / middle / end；fit = 最大寬（mm），超過時 fitTexts() 水平壓縮（同 PDF）。 */
+function text(x, y, s, { size, anchor = "start", bold = false, fit = null, cls = "" } = {}) {
+  if (s === "" || s == null) return "";
+  const attrs = [`x="${x}"`, `y="${y}"`, `font-size="${size}"`];
+  if (anchor !== "start") attrs.push(`text-anchor="${anchor}"`);
+  if (bold) attrs.push('font-weight="bold"');
+  if (fit) attrs.push(`data-fit="${fit}"`);
+  if (cls) attrs.push(`class="${cls}"`);
+  return `<text ${attrs.join(" ")}>${esc(s)}</text>`;
 }
 
-export function descHtml(text) {
-  return descRuns(text).map(r => (r.narrow ? esc(r.text) : `<span class="inv-ls">${esc(r.text)}</span>`)).join("");
+function hline(x0, x1, y) {
+  return `<line x1="${x0}" y1="${y}" x2="${x1}" y2="${y}" stroke="#000"/>`;
 }
 
-function companyBlock(c = {}) {
-  const contact = [c.tel ? `TEL: ${esc(c.tel)}` : "", c.fax ? `FAX: ${esc(c.fax)}` : ""].filter(Boolean).join(" ");
-  return `<header class="inv-company">
-      <div class="inv-company-name">${esc(c.name)}</div>
-      <div class="inv-company-line">${esc(c.address)}</div>
-      <div class="inv-company-line">${contact}</div>
-    </header>`;
+function vline(x, y0, y1) {
+  return `<line x1="${x}" y1="${y0}" x2="${x}" y2="${y1}" stroke="#000"/>`;
 }
 
-function lineRow(line) {
-  return `<div class="inv-cols inv-line">
-      <div class="c-qty">${esc(line.qty_display ?? fmtNum(line.qty, 4))}</div><div></div>
-      <div class="c-desc"><div class="inv-clamp">${descHtml(line.print_description)}</div></div>
-      <div class="c-price">${esc(line.price_display ?? fmtNum(line.price, 3))}</div>
-      <div class="c-amt">${esc(line.amount_display ?? fmtNum(line.amount, 3))}</div>
-    </div>`;
+function rect(x0, x1, y0, y1, w) {
+  return `<rect x="${x0}" y="${y0}" width="${x1 - x0}" height="${y1 - y0}" fill="none" stroke="#000" stroke-width="${w}"/>`;
 }
 
-function poRow(po) {
-  return `<div class="inv-cols inv-po"><div class="c-qty"></div><div></div><div class="c-desc">PO#${esc(po)}</div><div></div><div></div></div>`;
-}
-
-/** 明細依序切成不可拆的單位：PO 非空的每一列都帶 PO 標題（同一 PO 連續多列也每列都印，同正航 / 伺服器 PDF）。 */
-export function buildUnits(lines) {
-  return (lines || []).map((l, i) => {
-    const po = l.po || "";
-    return { line: i, po, header: Boolean(po) };
-  });
-}
-
-/**
- * 依實際高度分頁（純函式）。heights.po / heights.line[i] = PO 標題列 / 第 i 列明細的高度；
- * capacity = 每頁明細區可用高度；reserve = 最後一頁合計 + 簽核要多佔的高度。
- * 新頁從同一 PO 的中間開始時重印 PO 標題；最後一頁放不下合計 + 簽核時，把最後一個單位移到下一頁（最後一頁不會只剩合計）。
- */
-export function paginateUnits(units, heights, capacity, reserve) {
-  const unitHeight = (u, header) => (header ? heights.po : 0) + heights.line[u.line];
-  const pages = [];
-  let cur = [];
-  let used = 0;
-  for (const u of units) {
-    const header = u.header || (cur.length === 0 && Boolean(u.po));
-    const h = unitHeight(u, header);
-    if (cur.length && used + h > capacity) {
-      pages.push(cur);
-      const again = Boolean(u.po);
-      cur = [{ ...u, header: again }];
-      used = unitHeight(u, again);
-    } else {
-      cur.push({ ...u, header });
-      used += h;
-    }
-  }
-  if (cur.length > 1 && used + reserve > capacity) {
-    const last = cur.pop();
-    pages.push(cur);
-    cur = [{ ...last, header: Boolean(last.po) }];
-  }
-  pages.push(cur);
-  return pages.map((p, n) => ({
-    no: n + 1, of: pages.length, last: n === pages.length - 1,
-    rows: p.flatMap(u => (u.header ? [{ type: "po", po: u.po }, { type: "line", line: u.line }] : [{ type: "line", line: u.line }])),
-  }));
-}
-
-// 沒有 DOM 可量（例 Node 測試）時的估計：以「行」為單位，品名每 50 個半形字算 1 行、最多 3 行
-const EST_LINES_PER_PAGE = 38;
-const EST_RESERVE_LINES = 6;
-
-function estimateHeights(lines) {
-  const width = t => [...String(t || "")].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/.test(ch) ? 2 : 1), 0);
-  return { po: 1, line: (lines || []).map(l => Math.max(1, Math.min(3, Math.ceil(width(l.print_description) / 50)))) };
-}
-
-const PAGE_HEIGHT_MM = 277;   // A4 297mm − 上下邊界各 10mm
-const PAGE_SAFETY_MM = 3;     // 量測與列印的捨入誤差
-
-/** 在 root 裡放一張看不見的量測頁（列印時的寬度 190mm、同字型），量 PO 標題 / 每列明細 / 合計 + 簽核的實際高度。 */
-function measureLayout(data, root) {
-  const doc = root.ownerDocument;
-  const probe = doc.createElement("div");
-  probe.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;width:190mm;";
-  root.appendChild(probe);
-  try {
-    const units = buildUnits(data.lines);
-    const allRows = units.flatMap(u => [{ type: "po", po: u.po || "-" }, { type: "line", line: u.line }]);
-    probe.innerHTML = sheet(data, { no: 1, rows: [], last: false }, 1);
-    const s = probe.firstElementChild;
-    s.style.cssText = "width:190mm;min-height:0;margin:0;padding:0;box-shadow:none;";
-    const mm = doc.createElement("div");
-    mm.style.cssText = "height:100mm;";
-    probe.appendChild(mm);
-    const pxPerMm = mm.getBoundingClientRect().height / 100;
-    const base = s.getBoundingClientRect().height;
-    probe.innerHTML = sheet(data, { no: 1, rows: allRows, last: true }, 1);
-    const full = probe.firstElementChild;
-    full.style.cssText = s.style.cssText;
-    const rowEls = full.querySelectorAll(".inv-body > div");
-    const heights = { po: 0, line: [] };
-    allRows.forEach((r, i) => {
-      const h = rowEls[i].getBoundingClientRect().height;
-      if (r.type === "po") heights.po = Math.max(heights.po, h);
-      else heights.line[r.line] = h;
-    });
-    const tail = el => (el ? el.getBoundingClientRect().height + parseFloat(getComputedStyle(el).marginTop || 0) : 0);
-    const reserve = tail(full.querySelector(".inv-totals")) + tail(full.querySelector(".inv-sign"));
-    const capacity = (PAGE_HEIGHT_MM - PAGE_SAFETY_MM) * pxPerMm - base;
-    return { heights, capacity, reserve, pxPerMm };
-  } finally {
-    probe.remove();
-  }
-}
-
-function layoutPages(data, root) {
-  const units = buildUnits(data.lines);
-  const canMeasure = root && root.ownerDocument && typeof root.appendChild === "function" && typeof getComputedStyle === "function";
-  if (canMeasure) {
-    const m = measureLayout(data, root);
-    return paginateUnits(units, m.heights, m.capacity, m.reserve);
-  }
-  return paginateUnits(units, estimateHeights(data.lines), EST_LINES_PER_PAGE, EST_RESERVE_LINES);
-}
-
-function sheet(data, page, total) {
+/** 一頁：表頭、外粗框 + 內細框（內框左右細線一路到底）、明細、合計（最後一頁）、簽核（每一頁），同 PDF _header / _body / _footer。 */
+function sheet(data, page, g) {
+  const c = data.company || {};
   const t = data.totals || {};
-  const body = (page.rows || []).map(r => (r.type === "po" ? poRow(r.po) : lineRow(data.lines[r.line]))).join("");
-  const totals = page.last ? `<div class="inv-cols inv-totals">
-      <div class="c-qty"><span class="inv-dbl">${esc(t.qty_display ?? fmtNum(t.qty, 4))}</span></div><div></div><div></div>
-      <div class="c-sum"><span class="inv-dbl">${esc(data.currency)} ${esc(t.amount_display ?? fmtNum(t.amount, 3))}</span></div>
-    </div>` : "";
-  const signs = page.last ? `<div class="inv-sign">${(data.signatures || []).map(s => `<span class="inv-sign-item">${esc(s)} <span class="inv-sign-line"></span></span>`).join("")}</div>` : "";
-  return `<section class="inv-sheet">
-    ${companyBlock(data.company)}
-    <div class="inv-title"><span>${esc(data.title)}</span></div>
-    <div class="inv-pageno">Page ${page.no} of ${total}</div>
-    <div class="inv-box">
-      <div class="inv-row-a"><div>INVOICE:&nbsp;&nbsp;${esc(data.bill_no)}</div><div>DATE:&nbsp;&nbsp;${esc(data.date_display)}</div></div>
-      <div class="inv-row-b">客戶名稱:&nbsp;${esc(data.customer?.name)}</div>
-      <div class="inv-cols inv-head">
-        <div class="c-qty-head">QTY</div><div></div><div class="c-desc">DESCRIPTION</div>
-        <div class="c-price"><div class="inv-price-head">UNIT PRICE${data.trade_term ? `<div class="inv-term"><span>${esc(data.trade_term)}</span></div>` : ""}</div></div>
-        <div class="c-amt">TTL AMOUNT</div>
-      </div>
-      <div class="inv-body">${body}</div>
-      ${totals}
-      ${signs}
-    </div>
+  const S = g.size;
+  const out = [];
+  // 表頭
+  out.push(text(...g.company, c.name, { size: g.company_size, anchor: "middle" }));
+  out.push(text(...g.address, c.address, { size: S, anchor: "middle" }));
+  out.push(text(...g.tel, `TEL: ${c.tel || ""} FAX: ${c.fax || ""}`, { size: S, anchor: "middle" }));
+  out.push(text(...g.title, data.title || "銷貨單", { size: g.title_size, anchor: "middle" }));
+  out.push(hline(...g.title_ul));
+  out.push(text(...g.page_no, `Page ${page.no} of ${page.of}`, { size: S, anchor: "end" }));
+  // 框與格線
+  out.push(rect(g.frame_x[0], g.frame_x[1], g.frame_top, page.frame_bottom, g.frame_line_w));
+  out.push(rect(g.inner_x[0], g.inner_x[1], g.inner_top, page.frame_bottom - g.inner_bottom_pad, g.line_w));
+  for (const y of [g.row_a_bottom, g.row_b_bottom, g.head_bottom]) out.push(hline(g.inner_x[0], g.inner_x[1], y));
+  out.push(vline(g.row_a_div, g.inner_top, g.row_a_bottom));
+  for (const x of g.head_vlines) out.push(vline(x, g.row_b_bottom, g.head_bottom));
+  out.push(text(g.text_x, g.row_a_base, "INVOICE:", { size: S }));
+  out.push(text(g.invoice_value_x, g.row_a_base, data.bill_no, { size: S }));
+  out.push(text(g.date_x, g.row_a_base, "DATE:", { size: S }));
+  out.push(text(g.date_value_x, g.row_a_base, data.date_display, { size: S }));
+  out.push(text(g.text_x, g.row_b_base, `客戶名稱: ${data.customer?.name || ""}`, { size: S, fit: g.customer_max_w }));
+  out.push(text(g.text_x, g.head_base, "QTY", { size: S }));
+  out.push(text(g.head_desc_x, g.head_base, "DESCRIPTION", { size: S }));
+  out.push(text(g.head_price_right, g.head_base, "UNIT PRICE", { size: S, anchor: "end" }));
+  out.push(text(g.head_amount_cx, g.head_base, "TTL AMOUNT", { size: S, anchor: "middle" }));
+  if (data.trade_term && g.term_x != null) {
+    out.push(text(g.term_x, g.term_base, data.trade_term, { size: S }));
+    out.push(hline(g.term_x - 0.9, g.head_vlines[2], g.term_ul_y));
+  }
+  // 明細：PO 非空的每一列都印粗體 PO#，品名照 PDF 折好的行
+  for (const l of page.lines) {
+    if (l.po_base != null) out.push(text(g.po_x, l.po_base, `PO#${l.po}`, { size: S, bold: true, cls: "inv-po" }));
+    out.push(text(g.qty_right, l.base, l.qty, { size: S, anchor: "end", cls: "inv-qty" }));
+    out.push(text(g.price_right, l.base, l.price, { size: S, anchor: "end", cls: "inv-price" }));
+    out.push(text(g.amount_x, l.base, l.amount, { size: S, cls: "inv-amt" }));  // TTL AMOUNT 靠左（同正航）
+    l.desc.forEach((s, i) => out.push(text(g.desc_x, l.base + i * g.desc_pitch, s, { size: S, fit: g.desc_max_w, cls: "inv-desc" })));
+  }
+  // 合計（最後一頁）：細線、數量 / 金額雙底線，幣別在 166.8–175.8 置中、金額靠左
+  if (page.last) {
+    out.push(hline(g.inner_x[0], g.inner_x[1], page.totals_rule));
+    const base = page.totals_base;
+    out.push(text(g.qty_right, base, t.qty_display ?? fmtNum(t.qty, 4), { size: S, anchor: "end", cls: "inv-total-qty" }));
+    for (const dy of g.double_ul) out.push(hline(g.qty_ul[0], g.qty_ul[1], base + dy));
+    const amountBase = base + g.amount_base_dy;
+    out.push(text(g.currency_cx, amountBase, data.currency, { size: S, anchor: "middle" }));
+    out.push(text(g.amount_x, amountBase, t.amount_display ?? fmtNum(t.amount, 3), { size: S, cls: "inv-total-amt" }));
+    for (const dy of g.amount_double_ul) out.push(hline(g.amount_ul[0], g.amount_ul[1], amountBase + dy));
+  }
+  // 簽核每一頁都印（非最後一頁在頁尾、最後一頁緊接合計）：標籤 + 空白 + 底線字元，同正航
+  const labels = (data.signatures?.length ? data.signatures : DEFAULT_SIGNATURES).slice(0, 3);
+  labels.forEach((label, i) => out.push(text(g.sign_x[i], page.sign_base, `${label} ${"_".repeat(g.sign_underscores)}`,
+    { size: S, cls: "inv-sign" })));
+  return `<section class="inv-sheet" data-page="${page.no}" data-last="${page.last}">
+    <svg class="inv-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 210 297" width="210mm" height="297mm" fill="#000" stroke-width="${g.line_w}">
+      ${out.join("\n      ")}
+    </svg>
   </section>`;
 }
 
-/** 純函式：把列印資料畫進 root（每頁一張 A4，依實際高度分頁、Page n of N 用實際頁數）。 */
+/** 超過最大寬的文字整段水平壓縮（同 PDF Tz）；沒有 DOM（Node 測試）就略過。 */
+function fitTexts(root) {
+  if (typeof root.querySelectorAll !== "function") return;
+  for (const el of root.querySelectorAll("text[data-fit]")) {
+    const max = Number(el.getAttribute("data-fit"));
+    if (typeof el.getComputedTextLength === "function" && el.getComputedTextLength() > max) {
+      el.setAttribute("textLength", String(max));
+      el.setAttribute("lengthAdjust", "spacingAndGlyphs");
+    }
+  }
+}
+
+/** 純函式：把列印資料畫進 root，頁數 = print_pages（= 伺服器 PDF 頁數）。 */
 export function renderInvoicePrint(data, root) {
-  // 一律在瀏覽器依實際高度分頁；後端回的 pages 只是估計，不用
-  const pages = layoutPages(data, root);
-  root.innerHTML = pages.map(p => sheet(data, p, pages.length)).join("");
+  const pages = data.print_pages;
+  const g = data.print_geometry;
+  if (!Array.isArray(pages) || !pages.length || !g) throw new Error("列印資料缺少 print_pages / print_geometry（伺服器版本太舊）");
+  root.innerHTML = pages.map(p => sheet(data, p, g)).join("");
+  fitTexts(root);
   return pages.length;
 }
 
@@ -202,12 +145,14 @@ async function main() {
   const status = document.getElementById("print-status");
   try {
     const data = window.__INVOICE_PRINT_DATA__ !== undefined ? window.__INVOICE_PRINT_DATA__ : await loadData(bill);
-    if (document.fonts?.ready) await document.fonts.ready;  // 字型到位才量高度
+    if (document.fonts?.ready) await document.fonts.ready;  // 字型到位才量字寬（超寬壓縮）
     renderInvoicePrint(data, root);
     document.title = `${data.bill_no || bill} 銷貨單`;
-    if (status && data.excluded_tab_rows?.length) {
-      status.textContent = `已排除 ${data.excluded_tab_rows.length} 列 -TAB 料號（數量 ${fmtNum(data.excluded_tab_qty, 4)}、金額 ${fmtNum(data.excluded_tab_amount, 3)}），未列印`;
+    const notes = [data.print_form === "half" ? "A4 上半張" : `A4 ${data.print_pages.length} 頁`];
+    if (data.excluded_tab_rows?.length) {
+      notes.push(`已排除 ${data.excluded_tab_rows.length} 列 -TAB 料號（數量 ${fmtNum(data.excluded_tab_qty, 4)}、金額 ${fmtNum(data.excluded_tab_amount, 3)}），未列印`);
     }
+    if (status) status.textContent = notes.join("；");
     if (params.get("auto") === "1") setTimeout(() => window.print(), 300);
   } catch (error) {
     renderError(error.message || String(error), root);
