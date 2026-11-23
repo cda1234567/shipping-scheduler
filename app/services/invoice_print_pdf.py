@@ -1,20 +1,27 @@
 """開 Invoice 列印（正航「銷貨單」KPM5-INVOICE）：伺服器產生 A4 PDF，沿用進貨單列印的選印表機 / 送印流程。
 
-版面座標量自正航實際列印的 ST-2026304（759px 寬螢幕截圖 = A4 寬 210mm，1px = 210/759 mm），
+版面座標量自正航列印 ST-2026019 到「Microsoft Print to PDF」的向量 PDF（A4，2 頁），
 單位 mm、原點左上、y 為文字基線（baseline）。英數用 Arial 相容字型（Liberation Sans / Arimo / Arial，
 都沒有就用 PDF 內建 Helvetica，字寬相同），中文沿用 rm_print.resolve_fonts()（新細明體或文鼎明體）。
 
 品名折行：正航 FR2 以螢幕 DC（96dpi、10pt = 13px）的 Arial 整數字寬折行（字型 hdmx 表，下方 ARIAL_13PX），
-不是線性字寬——用線性字寬 ST-2026304 的兩個品名不可能同時折成正航的樣子。限寬 DESC_WRAP_PX。
+不是線性字寬——用線性字寬 ST-2026304 的兩個品名不可能同時折成正航的樣子。限寬 DESC_WRAP_PX = 366：
+ST-2026019 "ABXAAAX04-003 P/N:415-0213-00, Connector Shell, 4.3-10(M)," 366px 不折，
+ST-2026304 "IC-NB675GL-Z IC, 10A, 5V-24V INPUT SYNCHRONOUS BUCK" 367px 要折。
+
+明細（band 模型，同正航）：每一列 = PO band（PO 非空的每一列都印粗體 PO#，同一 PO 連續多列也每列都印）
++ 明細 band，一個接一個往下排；每頁第一個 PO 基線 80.90。band 底超過頁尾 band 頂 FOOTER_TOP（262.3）
+的那一列移到下一頁（ST-2026019：第 1 頁 14 列、第 2 頁 6 列 + 合計）。TTL AMOUNT 數值靠左。
 
 選印表機與進貨單相同：整張（含合計、簽核）放得進 A4 上半張（rm_print.half_page_limit()，預設 148.5mm）
 → rm_print.choose_printer(True)（NPI975BEF，A4 紙只印上半張）；否則 A4（M652），可多頁。
 
-簽核列位置（環境變數 INVOICE_PRINT_SIGN_MODE）：
+簽核列每一頁都印：非最後一頁在頁尾 band（基線 FOOTER_SIGN_BASE），框到頁底 A4_FRAME_BOTTOM，
+最後一列下面不畫收尾線。最後一頁 / 半張的簽核位置（環境變數 INVOICE_PRINT_SIGN_MODE）：
   follow / auto（預設，auto = follow）：簽核一律緊接合計下方（固定距離 SIGN_GAP），框在簽核下方收尾
     （SIGN_TO_FRAME_FOLLOW），半張也一樣；明細 + 合計 + 簽核 + 框底邊距的框底 <= 半張上限就用半張
-    （例 ST-2026304 框底 133.94mm、ST-2026307 框底 145.29mm），否則 A4，可多頁（合計、簽核只在最後一頁）。
-  bottom（舊版，需明確指定）：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 PAGE_BOTTOM_MM），
+    （例 ST-2026304 框底 132.44mm），否則 A4，可多頁（合計只在最後一頁）。
+  bottom（舊版，需明確指定）：一律貼框底（半張框底 HALF_FRAME_BOTTOM、A4 框底 A4_FRAME_BOTTOM），
     所以半張要簽核貼框底放得下才用。
 print-info 的 bottom_mm 就是 PDF 實際畫的框底（同一份 layout）。
 
@@ -28,76 +35,84 @@ import unicodedata
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import rm_print
-from .rm_print import PAGE_BOTTOM_MM, PAGE_H, PT_MM, fmt_num
+from .rm_print import PAGE_H, PT_MM, fmt_num
 
-PX = 210.0 / 759.0  # 實單截圖 1px → mm
-
-SIZE = 9.96             # 內文（10pt @96dpi）
+SIZE = 9.96             # 內文（10pt @96dpi），表頭地址 / 頁碼 / 貿易條件 / 簽核同大小（正航向量 PDF 實量）
 COMPANY_SIZE = 18.0
-ADDRESS_SIZE = 9.5
-TITLE_SIZE = 15.96
-PAGE_NO_SIZE = 9.0
-TERM_SIZE = 9.0
-SIGN_SIZE = 11.0
+TITLE_SIZE = 18.0
 LINE_W = 0.72           # 細線 pt
-FRAME_LINE_W = 2.2      # 外框 pt
+FRAME_LINE_W = 2.28     # 外框 pt
 
-# 表頭
-CENTER_X = 375 * PX
-COMPANY_BASE, ADDRESS_BASE, TEL_BASE = 85 * PX, 107 * PX, 127 * PX
-TITLE_BASE = 165 * PX
-TITLE_UL = (337 * PX, 414 * PX, 171 * PX)  # x0, x1, y
-PAGE_NO_RIGHT, PAGE_NO_BASE = 731 * PX, 186 * PX
+# 表頭（文字中心各自量自正航 ST-2026019，公司名稱與地址不同中心）
+COMPANY_CX, COMPANY_BASE = 101.40, 24.60
+ADDRESS_CX, ADDRESS_BASE = 103.06, 30.48
+TEL_CX, TEL_BASE = 103.59, 35.69
+TITLE_CX, TITLE_BASE = 103.17, 45.89
+TITLE_UL = (92.8, 113.5, 48.1)  # x0, x1, y
+PAGE_NO_RIGHT, PAGE_NO_BASE = 200.24, 51.77
 
-# 框與格線
-FRAME_X = (19 * PX, 734 * PX)
-FRAME_TOP = 191 * PX
-INNER_X = (24 * PX, 729 * PX)
-ROW_A = (195 * PX, 215 * PX)
-ROW_A_DIV = 478 * PX
-ROW_B = (216 * PX, 234 * PX)
-HEAD_ROW = (235 * PX, 255 * PX)
-HEAD_VLINES = (157 * PX, 529 * PX, 624 * PX)
-FRAME_PAD = ROW_A[0] - FRAME_TOP  # 內框線 → 外框
+# 框與格線：外粗框 + 內細框（內框左右細線一路到底），表頭三列
+FRAME_X = (6.0, 200.9)
+FRAME_TOP = 53.6
+INNER_X = (7.1, 199.8)
+INNER_TOP = 54.4
+INNER_BOTTOM_PAD = 1.4       # 內框底線 → 外框底（正航 281.4 / 282.8）
+ROW_A_BOTTOM, ROW_A_DIV = 60.1, 131.0
+ROW_B_BOTTOM = 65.3
+HEAD_BOTTOM = 70.8
+HEAD_VLINES = (43.4, 145.2, 171.4)
 
-TEXT_X = 26 * PX
-DATE_X = 483 * PX
-ROW_A_BASE, ROW_B_BASE, HEAD_BASE = 209 * PX, 229 * PX, 249 * PX
-HEAD_DESC_X = 158 * PX
-HEAD_PRICE_RIGHT, HEAD_AMOUNT_RIGHT = 622 * PX, 718 * PX
-TERM_CX, TERM_BASE = 606 * PX, 272 * PX
+TEXT_X = 7.79
+INVOICE_VALUE_X = 24.69      # 單號、日期是獨立欄位（不是「標籤 + 空白」）
+DATE_X, DATE_VALUE_X = 132.80, 144.83
+ROW_A_BASE, ROW_B_BASE, HEAD_BASE = 58.08, 63.54, 69.26
+HEAD_DESC_X = 44.08
+HEAD_PRICE_RIGHT = 170.74
+HEAD_AMOUNT_CX = 185.6       # TTL AMOUNT 在欄內置中（174.3–196.9）
+TERM_BASE, TERM_UL_Y = 75.27, 76.2  # 貿易條件（"FOB " 靠單價欄右緣），底線到單價欄右界 171.4
 
-# 明細
-QTY_RIGHT = 117 * PX
-DESC_X = 159 * PX
-PRICE_RIGHT = 622 * PX
-AMOUNT_RIGHT = 708 * PX
+# 明細（band 模型：每個單位 = PO band + 明細 band，一個接一個往下排）
+QTY_RIGHT = 32.65
+PO_X = 44.37                 # 粗體 PO#
+DESC_X = 44.07
+PRICE_RIGHT = 170.74
+AMOUNT_X = 176.50            # TTL AMOUNT 數值靠左（正航不是靠右）
 DESC_MAX_W = HEAD_VLINES[1] - DESC_X - 0.3  # 畫的時候超過才水平壓縮（折行看 DESC_WRAP_PX）
-BODY_FIRST_BASE = 291 * PX   # 每頁第一個元素（通常是 PO 標題）的基線
-PO_TO_LINE = 22 * PX         # PO 標題 → 該 PO 第一列
-DESC_PITCH = 15 * PX         # 品名折行行距
-ITEM_GAP = 17 * PX           # 一列最後一行 → 下一個 PO 標題 / 下一列
+BODY_TOP = 76.8              # 每頁第一個 band 的頂（貿易條件列底）
+BAND_TO_BASE = 4.10          # band 頂 → 第一行基線（每頁第一個 PO 基線 80.90）
+PO_TO_LINE = 5.88            # PO 基線 → 明細第一行基線
+DESC_PITCH = 4.06            # 品名折行行距
+LINE_TO_NEXT_MIN = 5.59      # 單行明細：明細基線 → 下一個 PO 基線（單位間距 11.47）
+LAST_DESC_TO_NEXT = 5.36     # 折行明細：最後一行基線 → 下一個 PO 基線（2 行 9.42、3 行 13.48）
 DESC_MAX_LINES = 3
-DESC_WRAP_PX = 365           # ST-2026304：要放得下的最寬行 364px、要折掉的最窄行 367px
+DESC_WRAP_PX = 366           # ST-2026019：366px 不折；ST-2026304：要折掉的最窄行 367px
 
-# 合計與簽核
-TOTALS_RULE_GAP = 3.0        # 最後一行 → 合計細線（非最後一頁的收尾細線同位置）
-TOTALS_BASE_GAP = 4.6        # 合計細線 → 合計文字基線
-DOUBLE_UL = (1.0, 1.6)       # 合計雙底線（基線下）
-QTY_UL = (52 * PX, 119 * PX)
-AMOUNT_UL = (612 * PX, 711 * PX)
+# 頁尾（非最後一頁：框到頁底，簽核在頁尾 band）
+FOOTER_TOP = 262.3           # 頁尾 band 頂：明細 band 底超過就換頁
+FOOTER_SIGN_BASE = 273.85
+A4_FRAME_BOTTOM = 282.8
+
+# 合計與簽核（最後一頁 / 半張：簽核緊接合計，框在簽核下方收尾）
+TOTALS_RULE_GAP = 0.2        # 最後一個 band 底 → 合計細線
+TOTALS_BASE_GAP = 4.28       # 合計細線 → 合計數量基線
+AMOUNT_BASE_DY = 0.30        # 合計金額基線比數量低一點（正航 161.88 / 162.18）
+DOUBLE_UL = (1.3, 1.8)       # 合計數量雙底線（數量基線下）
+AMOUNT_DOUBLE_UL = (1.2, 1.7)  # 合計金額雙底線（金額基線下）
+QTY_UL = (12.3, 33.3)
+AMOUNT_UL = (166.8, 194.9)
+CURRENCY_FIELD = (166.8, 175.8)  # 幣別在這格內置中，金額靠左 AMOUNT_X
 SIGN_GAP = 12.0              # 合計基線 → 簽核基線（follow）
 SIGN_TO_FRAME_FOLLOW = 4.5   # 簽核基線 → 框底（follow）
-SIGN_TO_FRAME_PINNED = (544 - 513) * PX  # 簽核貼框底時（bottom 模式）
-SIGN_X = (30 * PX, 279 * PX, 528 * PX)
-SIGN_UL = ((65 * PX, 190 * PX), (315 * PX, 440 * PX), (565 * PX, 690 * PX))
-SIGN_UL_DY = 0.6
+SIGN_TO_FRAME_PINNED = A4_FRAME_BOTTOM - FOOTER_SIGN_BASE  # 簽核貼框底時（頁尾 band / bottom 模式）
+SIGN_X = (8.85, 73.4, 138.0)
+SIGN_SIZE = SIZE
+SIGN_UNDERSCORES = 18        # 每個簽核標籤後面「空白 + 18 個底線」（同正航）
 DEFAULT_SIGNATURES = ("簽核", "審核", "製單")
 
 # 半張 bottom 模式：框底固定（實單 150.5mm，整體上移到 146.5mm，印表機只印上 148.5mm）
 HALF_FRAME_BOTTOM = 146.5
 HALF_SIGN_BASE = HALF_FRAME_BOTTOM - SIGN_TO_FRAME_PINNED
-A4_SIGN_MAX = PAGE_BOTTOM_MM - SIGN_TO_FRAME_PINNED  # A4 最後一頁合計 + 簽核要放得下
+A4_SIGN_MAX = FOOTER_SIGN_BASE  # A4 最後一頁：緊接合計的簽核不能低於頁尾簽核位置
 
 SIGN_MODES = ("auto", "follow", "bottom")
 
@@ -210,56 +225,63 @@ def print_lines(data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _units(data: Dict[str, Any], measure=None) -> List[Dict[str, Any]]:
-    """一列明細 = 一個單位；PO 換了（非空）才帶 PO 標題（同 erp_invoice_print.js buildUnits）。"""
-    units, prev = [], None
+    """一列明細 = 一個單位；PO 非空的每一列都帶 PO 標題（同一 PO 連續多列也每列都印，同正航；
+    同 erp_invoice_print.js buildUnits）。"""
+    units = []
     for i, line in enumerate(print_lines(data)):
         po = str(line.get("po") or "").strip()
         units.append({
-            "index": i, "po": po, "header": bool(po) and po != prev,
+            "index": i, "po": po, "header": bool(po),
             "desc": wrap_description(line.get("print_description") or line.get("description") or "", measure),
             "qty": line.get("qty_display") or fmt_num(line.get("qty"), 4),
             "price": line.get("price_display") or fmt_num(line.get("price"), 3),
             "amount": line.get("amount_display") or fmt_num(line.get("amount"), 3),
         })
-        prev = po
     return units
 
 
-def _place_page(units: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
-    """依序排一頁的單位 → (元素, 最後一行基線)；頁首接續中的 PO 重印標題。空頁的「最後一行」= 貿易條件列。"""
+def _next_base(line_base: float, n_lines: int) -> float:
+    """明細第一行基線 → 下一個單位第一行基線（正航：1 行 5.59、2 行 9.42、3 行 13.48）。"""
+    return line_base + max(LINE_TO_NEXT_MIN, (n_lines - 1) * DESC_PITCH + LAST_DESC_TO_NEXT)
+
+
+def _place_page(units: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float, float]:
+    """依序排一頁的單位 → (元素, 最後一個 band 底, 最後一行基線)。空頁：band 底 = BODY_TOP、最後一行 = 貿易條件列。"""
     elements: List[Dict[str, Any]] = []
-    y, last = BODY_FIRST_BASE, TERM_BASE
-    for k, u in enumerate(units):
-        reprint = k == 0 and bool(u["po"]) and not u["header"]
-        if u["header"] or reprint:
-            elements.append({"type": "po", "po": u["po"], "base": y, "reprint": reprint})
+    top, last = BODY_TOP, TERM_BASE
+    for u in units:
+        y = top + BAND_TO_BASE
+        if u["header"]:
+            elements.append({"type": "po", "po": u["po"], "base": y})
             y += PO_TO_LINE
-        elements.append({"type": "line", **u, "base": y})
         last = y + (len(u["desc"]) - 1) * DESC_PITCH
-        y = last + ITEM_GAP
-    return elements, last
+        bottom = _next_base(y, len(u["desc"])) - BAND_TO_BASE
+        elements.append({"type": "line", **u, "base": y, "band_top": top, "band_bottom": bottom})
+        top = bottom
+    return elements, top, last
 
 
-def _last_base(units: List[Dict[str, Any]]) -> float:
+def _band_bottom(units: List[Dict[str, Any]]) -> float:
     return _place_page(units)[1]
 
 
-def _totals_base(last: float) -> float:
-    return last + TOTALS_RULE_GAP + TOTALS_BASE_GAP
+def _totals_base(band_bottom: float) -> float:
+    return band_bottom + TOTALS_RULE_GAP + TOTALS_BASE_GAP
 
 
-def _follow_sign_base(last: float) -> float:
-    return _totals_base(last) + SIGN_GAP
+def _follow_sign_base(band_bottom: float) -> float:
+    return _totals_base(band_bottom) + SIGN_GAP
 
 
 def _paginate_a4(units: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """band 底超過頁尾 band 頂（FOOTER_TOP）的單位移到下一頁。"""
     pages: List[List[Dict[str, Any]]] = [[]]
     for u in units:
-        if pages[-1] and _last_base(pages[-1] + [u]) + TOTALS_RULE_GAP + FRAME_PAD > PAGE_BOTTOM_MM:
+        if pages[-1] and _band_bottom(pages[-1] + [u]) > FOOTER_TOP:
             pages.append([])
         pages[-1].append(u)
     # 最後一頁放不下合計 + 簽核：把最後一個單位移到新的一頁（最後一頁不會只有合計）
-    if len(pages[-1]) > 1 and _follow_sign_base(_last_base(pages[-1])) > A4_SIGN_MAX:
+    if len(pages[-1]) > 1 and _follow_sign_base(_band_bottom(pages[-1])) > A4_SIGN_MAX:
         pages.append([pages[-1].pop()])
     return pages
 
@@ -268,33 +290,34 @@ def layout(data: Dict[str, Any], mode: Optional[str] = None, measure=None) -> Di
     mode = mode if mode in SIGN_MODES else sign_mode()
     units = _units(data, measure)
     half_limit = rm_print.half_page_limit()
-    last = _last_base(units)
+    bottom = _band_bottom(units)
     # follow / auto：簽核緊接合計，整份（含框底邊距）放得進半張就用半張；bottom：簽核貼框底放得下才用半張
     follow = mode != "bottom"
     if follow:
-        half = _follow_sign_base(last) + SIGN_TO_FRAME_FOLLOW <= half_limit
+        half = _follow_sign_base(bottom) + SIGN_TO_FRAME_FOLLOW <= half_limit
     else:
-        half = _follow_sign_base(last) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
+        half = _follow_sign_base(bottom) <= HALF_SIGN_BASE and HALF_FRAME_BOTTOM <= half_limit
     groups = [units] if half else _paginate_a4(units)
     pages = []
     for no, group in enumerate(groups, 1):
-        elements, last = _place_page(group)
-        page = {"no": no, "elements": elements, "last": no == len(groups), "last_base": last}
+        elements, bottom, last = _place_page(group)
+        page = {"no": no, "elements": elements, "last": no == len(groups), "last_base": last, "band_bottom": bottom}
         if page["last"]:
-            page["totals_rule"] = last + TOTALS_RULE_GAP
-            page["totals_base"] = _totals_base(last)
+            page["totals_rule"] = bottom + TOTALS_RULE_GAP
+            page["totals_base"] = _totals_base(bottom)
             if follow:
-                page["sign_base"] = _follow_sign_base(last)
+                page["sign_base"] = _follow_sign_base(bottom)
                 page["frame_bottom"] = page["sign_base"] + SIGN_TO_FRAME_FOLLOW
             else:
-                page["frame_bottom"] = HALF_FRAME_BOTTOM if half else PAGE_BOTTOM_MM
+                page["frame_bottom"] = HALF_FRAME_BOTTOM if half else A4_FRAME_BOTTOM
                 page["sign_base"] = page["frame_bottom"] - SIGN_TO_FRAME_PINNED
         else:
-            page["close_rule"] = last + TOTALS_RULE_GAP
-            page["frame_bottom"] = page["close_rule"] + FRAME_PAD
+            # 非最後一頁：框到頁底、簽核在頁尾 band（同正航），最後一列下面不畫收尾線
+            page["sign_base"] = FOOTER_SIGN_BASE
+            page["frame_bottom"] = A4_FRAME_BOTTOM
         pages.append(page)
-    bottom = pages[-1]["frame_bottom"]
-    return {"pages": pages, "page_count": len(pages), "bottom_mm": round(bottom, 2), "fits_half_page": half,
+    frame_bottom = pages[-1]["frame_bottom"]
+    return {"pages": pages, "page_count": len(pages), "bottom_mm": round(frame_bottom, 2), "fits_half_page": half,
             "form": "half" if half else "a4", "sign_mode": mode, "half_page_mm": half_limit,
             "bill_no": data.get("bill_no") or ""}
 
@@ -377,70 +400,74 @@ class _Painter:
 
 def _header(p: _Painter, data: Dict[str, Any], page_no: int, page_count: int, frame_bottom: float) -> None:
     company = data.get("company") or {}
-    p.text_center(CENTER_X, COMPANY_BASE, company.get("name") or "", COMPANY_SIZE)
-    p.text_center(CENTER_X, ADDRESS_BASE, company.get("address") or "", ADDRESS_SIZE)
-    p.text_center(CENTER_X, TEL_BASE, f"TEL: {company.get('tel') or ''} FAX: {company.get('fax') or ''}", ADDRESS_SIZE)
-    p.text_center(CENTER_X, TITLE_BASE, data.get("title") or "銷貨單", TITLE_SIZE)
+    p.text_center(COMPANY_CX, COMPANY_BASE, company.get("name") or "", COMPANY_SIZE)
+    p.text_center(ADDRESS_CX, ADDRESS_BASE, company.get("address") or "")
+    p.text_center(TEL_CX, TEL_BASE, f"TEL: {company.get('tel') or ''} FAX: {company.get('fax') or ''}")
+    p.text_center(TITLE_CX, TITLE_BASE, data.get("title") or "銷貨單", TITLE_SIZE)
     p.hline(*TITLE_UL)
-    p.text_right(PAGE_NO_RIGHT, PAGE_NO_BASE, f"Page {page_no} of {page_count}", PAGE_NO_SIZE)
+    p.text_right(PAGE_NO_RIGHT, PAGE_NO_BASE, f"Page {page_no} of {page_count}")
 
     p.c.setLineWidth(FRAME_LINE_W)
     p.box(FRAME_X[0], FRAME_X[1], FRAME_TOP, frame_bottom)
     p.c.setLineWidth(LINE_W)
-    p.box(INNER_X[0], INNER_X[1], *ROW_A)
-    p.vline(ROW_A_DIV, *ROW_A)
-    p.box(INNER_X[0], INNER_X[1], *ROW_B)
-    p.box(INNER_X[0], INNER_X[1], *HEAD_ROW)
+    p.box(INNER_X[0], INNER_X[1], INNER_TOP, frame_bottom - INNER_BOTTOM_PAD)
+    for y in (ROW_A_BOTTOM, ROW_B_BOTTOM, HEAD_BOTTOM):
+        p.hline(*INNER_X, y)
+    p.vline(ROW_A_DIV, INNER_TOP, ROW_A_BOTTOM)
     for x in HEAD_VLINES:
-        p.vline(x, *HEAD_ROW)
+        p.vline(x, ROW_B_BOTTOM, HEAD_BOTTOM)
 
-    p.text(TEXT_X, ROW_A_BASE, f"INVOICE:  {data.get('bill_no') or ''}")
-    p.text(DATE_X, ROW_A_BASE, f"DATE:  {data.get('date_display') or ''}")
+    p.text(TEXT_X, ROW_A_BASE, "INVOICE:")
+    p.text(INVOICE_VALUE_X, ROW_A_BASE, data.get("bill_no") or "")
+    p.text(DATE_X, ROW_A_BASE, "DATE:")
+    p.text(DATE_VALUE_X, ROW_A_BASE, data.get("date_display") or "")
     customer = (data.get("customer") or {}).get("name") or ""
     p.text(TEXT_X, ROW_B_BASE, f"客戶名稱: {customer}", max_width=INNER_X[1] - TEXT_X - 1.0)
     p.text(TEXT_X, HEAD_BASE, "QTY")
     p.text(HEAD_DESC_X, HEAD_BASE, "DESCRIPTION")
     p.text_right(HEAD_PRICE_RIGHT, HEAD_BASE, "UNIT PRICE")
-    p.text_right(HEAD_AMOUNT_RIGHT, HEAD_BASE, "TTL AMOUNT")
+    p.text_center(HEAD_AMOUNT_CX, HEAD_BASE, "TTL AMOUNT")
     term = data.get("trade_term") or ""
     if term:
-        x0, x1 = p.text_center(TERM_CX, TERM_BASE, term, TERM_SIZE)
-        p.hline(x0, x1, TERM_BASE + 0.7)
+        x0 = PRICE_RIGHT - p.width(term + " ")
+        p.text(x0, TERM_BASE, term)
+        p.hline(x0 - 0.9, HEAD_VLINES[2], TERM_UL_Y)
 
 
 def _body(p: _Painter, page: Dict[str, Any]) -> None:
     for el in page["elements"]:
         if el["type"] == "po":
-            p.text(DESC_X, el["base"], f"PO#{el['po']}", bold=True)
+            p.text(PO_X, el["base"], f"PO#{el['po']}", bold=True)
             continue
         p.text_right(QTY_RIGHT, el["base"], el["qty"])
         p.text_right(PRICE_RIGHT, el["base"], el["price"])
-        p.text_right(AMOUNT_RIGHT, el["base"], el["amount"])
+        p.text(AMOUNT_X, el["base"], el["amount"])
         for i, s in enumerate(el["desc"]):
             p.text(DESC_X, el["base"] + i * DESC_PITCH, s, max_width=DESC_MAX_W)
 
 
-def _double_ul(p: _Painter, x0: float, x1: float, base: float) -> None:
-    for dy in DOUBLE_UL:
+def _double_ul(p: _Painter, x0: float, x1: float, base: float, dys: Tuple[float, float]) -> None:
+    for dy in dys:
         p.hline(x0, x1, base + dy)
 
 
 def _footer(p: _Painter, data: Dict[str, Any], page: Dict[str, Any]) -> None:
-    if not page["last"]:
-        p.hline(*INNER_X, page["close_rule"])
-        return
-    t = data.get("totals") or {}
-    p.hline(*INNER_X, page["totals_rule"])
-    base = page["totals_base"]
-    p.text_right(QTY_RIGHT, base, t.get("qty_display") or fmt_num(t.get("qty"), 4))
-    _double_ul(p, *QTY_UL, base)
-    amount = t.get("amount_display") or fmt_num(t.get("amount"), 3)
-    p.text_right(AMOUNT_RIGHT, base, f"{data.get('currency') or ''} {amount}".strip())
-    _double_ul(p, *AMOUNT_UL, base)
+    if page["last"]:
+        t = data.get("totals") or {}
+        p.hline(*INNER_X, page["totals_rule"])
+        base = page["totals_base"]
+        p.text_right(QTY_RIGHT, base, t.get("qty_display") or fmt_num(t.get("qty"), 4))
+        _double_ul(p, *QTY_UL, base, DOUBLE_UL)
+        amount_base = base + AMOUNT_BASE_DY
+        currency = data.get("currency") or ""
+        if currency:
+            p.text_center(sum(CURRENCY_FIELD) / 2, amount_base, currency)
+        p.text(AMOUNT_X, amount_base, t.get("amount_display") or fmt_num(t.get("amount"), 3))
+        _double_ul(p, *AMOUNT_UL, amount_base, AMOUNT_DOUBLE_UL)
+    # 簽核每一頁都印（非最後一頁在頁尾 band，最後一頁緊接合計）：標籤 + 空白 + 底線字元，同正航
     labels = list(data.get("signatures") or DEFAULT_SIGNATURES)[:3]
-    for x, (u0, u1), label in zip(SIGN_X, SIGN_UL, labels):
-        p.text(x, page["sign_base"], label, SIGN_SIZE)
-        p.hline(u0, u1, page["sign_base"] + SIGN_UL_DY)
+    for x, label in zip(SIGN_X, labels):
+        p.text(x, page["sign_base"], f"{label} " + "_" * SIGN_UNDERSCORES, SIGN_SIZE)
 
 
 def render_pdf(data: Dict[str, Any], mode: Optional[str] = None) -> Tuple[bytes, Dict[str, Any]]:

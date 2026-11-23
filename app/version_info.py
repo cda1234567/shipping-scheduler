@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 APP_NAME = "出貨排程系統"
-APP_VERSION = "v2026.11.20.16"
-APP_RELEASED_AT = "2026-11-20"
-APP_HEADLINE = "調撥不再覆寫月平均成本、Invoice 表頭結案／裝船日填開單日、開採購單補寫異動紀錄，與正航手開單一致"
+APP_VERSION = "v2026.11.23.1"
+APP_RELEASED_AT = "2026-11-23"
+APP_HEADLINE = "Invoice 列印對齊正航 ST-2026019 實印：每列印 PO#、每頁印簽核、客戶印英文名稱、分頁與位置一致"
 APP_CHANGELOG = [
+    {"title": "v2026.11.23.1：Invoice 列印對齊正航 ST-2026019 實印（PO# 每列都印、每頁簽核、客戶英文名稱、分頁位置）", "items": [
+        "PO# 每一列都印：明細每一列上方都印粗體「PO#…」，同一個 PO 連續多列也每列各印一次（正航 ST-2026019 的 PO#70003767 連印 10 次）；PO 空白的列照舊不印。伺服器 PDF 與瀏覽器預覽頁一致。",
+        "簽核列每一頁都印：非最後一頁的簽核 / 審核 / 製單（標籤後接底線）印在頁底的頁尾區，外框畫到頁底，最後一列下面不再畫收尾線，同正航。最後一頁維持 2026-11-20 的規則：簽核緊接合計下方、框在簽核下方收尾；半張判斷規則不變。",
+        "客戶名稱改印客戶英文全名（comCustDesc.EngFullName），同正航：例 C0034 主檔名稱是「NEXTEK  LLC」，正航 Invoice 印「NEXTEK  INC」，現在網站也印「NEXTEK  INC」。順序：Invoice 單頭客戶名稱 → 客戶英文全名 → 客戶全名 → 客戶簡稱；查不到英文名稱就照舊用客戶全名。",
+        "分頁、行位置、金額對齊改照正航 ST-2026019 實印（印到 PDF 的向量檔）重新量：每列 = PO 區 + 明細區依序往下排，明細區超過頁尾區就換頁，ST-2026019 第 1 頁 14 列（到 AHXAAAX24-000 86.0000）、第 2 頁 6 列 + 合計，與正航相同；品名折行全部相同（例「…Connector Shell, 4.3-10(M),」不再提早折行）；TTL AMOUNT 金額改靠左；表頭、框線、字級、簽核位置都對齊，文字位置與正航差 0.5mm 以內。",
+        "半張判斷規則不變，數字依新版面重算：ST-2026304 框底 133.94mm → 132.44mm（仍半張 M111w）；ST-2026307 因 4 列都印 PO#（原本 3 個），框底 145.29mm → 151.32mm，超過半張上限 148.5mm，改用 A4。",
+    ]},
     {"title": "v2026.11.20.16：調撥不動月平均成本欄、Invoice 表頭 CloseDate / OnBoardDate、採購單寫 comChangeLog", "items": [
         "一鍵調撥（公司3，CostByWare=0）：當月 stkYearMonthAvg（WareID 空白）只更新 AtLastQuan = 所有倉庫庫存合計，不再把 comProduct 的 CAvgCost / CTotalCost 寫進 MonthCost / AtLastCost；當月列不存在時新增，MonthCost / AtLastCost 為 0。依倉庫成本（CostByWare=1，公司13）照舊只加減 AtLastQuan。依據：正航手開調撥單（Flag 400）從不改這兩欄，它們只由會計月成本計算（MatCostAgg）寫入；2026-11-05 成本計算後有手開調撥的 30 個料號仍與月成本計算結果一致，網站調撥卻覆寫了 60 列。",
         "開 Invoice：TraBillMain（Flag 501）表頭的 CloseDate 與 OnBoardDate 改填開單當天（yyyymmdd，與 S/C 回寫 Endacasedate 同一天），原本寫 0；BillDate 等其他表頭欄位不變，寫入後讀回也比對這兩欄。依據：公司3近期手開 Invoice 45 張有 44 張如此，例 ST-2026304 於 2026-11-20 開 → 20261120、ST-2026293～301 於 2026-11-16 開 → 20261116。",

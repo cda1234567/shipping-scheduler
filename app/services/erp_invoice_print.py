@@ -7,6 +7,8 @@
 欄位對應（正航實單的 TraBill Flag 501 有些值留空 / 佔位，真正的值在 comBillAccounts / comProdRec，見 erp_invoice 模組說明）：
 - 表頭日期 / 客戶 / 幣別 / 金額：TraBillMain 有值就用，空（0 / ''）才用 comBillAccounts（Flag 501、FundBillNo=單號），回傳 header_sources。
 - 數量 / 單價 / 金額：同列號（RowNO）的 comProdRec（Flag 501）優先，沒有才用 TraBillSub 本身，回傳 qty_source。
+- 客戶名稱：TraBillMain.CustName → comCustDesc.EngFullName（客戶英文全名，同正航列印）→ comCustomer.FullName
+  → comCustomer.ShortName，來源回 customer_name_source；comCustDesc 查詢失敗就略過。
 - 客戶 PO：S/C（TraBillMain Flag 2，單號 = OriginBillNo，空則 FromNO / POBillNO）的 Ref → CustBillNo → 本張 Invoice 的 Ref。
 - 貿易條件：Invoice TradeWay → Invoice TermContent → Invoice Term（數字列舉，0 = FOB，由 ST-2026304 實單推定）；
   其他 Term 值不猜，留空並回 trade_term_unmapped_term。Way / Shipment 是運輸方式（Air 等），不當貿易條件。
@@ -281,6 +283,7 @@ def _load(cur, bill_no: str) -> Dict[str, Any]:
     cust_id, _ = first_text([("TraBillMain", ep._get(main, "CustID")), ("comBillAccounts", ep._get(acc, "CustID"))])
     customers = _query(cur, f"SELECT TOP 1 ID, ShortName, FullName FROM comCustomer WHERE Flag = {CUSTOMER_FLAG} "
                             "AND ID = %s", (cust_id,)) if cust_id else []
+    cust_desc = _load_cust_desc(cur, cust_id) if cust_id else {}
     sc_nos = sorted({_sc_no(s) for s in subs} - {""})
     scs: Dict[str, Dict[str, Any]] = {}
     if sc_nos:
@@ -289,7 +292,18 @@ def _load(cur, bill_no: str) -> Dict[str, Any]:
                              f"AND BillNo IN ({marks})", tuple(sc_nos)):
             scs[_s(ep._get(r, "BillNo"))] = r
     return {"main": main, "subs": subs, "recs": recs, "acc": acc, "cust_id": cust_id,
-            "customer": customers[0] if customers else {}, "scs": scs}
+            "customer": customers[0] if customers else {}, "cust_desc": cust_desc, "scs": scs}
+
+
+def _load_cust_desc(cur, cust_id: str) -> Dict[str, Any]:
+    """客戶英文名稱（comCustDesc.EngFullName，正航 Invoice 印的就是它，例 C0034 印 'NEXTEK  INC'）；
+    查不到 / 表不存在（測試公司）就當沒有，不影響列印。"""
+    try:
+        rows = _query(cur, f"SELECT TOP 1 ID, EngFullName FROM comCustDesc WHERE Flag = {CUSTOMER_FLAG} "
+                           "AND ID = %s", (cust_id,))
+    except Exception:
+        return {}
+    return rows[0] if rows else {}
 
 
 def _sc_order(subs: List[Dict[str, Any]]) -> List[str]:
@@ -340,6 +354,7 @@ def build_print_data(raw: Dict[str, Any], *, bill_no: str, target: str, company:
     sources["customer_id"] = "TraBillMain" if _s(g(main, "CustID")) else ("comBillAccounts" if raw["cust_id"] else "")
 
     cust_name, name_source = first_text([("TraBillMain.CustName", g(main, "CustName")),
+                                         ("comCustDesc.EngFullName", g(raw.get("cust_desc") or {}, "EngFullName")),
                                          ("comCustomer.FullName", g(cust, "FullName")),
                                          ("comCustomer.ShortName", g(cust, "ShortName"))])
     # 貿易條件（單價欄下方小字）：Way / Shipment 是運輸方式（例 Air）不是貿易條件，不拿來用，另外回 transport_way

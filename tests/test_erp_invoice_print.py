@@ -72,6 +72,10 @@ class _Cur:
             self._dicts(d.get("accs", []))
         elif "FROM comCustomer" in sql:
             self._dicts(d.get("customers", []))
+        elif "FROM comCustDesc" in sql:
+            if d.get("cust_desc_error"):
+                raise RuntimeError("Invalid object name 'comCustDesc'")
+            self._dicts([r for r in d.get("cust_desc", []) if r["ID"] == params[0]])
         else:
             raise AssertionError(f"unexpected SQL {sql}")
 
@@ -236,6 +240,31 @@ class PrintDataTests(unittest.TestCase):
         self.assertEqual((r["trade_term"], r["trade_term_source"]), ("CIF HONG KONG", "TraBillMain.TermContent"))
         r2, _, _ = run_print(sample_data(customers=[{"ID": "C0152", "ShortName": "Open Text", "FullName": ""}]))
         self.assertEqual((r2["customer"]["name"], r2["customer"]["name_source"]), ("Open Text", "comCustomer.ShortName"))
+
+    def test_customer_english_name_from_cust_desc(self):
+        # 正航 Invoice 印客戶英文全名 comCustDesc.EngFullName：C0034 FullName 'NEXTEK  LLC'、英文名 'NEXTEK  INC'
+        accs = [{"BillDate": 20260130, "CustID": "C0034", "CurrID": "USD", "ExchRate": 31.5, "Total": 85415}]
+        customers = [{"ID": "C0034", "ShortName": "NEXTEK  LLC", "FullName": "NEXTEK  LLC"}]
+        cust_desc = [{"ID": "C0034", "EngFullName": "NEXTEK  INC  "}]
+        r, cur, _ = run_print(sample_data(accs=accs, customers=customers, cust_desc=cust_desc))
+        self.assertEqual((r["customer"]["name"], r["customer_name_source"]), ("NEXTEK  INC", "comCustDesc.EngFullName"))
+        self.assertEqual(r["customer"]["name_source"], "comCustDesc.EngFullName")
+        sql = next(q for q in cur.sqls if "comCustDesc" in q)
+        self.assertIn(f"SELECT TOP 1 ID, EngFullName FROM comCustDesc WHERE Flag = {inv.CUSTOMER_FLAG} AND ID = %s", sql)
+        # TraBillMain.CustName 仍優先
+        r, _, _ = run_print(sample_data(main=_main(CustName="Main Name"), accs=accs, customers=customers,
+                                        cust_desc=cust_desc))
+        self.assertEqual((r["customer"]["name"], r["customer_name_source"]), ("Main Name", "TraBillMain.CustName"))
+
+    def test_customer_english_name_fallbacks(self):
+        accs = [{"BillDate": 20260130, "CustID": "C0034", "CurrID": "USD", "ExchRate": 31.5, "Total": 85415}]
+        customers = [{"ID": "C0034", "ShortName": "NEXTEK", "FullName": "NEXTEK  LLC"}]
+        for extra in ({"cust_desc": [{"ID": "C0034", "EngFullName": "  "}]}, {"cust_desc": []},
+                      {"cust_desc_error": True}):  # 空白、沒資料、表不存在（測試公司）→ 略過
+            r, _, conn = run_print(sample_data(accs=accs, customers=customers, **extra))
+            self.assertEqual((r["customer"]["name"], r["customer_name_source"]), ("NEXTEK  LLC", "comCustomer.FullName"),
+                             extra)
+            self.assertTrue(conn.rolled_back and conn.closed and not conn.committed)
 
     def test_trade_term_from_term_enum(self):
         sc = [{"BillNo": "MO-2610001", "Ref": "4500059700", "CustBillNo": "", "TradeWay": "CIF", "Shipment": "CFR X",
@@ -474,16 +503,16 @@ assert.equal(mod.descHtml('A & B'), 'A <span class="inv-ls">&amp;</span> B');
 // 後端 pages 不用：兩頁的假 pages 仍只畫一頁
 const two = { ...data, pages: [{ no: 1, rows: [{ type: 'line', line: 0 }], last: false }, { no: 2, rows: [], last: true }] };
 assert.equal(mod.renderInvoicePrint(two, root), 1);
-// PO 單位：PO 換了才帶標題
+// PO 單位：PO 非空的每一列都帶標題（同一 PO 連續多列也每列都印，同正航 / 伺服器 PDF）
 const lines = ['P1', 'P1', 'P2', '', 'P2'].map(po => ({ po, print_description: 'x' }));
-assert.deepEqual(mod.buildUnits(lines).map(u => u.header), [true, false, true, false, true]);
+assert.deepEqual(mod.buildUnits(lines).map(u => u.header), [true, true, true, false, true]);
 // 依高度分頁：容量 100、PO 標題 10、每列 20
 const H = n => ({ po: 10, line: Array(n).fill(20) });
 const P = (units, cap, reserve, n) => mod.paginateUnits(mod.buildUnits(units), H(n), cap, reserve);
 const many = Array.from({ length: 9 }, () => ({ po: 'P1' }));
-let pages = P(many, 100, 0, 9);  // 頁 1：PO + 4 列 = 90；頁 2 重印 PO 標題
+let pages = P(many, 100, 0, 9);  // 每列 PO + 明細 = 30：每頁 3 列
 assert.equal(pages.length, 3);
-assert.deepEqual(pages[0].rows.map(r => r.type), ['po', 'line', 'line', 'line', 'line']);
+assert.deepEqual(pages[0].rows.map(r => r.type), ['po', 'line', 'po', 'line', 'po', 'line']);
 assert.deepEqual(pages[1].rows[0], { type: 'po', po: 'P1' });
 assert.deepEqual(pages.map(p => [p.no, p.of, p.last]), [[1, 3, false], [2, 3, false], [3, 3, true]]);
 assert.equal(pages.flatMap(p => p.rows).filter(r => r.type === 'line').length, 9);

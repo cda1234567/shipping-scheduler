@@ -46,14 +46,11 @@ function poRow(po) {
   return `<div class="inv-cols inv-po"><div class="c-qty"></div><div></div><div class="c-desc">PO#${esc(po)}</div><div></div><div></div></div>`;
 }
 
-/** 明細依序切成不可拆的單位：PO 換了的那一列帶 PO 標題（標題與第一列綁在一起）。 */
+/** 明細依序切成不可拆的單位：PO 非空的每一列都帶 PO 標題（同一 PO 連續多列也每列都印，同正航 / 伺服器 PDF）。 */
 export function buildUnits(lines) {
-  let prev = null;
   return (lines || []).map((l, i) => {
     const po = l.po || "";
-    const unit = { line: i, po, header: Boolean(po) && (i === 0 || po !== prev) };
-    prev = po;
-    return unit;
+    return { line: i, po, header: Boolean(po) };
   });
 }
 

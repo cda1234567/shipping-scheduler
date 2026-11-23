@@ -1,9 +1,12 @@
 """開 Invoice 伺服器 PDF 列印（同進貨單列印流程）：折行、選印表機、分頁、簽核模式、PDF、路由。
 
 不連 ERP、不連列印小幫手：get_print_data 與 send_pdf_with_auto_restart 一律用假的。
+tests/fixtures/ST-2026019.json 等是正式站 /api/erp-invoice/print-data 的唯讀快照；ST-2026019 的分頁、折行、
+基線對照正航列印到 Microsoft Print to PDF 的向量 PDF（2 頁：14 列 / 6 列 + 合計）。
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import unittest
@@ -13,6 +16,7 @@ from unittest import mock
 from app.services import erp_invoice_print, erp_stock, invoice_print_pdf as ipp, rm_print, rm_print_dispatch
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = ROOT / "tests" / "fixtures"
 
 DESC_304 = [
     "IC-NB675GL-Z IC, 10A, 5V-24V INPUT SYNCHRONOUS BUCK CONVERTER WITH 1.5A LDO AND LOW-NOISE "
@@ -76,6 +80,36 @@ def st_2026307():
     ], 5560, 11080.8)
 
 
+def fixture(bill_no):
+    return json.loads((FIXTURES / f"{bill_no}.json").read_text(encoding="utf-8"))
+
+
+# 正航 ST-2026019 實印（向量 PDF）每頁的品名行（含折行）
+ZH_019_DESC = [
+    [["OC-10268B Housing"], ["AHIAAVXA3-000 Housing, HPR 1-20 Mount"], ["OC-10277B Housing, N(F), PTC E"],
+     ["ANXAAAX7P-001 P/N:501-0041-02, Hex Nut, Type N (5/8-24),", "St St/Passivated"],
+     ["APXA0V024-000 P/N:380-0232-00, Pin 4.3-10(F)"], ["ABXAAV024-000 P/N:382-0001-00, Center Conductor"],
+     ["AIXAAAXXX-016 P/N:410-0137-00, Insulator"],
+     ["ABXAAA204-000 P/N:415-0211-00, Connector Shell, 4.3-10(F)", "Bulkhead Mount, Thread-In"],
+     ["ABXAAAX04-002 P/N:415-0212-00, Connector Shell, 4.3-10(F),", "Thread-In"],
+     ["APXA1V004-000 P/N:380-0234-00, Pin, 4.3-10(M)"],
+     ["ABXAAAX04-003 P/N:415-0213-00, Connector Shell, 4.3-10(M),", "Press-In"],
+     ["AHXAAA004-001 P/N:416-0001-00, Housing, 4.3-10(F)"],
+     ["ANXAAAX04-001 P/N:510-0001-00, Coupling Nut, 4.3-10(M),", "22mm HEX"],
+     ["AHXAAAX24-000 P/N:381-0001, Outer Contact (BeCu consign)"]],
+    [["70MB0V27X-006 P/N: 330-0253-02 CONNECTOR, Press-In",
+      "SMA(F), Solder dipped and 24AWG wire installed, with Lead", 'L=0.4"'],
+     ["ABXAAV00X-008 P/N:750-0897-00, Electrode"], ["OC-10279B Cover, Press-In N 6 GHZ"],
+     ["ABXAAA0AX-002 P/N:415-0205-00, Cover, Type N(M), Alum"], ["APXAAVX44-000 P/N:380-0227-00, Pin, Type N F-M"],
+     ["AVXAAAX0X-000 P/N:750-0840-00, Back Cover, ADP-C003", "(Unfinished by Sandy 2024/04/26)"]],
+]
+# 正航 ST-2026019 每頁 PO# 基線（mm）
+ZH_019_PO_BASES = [
+    [80.90, 92.37, 103.84, 115.32, 130.60, 142.07, 153.54, 165.02, 180.34, 195.62, 207.09, 222.42, 233.89, 249.17],
+    [80.90, 100.29, 111.76, 123.23, 134.70, 146.18],
+]
+
+
 def synthetic(n=60):
     descs = ["SHORT PART", "PCB-A1080 T3iu A+B -REV-1.2+1.0 Forensic SATA Imaging Bay", UNATTACHED]
     lines = [_line(f"PO{i // 8}", f"P{i:02d} {descs[i % 3]}", 10, 1.5, 15) for i in range(n)]
@@ -101,6 +135,15 @@ class WrapTest(unittest.TestCase):
         self.assertEqual(ipp.screen_px(WRAPS_304[1][0]), 364)
         self.assertEqual(ipp.screen_px(WRAPS_304[0][0] + " BUCK"), 367)
         self.assertTrue(364 <= ipp.DESC_WRAP_PX < 367)
+
+    def test_wrap_366_fits_367_wraps(self):
+        # ST-2026019：正航把 366px 的這行放在同一行；ST-2026304 的 367px 要折
+        line = "ABXAAAX04-003 P/N:415-0213-00, Connector Shell, 4.3-10(M),"
+        self.assertEqual(ipp.screen_px(line), 366)
+        self.assertEqual(ipp.wrap_description(line), [line])
+        self.assertEqual(ipp.wrap_description(line + " Press-In"), [line, "Press-In"])
+        self.assertEqual(ipp.wrap_description("x" * 360 + " yyyyy", len), ["x" * 360 + " yyyyy"])  # 366
+        self.assertEqual(ipp.wrap_description("x" * 360 + " yyyyyy", len), ["x" * 360, "yyyyyy"])  # 367
 
     def test_wraps_with_real_font_metrics(self):
         try:
@@ -148,7 +191,7 @@ class PrinterChoiceTest(unittest.TestCase):
         lines = [e["desc"] for e in lay["pages"][0]["elements"] if e["type"] == "line"]
         self.assertEqual(lines, WRAPS_304)
         pos = [(e["type"], round(e["base"], 1)) for e in lay["pages"][0]["elements"]]
-        self.assertEqual(pos, [("po", 80.5), ("line", 86.6), ("po", 99.6), ("line", 105.7)])  # 實單 291/313/360px
+        self.assertEqual(pos, [("po", 80.9), ("line", 86.8), ("po", 100.3), ("line", 106.1)])  # 正航 band 模型
 
     def test_st_2026302_a4_one_page(self):
         lay = ipp.layout(st_2026302())
@@ -159,7 +202,9 @@ class PrinterChoiceTest(unittest.TestCase):
         self.assertIn("M652", info["printer"])
         self.assertEqual(info["paper"], "A4")
         pos = [e["po"] for e in lay["pages"][0]["elements"] if e["type"] == "po"]
-        self.assertEqual(pos, ["4500059433", "4500059418", "4500059497-B", "4500059563", "4500059563-A"])
+        # 同一 PO 連續多列也每列都印 PO#（同正航）
+        self.assertEqual(pos, ["4500059433", "4500059418", "4500059497-B", "4500059563", "4500059563",
+                               "4500059563-A", "4500059563-A"])
 
     def test_st_2026304_half_signature_follows_totals(self):
         for mode in ("auto", "follow", None):
@@ -170,32 +215,31 @@ class PrinterChoiceTest(unittest.TestCase):
             self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
             self.assertLess(page["frame_bottom"], ipp.HALF_FRAME_BOTTOM)  # 框底跟著上移，不再固定 146.5
             self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
-            self.assertEqual(lay["bottom_mm"], 133.94)
+            self.assertEqual(lay["bottom_mm"], 132.44)
             self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
 
-    def test_st_2026307_half_signature_follows_totals(self):
+    def test_st_2026307_signature_follows_totals(self):
+        # 4 列都印 PO#（W058376 兩列各一個）+ 兩列品名 373px 折 2 行：框底 151.32 > 半張 148.5 → A4
         lay = ipp.layout(st_2026307(), "auto")
         page = lay["pages"][-1]
+        self.assertEqual(sum(e["type"] == "po" for e in page["elements"]), 4)
         self.assertGreater(page["totals_base"] + ipp.SIGN_GAP, ipp.HALF_SIGN_BASE)  # 貼框底會壓到合計
-        self.assertTrue(lay["fits_half_page"])
-        self.assertEqual((lay["form"], lay["page_count"]), ("half", 1))
         self.assertAlmostEqual(page["sign_base"], page["totals_base"] + ipp.SIGN_GAP)
         self.assertAlmostEqual(page["frame_bottom"], page["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
         self.assertEqual(lay["bottom_mm"], round(page["frame_bottom"], 2))
-        self.assertLessEqual(lay["bottom_mm"], 148.5)
-        self.assertEqual(lay["bottom_mm"], 145.29)
-        self.assertIn("M111w", ipp.info_from_layout(lay)["printer"])
-        self.assertTrue(ipp.layout(st_2026307(), "follow")["fits_half_page"])
-        self.assertFalse(ipp.layout(st_2026307(), "bottom")["fits_half_page"])  # bottom 要簽核貼框底才用半張
+        self.assertEqual(lay["bottom_mm"], 151.32)
+        self.assertEqual((lay["form"], lay["page_count"], lay["fits_half_page"]), ("a4", 1, False))
+        self.assertFalse(ipp.layout(st_2026307(), "bottom")["fits_half_page"])
+        self.assertEqual(ipp.layout(fixture("ST-2026307"), "auto")["bottom_mm"], 151.32)  # 正式站資料同結果
 
     def test_st_2026302_a4(self):
         lay = ipp.layout(st_2026302(), "auto")
-        self.assertEqual((lay["form"], lay["fits_half_page"], lay["bottom_mm"]), ("a4", False, 196.47))
+        self.assertEqual((lay["form"], lay["fits_half_page"], lay["bottom_mm"]), ("a4", False, 209.17))
 
     def test_half_page_limit_env(self):
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "140"}):
-            lay = ipp.layout(st_2026304())  # 簽核緊接合計的框底 133.94 <= 140 → 仍是半張
-            self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 133.94))
+            lay = ipp.layout(st_2026304())  # 簽核緊接合計的框底 132.44 <= 140 → 仍是半張
+            self.assertEqual((lay["form"], lay["bottom_mm"]), ("half", 132.44))
         with mock.patch.dict(os.environ, {"RM_PRINT_HALF_PAGE_MM": "130"}):
             self.assertFalse(ipp.layout(st_2026304())["fits_half_page"])
 
@@ -220,36 +264,38 @@ class PaginationTest(unittest.TestCase):
         idx = [e["index"] for p in self.pages for e in p["elements"] if e["type"] == "line"]
         self.assertEqual(idx, list(range(60)))
         for p in self.pages:
-            self.assertLessEqual(p["frame_bottom"], ipp.PAGE_BOTTOM_MM + 1e-9)
+            self.assertLessEqual(p["frame_bottom"], ipp.A4_FRAME_BOTTOM + 1e-9)
 
-    def test_po_header_kept_with_first_line_and_reprinted(self):
-        reprints = 0
-        prev_po = None
+    def test_po_header_on_every_line(self):
         for p in self.pages:
             els = p["elements"]
             self.assertEqual(els[-1]["type"], "line")  # PO 標題不會單獨留在頁底
-            for a, b in zip(els, els[1:]):
-                if a["type"] == "po":
-                    self.assertEqual(b["type"], "line")
-                    self.assertEqual(b["po"], a["po"])
-            first_line = next(e for e in els if e["type"] == "line")
-            if prev_po is not None and first_line["po"] == prev_po:
-                self.assertEqual(els[0]["type"], "po")
-                self.assertTrue(els[0]["reprint"])
-                reprints += 1
-            prev_po = [e for e in els if e["type"] == "line"][-1]["po"]
-        # 合成資料每 8 列換 PO（每頁約 21 列），跨頁時至少一次接續同一個 PO
-        self.assertGreaterEqual(reprints, 1)
+            for i, e in enumerate(els):
+                if e["type"] == "line":
+                    self.assertTrue(e["header"])
+                    self.assertEqual((els[i - 1]["type"], els[i - 1]["po"]), ("po", e["po"]))  # 每列都有自己的 PO#
+                    self.assertLessEqual(e["band_bottom"], ipp.FOOTER_TOP + 1e-9)
+        n_lines = sum(e["type"] == "line" for p in self.pages for e in p["elements"])
+        self.assertEqual(sum(e["type"] == "po" for p in self.pages for e in p["elements"]), n_lines)
 
-    def test_totals_and_signature_only_on_last_page(self):
+    def test_empty_po_has_no_header(self):
+        data = invoice("ST-2026001", [_line("P1", "A", 1, 1, 1), _line("", "B", 1, 1, 1), _line("P1", "C", 1, 1, 1)],
+                       3, 3)
+        els = ipp.layout(data)["pages"][0]["elements"]
+        self.assertEqual([(e["type"], e.get("po")) for e in els],
+                         [("po", "P1"), ("line", "P1"), ("line", ""), ("po", "P1"), ("line", "P1")])
+
+    def test_totals_only_on_last_page_signature_on_every_page(self):
         for p in self.pages[:-1]:
             self.assertNotIn("totals_base", p)
-            self.assertNotIn("sign_base", p)
-            self.assertAlmostEqual(p["close_rule"], p["last_base"] + ipp.TOTALS_RULE_GAP)
+            self.assertNotIn("close_rule", p)  # 非最後一頁最後一列下面不畫收尾線
+            self.assertEqual((p["sign_base"], p["frame_bottom"]), (ipp.FOOTER_SIGN_BASE, ipp.A4_FRAME_BOTTOM))
+            self.assertEqual((p["sign_base"], p["frame_bottom"]), (273.85, 282.8))  # 正航頁尾 band
         last = self.pages[-1]
         self.assertTrue(last["last"])
         self.assertTrue(any(e["type"] == "line" for e in last["elements"]))  # 最後一頁不會只有合計
         self.assertLessEqual(last["sign_base"], ipp.A4_SIGN_MAX + 1e-9)
+        self.assertAlmostEqual(last["sign_base"], last["totals_base"] + ipp.SIGN_GAP)  # 最後一頁緊接合計
 
     def test_last_unit_moved_when_totals_do_not_fit(self):
         keys = ("index", "po", "header", "desc", "qty", "price", "amount")
@@ -259,22 +305,21 @@ class PaginationTest(unittest.TestCase):
             if len(pages) < 2 or len(lines[-1]) != 1:
                 continue
             prev = lines[-2] + lines[-1]
-            last = ipp._last_base(prev)
-            if last + ipp.TOTALS_RULE_GAP + ipp.FRAME_PAD <= ipp.PAGE_BOTTOM_MM:
+            bottom = ipp._band_bottom(prev)
+            if bottom <= ipp.FOOTER_TOP:
                 # 明細放得下、合計 + 簽核放不下 → 最後一列移到新的一頁
-                self.assertGreater(ipp._follow_sign_base(last), ipp.A4_SIGN_MAX)
+                self.assertGreater(ipp._follow_sign_base(bottom), ipp.A4_SIGN_MAX)
                 return
         self.fail("找不到最後一列被移到下一頁的情況")
 
-    def test_single_po_reprinted_on_every_page(self):
+    def test_single_po_printed_on_every_line(self):
         data = synthetic()
         for line in data["lines"]:
             line["po"] = "4500000001"
         pages = ipp.layout(data)["pages"]
         self.assertGreaterEqual(len(pages), 2)
-        self.assertEqual([p["elements"][0]["reprint"] for p in pages], [False] + [True] * (len(pages) - 1))
         self.assertTrue(all(p["elements"][0]["type"] == "po" for p in pages))
-        self.assertEqual(sum(e["type"] == "po" for p in pages for e in p["elements"]), len(pages))
+        self.assertEqual(sum(e["type"] == "po" for p in pages for e in p["elements"]), 60)
 
     def test_empty_invoice_single_page(self):
         lay = ipp.layout(invoice("ST-2026001", [], 0, 0))
@@ -297,15 +342,15 @@ class SignModeTest(unittest.TestCase):
         self.assertLess(follow["frame_bottom"], bottom["frame_bottom"])
         # 合計一律緊接最後一行
         for p in (auto, follow, bottom):
-            self.assertAlmostEqual(p["totals_rule"], p["last_base"] + ipp.TOTALS_RULE_GAP)
+            self.assertAlmostEqual(p["totals_rule"], p["band_bottom"] + ipp.TOTALS_RULE_GAP)
 
     def test_a4_modes(self):
         auto, follow, bottom = (self._last(st_2026302(), m) for m in ("auto", "follow", "bottom"))
         self.assertAlmostEqual(auto["sign_base"], auto["totals_base"] + ipp.SIGN_GAP)
         self.assertAlmostEqual(auto["frame_bottom"], auto["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
         self.assertEqual(follow["sign_base"], auto["sign_base"])
-        self.assertAlmostEqual(bottom["frame_bottom"], ipp.PAGE_BOTTOM_MM)
-        self.assertAlmostEqual(bottom["sign_base"], ipp.PAGE_BOTTOM_MM - ipp.SIGN_TO_FRAME_PINNED)
+        self.assertAlmostEqual(bottom["frame_bottom"], ipp.A4_FRAME_BOTTOM)
+        self.assertAlmostEqual(bottom["sign_base"], ipp.FOOTER_SIGN_BASE)
 
     def test_mode_does_not_change_printer(self):
         for m in ipp.SIGN_MODES:
@@ -330,6 +375,102 @@ class SignModeTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"INVOICE_PRINT_SIGN_MODE": value}):
                 self.assertEqual(ipp.sign_mode(), expected)
                 self.assertEqual(ipp.layout(st_2026304())["sign_mode"], expected)
+
+
+class ZhenghangSt2026019Test(unittest.TestCase):
+    """正式站 ST-2026019 print-data 快照 → 與正航實印（向量 PDF）同分頁、同折行、同基線。"""
+
+    def setUp(self):
+        patcher = mock.patch.dict(os.environ, {"INVOICE_PRINT_SIGN_MODE": "", "RM_PRINT_HALF_PAGE_MM": ""})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.lay = ipp.layout(fixture("ST-2026019"))
+        self.pages = self.lay["pages"]
+
+    def _lines(self, page):
+        return [e for e in page["elements"] if e["type"] == "line"]
+
+    def test_split_14_and_6(self):
+        self.assertEqual((self.lay["form"], self.lay["page_count"]), ("a4", 2))
+        p1, p2 = (self._lines(p) for p in self.pages)
+        self.assertEqual((len(p1), len(p2)), (14, 6))
+        self.assertTrue(p1[-1]["desc"][0].startswith("AHXAAAX24-000"))
+        self.assertEqual(p1[-1]["qty"], "86.0000")
+        self.assertTrue(p2[0]["desc"][0].startswith("70MB0V27X-006"))
+        self.assertTrue(p2[-1]["desc"][0].startswith("AVXAAAX0X-000"))
+        self.assertEqual([sum(e["type"] == "po" for e in p["elements"]) for p in self.pages], [14, 6])
+        self.assertEqual(sum(e.get("po") == "70003767" for e in self.pages[0]["elements"] if e["type"] == "po"), 10)
+
+    def test_description_breaks_match_zhenghang(self):
+        self.assertEqual([[e["desc"] for e in self._lines(p)] for p in self.pages], ZH_019_DESC)
+
+    def test_baselines_match_zhenghang(self):
+        for page, expect in zip(self.pages, ZH_019_PO_BASES):
+            got = [e["base"] for e in page["elements"] if e["type"] == "po"]
+            self.assertEqual(len(got), len(expect))
+            for g, z in zip(got, expect):
+                self.assertAlmostEqual(g, z, delta=0.1)
+        first = self._lines(self.pages[0])[0]
+        self.assertAlmostEqual(first["base"], 86.74, delta=0.1)
+        last = self.pages[-1]
+        self.assertAlmostEqual(last["totals_rule"], 157.6, delta=0.1)
+        self.assertAlmostEqual(last["totals_base"], 161.88, delta=0.1)
+        self.assertLessEqual(self.pages[0]["band_bottom"], ipp.FOOTER_TOP)
+
+    def test_signature_every_page(self):
+        p1, p2 = self.pages
+        self.assertEqual((p1["sign_base"], p1["frame_bottom"]), (273.85, 282.8))  # 非最後一頁：頁尾 band
+        self.assertNotIn("totals_base", p1)
+        self.assertAlmostEqual(p2["sign_base"], p2["totals_base"] + ipp.SIGN_GAP)  # 最後一頁：緊接合計
+        self.assertAlmostEqual(p2["frame_bottom"], p2["sign_base"] + ipp.SIGN_TO_FRAME_FOLLOW)
+        self.assertEqual(self.lay["bottom_mm"], round(p2["frame_bottom"], 2))
+
+    def test_half_page_fixture_st_2026304(self):
+        lay = ipp.layout(fixture("ST-2026304"))
+        self.assertEqual((lay["form"], lay["page_count"], lay["bottom_mm"]), ("half", 1, 132.44))
+
+
+class DrawTest(unittest.TestCase):
+    """畫出來的字：TTL AMOUNT 數值靠左（AMOUNT_X）、每一頁都有三個簽核（標籤 + 空白 + 18 個底線）。"""
+
+    def _calls(self, data):
+        _fonts_or_skip(self)
+        calls = []
+        orig = ipp._Painter.text
+
+        def spy(painter, x, base, s, *args, **kwargs):
+            calls.append((painter.c.getPageNumber(), round(x, 2), round(base, 2), s))
+            return orig(painter, x, base, s, *args, **kwargs)
+
+        with mock.patch.object(ipp._Painter, "text", spy), mock.patch.dict(os.environ, {"INVOICE_PRINT_SIGN_MODE": ""}):
+            pdf, info = ipp.render_pdf(data)
+        return calls, info
+
+    def test_amount_left_aligned(self):
+        data = fixture("ST-2026019")
+        calls, _ = self._calls(data)
+        amounts = [l["amount_display"] for l in data["lines"]] + [data["totals"]["amount_display"]]
+        xs = {x for _, x, _, s in calls if s in amounts}
+        self.assertEqual(xs, {ipp.AMOUNT_X})
+        self.assertEqual(ipp.AMOUNT_X, 176.5)
+
+    def test_signature_drawn_on_every_page(self):
+        calls, info = self._calls(fixture("ST-2026019"))
+        self.assertEqual(info["page_count"], 2)
+        for page_no, base in ((1, 273.85), (2, None)):
+            signs = [(x, b, s) for n, x, b, s in calls if n == page_no and s.endswith("_" * 18)]
+            self.assertEqual([s for _, _, s in signs], [f"{l} " + "_" * 18 for l in ("簽核", "審核", "製單")])
+            self.assertEqual([x for x, _, _ in signs], list(ipp.SIGN_X))
+            if base:
+                self.assertEqual({b for _, b, _ in signs}, {base})
+            else:
+                self.assertLess(signs[0][1], 200)  # 最後一頁緊接合計，不在頁底
+
+    def test_customer_name_printed(self):
+        data = fixture("ST-2026019")
+        data["customer"]["name"] = "NEXTEK  INC"
+        calls, _ = self._calls(data)
+        self.assertIn("客戶名稱: NEXTEK  INC", [s for *_, s in calls])
 
 
 class RenderTest(unittest.TestCase):
