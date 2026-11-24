@@ -1,7 +1,7 @@
 """缺料採購：寫入主檔 / 生成發料單之後，列出哪些料要買，勾選後依供應商各開一張正航採購單。
 
 流程：選訂單 → build_shortage_list（彙整需求、加待調撥、扣 ST 現有（在途僅供參考、不扣除）、解析供應商 / 單價 / 預計進貨日）
-缺 = max(0, 需求 + 待調撥 − ST)，再套 MOQ（建議量 = max(缺, MOQ)，多出來的標「MOQ 進位」，不另列多買）。待調撥見 st_pending_transfer（截止批次之後網站已扣、正航還沒調撥的量）。
+缺 = max(0, 需求 + 待調撥 − ST)，再套 MOQ（建議量 = ceil(缺 / MOQ) × MOQ，多出來的標「MOQ 進位」，不另列多買）。待調撥見 st_pending_transfer（截止批次之後網站已扣、正航還沒調撥的量）。
 → 使用者勾選 → erp_purchase.preview_many 預覽 → create_many 逐張寫入（每張獨立 transaction）。
 
 預計進貨日（以「最早出貨日的訂單」為準）：
@@ -254,7 +254,8 @@ def _allocation_context(order_ids: List[int]) -> Dict[str, Dict[str, Any]]:
         st = part_conversion.effective_stock(key, st_stock, sources)[0]
         pend = float(pending.get(key, {}).get("pending", 0.0))
         shortage = float(summarize_requested_supply(entry["need"] + pend, st)["purchase_needed_qty"])
-        fields = moq_service.moq_fields(shortage, moq_info.get(key))
+        info = moq_info.get(key)
+        fields = moq_service.moq_fields(shortage, info, (info or {}).get("moq") or 0)
         out[key] = {
             "st": st, "pending": pend, "orders": entry["orders"], "need": entry["need"],
             "shortage": shortage, **fields,
@@ -653,27 +654,6 @@ def _dispatch_positions(
     return positions
 
 
-def _customer_supplied_item(
-    key: str, entry: Dict[str, Any], product: Dict[str, Any], reason: str, lookups: Dict[str, Any]
-) -> Dict[str, Any]:
-    """客供料明細：庫存 = 客供倉庫（預設 002）合計，不是 ST；查不到庫存時 stock / shortage 為 None。"""
-    known = not lookups["tab_stock_error"]
-    stock = float(lookups["tab_stock"].get(key, 0.0)) if known else None
-    return {
-        "part_number": key,
-        "description": product.get("name") or entry["desc"],
-        "reason": reason,
-        "need": entry["need"],
-        "tab_stock": stock,
-        "stock_known": known,
-        "stock_error": lookups["tab_stock_error"],
-        "ware_ids": lookups["tab_ware_ids"],
-        "shortage": max(0.0, entry["need"] - stock) if known else None,
-        "earliest_order": {k: entry["earliest"][k] for k in ("order_id", "code", "model", "po_number", "ship_date")},
-        "orders": entry["orders"],
-    }
-
-
 def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     from ..routers import dispatch as dispatch_router  # 延遲載入避免循環相依
 
@@ -683,29 +663,22 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
     sources = part_conversion.sources_by_target(conversions)
     aggregated = _aggregate(groups, conversions)
     positions = _dispatch_positions(groups, conversions)
-    keys = sorted(aggregated)
+    # R-D1：客供料（-TAB 結尾）不列入缺料清單（一鍵調撥 002 另行處理）
+    keys = sorted(k for k in aggregated if not erp_purchase.customer_supplied_reason(k))
 
     st_stock, st_added = _st_stock_for(order_ids)
     links = db.active_postprocess_links(keys)
     process_extra = sorted({l["process_part"] for ls in links.values() for l in ls} - set(keys))
     lookups = _erp_lookups(sorted(set(keys) | set(process_extra)), today)
     overrides = db.get_part_purchase_categories(keys)
-    moq_info = moq_service.lookup_moq([k for k in keys if not erp_purchase.customer_supplied_reason(k)])
+    moq_info = moq_service.lookup_moq(keys)
     pending_result = st_pending_transfer.compute(order_ids, conversions)
     pending_parts = pending_result["parts"]
 
     parts_out: List[Dict[str, Any]] = []
-    customer_supplied: List[Dict[str, Any]] = []
     for key in keys:
         entry = aggregated[key]
         product = lookups["products"].get(key, {})
-        reason = erp_purchase.customer_supplied_reason(key)
-        if reason:
-            customer_supplied.append({
-                **_customer_supplied_item(key, entry, product, reason, lookups),
-                "dispatch_seq": positions.get(key),
-            })
-            continue
         last = lookups["last_po"].get(key, {})
         supplier_id, source = resolve_supplier(
             product.get("major_supplier", ""), last.get("supplier_id", ""), lookups["suppliers"]
@@ -735,9 +708,10 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         postprocess_out = [
             _postprocess_entry(link, lookups, pp_dates, keys) for link in link_list
         ]
-        # 預設採購量 = 缺經 MOQ 調整（moq_service.adjust_qty：max(缺, MOQ)；缺 0 就是 0），不會再多；
+        # 預設採購量 = 缺往上取整到 MOQ 的倍數（R-E2：ceil(缺 / MOQ) × MOQ；缺 0 就是 0），不會再多；
         # 多於缺的部分照實標成「MOQ 進位」（overage_reason=moq）
-        qty_fields = moq_service.moq_fields(shortage, moq_info.get(key))
+        info = moq_info.get(key)
+        qty_fields = moq_service.moq_fields(shortage, info, (info or {}).get("moq") or 0)
         suggested = qty_fields["suggested_qty"]
         over = overage_breakdown(suggested, qty_fields["need_qty"], suggested)
         parts_out.append({
@@ -787,23 +761,19 @@ def build_shortage_list(order_ids: List[int]) -> Dict[str, Any]:
         return (0 if seq is not None else 1, seq or 0, p["part_number"])
 
     parts_out.sort(key=lambda p: (p["supplier_id"], *position_key(p)))
-    customer_supplied.sort(key=position_key)
     _already_ordered(parts_out)
 
     orders = [o for o in (db.get_order(int(i)) for i in dict.fromkeys(order_ids)) if o]
     warnings = list(lookups["warnings"]) + list(pending_result["warnings"])
-    if not parts_out and not customer_supplied:
+    if not parts_out:
         warnings.append("選取的訂單沒有補料 / 缺料內容")
     return {
         "config": erp_purchase.get_config(),
         "today": today.isoformat(),
         "orders": [_order_summary(o) for o in orders],
         "parts": parts_out,
-        "customer_supplied": customer_supplied,
-        "customer_supplied_zero_count": sum(
-            1 for c in customer_supplied if c["shortage"] is not None and c["shortage"] <= 0
-        ),
-        "customer_supplied_ware_ids": lookups["tab_ware_ids"],
+        "customer_supplied": [],
+        "customer_supplied_zero_count": 0,
         "pending_transfer": pending_result["info"],
         "warnings": warnings,
     }

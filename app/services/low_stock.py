@@ -1202,7 +1202,7 @@ def suggested_po_gap(row: dict) -> int:
 
 
 def with_moq(views: List[dict]) -> List[dict]:
-    """替每列加上 moq / moq_source / last_receipt_* / receipt_gcd / receipt_count / receipt_qtys / moq_floor_applied / suggested_po_qty（= max(缺口, 估算 MOQ)）。
+    """替每列加上 moq / moq_source / last_receipt_* / receipt_gcd / receipt_count / receipt_qtys / moq_floor_applied / suggested_po_qty（= 缺口往上取整到估算 MOQ 的倍數）。
 
     MOQ 以近 10 次進貨量的最大公因數估算（不低於主檔 / 正航最小採購量）（見 moq.lookup_moq，批次查詢 + 快取）；正航連不上時退回本站 MOQ。"""
     from . import moq as moq_service
@@ -1220,7 +1220,7 @@ def with_moq(views: List[dict]) -> List[dict]:
         v["receipt_count"] = i.get("receipt_count") or 0
         v["receipt_qtys"] = i.get("receipt_qtys") or []
         v["moq_floor_applied"] = bool(i.get("moq_floor_applied"))
-        v["suggested_po_qty"] = moq_service.adjust_qty(suggested_po_gap(v), value)
+        v["suggested_po_qty"] = moq_service.adjust_qty(suggested_po_gap(v), value, value)
     return views
 
 

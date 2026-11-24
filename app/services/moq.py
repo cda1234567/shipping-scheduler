@@ -1,4 +1,4 @@
-"""採購最低量（MOQ）：開採購單 / 缺料採購 / 低庫存的預設數量 = max(需求, 估算 MOQ)。
+"""採購最低量（MOQ）：開採購單 / 缺料採購 / 低庫存的預設數量 = 需求往上取整到估算 MOQ 的倍數（R-E2）。
 
 估算 MOQ：
 1. 近 RECEIPT_GCD_BILLS（10）張進貨單的數量取最大公因數（GCD）。進貨來源為正航公司 comProdRec
@@ -10,7 +10,8 @@
 3. 有進貨 GCD 時：GCD 小於 base 就用 base（moq_floor_applied=True，來源 site_master / erp_minpurch），
    否則用 GCD（來源 last_receipt）。沒有進貨紀錄就直接用 base；都沒有則 none（預設數量就是需求）。
 正航連不上時進貨查詢靜默略過（改走 base，並在 receipt_lookup_failed 標記；失敗 60 秒內不再重試）。
-目前沒有可靠的訂購倍數，所以不進位到倍數；adjust_qty 預留 multiple 參數。
+R-E2：所有呼叫端都把 MOQ 同時當倍數傳入（adjust_qty(need, moq, moq)），建議量 = ceil(需求 / MOQ) × MOQ，
+不會多買超過一個 MOQ 倍數；需求 <= 0 為 0；沒有 MOQ 時就是需求本身。
 """
 from __future__ import annotations
 

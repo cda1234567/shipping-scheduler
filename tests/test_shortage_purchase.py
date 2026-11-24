@@ -638,6 +638,35 @@ class AllocationFlowTests(ShortageListTests):
         out = sp.prepare_groups(raw, None)
         self.assertEqual([a["kind"] for a in out[0]["lines"][0]["allocations"]], ["manual"])
 
+    def test_r_e2_suggested_rounds_up_to_moq_multiple(self):
+        # OC-10702B 實例：缺 120、MOQ 50 → 150（不是 max(120, 50)=120）；缺剛好是倍數 → 不加；缺 0 → 0
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 120), item("EC-1", 100), item("PK-1", 10)])]
+        self.st = {"AC-1": 0, "EC-1": 0, "PK-1": 100}
+        self.site_moq = {"AC-1": 50.0, "EC-1": 50.0, "PK-1": 50.0}
+        _, p = self.parts()
+        ac = p["AC-1"]
+        self.assertEqual((ac["need_qty"], ac["moq"], ac["suggested_qty"], ac["moq_adjusted"]), (120, 50, 150, True))
+        self.assertEqual((ac["overage_qty"], ac["overage_reason"], ac["moq_round_qty"], ac["user_over_qty"]), (30, "moq", 30, 0))
+        self.assertEqual((p["EC-1"]["suggested_qty"], p["EC-1"]["moq_adjusted"]), (100, False))
+        self.assertEqual((p["PK-1"]["shortage"], p["PK-1"]["suggested_qty"]), (0, 0))
+
+    def test_r_e2_create_validation_matches_rounded_suggestion(self):
+        self.groups = [group(1, "A", "2026-12-10", [item("AC-1", 120)])]
+        self.st = {"AC-1": 0}
+        self.site_moq = {"AC-1": 50.0}
+
+        def raw(qty, edited=False):
+            return [{"supplier_id": "S2", "lines": [
+                {"part_number": "AC-1", "qty": qty, "price": 1, "pre_in_date": "2026-11-01", "qty_edited": edited}]}]
+
+        line = sp.prepare_groups(raw(150), [1])[0]["lines"][0]  # 建議量 150 不需改量即可開單
+        self.assertEqual((line["moq_round_qty"], line["user_over_qty"], line["overage_reason"]), (30, 0, "moq"))
+        self.assertEqual(line["shortage_snapshot"]["suggested_qty"], 150)
+        with self.assertRaises(ep.PoValidationError):
+            sp.prepare_groups(raw(151), [1])
+        line = sp.prepare_groups(raw(151, edited=True), [1])[0]["lines"][0]
+        self.assertEqual((line["moq_round_qty"], line["user_over_qty"], line["overage_reason"]), (30, 1, "user"))
+
     def test_prepare_groups_context_failure_degrades_to_manual(self):
         raw = [{"supplier_id": "S2", "lines": [{"part_number": "AC-1", "qty": 3, "price": 1, "pre_in_date": "2026-11-01"}]}]
         with patch.object(dispatch_router, "build_dispatch_groups", side_effect=RuntimeError("x")):
@@ -1031,40 +1060,12 @@ class CustomerSuppliedListTests(Base):
         res = sp.build_shortage_list([1])
         return res, {p["part_number"]: p for p in res["parts"]}, {c["part_number"]: c for c in res["customer_supplied"]}
 
-    def test_customer_supplied_dispatch_order(self):
-        self.groups = [group(1, "1-1", "2026-12-10", [
-            item("CS-2-TAB", 8), item("CS-1-TAB", 50), item("CS-2-TAB", 2)])]
-        res, _, _ = self.build()
-        self.assertEqual([p["part_number"] for p in res["customer_supplied"]], ["CS-2-TAB", "CS-1-TAB"])
-        self.assertEqual([p["dispatch_seq"] for p in res["customer_supplied"]], [0, 1])
-        self.assertEqual(res["customer_supplied"][0]["need"], 10)
-
     def test_classification(self):
         self.assertEqual(ep.customer_supplied_reason("X-TAB"), "suffix")
         self.assertEqual(ep.customer_supplied_reason("x-tab"), "suffix")
         self.assertEqual(ep.customer_supplied_reason("X", "003"), "")  # 類別 003 不再是客供料
         self.assertEqual(ep.customer_supplied_reason("OC-10222B", "003"), "")
         self.assertEqual(ep.customer_supplied_reason("X", "001"), "")
-
-    def test_excluded_from_purchasable_and_listed_separately(self):
-        res, parts, cs = self.build()
-        self.assertEqual(set(parts), {"EC-1", "NOSUP"})
-        self.assertEqual(set(cs), {"CS-1-TAB", "CS-2-TAB"})
-        self.assertEqual(cs["CS-1-TAB"]["reason"], "suffix")
-        self.assertEqual(cs["CS-2-TAB"]["reason"], "suffix")
-        self.assertEqual(cs["CS-1-TAB"]["description"], "客供電阻")
-        self.assertEqual(cs["CS-1-TAB"]["earliest_order"]["code"], "1-1")
-        self.assertEqual(cs["CS-1-TAB"]["orders"][0]["qty"], 50)
-
-    def test_zero_shortage_count_for_frontend_filter(self):
-        self.erp["wares"].append(("002", "CS-2-TAB", 15.0))  # CS-2-TAB 庫存 20 ≥ 需求 8 → 缺 0
-        res, _, cs = self.build()
-        self.assertEqual(cs["CS-2-TAB"]["shortage"], 0)
-        self.assertEqual(res["customer_supplied_zero_count"], 1)
-        self.tab_down = True  # 庫存未知（shortage None）不算缺 0，前端照常列出
-        res, _, cs = self.build()
-        self.assertIsNone(cs["CS-1-TAB"]["shortage"])
-        self.assertEqual(res["customer_supplied_zero_count"], 0)
 
     def test_no_supplier_or_price_lookup_for_customer_supplied(self):
         self.build()
@@ -1082,57 +1083,9 @@ class CustomerSuppliedListTests(Base):
         self.assertIn("EC-1", self.on_order_parts)
         self.assertTrue(looked_up)
 
-    def test_stock_is_002_only_not_015_not_st(self):
-        _, _, cs = self.build()
-        self.assertEqual(cs["CS-1-TAB"]["tab_stock"], 30)  # 015=1000、001=777、003=4、ST=9999 都不算
-        self.assertEqual(cs["CS-1-TAB"]["need"], 50)
-        self.assertEqual(cs["CS-1-TAB"]["shortage"], 20)
-        self.assertEqual(cs["CS-1-TAB"]["ware_ids"], ["002"])
-        self.assertEqual(cs["CS-2-TAB"]["tab_stock"], 5)
-        self.assertEqual(cs["CS-2-TAB"]["shortage"], 3)
-        wares_sql = [(s, p) for s, p in zip(self.erp["sql"], self.erp["params"]) if "comWareAmount" in s]
-        self.assertEqual(len(wares_sql), 1)
-        self.assertTrue(wares_sql[0][0].upper().lstrip().startswith("SELECT"))
-        self.assertEqual(wares_sql[0][1][0], "002")
-
-    def test_shortage_never_negative(self):
-        self.groups = [group(1, "1-1", "2026-12-10", [item("CS-1-TAB", 10)])]
-        _, _, cs = self.build()
-        self.assertEqual(cs["CS-1-TAB"]["shortage"], 0)
-
-    def test_env_override_multiple_wares(self):
-        with patch.dict(os.environ, {"ERP_TAB_WARE_IDS": "002, 003 ,"}):
-            _, _, cs = self.build()
-        self.assertEqual(cs["CS-1-TAB"]["ware_ids"], ["002", "003"])
-        self.assertEqual(cs["CS-1-TAB"]["tab_stock"], 34)  # 30 + 4，015 仍不算
-        self.assertEqual(cs["CS-1-TAB"]["shortage"], 16)
-
     def test_env_blank_falls_back_to_default(self):
         with patch.dict(os.environ, {"ERP_TAB_WARE_IDS": " , "}):
             self.assertEqual(sp.tab_ware_ids(), ["002"])
-
-    def test_tab_stock_failure_shows_unknown(self):
-        self.tab_down = True
-        res, parts, cs = self.build()
-        self.assertIsNone(cs["CS-1-TAB"]["tab_stock"])
-        self.assertIsNone(cs["CS-1-TAB"]["shortage"])
-        self.assertFalse(cs["CS-1-TAB"]["stock_known"])
-        self.assertIn("庫存查詢失敗", cs["CS-1-TAB"]["stock_error"])
-        self.assertTrue(any("客供料倉庫" in w for w in res["warnings"]))
-        self.assertIn("EC-1", parts)  # 其餘照常
-
-    def test_erp_down_falls_back_to_suffix_rule_only(self):
-        @contextmanager
-        def broken():
-            raise RuntimeError("down")
-            yield
-
-        with patch.object(ep, "_source_session", broken), patch.object(low_stock, "_erp_session", broken):
-            res, parts, cs = self.build()
-        self.assertEqual(set(cs), {"CS-1-TAB", "CS-2-TAB"})  # 只看 -TAB 結尾，與正航連線無關
-        self.assertNotIn("CS-1-TAB", parts)
-        self.assertIsNone(cs["CS-2-TAB"]["tab_stock"])
-        self.assertTrue(res["warnings"])
 
     def test_part_without_supplier_unchanged(self):
         _, parts, _ = self.build()
@@ -1140,21 +1093,38 @@ class CustomerSuppliedListTests(Base):
         self.assertEqual(parts["NOSUP"]["supplier_source"], "none")
         self.assertEqual(parts["EC-1"]["supplier_id"], "S1")
 
-    def test_classified_after_conversion(self):
-        # A 轉成 B：以轉換後的料號判斷（B 是 -TAB → 客供料；A 的需求併入）
+    def test_tab_parts_not_listed_r_d1(self):
+        # R-D1：-TAB（大小寫不分、去空白）不列在缺料清單，也不另列客供料區塊
+        self.groups = [group(1, "1-1", "2026-12-10", [
+            item("CS-2-TAB", 8), item("CS-1-TAB", 50), item("cs-3-tab ", 5), item("EC-1", 10)])]
+        res, parts, cs = self.build()
+        self.assertEqual(cs, {})
+        self.assertEqual(res["customer_supplied"], [])
+        self.assertEqual(res["customer_supplied_zero_count"], 0)
+        self.assertFalse(any(p.upper().strip().endswith("-TAB") for p in parts))
+        self.assertIn("EC-1", parts)
+
+    def test_tab_stock_not_queried_and_no_tab_warning(self):
+        self.tab_down = True
+        res, parts, _ = self.build()
+        self.assertFalse(any("客供料倉庫" in w for w in res["warnings"]))
+        self.assertFalse([s for s in self.erp["sql"] if "comWareAmount" in s])
+        self.assertIn("EC-1", parts)
+
+    def test_tab_after_conversion_not_listed(self):
+        # A 轉成 B（B 是 -TAB）：A 的需求併入 B，兩者都不列
         db.apply_part_conversion("OLD-1", "CS-2-TAB", [], {}, [], "t")
         self.groups = [group(1, "1-1", "2026-12-10", [item("OLD-1", 4), item("CS-2-TAB", 8)])]
-        _, parts, cs = self.build()
-        self.assertNotIn("OLD-1", parts)
-        self.assertEqual(cs["CS-2-TAB"]["need"], 12)
-        self.assertEqual(cs["CS-2-TAB"]["shortage"], 7)
-
-    def test_only_customer_supplied_does_not_warn_empty(self):
-        self.groups = [group(1, "1-1", "2026-12-10", [item("CS-1-TAB", 10)])]
         res, parts, cs = self.build()
-        self.assertEqual(parts, {})
-        self.assertFalse(any("沒有補料" in w for w in res["warnings"]))
+        self.assertNotIn("OLD-1", parts)
+        self.assertNotIn("CS-2-TAB", parts)
+        self.assertEqual(cs, {})
 
+    def test_only_tab_parts_gives_empty_list(self):
+        self.groups = [group(1, "1-1", "2026-12-10", [item("CS-1-TAB", 10)])]
+        res, parts, _ = self.build()
+        self.assertEqual(parts, {})
+        self.assertTrue(any("沒有補料" in w for w in res["warnings"]))
 
     def test_class_003_non_tab_is_purchasable(self):
         self.groups = [group(1, "1-1", "2026-12-10", [item("OC-10222B", 40)])]

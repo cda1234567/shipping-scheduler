@@ -1001,7 +1001,18 @@ async def calculate_shortage():
         db.list_bom_substitution_rules(active_only=True),
         db.get_order_substitution_allocations([int(order["id"]) for order in orders]),
     )
-    return {"results": results}
+    return {"results": [_without_customer_supplied(r) for r in results]}
+
+
+def _without_customer_supplied(result: dict) -> dict:
+    """R-D1：客供料（料號 -TAB 結尾）不列入缺料清單，訂單狀態也不因它算缺料（只影響顯示，不動計算本身）。"""
+    if result.get("status") not in ("shortage", "ok"):
+        return result
+    shortages = [
+        s for s in result.get("shortages") or []
+        if not str(s.get("part_number") or "").strip().upper().endswith("-TAB")
+    ]
+    return {**result, "shortages": shortages, "status": "shortage" if shortages else "ok"}
 
 
 # ── Order status changes ──────────────────────────────────────────────────────

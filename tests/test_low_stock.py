@@ -358,14 +358,14 @@ class OnOrderTests(DbCase):
         self.usage = {"A-1": (900.0, 5), "B-1": (900.0, 5), "C-1": (900.0, 5)}
         ls.run_suggestion()  # 門檻皆 105
         self.set_stock("A-1", 10)  # 缺口 95 < MOQ 500 → 500
-        self.set_stock("B-1", 10)  # 缺口 95 > MOQ 50 → 95
+        self.set_stock("B-1", 10)  # 缺口 95 > MOQ 50 → 往上取整到 50 的倍數 100（R-E2）
         self.set_stock("C-1", 10)  # 沒有 MOQ → 95
         self.set_stock("A-1", 10)
         with patch.object(moq_service, "site_moq_map", lambda: {"A-1": 500.0, "B-1": 50.0, "C-1": 0.0}):
             rows = {r["part_number"]: r for r in ls.list_rows()}
             alerts = {a["part_number"]: a for a in ls.list_alerts()}
         self.assertEqual((rows["A-1"]["suggested_po_qty"], rows["A-1"]["moq"], rows["A-1"]["moq_source"]), (500, 500, "site_master"))
-        self.assertEqual(rows["B-1"]["suggested_po_qty"], 95)
+        self.assertEqual(rows["B-1"]["suggested_po_qty"], 100)
         self.assertEqual((rows["C-1"]["suggested_po_qty"], rows["C-1"]["moq"], rows["C-1"]["moq_source"]), (95, 0, "none"))
         self.assertEqual(alerts["A-1"]["suggested_po_qty"], 500)
 

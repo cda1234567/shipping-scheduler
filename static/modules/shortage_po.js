@@ -164,7 +164,7 @@ function toRow(p) {
     moqSource: p.moq_source || "",
     lastReceipt: { qty: p.last_receipt_qty, date: p.last_receipt_date || "", gcd: p.receipt_gcd, count: p.receipt_count, floor: p.moq_floor_applied },
     moqAdjusted: Boolean(p.moq_adjusted),
-    suggested: Number(p.suggested_qty) || 0, // 缺經 MOQ 調整後的建議量（伺服器算的，不會超過 max(缺, MOQ)）
+    suggested: Number(p.suggested_qty) || 0, // 缺經 MOQ 調整後的建議量（伺服器算的，= ceil(缺 / MOQ) × MOQ）
     price: String(p.price ?? 0),
     currency: "", // 空 = 依該供應商 + 料號最近一張正航採購單自動判斷；NTD / USD = 手動
     date: p.pre_in_date || "",
@@ -208,7 +208,6 @@ async function buildList() {
     renderCutoff();
     el("shortage-po-list").hidden = false;
     renderGroups();
-    renderCustomerSupplied();
   } catch (error) {
     showToast(`產生缺料清單失敗：${error.message}`, { tone: "error", sticky: true });
   } finally {
@@ -220,40 +219,6 @@ function renderWarnings() {
   const box = el("shortage-po-warnings");
   const warnings = _data?.warnings || [];
   box.innerHTML = warnings.map(w => `<div class="erp-po-warn">${esc(w)}</div>`).join("");
-}
-
-// ── 客供料（向客戶要料）：唯讀，不可勾選、不開採購單 ──────────────────────────
-function renderCustomerSupplied() {
-  const box = el("shortage-po-cs");
-  if (!box) return;
-  const all = _data?.customer_supplied || [];
-  // 只列缺 > 0 的；庫存未知（shortage 為 null）無從判斷，照常列出
-  const items = all.filter(c => c.shortage === null || c.shortage === undefined || c.shortage > 0);
-  const hiddenZero = all.length - items.length;
-  if (!all.length) { box.hidden = true; box.innerHTML = ""; return; }
-  const wares = (_data.customer_supplied_ware_ids || []).join("、");
-  const rows = items.map(c => {
-    const e = c.earliest_order || {};
-    const tip = (c.orders || []).map(o => `${o.code} ${o.model}　出貨 ${o.ship_date || "—"}　需求 ${fmtQty(o.qty)}`).join("\n");
-    const stock = c.stock_known ? fmtQty(c.tab_stock) : `<span class="shortage-po-adjusted" title="${esc(c.stock_error)}">未知</span>`;
-    const short = c.stock_known ? fmtQty(c.shortage) : "—";
-    return `<tr>
-      <td class="mono">${esc(c.part_number)}</td>
-      <td>${esc(c.description)}</td>
-      <td class="num">${fmtQty(c.need)}</td>
-      <td class="num">${stock}</td>
-      <td class="num ${c.stock_known && c.shortage > 0 ? "shortage-po-short" : ""}">${short}</td>
-      <td title="${esc(tip)}">${esc(e.code)} ${esc(e.model)}<div class="erp-po-hint">出貨 ${esc(e.ship_date) || "—"}${(c.orders || []).length > 1 ? `（共 ${c.orders.length} 張）` : ""}</div></td>
-    </tr>`;
-  }).join("");
-  const errors = [...new Set(items.filter(c => !c.stock_known).map(c => c.stock_error))];
-  box.hidden = false;
-  box.innerHTML = `<div class="shortage-po-group-head"><strong>客供料（向客戶要料）</strong>
-      <span class="erp-po-hint">${items.length} 種；料號 -TAB 結尾。僅供查看，不可勾選、不開採購單；庫存為正航倉庫 ${esc(wares)}（非 ST）${hiddenZero ? `（另 ${hiddenZero} 筆缺 0 未列出）` : ""}</span></div>
-    ${errors.map(e => `<div class="erp-po-warn">${esc(e)}，庫存暫顯示為未知</div>`).join("")}
-    ${items.length ? `<div class="erp-po-table-wrap"><table class="erp-po-table"><thead><tr>
-      <th>料號</th><th>品名</th><th class="num">需求</th><th class="num">${esc(wares)} 庫存</th><th class="num">缺（向客戶要）</th><th>最早訂單</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="erp-po-hint">沒有缺的客供料</div>'}`;
 }
 
 // ── 鈞洋 後段加工連動 ────────────────────────────────────────────────────────
