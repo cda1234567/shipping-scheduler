@@ -1,4 +1,4 @@
-"""001／002→015 調撥；每批獨立交易，正式公司由調撥專用開關控制。"""
+"""001→015 調撥；每批獨立交易，正式公司由調撥專用開關控制。客供料（-TAB）不走一鍵調撥（R-G2）。"""
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +14,7 @@ from .erp_stock import ErpUnavailable
 from .local_time import local_now
 from .erp_transfer_schema import DEFAULTS
 
-SOURCE_WARE = '001'  # 一般料來源倉；客供料（-TAB）由 st_pending_transfer 標成 002
+SOURCE_WARE = '001'  # 唯一來源倉；002 客供倉不再用於調撥（R-G2）
 TARGET_WARE = '015'  # 庚霖倉
 
 
@@ -80,8 +80,22 @@ def cost_values(product: dict, outgoing: dict, incoming: dict, qty: float, param
     return dict(cost=price, amount=amount, avg=avg, avg_out=float(avg_out))
 
 
+def is_tab_row(r: dict) -> bool:
+    return bool(ep.customer_supplied_reason(r.get('part')))
+
+
+def reject_tab_rows(rows: list[dict]) -> None:
+    """R-G2 寫入防線：客供料或非 001 來源倉的明細一律拒絕，不寫入正航。"""
+    for r in rows:
+        if is_tab_row(r):
+            raise ep.PoValidationError(f"料號 {r.get('part')} 為客供料（-TAB），不走一鍵調撥，已拒絕寫入；請重新預覽")
+        if r.get('ware_out', SOURCE_WARE) != SOURCE_WARE:
+            raise ep.PoValidationError(f"料號 {r.get('part')} 來源倉 {r.get('ware_out')} 不可調撥，只能從 {SOURCE_WARE} 倉撥出；請重新預覽")
+
+
 def build_rows(move_no: str, today: int, rows: list[dict]) -> dict[str, list[dict]]:
     """三份公司3樣本 EUnitRelation 都為0；新單 DataVer 依規格為1（手開樣本為2）。"""
+    reject_tab_rows(rows)
     def row(table: str, **values: Any) -> dict[str, Any]:
         return {**DEFAULTS[table], **values}
     main = row('stkMoveMain', Flag=400, MoveNO=move_no, MoveDate=today,
@@ -139,6 +153,9 @@ def source_stock(pairs: list[tuple[str, str]]) -> dict[tuple[str, str], float]:
 
 def plan(cur: Any, target: str, lock: bool = False) -> dict[str, Any]:
     info = pending.batch_breakdown(target)
+    # 預覽也再濾一次客供料，整批濾空就照空批次顯示（不能勾）。
+    for b in info['batches']:
+        b['rows'] = [r for r in b['rows'] if not is_tab_row(r)]
     params = er.load_cost_params(cur, target)
     hint = ' WITH (UPDLOCK, HOLDLOCK)' if lock else ''
     stock = source_stock([(r['part'], r.get('ware_out', SOURCE_WARE)) for b in info['batches'] for r in b['rows']])
@@ -319,6 +336,7 @@ def execute_bill(cur: Any, target: str, batch: dict, today: int, actor: str = 'w
     → comChangeLog → 回讀檢查。不寫 CAvgCost／CTotalCost；CostByWare=0 時不改各倉 Cost／TotalCost。
     """
     # 未勾選的前批次不會真的改變015成本；以此交易實際鎖定的庫存算入庫平均。
+    reject_tab_rows(batch['rows'])
     rows = [dict(r) for r in batch['rows'] if r['transfer'] > 0]
     if not rows:
         raise ep.PoValidationError('此批次沒有可調撥數量')
@@ -420,6 +438,11 @@ def create(req: dict, actor: str = 'web', client_ip: str = '') -> dict[str, Any]
     ordered = [b['key'] for b in expected['batches'] if b['key'] in keys]
     if len(ordered) != len(keys):
         raise ep.PoValidationError('批次不在預覽中，請重新預覽')
+    for b in expected['batches']:
+        if b['key'] in keys:
+            reject_tab_rows(b['rows'])
+            if not any(r['transfer'] > 0 for r in b['rows']):
+                raise ep.PoValidationError(f"批次 {b.get('code') or b['key']} 沒有可調撥的料，不能送出")
     results = []
     with ep._write_lock:
         for i, key in enumerate(ordered):

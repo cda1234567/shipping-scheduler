@@ -2,7 +2,7 @@
 
 export const WARE_LABELS = { "001": "一般倉", "002": "客供倉", "015": "庚霖倉" };
 export const COLUMNS = ["料號", "品名", "本次撥"];
-export const INTRO = "一個批次開一張調撥單：一般料從一般倉（001）、客供料從客供倉（002）撥到庚霖倉（015）。公司倉不夠時能撥多少撥多少，短少的留到下次。";
+export const INTRO = "一個批次開一張調撥單：一般料從一般倉（001）撥到庚霖倉（015）；客供料（-TAB）不調撥。公司倉不夠時能撥多少撥多少，短少的留到下次。";
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

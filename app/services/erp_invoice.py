@@ -348,10 +348,10 @@ def normalize_request(raw: Dict[str, Any]) -> Dict[str, Any]:
 def list_open_lines(
     customer: Optional[str] = None, q: Optional[str] = None, limit: int = 300, target: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """寫入公司的 S/C（TraBillSub Flag 2）未完成量 QtyRemain > 0 的明細（唯讀）。"""
+    """寫入公司尚未結案（BillStatus = 0）的 S/C（TraBillSub Flag 2）未完成量 QtyRemain > 0 的明細（唯讀）。"""
     target, creds = resolve_target(target)
     limit = max(1, min(int(limit), 1000))
-    where = [f"s.Flag = {SC_FLAG}", "s.QtyRemain > 0"]
+    where = [f"s.Flag = {SC_FLAG}", "m.BillStatus = 0", "s.QtyRemain > 0"]
     params: List[Any] = []
     if ep._text(customer):
         where.append("m.CustID = %s")
@@ -464,6 +464,8 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         main = _one_row(wcur, f"SELECT * FROM TraBillMain{hint} WHERE Flag = {SC_FLAG} AND BillNo = %s", (sc_no,))
         if main is None:
             raise InvoiceValidationError(f"找不到 S/C {sc_no}")
+        if int(ep._get(main, "BillStatus", 0) or 0) != 0:
+            raise InvoiceValidationError(f"S/C {sc_no} 已結案，不能再開 Invoice")
         wcur.execute(f"SELECT * FROM TraBillSub{hint} WHERE Flag = {SC_FLAG} AND BillNo = %s ORDER BY RowNo", (sc_no,))
         subs = {int(ep._get(r, "RowNo")): r for r in ep._rows(wcur)}
         scs[sc_no] = {"main": main, "subs": subs}
