@@ -447,8 +447,8 @@ export async function initErpReceive() {
   _initialized = true;
   el("erp-receive-date").value = todayText();
   _picker = createOpenLinePicker(el("erp-receive-picker"), {
-    // 已鎖定廠商時只抓該廠商（勾選跨搜尋保留，且不會被 300 筆上限截掉）
-    fetchLines: async ({ q, group }) => apiJson(`/api/erp-receive/open-lines?q=${encodeURIComponent(q)}${group ? `&vendor=${encodeURIComponent(group)}` : ""}`),
+    // 已鎖定廠商時只抓該廠商、上限 1000 筆（未鎖定 300 筆）；超過上限時只取最新的明細（勾選跨搜尋保留）
+    fetchLines: async ({ q, group }) => apiJson(`/api/erp-receive/open-lines?q=${encodeURIComponent(q)}${group ? `&vendor=${encodeURIComponent(group)}&limit=1000` : ""}`),
     lineKey: l => `${l.po_no}#${l.row_no}`,
     groupKey: l => l.vendor_id,
     groupLabel: l => `${l.vendor_id} ${l.vendor_name}`,
@@ -463,6 +463,7 @@ export async function initErpReceive() {
     qtyOf: l => l.qty_remain,
     priceOf: l => l.price,
     otherGroupText: "已隱藏其他廠商 {n} 筆",
+    truncatedText: "結果過多，只顯示最新的 {n} 筆，較舊的單請用搜尋縮小範圍",
     multiGroupText: "目前顯示多家廠商，請先在搜尋框輸入廠商 / 單號縮小到單一廠商再全選（不可混廠商）",
     onRender: root => { void decoratePoMailBadges(root); },
     onChange: () => hidePreview(),

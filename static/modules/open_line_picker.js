@@ -57,7 +57,7 @@ export function planSelectAll(visible, lockKey, groupKey, lineKey) {
 
 export function createOpenLinePicker(root, options) {
   const opts = { searchPlaceholder: "搜尋廠商 / 料號 / 單號", emptyText: "沒有可選的明細", otherGroupText: "已隱藏其他分組 {n} 筆",
-    multiGroupText: "目前顯示多個分組，請先搜尋縮小到單一分組再全選", ...options };
+    multiGroupText: "目前顯示多個分組，請先搜尋縮小到單一分組再全選", truncatedText: "結果過多，只顯示前面一部分，請用搜尋縮小範圍", ...options };
   const hasPrice = typeof opts.priceOf === "function";
   let lines = [];
   let truncated = false;
@@ -143,7 +143,7 @@ export function createOpenLinePicker(root, options) {
       : "";
     const rest = visibleLines(lines, lockKey, opts.groupKey);
     body.innerHTML = pinnedHtml + (pinned.length && rest.length ? `<tr class="olp-pinned-head"><td colspan="${colspan}" class="olp-empty">本次搜尋結果</td></tr>` : "")
-      + (rest.length ? rest.map(l => rowHtml(l, false)).join("") : (lines.length ? "" : `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.emptyText)}</td></tr>`)) + (truncated ? `<tr><td colspan="${colspan}" class="olp-empty">結果過多，只顯示前面一部分，請用搜尋縮小範圍</td></tr>` : "");
+      + (rest.length ? rest.map(l => rowHtml(l, false)).join("") : (lines.length ? "" : `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.emptyText)}</td></tr>`)) + (truncated ? `<tr><td colspan="${colspan}" class="olp-empty">${esc(opts.truncatedText.replace("{n}", lines.length))}</td></tr>` : "");
   }
 
   function render() {

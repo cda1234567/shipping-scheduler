@@ -847,6 +847,47 @@ class RuleTests(ErpCase):
         self.assertIn("m.CustomerID = %s", sql)
         self.assertIn("%a[_]b%", params)
 
+    def test_open_lines_keeps_newest_and_sorts_ascending(self):
+        # 舊單很多的廠商：TOP 要取最新的明細，回傳仍依日期 / 單號 / 項次升冪
+        data = [("PO-2006", 1, 20060105), ("PO-2016", 1, 20160301), ("PO-2026A", 2, 20260110),
+                ("PO-2026A", 1, 20260110), ("PO-2026B", 1, 20261120)]
+        executed = []
+
+        class Cur:
+            def execute(self, sql, params=()):
+                executed.append(sql)
+                if "FROM ordBillSub" not in sql:
+                    self.rows = [("CHIComp03",)]
+                    return
+                top = int(re.search(r"TOP (\d+)", sql).group(1))
+                rows = sorted(data, key=lambda r: r[1])
+                rows = sorted(rows, key=lambda r: (r[2], r[0]), reverse="BillDate DESC, m.BillNO DESC" in sql)
+                self.rows = [(no, rn, bd, "P0175", "廠", "", "X", "", 1, 1, 1, 0.05, "", "NTD", 1)
+                             for no, rn, bd in rows][:top]
+
+            def fetchone(self):
+                return self.rows[0] if self.rows else None
+
+            def fetchall(self):
+                return list(self.rows)
+
+        class Conn:
+            def cursor(self):
+                return Cur()
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+
+        with patch.object(ep, "_connect_write", lambda creds: Conn()), patch.object(ep, "_check_db_name", lambda cur, t: None):
+            r = er.list_open_lines(vendor="P0175", limit=3)
+        self.assertIn("ORDER BY m.BillDate DESC, m.BillNO DESC, s.RowNO", executed[-1])
+        self.assertTrue(r["truncated"])
+        self.assertEqual([(l["po_no"], l["row_no"]) for l in r["lines"]],
+                         [("PO-2026A", 1), ("PO-2026A", 2), ("PO-2026B", 1)])
+
 
 class ApiTests(ErpCase):
     def setUp(self):

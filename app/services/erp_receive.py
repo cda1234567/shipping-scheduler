@@ -464,8 +464,8 @@ def list_open_lines(
         "s.ProdName, s.Quantity, s.QtyRemain, s.Price, s.TaxRate, s.Unit, m.CurrID, s.Discount "
         "FROM ordBillSub s JOIN ordBillMain m ON m.Flag = s.Flag AND m.BillNO = s.BillNO "
         "LEFT JOIN comCustomer c ON c.Flag = 2 AND c.ID = m.CustomerID "
-        f"WHERE {' AND '.join(where)} ORDER BY m.BillDate, m.BillNO, s.RowNO"
-    )
+        f"WHERE {' AND '.join(where)} ORDER BY m.BillDate DESC, m.BillNO DESC, s.RowNO"
+    )  # 取最新的 limit 筆（舊單多的廠商不會只看到十幾年前的單），回傳前再依日期升冪排
     wconn = ep._connect_write(creds)
     try:
         cur = wconn.cursor()
@@ -490,6 +490,7 @@ def list_open_lines(
             "tax_rate": float(r[11] or 0), "unit": ep._text(r[12]), "currency": ep._text(r[13]),
             "discount": float(r[14] or 1),
         })
+    lines.sort(key=lambda l: (l["date"], l["po_no"], l["row_no"]))
     return {"target": target, "target_label": ep.target_label(target), "lines": lines, "truncated": len(rows) > limit}
 
 
