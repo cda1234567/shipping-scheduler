@@ -17,7 +17,9 @@ let _entryCcy = "";      // USD 採購單選「美金」(USD) / 「台幣」(NTD
 let _entryVendor = null; // 選擇是哪家廠商時做的；換廠商就回到新單的預設
 let _priceNtd = false;   // USD 採購單打台幣時勾「單價是台幣」（現貨報台幣價，不用匯率）
 let _priceNtdVendor = null; // 勾選是哪家廠商時做的；換廠商就不沿用
-let _lastShown = null;   // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
+let _entryChoosable = false; // 上一次成功預覽的 entry_ccy_choosable；false 時不送 price_ntd / entry_ccy（後端會忽略）
+let _selKey = "";        // 目前勾選明細（po_no#row）+ 鎖定廠商；變了就把上面的選擇清回預設
+let _lastShown = null;   //最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
 
 const fmt = v => (Number.isFinite(Number(v)) ? Number(v).toLocaleString("zh-TW", { maximumFractionDigits: 4 }) : "—");
 const el = id => document.getElementById(id);
@@ -82,9 +84,31 @@ function buildBody(confirm = false) {
   };
 }
 
+// v2026.11.24.8：「單價是台幣」、打美金 / 台幣、匯率一律從這次選的採購單預設開始，不跨收料沿用
+function resetEntryChoices() {
+  _rate = "";
+  _rateVendor = null;
+  _entryCcy = "";
+  _entryVendor = null;
+  _priceNtd = false;
+  _priceNtdVendor = null;
+  _entryChoosable = false;
+}
+
+function selectionKey(sel) {
+  return `${_picker.lockedGroup() ?? ""}|${sel.map(s => `${s.line.po_no}#${s.line.row_no}`).sort().join(",")}`;
+}
+
+// 勾選明細或鎖定廠商變了才清選擇；只改數量 / 單價不清（同一批明細剛打的匯率保留）
+function handlePickerChange(sel) {
+  const key = selectionKey(sel);
+  if (key !== _selKey) { _selKey = key; resetEntryChoices(); }
+  hidePreview();
+}
+
 // 「單價是台幣」只在打台幣時有效；切到打美金就不送
 function currentPriceNtd() {
-  return _priceNtd && _picker.lockedGroup() === _priceNtdVendor && currentEntryCcy() !== "USD";
+  return _entryChoosable && _priceNtd && _picker.lockedGroup() === _priceNtdVendor && currentEntryCcy() !== "USD";
 }
 
 // 勾 / 取消「單價是台幣」：一改就重新預覽（單價、匯率都會變）
@@ -104,7 +128,7 @@ function bindPriceNtdInput() {
 }
 
 function currentEntryCcy() {
-  if (!_entryCcy || _picker.lockedGroup() !== _entryVendor) return null;
+  if (!_entryChoosable || !_entryCcy || _picker.lockedGroup() !== _entryVendor) return null;
   return _entryCcy;
 }
 
@@ -286,6 +310,7 @@ async function handlePreview() {
   try {
     _token = newToken();
     const r = await apiPost("/api/erp-receive/preview", body);
+    _entryChoosable = Boolean(r.entry_ccy_choosable);
     renderPreview(r);
     _preview = r;
     _lastShown = r;
@@ -323,7 +348,8 @@ async function handleCreate() {
     await handlePreview();
     return;
   }
-  if (Boolean(_preview.price_ntd) !== body.price_ntd) {
+  // 只有可選打美金 / 台幣的採購單才比對（台幣單後端一律回 false，不比對以免一直重新預覽）
+  if (_preview.entry_ccy_choosable && Boolean(_preview.price_ntd) !== body.price_ntd) {
     showToast("已改「單價是台幣」，已重新預覽，請確認後再按「確認收料」");
     await handlePreview();
     return;
@@ -360,6 +386,7 @@ async function handleCreate() {
     result.innerHTML = `✅ 已寫入 ${esc(r.target_label)}：收料 <strong class="mono">${esc(r.im_no)}</strong>　驗收 <strong class="mono">${esc(r.qm_no)}</strong>　進貨 <strong class="mono">${esc(r.rm_no)}</strong>，合計 ${esc(r.currency || "NTD")} ${fmt(r.totals.total)}${r.closed_pos?.length ? `　已結案採購單：${esc(r.closed_pos.join("、"))}` : ""}${r.receipt_id ? `　<button type="button" class="btn btn-sm" data-rm-print="${esc(r.receipt_id)}">🖨 列印進貨單</button>` : ""}`;
     result.hidden = false;
     hidePreview();
+    resetEntryChoices();
     _picker.clear();
     await _picker.reload();
     showToast(`已建立進貨單 ${r.rm_no}`, { tone: "success" });
@@ -435,6 +462,8 @@ async function loadConfig() {
 }
 
 export async function onErpReceiveTabActivated() {
+  resetEntryChoices();
+  hidePreview();  // 舊預覽是照舊選擇算的，選擇清掉後要重新預覽
   await loadConfig();
   if (_config?.available) {
     try { await _picker.reload(); } catch (error) { showToast(`讀取明細失敗：${error.message}`, { tone: "error" }); }
@@ -445,6 +474,7 @@ export async function onErpReceiveTabActivated() {
 export async function initErpReceive() {
   if (_initialized) return;
   _initialized = true;
+  resetEntryChoices();
   el("erp-receive-date").value = todayText();
   _picker = createOpenLinePicker(el("erp-receive-picker"), {
     // 已鎖定廠商時只抓該廠商、上限 1000 筆（未鎖定 300 筆）；超過上限時只取最新的明細（勾選跨搜尋保留）
@@ -466,7 +496,7 @@ export async function initErpReceive() {
     truncatedText: "結果過多，只顯示最新的 {n} 筆，較舊的單請用搜尋縮小範圍",
     multiGroupText: "目前顯示多家廠商，請先在搜尋框輸入廠商 / 單號縮小到單一廠商再全選（不可混廠商）",
     onRender: root => { void decoratePoMailBadges(root); },
-    onChange: () => hidePreview(),
+    onChange: sel => handlePickerChange(sel),
   });
   el("btn-erp-receive-preview").addEventListener("click", handlePreview);
   bindPrintButtons();

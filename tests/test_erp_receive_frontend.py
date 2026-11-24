@@ -232,7 +232,7 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : nt
 // 換廠商：不沿用上一家的選擇（回到新單預設）
 {
   const t = await setup(pick);
-  t.run('_entryCcy = "USD"; _entryVendor = "P0373";');
+  t.run('_entryCcy = "USD"; _entryVendor = "P0373"; _entryChoosable = true;');
   assert.equal(t.run('buildBody().entry_ccy'), 'USD');
   t.run(`_picker.lockedGroup = () => 'P0304';`);
   assert.equal(t.run('buildBody().entry_ccy'), null);
@@ -318,6 +318,138 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.price_ntd ? ntdPrice
   const t = await setup(pick);
   t.run(`renderPreview(${JSON.stringify({ ...fx.with, mode: 'local', currency: 'NTD', po_currency: 'NTD' })})`);
   assert.ok(!t.els['erp-receive-preview'].innerHTML.includes('erp-receive-price-ntd'));
+}
+"""
+        completed = run_node(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_entry_choices_reset_per_receipt_with_node(self):
+        # v2026.11.24.8：「單價是台幣」、打美金 / 台幣、匯率不跨收料沿用（換明細、收料後、載入頁面都回預設）
+        script = r"""
+const ntdNoRate = { ...fx.without, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: false };
+const ntdRate = { ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: false };
+const ntdPrice = { ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: true,
+  exch_rate: 1, rate_source: 'ntd_price', rate_required: false };
+// 台幣採購單（PO-20261029002）：後端不讓選、price_ntd 一律 false
+const local = { ...fx.with, mode: 'local', currency: 'NTD', po_currency: 'NTD', entry_ccy: null, entry_ccy_default: null,
+  entry_ccy_choosable: false, price_ntd: false, exch_rate: 1, rate_required: false };
+const pick = body => (body.lines[0].po_no === 'PO-20261029002' ? local
+  : body.price_ntd ? ntdPrice : body.exch_rate ? ntdRate : ntdNoRate);
+const L = (po, row, qty = 100, price = 6.6) => ({ line: { po_no: po, row_no: row }, qty, price });
+const USD_A = L('PO-20260904003', 1), USD_B = L('PO-20260904003', 2), NTD = L('PO-20261029002', 2);
+
+// 用假 picker 跑真的 initErpReceive，onChange 走實際接線
+async function boot() {
+  const t = await setup(pick);
+  t.els['btn-erp-receive-preview'] = { addEventListener() {} };
+  t.run(`
+    globalThis._sel = []; globalThis._lock = null; globalThis._confirms = [];
+    globalThis.decoratePoMailBadges = () => {}; globalThis.poMailSlot = () => '';
+    globalThis.createOpenLinePicker = (root, opts) => { globalThis._opts = opts; return {
+      getSelection: () => globalThis._sel, lockedGroup: () => globalThis._lock,
+      clear() { globalThis._sel = []; globalThis._lock = null; opts.onChange([]); },
+      reload: async () => {} }; };
+    window.confirm = m => { globalThis._confirms.push(m); return true; };
+  `);
+  await t.run('initErpReceive()');
+  t.els['erp-receive-date'].value = '2026-11-09';  // init 會填今天；對齊 fixture 的發票日期
+  t.select = (sel, lock = 'P0304') => { t.run(`globalThis._sel = ${JSON.stringify(sel)}; globalThis._lock = ${JSON.stringify(lock)}; globalThis._opts.onChange(globalThis._sel);`); };
+  t.state = () => JSON.parse(t.run('JSON.stringify({ r: _rate, rv: _rateVendor, c: _entryCcy, cv: _entryVendor, p: _priceNtd, pv: _priceNtdVendor })'));
+  return t;
+}
+const DEFAULTS = { r: '', rv: null, c: '', cv: null, p: false, pv: null };
+
+// 勾「單價是台幣」收料成功 → 同廠商挑下一張單：下一次預覽 price_ntd false、entry_ccy null、exch_rate null
+{
+  const t = await boot();
+  t.select([USD_A]);
+  await t.run('handlePreview()');
+  const box = t.els['erp-receive-price-ntd'];
+  box.checked = true; box.fire('change');
+  await flush(); await flush();
+  assert.equal(t.posts.at(-1).price_ntd, true);
+  await t.run('handleCreate()');
+  assert.equal(t.run('globalThis._confirms.length'), 1, '確認收料要開確認視窗');
+  assert.equal(t.posts.at(-1).price_ntd, true, 'create 帶 price_ntd');
+  assert.deepEqual(t.state(), DEFAULTS, '收料成功後清回預設');
+  t.select([NTD]);
+  await t.run('handlePreview()');
+  const b = t.posts.at(-1);
+  assert.deepEqual([b.price_ntd, b.entry_ccy, b.exch_rate], [false, null, null]);
+  // 台幣單：確認收料直接開確認視窗，不出現「已改單價是台幣」重新預覽
+  const before = t.posts.length;
+  await t.run('handleCreate()');
+  assert.equal(t.run('globalThis._confirms.length'), 2, '台幣單要開確認視窗');
+  assert.equal(t.posts.length, before + 1, '直接送 create，不重新預覽');
+  assert.ok(!t.toasts.some(x => x.msg.includes('單價是台幣')), JSON.stringify(t.toasts));
+}
+
+// 同廠商換別的明細：選擇清回預設
+{
+  const t = await boot();
+  t.select([USD_A]);
+  t.run('_rate = "32.77"; _rateVendor = "P0304"; _entryCcy = "NTD"; _entryVendor = "P0304"; _priceNtd = true; _priceNtdVendor = "P0304"; _entryChoosable = true;');
+  t.select([USD_A, USD_B]);
+  assert.deepEqual(t.state(), DEFAULTS, '加勾一筆');
+  t.run('_rate = "32.77"; _rateVendor = "P0304"; _priceNtd = true; _priceNtdVendor = "P0304"; _entryChoosable = true;');
+  t.select([USD_B]);
+  assert.deepEqual(t.state(), DEFAULTS, '換成另一筆');
+  const b = t.run('buildBody()');
+  assert.deepEqual([b.price_ntd, b.entry_ccy, b.exch_rate], [false, null, null]);
+}
+
+// 換廠商再換回來：不會恢復舊選擇
+{
+  const t = await boot();
+  t.select([USD_A]);
+  t.run('_rate = "32.77"; _rateVendor = "P0304"; _entryCcy = "NTD"; _entryVendor = "P0304"; _priceNtd = true; _priceNtdVendor = "P0304"; _entryChoosable = true;');
+  t.select([]);
+  t.select([L('PO-20260612001', 1)], 'P0373');
+  t.select([USD_A]);
+  assert.deepEqual(t.state(), DEFAULTS);
+  const b = t.run('buildBody()');
+  assert.deepEqual([b.price_ntd, b.entry_ccy, b.exch_rate], [false, null, null]);
+}
+
+// 同一批明細只改數量 / 單價：剛打的匯率保留
+{
+  const t = await boot();
+  t.select([USD_A]);
+  await t.run('handlePreview()');
+  const rate = t.els['erp-receive-rate'];
+  rate.value = '32.77'; rate.fire('change');
+  await flush(); await flush();
+  assert.equal(t.posts.at(-1).exch_rate, 32.77);
+  t.select([L('PO-20260904003', 1, 50, 7.1)]);
+  assert.equal(t.run('_rate'), '32.77', '改數量不清匯率');
+  assert.equal(t.run('buildBody().exch_rate'), 32.77);
+  assert.equal(t.run('_entryChoosable'), true, '同一批明細仍可選');
+}
+
+// 防呆：就算殘留舊勾選，台幣單（entry_ccy_choosable false）也不送 price_ntd、確認收料不會重新預覽迴圈
+{
+  const t = await boot();
+  t.select([NTD]);
+  t.run('_priceNtd = true; _priceNtdVendor = "P0304"; _entryCcy = "NTD"; _entryVendor = "P0304"; _entryChoosable = true;');
+  await t.run('handlePreview()');
+  assert.equal(t.run('buildBody().price_ntd'), false, '台幣單預覽後不送 price_ntd');
+  assert.equal(t.run('buildBody().entry_ccy'), null, '台幣單預覽後不送 entry_ccy');
+  await t.run('handleCreate()');
+  assert.equal(t.run('globalThis._confirms.length'), 1, '直接開確認視窗');
+  assert.ok(!t.toasts.some(x => x.msg.includes('單價是台幣')), JSON.stringify(t.toasts));
+}
+
+// 載入頁面 / 切回分頁：回到預設
+{
+  const t = await boot();
+  assert.deepEqual(t.state(), DEFAULTS, 'init 後是預設');
+  t.select([USD_A]);
+  t.run('_rate = "32.77"; _rateVendor = "P0304"; _entryCcy = "USD"; _entryVendor = "P0304"; _priceNtd = true; _priceNtdVendor = "P0304"; _entryChoosable = true;');
+  await t.run('onErpReceiveTabActivated()');
+  assert.deepEqual(t.state(), DEFAULTS, '切回分頁後是預設');
+  assert.equal(t.run('_entryChoosable'), false);
+  const b = t.run('buildBody()');
+  assert.deepEqual([b.price_ntd, b.entry_ccy, b.exch_rate], [false, null, null]);
 }
 """
         completed = run_node(script)
