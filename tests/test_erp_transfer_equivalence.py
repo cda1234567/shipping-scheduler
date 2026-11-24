@@ -97,24 +97,29 @@ SCENARIOS = {
         cost_by_ware=False,
         seed=dict(
             products={"P": {"ProdID": "P", "ProdName": "面板", "CAvgCost": 21, "CTotalCost": 63000},
+                      "Q-TAB": {"ProdID": "Q-TAB", "ProdName": "客供", "CAvgCost": 0, "CTotalCost": 0},
                       "R": {"ProdID": "R", "ProdName": "電阻", "CAvgCost": 0.5, "CTotalCost": 250}},
             stocks={"P|001": _seed_stock(2000), "P|015": _seed_stock(1000, 0, 0),
-                    "R|001": _seed_stock(500, 0.5)},
-            rolls={"202611|P|001": {"Quantity": 2000}},
+                    "Q-TAB|002": _seed_stock(80, 0), "R|001": _seed_stock(500, 0.5)},
+            rolls={"202611|P|001": {"Quantity": 2000}, "202611|Q-TAB|002": {"Quantity": 80}},
             avgs={"202611|P|": {"AtLastQuan": 1, "MonthCost": 1, "AtLastCost": 1},
                   "202610|P|": {"AtLastQuan": 999, "MonthCost": 9, "AtLastCost": 9}}),
         rows=[dict(part="P", name="面板", ware_out="001", transfer=1500, cost=21),
+              dict(part="Q-TAB", name="客供", ware_out="002", transfer=80, cost=0),
               dict(part="ZERO", name="不撥", ware_out="001", transfer=0, cost=1),
               dict(part="R", name="電阻", ware_out="001", transfer=123, cost=0.5)]),
     # 公司13：CostByWare=1，倉庫成本、AtLastQuan 只加減
     "ware_cost": dict(
         cost_by_ware=True,
         seed=dict(
-            products={"P": {"ProdID": "P", "ProdName": "面板", "CAvgCost": 21, "CTotalCost": 63000}},
-            stocks={"P|001": _seed_stock(2000, 20.5), "P|015": _seed_stock(100, 30)},
+            products={"P": {"ProdID": "P", "ProdName": "面板", "CAvgCost": 21, "CTotalCost": 63000},
+                      "Q-TAB": {"ProdID": "Q-TAB", "ProdName": "客供", "CAvgCost": 3, "CTotalCost": 300}},
+            stocks={"P|001": _seed_stock(2000, 20.5), "P|015": _seed_stock(100, 30),
+                    "Q-TAB|002": _seed_stock(100, 3)},
             rolls={"202611|P|015": {"Quantity": 100}},
             avgs={"202611|P|001": {"AtLastQuan": 2000}, "202611|P|015": {"AtLastQuan": 100}}),
-        rows=[dict(part="P", name="面板", ware_out="001", transfer=700, cost=20.5)]),
+        rows=[dict(part="P", name="面板", ware_out="001", transfer=700, cost=20.5),
+              dict(part="Q-TAB", name="客供", ware_out="002", transfer=40, cost=3)]),
 }
 
 
@@ -167,7 +172,7 @@ class ExecuteBillEquivalenceTests(unittest.TestCase):
         self.assertEqual(tables.count("stkMoveMain"), 1)  # 一個批次一張單
         recs = [v for t, v in inserts if t == "comProdRec"]
         self.assertEqual([(r["ProdID"], r["WareOut"], r["WareID"]) for r in recs],
-                         [("P", "001", "015"), ("R", "001", "015")])
+                         [("P", "001", "015"), ("Q-TAB", "002", "015"), ("R", "001", "015")])
         self.assertTrue(all(r["BillDate"] == 20261109 for r in recs))
         logs = [v for t, v in inserts if t == "comChangeLog"]
         self.assertEqual(len(logs), 1)
@@ -178,7 +183,7 @@ class ExecuteBillEquivalenceTests(unittest.TestCase):
                 self.assertEqual(v["BCQty"], v["Quantity"])
         # CostByWare=0：只有當月 WareID=''，上月不動不新建，不改 CAvgCost/CTotalCost 與各倉成本
         avgs = company["state"]["avgs"]
-        self.assertEqual(set(avgs), {"202611|P|", "202610|P|", "202611|R|"})
+        self.assertEqual(set(avgs), {"202611|P|", "202610|P|", "202611|Q-TAB|", "202611|R|"})
         self.assertEqual(avgs["202610|P|"], {"AtLastQuan": 999, "MonthCost": 9, "AtLastCost": 9})
         self.assertEqual(avgs["202611|P|"], {"AtLastQuan": 3000, "MonthCost": 1, "AtLastCost": 1})  # 成本欄只由月成本計算寫
         self.assertEqual((avgs["202611|R|"]["MonthCost"], avgs["202611|R|"]["AtLastCost"]), (0, 0))
@@ -194,7 +199,7 @@ class ExecuteBillEquivalenceTests(unittest.TestCase):
         ware_avgs = self.golden["ware_cost"]["state"]["avgs"]
         self.assertEqual(ware_avgs["202611|P|001"]["AtLastQuan"], 1300)
         self.assertEqual(ware_avgs["202611|P|015"]["AtLastQuan"], 800)
-        self.assertFalse(any("-TAB" in k or k.endswith("|002") for k in ware_avgs))  # R-G2：客供料與 002 不再調撥
+        self.assertEqual(ware_avgs["202611|Q-TAB|002"]["AtLastQuan"], -40)
         self.assertFalse(any(k.startswith("202610") for k in ware_avgs))
 
 

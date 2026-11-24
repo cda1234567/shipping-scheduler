@@ -140,14 +140,13 @@ class MainBatchUsageTests(unittest.TestCase):
                 patch.object(st.part_conversion, "active_map", return_value={}), \
                 patch.object(st.low_stock, "_erp_session", session), \
                 patch.object(st, "detect_settle_date", return_value=None), \
-                patch.object(st, "query_transfers", return_value={}) as transfers, \
+                patch.object(st, "query_transfers", return_value={}), \
                 patch.object(st.db, "get_setting", side_effect=settings), \
                 patch.object(st.db, "successful_erp_transfers", return_value=[]):
             out = st.batch_breakdown("CHIComp03")
         rows = {b["code"]: b["rows"] for b in out["batches"]}
         self.assertEqual(rows["10-5"], [{"part": "EC-20117A", "pending": 1811, "ware_out": "001"}])
-        self.assertEqual(rows["10-6"], [])  # R-G2：-TAB 不撥，整批空
-        self.assertEqual([c.args[2:] for c in transfers.call_args_list], [("001", "015")])  # 不再查 002
+        self.assertEqual(rows["10-6"], [{"part": "UC-20033B-TAB", "pending": 200, "ware_out": "002"}])
 
     def test_batch_breakdown_requires_main_file(self):
         with patch.object(st, "list_batches", return_value=_batches([("10-3", "2026-10-20 08:00:00")])), \

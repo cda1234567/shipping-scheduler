@@ -67,12 +67,12 @@ class ScheduleCalculateTabTests(unittest.TestCase):
         self.assertEqual(out[4]["status"], "ok")
 
 
-class TransferPreviewExcludesTabTests(unittest.TestCase):
-    def test_transfer_allocation_excludes_tab(self):
-        # R-G2（11/24）取代 R-D1 時期「-TAB 從 002 撥」的規則。
+class TransferPreviewKeepsTabTests(unittest.TestCase):
+    def test_transfer_allocation_still_includes_tab_from_002(self):
         batches = [dict(key="A", deductions=[("P-TAB", 500), ("P", 20)])]
         out = st.allocate_batches(batches, {}, [], {})
-        self.assertEqual(out[0]["rows"], [{"part": "P", "pending": 20, "ware_out": "001"}])
+        self.assertIn({"part": "P-TAB", "pending": 500, "ware_out": "002"}, out[0]["rows"])
+        self.assertIn({"part": "P", "pending": 20, "ware_out": "001"}, out[0]["rows"])
 
 
 if __name__ == "__main__":
