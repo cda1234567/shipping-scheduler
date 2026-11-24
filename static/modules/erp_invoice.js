@@ -232,11 +232,16 @@ function serialInput(r) {
 function rateInput(r) {
   if (r.rate_source === "local") return "";
   const h = r.rate_hint || {};
-  const hint = [h.sc ? `預設＝第一張 S/C 匯率 ${h.sc}` : (h.currency ? "S/C 沒有匯率，預設用正航幣別檔" : ""), h.currency ? `正航幣別檔 ${h.currency}（參考）` : ""].filter(Boolean).join(" / ");
   // 使用者輸入過的匯率優先（預覽失敗重畫時也不會把剛打的數字清掉）
   const typed = currentRate();
+  const ref = h.currency ? `正航幣別檔 ${h.currency}（參考）` : "";
+  let hint;
+  if (typed === null && r.rate_source === "sc") hint = [`已自動帶入第一張 S/C 匯率 ${r.exch_rate}，不用輸入`, ref].filter(Boolean).join(" / ");
+  else if (typed === null && r.rate_source === "currency") hint = `S/C 沒有匯率，已自動帶入正航幣別檔 ${r.exch_rate}，不用輸入`;
+  else hint = [h.sc ? `預設＝第一張 S/C 匯率 ${h.sc}` : (h.currency ? "S/C 沒有匯率，預設用正航幣別檔" : ""), ref].filter(Boolean).join(" / ");
   const val = typed !== null ? esc(typed) : (r.rate_required ? "" : esc(r.exch_rate));
-  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.currency)}）<input type="number" id="erp-invoice-rate" class="num" min="0" step="any" style="width:7em" placeholder="照發票填" value="${val}"></label> <span id="erp-invoice-rate-tip" class="erp-po-hint" style="display:inline" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
+  const placeholder = r.rate_required ? ' placeholder="照發票填"' : "";
+  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.currency)}）<input type="number" id="erp-invoice-rate" class="num" min="0" step="any" style="width:7em"${placeholder} value="${val}"></label> <span id="erp-invoice-rate-tip" class="erp-po-hint" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
 }
 
 function hidePreview() {
