@@ -537,7 +537,10 @@ CREATE TABLE IF NOT EXISTS erp_receipts (
     status        TEXT NOT NULL DEFAULT 'ok',
     error         TEXT NOT NULL DEFAULT '',
     currency      TEXT NOT NULL DEFAULT '',
-    exch_rate     REAL
+    exch_rate     REAL,
+    po_currency   TEXT,
+    convert_rate  REAL,
+    price_ntd     INTEGER
 );
 
 -- 開 Invoice（外銷 ST- 單）本機紀錄（成功與失敗嘗試都記）
@@ -916,6 +919,10 @@ def init_db():
             conn.execute("ALTER TABLE erp_receipts ADD COLUMN currency TEXT NOT NULL DEFAULT ''")
         if "exch_rate" not in rcpt_cols:
             conn.execute("ALTER TABLE erp_receipts ADD COLUMN exch_rate REAL")
+        # v2026.11.24.10：採購單幣別 / 打台幣換算匯率 / 單價是台幣（currency、exch_rate 改為正航進貨單幣別與匯率）
+        for name, definition in (("po_currency", "TEXT"), ("convert_rate", "REAL"), ("price_ntd", "INTEGER")):
+            if name not in rcpt_cols:
+                conn.execute(f"ALTER TABLE erp_receipts ADD COLUMN {name} {definition}")
         # migration: orders 加 folder 欄位
         cols = [r[1] for r in conn.execute("PRAGMA table_info(orders)").fetchall()]
         for name, definition in (("archived_at", "TEXT NOT NULL DEFAULT ''"),
@@ -4274,8 +4281,8 @@ def add_erp_receipt(rec: dict) -> int:
             """INSERT INTO erp_receipts(
                    target_db, im_no, qm_no, rm_no, rm_date, vendor_id, vendor_name, lines_json,
                    sum_qty, sum_amount, sum_tax, total, actor, client_ip, client_token, fingerprint,
-                   created_at, status, error, currency, exch_rate)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   created_at, status, error, currency, exch_rate, po_currency, convert_rate, price_ntd)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rec.get("target_db", ""), rec.get("im_no", ""), rec.get("qm_no", ""), rec.get("rm_no", ""),
                 int(rec.get("rm_date") or 0), rec.get("vendor_id", ""), rec.get("vendor_name", ""),
@@ -4284,6 +4291,9 @@ def add_erp_receipt(rec: dict) -> int:
                 rec.get("client_ip", ""), rec.get("client_token", ""), rec.get("fingerprint", ""), _now(),
                 rec.get("status", "ok"), rec.get("error", ""), rec.get("currency", "") or "",
                 None if rec.get("exch_rate") in (None, "") else float(rec.get("exch_rate")),
+                rec.get("po_currency") or None,
+                None if rec.get("convert_rate") in (None, "") else float(rec.get("convert_rate")),
+                None if rec.get("price_ntd") is None else int(bool(rec.get("price_ntd"))),
             ),
         )
         return int(cur.lastrowid)

@@ -1447,14 +1447,59 @@ class TaxCurrencyTests(ErpCase):
         self.assertEqual((r["exch_rate"], r["rate_source"], r["lines"][0]["price"]), (32.505, "manual", 627.3465))
         er.create_receive(req, "t", "1.2.3.4")
         rec = db.list_erp_receipts(1)[0]
-        self.assertEqual((rec["status"], rec["currency"], rec["exch_rate"]), ("ok", "USD", 32.505))
+        # 課稅別 0 預設打台幣：本機紀錄存正航進貨單幣別 NTD / 匯率 1，輸入的匯率存 convert_rate
+        self.assertEqual((rec["status"], rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
+                         ("ok", "NTD", 1.0, "USD", 32.505, 0))
 
     def test_ntd_po_has_no_rate(self):
         from app import database as db
         r = er.preview_receive(self.req())
         self.assertEqual((r["mode"], r["rate_required"], r["rate_hint"]), ("local", False, None))
         er.create_receive(self.req(), "t", "1.2.3.4")
-        self.assertIsNone(db.list_erp_receipts(1)[0]["exch_rate"])
+        rec = db.list_erp_receipts(1)[0]
+        self.assertEqual((rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
+                         ("NTD", 1.0, "NTD", None, 0))
+
+    # v2026.11.24.10：本機紀錄 currency / exch_rate = 正航 comBillAccounts 的 CurrID / ExchRate（IM-20261124003、IM-20261112001 存成 USD）
+    def _last_receipt(self, res):
+        from app import database as db
+        rec = db.list_erp_receipts(1)[0]
+        acc = self.acc(res["rm_no"])
+        self.assertEqual((rec["currency"], rec["exch_rate"]), (acc["CurrID"], float(acc["ExchRate"])))
+        return rec
+
+    def test_history_price_ntd_stores_ntd_bill(self):
+        from app.services import rm_print_data
+        self._ntd_price_setup(0)
+        self.set_po(ExchRate=Decimal("30.385"))
+        res = er.create_receive(self._ntd_price_req(), "t", "1.2.3.4")
+        self.assertEqual((res["currency"], res["exch_rate"], res["bill_exch_rate"], res["po_currency"]), ("NTD", 1.0, 1.0, "USD"))
+        rec = self._last_receipt(res)
+        self.assertEqual((rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
+                         ("NTD", 1.0, "USD", None, 1))
+        self.assertEqual(rm_print_data.from_local(rec)["currency"], "NTD")
+
+    def test_history_convert_stores_ntd_bill_and_convert_rate(self):
+        self.usd_setup(0, price="0.11")
+        res = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.89"), "t", "1.2.3.4")
+        self.assertEqual((res["mode"], res["currency"], res["exch_rate"], res["bill_exch_rate"]), ("convert", "NTD", 32.89, 1.0))
+        rec = self._last_receipt(res)
+        self.assertEqual((rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
+                         ("NTD", 1.0, "USD", 32.89, 0))
+
+    def test_history_foreign_stores_usd_and_invoice_rate(self):
+        self.usd_setup(1)
+        res = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.215"), "t", "1.2.3.4")
+        self.assertEqual((res["mode"], res["currency"], res["exch_rate"], res["bill_exch_rate"]), ("foreign", "USD", 32.215, 32.215))
+        rec = self._last_receipt(res)
+        self.assertEqual((rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
+                         ("USD", 32.215, "USD", None, 0))
+
+    def test_preview_price_ntd_usd_po_is_ntd_rate_1(self):
+        self._ntd_price_setup(0)
+        r = er.preview_receive(self._ntd_price_req())
+        self.assertEqual((r["mode"], r["currency"], r["exch_rate"], r["bill_exch_rate"], r["po_currency"]),
+                         ("convert", "NTD", 1.0, 1.0, "USD"))
 
     def test_mixed_currency_message_says_split(self):
         self.rows("ordBillMain")[1].update(CurrID="USD")

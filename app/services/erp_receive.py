@@ -1110,6 +1110,7 @@ def build_plan(
         "target": target, "numbers": numbers, "today": today, "rm_date": rm_date, "terms": terms,
         "vendor": {"id": vendor_id, "name": ctx["vendor_name"]}, "currency": curr, "warehouse": ware,
         "po_currency": po_curr, "mode": mode, "exch_rate": exch if mode == "foreign" else rate,
+        "bill_exch_rate": exch,  # 實際寫入 comBillAccounts.ExchRate（台幣單據 1、打美金 = 發票匯率）
         "rate_source": rate_source, "rate_required": rate_missing,
         "rate_hint": None if mode == "local" else {"po": _jsonable(po_exch), "currency": _jsonable(sys_rate) if sys_rate > 0 else None},
         "tax_type": tax_type,
@@ -1238,6 +1239,7 @@ def _summary(plan: Dict[str, Any], *, include_rows: bool) -> Dict[str, Any]:
         **plan["numbers"], "numbers": dict(plan["numbers"]), "today": plan["today"], "rm_date": plan["rm_date"], "terms": plan["terms"],
         "vendor": plan["vendor"], "currency": plan["currency"], "warehouse": plan["warehouse"],
         "po_currency": plan.get("po_currency"), "mode": plan.get("mode"), "exch_rate": _jsonable(plan.get("exch_rate")),
+        "bill_exch_rate": _jsonable(plan.get("bill_exch_rate")),
         "rate_source": plan.get("rate_source"), "rate_required": bool(plan.get("rate_required")),
         "rate_hint": plan.get("rate_hint"), "tax_type": plan.get("tax_type"), "tax_label": plan.get("tax_label"),
         "po_tax_type": plan.get("po_tax_type"), "entry_ccy": plan.get("entry_ccy"),
@@ -1399,8 +1401,10 @@ def create_receive(raw_req: Dict[str, Any], actor: str = "web", client_ip: str =
             "rm_date": result["rm_date"], "vendor_id": result["vendor"]["id"], "vendor_name": result["vendor"]["name"],
             "lines_json": json.dumps(result["lines"], ensure_ascii=False), "sum_qty": t["sum_qty"],
             "sum_amount": t["sum_amount"], "sum_tax": t["sum_tax"], "total": t["total"], "status": "ok",
-            "exch_rate": result.get("exch_rate") if result.get("mode") not in (None, "local") else None,
-            "currency": result.get("po_currency") or result.get("currency") or ""})
+            # currency / exch_rate = 正航進貨單幣別與匯率（打台幣、單價是台幣 = NTD / 1）；採購單幣別與換算匯率另存
+            "currency": result.get("currency") or "", "exch_rate": result.get("bill_exch_rate"),
+            "po_currency": result.get("po_currency") or None, "price_ntd": 1 if result.get("price_ntd") else 0,
+            "convert_rate": result.get("exch_rate") if result.get("mode") == "convert" and not result.get("price_ntd") else None})
         db.log_activity(
             "erp_receive_created",
             f"{ep.target_label(target)} 收料 {result['im_no']} / 驗收 {result['qm_no']} / 進貨 {result['rm_no']}，"
