@@ -35,6 +35,10 @@
  * 勾選跨搜尋保留（v2026.11.04.1）：勾了 A 再搜尋 B，A 仍是勾選狀態，並以「已選（不在本次搜尋結果）」
  * 固定顯示在表格最上方，可在那裡取消；只有使用者自己取消勾選、按全不選 / 解除，或呼叫 clear() 才會移除。
  * 全選 / 表頭勾選框只作用在「本次搜尋結果」看得到的列。
+ *
+ * 鎖定 / 解除時重抓（v2026.11.24.5）：鎖定從無到有（勾第一筆、全選）或從有到無（取消最後一筆、解除、clear()）
+ * 時自動以目前搜尋字 + 新的鎖定分組 reload() 一次（例：收料鎖定廠商後改抓該廠商最多 1000 筆）；其他勾選不重抓。
+ * 同時有多個 reload() 時只採用最後一個發出的結果，較早回來的舊結果直接丟掉。
  */
 import { esc } from "/static/modules/api.js";
 
@@ -67,6 +71,7 @@ export function createOpenLinePicker(root, options) {
   const picked = new Map(); // lineKey → line（勾選當下的資料；之後的搜尋結果有同一筆就更新）
   const edits = new Map(); // lineKey → { qty, price }
   let timer = null;
+  let reloadSeq = 0; // 每次 reload() +1；回來時不是最新的就丟掉
 
   root.classList.add("olp");
   root.innerHTML = `
@@ -153,6 +158,12 @@ export function createOpenLinePicker(root, options) {
     if (typeof opts.onRender === "function") opts.onRender(root);
   }
 
+  // 鎖定從無到有或從有到無 → 以新的鎖定分組重抓一次（呼叫前先記下原本的 lockKey）
+  function reloadIfLockChanged(before) {
+    if ((before === null) === (lockKey === null)) return;
+    api.reload().catch(error => setMsg(`讀取明細失敗：${error.message}`));
+  }
+
   function pick(key, on) {
     const line = byKey(key);
     if (!line) return;
@@ -175,8 +186,10 @@ export function createOpenLinePicker(root, options) {
     const key = tr.dataset.key;
     if (event.target.classList.contains("olp-check")) {
       setMsg("");
+      const before = lockKey;
       pick(key, event.target.checked);
       render();
+      reloadIfLockChanged(before);
     } else {
       const e = edits.get(key);
       if (e) {
@@ -213,9 +226,11 @@ export function createOpenLinePicker(root, options) {
         return { ok: false, message };
       }
       setMsg("");
+      const before = lockKey;
       for (const key of plan.keys) pick(key, true);
       render();
       notify();
+      reloadIfLockChanged(before);
       return { ok: true };
     },
     selectNone() {
@@ -223,6 +238,7 @@ export function createOpenLinePicker(root, options) {
       api.clear();
     },
     clear() {
+      const before = lockKey;
       order.length = 0;
       picked.clear();
       edits.clear();
@@ -230,9 +246,18 @@ export function createOpenLinePicker(root, options) {
       lockLabel = "";
       render();
       notify();
+      reloadIfLockChanged(before);
     },
     async reload() {
-      const result = await opts.fetchLines({ q: search.value.trim(), group: lockKey });
+      const seq = ++reloadSeq;
+      let result;
+      try {
+        result = await opts.fetchLines({ q: search.value.trim(), group: lockKey });
+      } catch (error) {
+        if (seq !== reloadSeq) return; // 已有較新的 reload，舊的失敗不用管
+        throw error;
+      }
+      if (seq !== reloadSeq) return; // 較早發出的 reload 晚回來 → 丟掉，避免蓋掉新結果
       lines = Array.isArray(result) ? result : (result.lines || []);
       truncated = !Array.isArray(result) && Boolean(result.truncated);
       // 勾選不因搜尋而取消：搜尋結果有同一筆就更新它的資料（例：未收量），沒有就照舊保留
