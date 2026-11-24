@@ -4,6 +4,7 @@ from __future__ import annotations
 from .bom_quantity import coerce_qty, get_component_effective_needed_qty
 
 _ZERO_EPSILON = 1e-9
+_CUSTOMER_SUPPLIED_SUFFIX = "-TAB"
 
 
 def _part_key(value: object) -> str:
@@ -97,6 +98,8 @@ def build_frequent_zero_stock_analysis(
         part = _part_key(history.get("part_number"))
         if not part or part.startswith(hidden_prefixes):
             continue
+        if part.endswith(_CUSTOMER_SUPPLIED_SUFFIX):
+            continue  # 客供料（-TAB）向客戶要料，所有清單一律排除
 
         order_count = int(history.get("order_count") or 0)
         if order_count < normalized_min_orders:

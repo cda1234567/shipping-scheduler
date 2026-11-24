@@ -1418,6 +1418,8 @@ def _safe_log(db, rec: Dict[str, Any]) -> Optional[int]:
 
 
 def list_history(limit: int = 50) -> List[Dict[str, Any]]:
+    """一次收料本機紀錄；正航已查無進貨單（rm_no）者加 erp_deleted=True（唯讀查詢，不動本機紀錄；查詢失敗不加）。"""
     from .. import database as db
+    from . import erp_bill_exists
 
-    return db.list_erp_receipts(limit)
+    return erp_bill_exists.mark_deleted(db.list_erp_receipts(limit), "receipt", "rm_no")

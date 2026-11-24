@@ -6,7 +6,7 @@
   * 這行沒綁訂單（手動開採購單）→ 同供應商、同料號、「今天」已開過才算。
 - 防連點（fingerprint）：同公司、同供應商、同明細（料號 / 數量 / 單價 / 預計進貨日）在 IDEMPOTENCY_SECONDS 秒內
   已建立成功，或相同內容正在建立中，一律拒絕，即使 allow_duplicate 也一樣。
-本模組只讀寫本機 SQLite，不碰正航。
+本模組讀寫本機 SQLite；load_prior 另以唯讀 SELECT 查正航，正航已刪的單（或同單號換了供應商 / 料號）不算已開。
 """
 from __future__ import annotations
 
@@ -41,9 +41,13 @@ def _day(text: Any) -> Optional[date]:
         return None
 
 
-def load_prior(target: str, parts: Iterable[str]) -> Dict[str, List[Dict[str, Any]]]:
+def load_prior(
+    target: str, parts: Iterable[str], deleted: Optional[Dict[str, List[Dict[str, Any]]]] = None
+) -> Dict[str, List[Dict[str, Any]]]:
     """同一寫入公司、狀態成功的本站採購單中，含指定料號的明細：{料號: [{po_id, bill_no, supplier_id, date, created_at, qty, order_ids}]}。
-    讀取失敗回空（保護只是提醒，不可因此擋住開單）。"""
+    讀取失敗回空（保護只是提醒，不可因此擋住開單）。
+    正航（同一寫入公司）已查無的明細（單號 + 供應商 + 料號）不回傳；有給 deleted 就放進去（格式相同）。
+    查正航失敗時照本機紀錄全部回傳。"""
     keys = {_norm(p) for p in parts if _norm(p)}
     out: Dict[str, List[Dict[str, Any]]] = {}
     if not keys or not target:
@@ -80,7 +84,28 @@ def load_prior(target: str, parts: Iterable[str]) -> Dict[str, List[Dict[str, An
     except Exception as exc:
         logger.warning("讀取本站採購單紀錄失敗，略過重複檢查：%s", type(exc).__name__)
         return {}
-    return out
+    return _drop_erp_deleted(target, out, deleted)
+
+
+def _drop_erp_deleted(
+    target: str, prior: Dict[str, List[Dict[str, Any]]], deleted: Optional[Dict[str, List[Dict[str, Any]]]]
+) -> Dict[str, List[Dict[str, Any]]]:
+    """正航為準：只留正航還在的明細（同單號、同供應商、同料號）；查詢失敗回原樣。"""
+    if not prior:
+        return prior
+    from . import erp_bill_exists
+
+    alive = erp_bill_exists.po_line_keys(target, {e["bill_no"] for entries in prior.values() for e in entries})
+    if alive is None:
+        return prior
+    kept: Dict[str, List[Dict[str, Any]]] = {}
+    for part, entries in prior.items():
+        for e in entries:
+            if (_norm(e["bill_no"]), _norm(e["supplier_id"]), part) in alive:
+                kept.setdefault(part, []).append(e)
+            elif deleted is not None:
+                deleted.setdefault(part, []).append(e)
+    return kept
 
 
 def find_matches(

@@ -109,6 +109,25 @@ class MaterialRiskTests(unittest.TestCase):
         self.assertEqual(result["summary"]["watch_count"], 1)
         self.assertEqual(result["summary"]["missing_bom_orders"], 1)
 
+    def test_customer_supplied_tab_parts_excluded_from_items_and_summary(self):
+        # 客供料（-TAB 結尾，不分大小寫、去空白）一律不列，也不算進統計數
+        result = build_frequent_zero_stock_analysis(
+            history_usage=[
+                {"part_number": "IC-STM32F031C4T6-TAB", "order_count": 9, "total_qty": 90, "last_used_at": "2026-11-20"},
+                {"part_number": " oc-1-tab ", "order_count": 5, "total_qty": 50, "last_used_at": "2026-11-19"},
+                {"part_number": "IC-REAL", "order_count": 4, "total_qty": 40, "last_used_at": "2026-11-18"},
+                {"part_number": "IC-TABLET", "order_count": 3, "total_qty": 30, "last_used_at": "2026-11-17"},
+            ],
+            active_orders=[],
+            bom_map={},
+            main_snapshot={},
+            st_snapshot={},
+        )
+        self.assertEqual([i["part_number"] for i in result["items"]], ["IC-REAL", "IC-TABLET"])
+        self.assertEqual(result["summary"]["common_part_count"], 2)
+        self.assertEqual(result["summary"]["zero_stock_count"], 2)
+        self.assertEqual(result["summary"]["watch_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

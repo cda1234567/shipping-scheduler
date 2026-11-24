@@ -175,6 +175,7 @@ function toRow(p) {
     earliest: p.earliest_order,
     orders: p.orders || [],
     alreadyOrdered: p.already_ordered || [],
+    alreadyOrderedDeleted: p.already_ordered_deleted || [],
     dueReasons: p.due_shift_reasons || {},
     postprocess: p.postprocess || [],
     ownQty: p.suggested_qty > 0 ? String(p.suggested_qty) : "",
@@ -298,7 +299,7 @@ function newLinkedRow(part, entry) {
     qty: "", needQty: 0, moq: 0, moqSource: "", moqAdjusted: false,
     price: String(pp.price ?? 0), date: pp.pre_in_date || "", dates: { backend: pp.pre_in_date || "" },
     originalDates: { backend: pp.original_pre_in_date || "" }, datesAdjusted: {}, dueReasons: { backend: pp.due_shift_reason || "" },
-    dateEdited: false, earliest: base.earliest, orders: [], alreadyOrdered: [], postprocess: [],
+    dateEdited: false, earliest: base.earliest, orders: [], alreadyOrdered: [], alreadyOrderedDeleted: [], postprocess: [],
     ownQty: "", ownChecked: null, linkedFrom: [], checked: Boolean((pp.supplier_id || "").trim()), doneBill: "",
     isLinked: true,
   };
@@ -489,7 +490,9 @@ function rowHtml(r) {
       title="${reason ? "無法勾選：請先填供應商" : ""}">${reason ? `<div class="erp-po-hint shortage-po-adjusted">${esc(reason)}</div>` : ""}</td>
     <td class="mono">${esc(r.part)}${lnote ? `<div class="erp-po-hint pp-linked">${esc(lnote)}${r.isLinked && !r.doneBill ? ' <button class="btn btn-secondary btn-sm pp-unlink" data-act="unlink" type="button">移除</button>' : ""}</div>` : ""}${pnote ? `<div class="erp-po-hint pp-linked">${esc(pnote)}</div>` : ""}${r.doneBill ? `<div class="erp-po-hint">已開 ${esc(r.doneBill)} ${poMailSlot(r.doneBill)}</div>` : ""}${
       r.alreadyOrdered.length && !r.doneBill ? `<div class="erp-po-hint shortage-po-adjusted shortage-po-ordered">${r.alreadyOrdered.map(m =>
-        `已開 ${esc(m.bill_no)} ${poMailSlot(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}</td>
+        `已開 ${esc(m.bill_no)} ${poMailSlot(m.bill_no)}（${esc(m.date)}，${fmtQty(m.qty)}）`).join("<br>")}</div>` : ""}${
+      r.alreadyOrderedDeleted.length && !r.doneBill ? `<div class="erp-po-hint">${r.alreadyOrderedDeleted.map(m =>
+        `${esc(m.bill_no)} 已在正航刪除，不算已開`).join("<br>")}</div>` : ""}</td>
     <td>${esc(r.desc)}</td>
     <td><select data-act="category">
       ${Object.entries(CATEGORY_LABELS).map(([k, label]) => `<option value="${k}" ${r.category === k ? "selected" : ""}>${label}</option>`).join("")}

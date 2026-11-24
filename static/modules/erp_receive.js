@@ -382,7 +382,7 @@ async function refreshHistory() {
     body.innerHTML = rows.length ? rows.map(o => {
       const ok = o.status === "ok";
       return `<tr class="${ok ? "" : "erp-po-row-error"}"><td>${esc(String(o.created_at).slice(0, 16).replace("T", " "))}</td>
-        <td class="mono">${ok ? `${esc(o.im_no)} / ${esc(o.qm_no)} / ${esc(o.rm_no)}` : "—"}</td><td>${esc(o.target_db)}</td>
+        <td class="mono">${ok ? `${esc(o.im_no)} / ${esc(o.qm_no)} / ${esc(o.rm_no)}` : "—"}${o.erp_deleted ? ' <span class="po-status-badge badge-no-bom" title="正航已查無此進貨單，本機紀錄保留">正航已刪</span>' : ""}</td><td>${esc(o.target_db)}</td>
         <td>${esc(o.vendor_id)} ${esc(o.vendor_name)}</td><td class="num">${ok ? fmt(o.total) : "—"}</td>
         <td>${ok ? "成功" : `<span title="${esc(o.error)}">失敗：${esc(String(o.error).slice(0, 40))}</span>`}</td>
         <td>${ok && o.rm_no ? `<button type="button" class="btn btn-sm" data-rm-print="${esc(o.id)}" title="列印進貨單 ${esc(o.rm_no)}">🖨 列印</button>` : ""}</td></tr>`;

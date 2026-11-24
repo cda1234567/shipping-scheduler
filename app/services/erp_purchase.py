@@ -1687,14 +1687,17 @@ def _safe_save_allocations(db, po_id: Optional[int], result: Dict[str, Any], sou
 
 
 def list_history(limit: int = 50) -> List[Dict[str, Any]]:
-    """採購單本機紀錄，成功的單附上 allocations（扁平清單，含 row_no / part_number）；舊單為空清單。"""
+    """採購單本機紀錄，成功的單附上 allocations（扁平清單，含 row_no / part_number）；舊單為空清單。
+    正航已查無此單（或同單號但供應商不同）者加 erp_deleted=True（唯讀查詢，不動本機紀錄；查詢失敗不加）。"""
     from .. import database as db
+    from . import erp_bill_exists
 
     orders = db.list_erp_purchase_orders(limit)
     by_po: Dict[int, List[Dict[str, Any]]] = {}
     for a in db.get_po_line_allocations([o["id"] for o in orders]):
         by_po.setdefault(int(a["erp_po_id"]), []).append(a)
-    return [{**o, "allocations": by_po.get(int(o["id"]), [])} for o in orders]
+    rows = [{**o, "allocations": by_po.get(int(o["id"]), [])} for o in orders]
+    return erp_bill_exists.mark_deleted(rows, "po", "bill_no", "supplier_id")
 
 
 # ── 查詢（來源公司，唯讀）────────────────────────────────────────────────────

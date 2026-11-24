@@ -826,16 +826,21 @@ def find_group_duplicates(groups: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _already_ordered(parts_out: List[Dict[str, Any]]) -> None:
-    """替每個要買的料號加上 already_ordered（本站已開過的 PO，格式見 po_duplicates.find_matches）。"""
+    """替每個要買的料號加上 already_ordered（本站已開過的 PO，格式見 po_duplicates.find_matches）。
+    正航已刪的單不算已開，另放 already_ordered_deleted（同格式，只供提示）。"""
     try:
         target = erp_purchase.get_target(SHORTAGE_KIND)
     except Exception:
         target = ""
-    prior = po_duplicates.load_prior(target, [p["part_number"] for p in parts_out]) if target else {}
+    deleted: Dict[str, List[Dict[str, Any]]] = {}
+    prior = po_duplicates.load_prior(target, [p["part_number"] for p in parts_out], deleted) if target else {}
     for p in parts_out:
         ids = [a["order_id"] for a in p["allocations"] if a.get("order_id")]
         p["already_ordered"] = po_duplicates.find_matches(
             prior.get(p["part_number"].upper(), []), ids, p["supplier_id"]
+        ) if p["needs_purchase"] else []
+        p["already_ordered_deleted"] = po_duplicates.find_matches(
+            deleted.get(p["part_number"].upper(), []), ids, p["supplier_id"]
         ) if p["needs_purchase"] else []
 
 

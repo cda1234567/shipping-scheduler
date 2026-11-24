@@ -708,7 +708,7 @@ async function refreshHistory() {
       const ok = o.status === "ok";
       return `<tr class="${ok ? "" : "erp-po-row-error"}">
         <td>${esc(String(o.created_at).slice(0, 16).replace("T", " "))}</td>
-        <td class="mono">${esc(o.bill_no) || "—"}${ok && o.bill_no ? ` ${poMailSlot(o.bill_no)}` : ""}</td>
+        <td class="mono">${esc(o.bill_no) || "—"}${ok && o.bill_no ? ` ${poMailSlot(o.bill_no)}` : ""}${o.erp_deleted ? ' <span class="po-status-badge badge-no-bom" title="正航已查無此單（或供應商不同），本機紀錄保留">正航已刪</span>' : ""}</td>
         <td>${esc(o.target_db)}</td>
         <td>${esc(o.supplier_id)} ${esc(o.supplier_name)}</td>
         <td>${first}${more}${historyLinesHtml(o, lines)}</td>
