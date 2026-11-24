@@ -78,14 +78,18 @@ def po_line_keys(target: str, bill_nos: Iterable[Any]) -> Optional[Set[Tuple[str
 
 
 def bill_customers(target: str, kind: str, bill_nos: Iterable[Any]) -> Optional[Dict[str, Set[str]]]:
-    """正航目前還在的單據 {單號: {供應商 / 客戶}}（kind: po / receipt）；查詢失敗回 None。"""
+    """正航目前還在的單據 {單號: {供應商 / 客戶}}（kind: po / receipt）；查詢失敗回 None。
+    進貨單表頭 stkBillMain 沒有 CustomerID 欄，只查單號，供應商集合為空（只能用單號比對）。"""
     table, flag = _MAIN[kind]
-    rows = _select(target, f"SELECT BillNO, CustomerID FROM {table} WHERE Flag = {flag} AND BillNO IN ({{marks}})", bill_nos)
+    cols = "BillNO" if kind == "receipt" else "BillNO, CustomerID"
+    rows = _select(target, f"SELECT {cols} FROM {table} WHERE Flag = {flag} AND BillNO IN ({{marks}})", bill_nos)
     if rows is None:
         return None
     out: Dict[str, Set[str]] = {}
-    for bill, customer in rows:
-        out.setdefault(_norm(bill), set()).add(_norm(customer))
+    for bill, *customer in rows:
+        owners = out.setdefault(_norm(bill), set())
+        if customer:
+            owners.add(_norm(customer[0]))
     return out
 
 

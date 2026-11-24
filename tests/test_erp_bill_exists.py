@@ -34,9 +34,15 @@ class FakeCursor:
         if s.startswith("SELECT s.BillNO, m.CustomerID, s.ProdID FROM ordBillSub s"):
             self.rows = [r for r in self.erp["po_lines"] if r[0].strip() in bills]
             return
-        m = re.match(r"SELECT BillNO, CustomerID FROM (ordBillMain|stkBillMain) WHERE Flag = (\d+)", s)
+        if "stkBillMain" in s and "CustomerID" in s:  # 正航 stkBillMain 沒有 CustomerID 欄（實機 error 207）
+            raise RuntimeError("Invalid column name 'CustomerID'. (207)")
+        m = re.match(r"SELECT BillNO, CustomerID FROM (ordBillMain) WHERE Flag = (\d+)", s)
         if m:
             self.rows = [r[1:] for r in self.erp["mains"] if r[0] == (m.group(1), int(m.group(2))) and r[1] in bills]
+            return
+        m = re.match(r"SELECT BillNO FROM (stkBillMain) WHERE Flag = (\d+)", s)
+        if m:
+            self.rows = [r[1:2] for r in self.erp["mains"] if r[0] == (m.group(1), int(m.group(2))) and r[1] in bills]
             return
         raise AssertionError(f"unexpected SQL: {s}")
 
@@ -186,6 +192,19 @@ class HistoryFlagTests(Base):
         rows = {r["rm_no"]: r for r in er.list_history()}
         self.assertTrue(rows["RM-20261116002"]["erp_deleted"])
         self.assertNotIn("erp_deleted", rows["RM-20261120001"])
+
+    def test_receipt_query_never_uses_customer_id(self):
+        # 實機：RM-20261116002（CHIComp03、W0083）11/18 已在正航刪除，查 CustomerID 會 207 失敗而不標
+        for rm in ("RM-20261116002", "RM-20261120001"):
+            db.add_erp_receipt({"status": "ok", "target_db": "CHIComp03", "rm_no": rm, "vendor_id": "W0083", "lines_json": "[]"})
+        self.erp["mains"] = [(("stkBillMain", 100), "RM-20261120001")]
+        rows = {r["rm_no"]: r for r in er.list_history()}
+        self.assertTrue(rows["RM-20261116002"]["erp_deleted"])
+        self.assertNotIn("erp_deleted", rows["RM-20261120001"])
+        receipt_sql = [q for q in self.erp["sql"] if "stkBillMain" in q]
+        self.assertTrue(receipt_sql)
+        self.assertFalse(any("CustomerID" in q for q in receipt_sql))
+        self.assertEqual(ebe.bill_customers("CHIComp03", "receipt", ["RM-20261120001"]), {"RM-20261120001": set()})
 
     def test_history_erp_failure_omits_flag(self):
         self.record_po("PO-20261104004", [("PK-1", 1)])
