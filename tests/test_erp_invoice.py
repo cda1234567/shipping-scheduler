@@ -197,7 +197,7 @@ class InvoicePlanTests(unittest.TestCase):
         ctx["req_exch_rate"] = None
         plan = plan_of(ctx)
         self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("30.385"), "sc"))
-        self.assertEqual(plan["rate_hint"], {"sc": 30.385, "currency": 30.385})
+        self.assertEqual(plan["rate_hint"], {"sc": 30.385, "currency": 30.385, "sc_no": "MO-2607031"})
         ctx["req_exch_rate"] = D("32.77")
         plan = plan_of(ctx)
         self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("32.77"), "manual"))
@@ -221,7 +221,7 @@ class InvoicePlanTests(unittest.TestCase):
     def test_default_rate_is_first_sc_rate_like_st_2026304(self):
         plan = plan_of(self._rate_ctx({"MO-1": 31.505}))
         self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D("31.505"), "sc", False))
-        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385})
+        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385, "sc_no": "MO-1"})
         line = plan["lines"][0]
         self.assertEqual((line["amount"], line["ml_amount"]), (D(1500), D(47258)))  # 1500 × 31.505 = 47257.5
         self.assertEqual(rows_of(plan, "comBillAccounts")[0]["ExchRate"], D("31.505"))
@@ -239,11 +239,24 @@ class InvoicePlanTests(unittest.TestCase):
         self.assertEqual(plan["rate_hint"]["sc"], 32.0)
         self.assertEqual([l["ml_amount"] for l in plan["lines"]], [D(48000)] * 3)
 
+    def test_first_sc_zero_uses_other_ticked_sc(self):
+        plan = plan_of(self._rate_ctx({"MO-1": 0, "MO-2": 31.505, "MO-3": 32.0}))
+        self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D("31.505"), "sc_other", False))
+        self.assertEqual(plan["rate_hint"], {"sc": None, "currency": 30.385, "sc_no": "MO-2"})
+        self.assertEqual(rows_of(plan, "comBillAccounts")[0]["ExchRate"], D("31.505"))
+
+    def test_all_ticked_sc_zero_uses_latest_sc(self):
+        ctx = self._rate_ctx({"MO-1": 0, "MO-2": None})
+        ctx["latest_sc_rate"] = {"bill_no": "MO-2611001", "rate": D("31.505")}
+        plan = plan_of(ctx)
+        self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D("31.505"), "sc_latest", False))
+        self.assertEqual(plan["rate_hint"], {"sc": None, "currency": 30.385, "sc_no": "MO-2611001"})
+
     def test_sc_rate_zero_or_missing_falls_back_to_currency(self):
         for sc_rate in (0, None):
             plan = plan_of(self._rate_ctx({"MO-1": sc_rate}))
             self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("30.385"), "currency"), sc_rate)
-            self.assertEqual(plan["rate_hint"], {"sc": None, "currency": 30.385})
+            self.assertEqual(plan["rate_hint"], {"sc": None, "currency": 30.385, "sc_no": None})
         ctx = self._rate_ctx({"MO-1": 0})
         ctx["currency_row"].update(BuyInRate=0, FixedRate=31.0)
         self.assertEqual((plan_of(ctx)["exch_rate"], plan_of(ctx)["rate_source"]), (D("31"), "currency"))
@@ -253,13 +266,23 @@ class InvoicePlanTests(unittest.TestCase):
         ctx["currency_row"].update(BuyInRate=0, FixedRate=0)
         plan = plan_of(ctx)
         self.assertEqual((plan["exch_rate"], plan["rate_source"], plan["rate_required"]), (D(0), "missing", True))
-        self.assertEqual(plan["rate_hint"], {"sc": None, "currency": None})
-        self.assertIn("rate_required", [w["code"] for w in plan["warnings"]])
+        self.assertEqual(plan["rate_hint"], {"sc": None, "currency": None, "sc_no": None})
+        msg = next(w["message"] for w in plan["warnings"] if w["code"] == "rate_required")
+        self.assertIn("請聯絡系統管理員", msg)
+        self.assertNotIn("請輸入", msg)
+
+    def test_non_usd_sc_warns_without_converting(self):
+        ctx = self._rate_ctx({"MO-1": 4.5})
+        ctx["curr"] = "RMB"
+        plan = plan_of(ctx)
+        self.assertEqual((plan["currency"], plan["exch_rate"], plan["rate_source"]), ("RMB", D("4.5"), "sc"))
+        self.assertIn("S/C 幣別不是美金", next(w["message"] for w in plan["warnings"] if w["code"] == "currency_not_usd"))
+        self.assertNotIn("currency_not_usd", [w["code"] for w in plan_of(self._rate_ctx({"MO-1": 31.505}))["warnings"]])
 
     def test_manual_rate_beats_sc_rate(self):
         plan = plan_of(self._rate_ctx({"MO-1": 31.505}, rate="32.77"))
         self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D("32.77"), "manual"))
-        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385})
+        self.assertEqual(plan["rate_hint"], {"sc": 31.505, "currency": 30.385, "sc_no": None})
 
     def test_local_currency_rate_is_one(self):
         ctx = self._rate_ctx({"MO-1": 31.505})
@@ -267,6 +290,49 @@ class InvoicePlanTests(unittest.TestCase):
         ctx["currency_row"] = {"CurrencyID": "NTD", "BuyInRate": 1, "FixedRate": 1, "AmountDeciDigits": 0}
         plan = plan_of(ctx)
         self.assertEqual((plan["exch_rate"], plan["rate_source"]), (D(1), "local"))
+
+    def _load_ctx_with_fake_cursor(self, sc_rate):
+        """假 cursor 跑 _load_context（不連 ERP）：回傳 (ctx, 執行過的 SQL)。"""
+        executed = []
+
+        class _Cur:
+            def execute(self, sql, params=()):
+                executed.append((sql, params))
+                if "FROM TraBillMain" in sql and "TOP 1" in sql:
+                    self.description, self._rows = [("BillNo",), ("ExchRate",)], [("MO-2611001", 31.505)]
+                elif "FROM TraBillMain" in sql:
+                    main = {**_sc_main("MO-1"), "ExchRate": sc_rate}
+                    self.description, self._rows = [(k,) for k in main], [tuple(main.values())]
+                elif "FROM TraBillSub" in sql:
+                    sub = _sc_sub("MO-1", 1, "P1", 1000, 1000, 1.5)
+                    self.description, self._rows = [(k,) for k in sub], [tuple(sub.values())]
+                elif "FROM comWareAmount" in sql:
+                    self.description, self._rows = [("WareID",), ("Quantity",)], [("001", 10 ** 6)]
+                else:
+                    self.description, self._rows = [("x",)], [(1,)]
+
+            def fetchall(self):
+                return self._rows
+
+        req = {"lines": [{"sc_no": "MO-1", "row_no": 1, "qty": D(1000), "price": None}], "exch_rate": None}
+        with patch.object(inv.er, "load_cost_params", return_value=COMP03_PARAMS), \
+                patch.object(inv, "_load_masters", return_value={"customer": {}, "products": {"P1": {}}, "missing": []}), \
+                patch.object(inv.er, "load_currency", return_value={"CurrencyID": "USD", "BuyInRate": 30.385}), \
+                patch.object(inv, "warehouse", return_value="001"):
+            ctx = inv._load_context(_Cur(), "CHIComp13", req, lock=False)
+        return ctx, [sql for sql, _ in executed]
+
+    def test_load_context_queries_latest_usd_sc_only_when_ticked_rates_zero(self):
+        ctx, sqls = self._load_ctx_with_fake_cursor(0)
+        self.assertEqual(ctx["latest_sc_rate"], {"bill_no": "MO-2611001", "rate": D("31.505")})
+        latest = [s for s in sqls if "TOP 1" in s]
+        self.assertEqual(len(latest), 1)
+        self.assertIn(f"Flag = {inv.SC_FLAG}", latest[0])
+        self.assertIn("CurrID = %s AND ExchRate > 0 ORDER BY BillDate DESC, BillNo DESC", latest[0])
+        self.assertTrue(latest[0].lstrip().upper().startswith("SELECT"))
+        ctx, sqls = self._load_ctx_with_fake_cursor(32.625)
+        self.assertIsNone(ctx["latest_sc_rate"])
+        self.assertEqual([s for s in sqls if "TOP 1" in s], [])
 
     def test_user_price_used(self):
         no = "MO-1"
@@ -994,9 +1060,7 @@ const lines = mod.invoiceLines([{ line: { sc_no: 'MO-1', row_no: 2 }, qty: 700, 
 assert.deepEqual(lines, [{ sc_no: 'MO-1', row_no: 2, qty: 700, price: 1.5 }]);
 assert.throws(() => mod.invoiceLines([]));
 assert.throws(() => mod.invoiceLines([{ line: { sc_no: 'MO-1', row_no: 2 }, qty: 0, price: 1 }]));
-assert.equal(mod.parseRate('32.215'), 32.215);
-assert.equal(mod.parseRate(''), null);
-assert.equal(mod.parseRate('0'), null);
+assert.equal(mod.parseRate, undefined);  // 匯率不用輸入，已移除輸入解析
 assert.equal(mod.parseSerial(''), '');
 assert.equal(mod.parseSerial(' 305 '), '305');
 assert.equal(mod.parseSerial('5'), '005');

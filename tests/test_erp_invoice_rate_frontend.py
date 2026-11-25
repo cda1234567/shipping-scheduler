@@ -1,4 +1,4 @@
-"""開 Invoice 匯率：預覽自動帶入 S/C / 幣別檔匯率、「按 Enter 重新計算」只在改過匯率後才出現（v2026.11.24.9）。"""
+"""開 Invoice 匯率：預覽只唯讀顯示自動帶入的匯率，沒有匯率輸入框、也不要求使用者輸入（v2026.11.25.1）。"""
 from __future__ import annotations
 
 import subprocess
@@ -27,14 +27,20 @@ const els = {};
 const document = { getElementById: id => (els[id] ||= mkEl()) };
 const ctx = vm.createContext({ esc, document, showToast() {}, isEditAuthenticated: () => true,
   openEditAuthModal() {}, createOpenLinePicker() {}, apiJson() {}, apiPost() {}, window: {}, console });
-vm.runInContext(source + '\n_picker = { lockedGroup: () => "C01" };\nthis.renderPreview = renderPreview;', ctx);
+vm.runInContext(source + '\n_picker = { lockedGroup: () => "C01", getSelection: () => [{ line: { sc_no: "MO-2611009", row_no: 1 }, qty: 1, price: 1 }] };'
+  + '\n_config = { target: null };\nthis.renderPreview = renderPreview;\nthis.buildBody = buildBody;', ctx);
 
 const preview = over => ({ bill_no: 'ST-2026001', bill_prefix: 'ST-2026', customer: { id: 'C01', name: 'ACME' },
   sc_nos: ['MO-2611009'], inv_date: 20261124, currency: 'USD', lines: [], totals: { sum_qty: 0, total: 0, local_total: 0 },
   warnings: [], is_production: false, target_label: '公司13（測試）', ...over });
 const html = () => els['erp-invoice-preview'].innerHTML;
-const rateValue = () => html().match(/id="erp-invoice-rate"[^>]*value="([^"]*)"/)[1];
-const tipTag = () => html().match(/<span id="erp-invoice-rate-tip"[^>]*>/)[0];
+const noInput = () => {
+  assert.doesNotMatch(html(), /id="erp-invoice-rate"/);
+  assert.doesNotMatch(html(), /<input[^>]*type="number"/);
+  assert.ok(!html().includes('請輸入'), html());
+  assert.ok(!html().includes('照發票填'));
+  assert.ok(!html().includes('按 Enter 重新計算'));
+};
 """
 
 
@@ -48,39 +54,44 @@ class InvoiceRateFrontendTests(unittest.TestCase):
         completed = run_node(body)
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
-    def test_sc_rate_prefilled_and_tip_hidden_until_input(self):
+    def test_first_sc_rate_read_only(self):
         self._run(r"""
-ctx.renderPreview(preview({ exch_rate: 32.625, rate_source: 'sc', rate_required: false, rate_hint: { sc: 32.625, currency: 30.385 } }));
-assert.equal(rateValue(), '32.625');
-assert.match(tipTag(), /\shidden[\s>]/);
-assert.doesNotMatch(tipTag(), /style=/);                // 不能有 inline display 蓋掉 hidden
-assert.doesNotMatch(html(), /id="erp-invoice-rate"[^>]*placeholder=/);
-assert.ok(html().includes('已自動帶入第一張 S/C 匯率 32.625，不用輸入'));
-assert.ok(html().includes('正航幣別檔 30.385（參考）'));
-assert.ok(!html().includes('請輸入發票上的匯率'));
-const tip = document.getElementById('erp-invoice-rate-tip');
-tip.hidden = true;                                       // 對應 HTML 上的 hidden 屬性
-els['erp-invoice-rate'].fire('input');
-assert.equal(tip.hidden, false);
-assert.notEqual(tip.style.display, 'none');
-assert.equal(els['btn-erp-invoice-create'].disabled, true);
+ctx.renderPreview(preview({ exch_rate: 32.625, rate_source: 'sc', rate_required: false,
+  rate_hint: { sc: 32.625, currency: 30.385, sc_no: 'MO-2611009' } }));
+noInput();
+assert.ok(html().includes('匯率 <span class="mono" id="erp-invoice-rate-text">32.625</span>'));
+assert.ok(html().includes('（自動帶第一張 S/C MO-2611009）'));
+assert.equal(els['btn-erp-invoice-create'].disabled, false);
 """)
 
-    def test_currency_fallback_prefills_currency_rate(self):
+    def test_other_and_latest_sc_and_currency_text(self):
         self._run(r"""
-ctx.renderPreview(preview({ exch_rate: 30.385, rate_source: 'currency', rate_required: false, rate_hint: { sc: null, currency: 30.385 } }));
-assert.equal(rateValue(), '30.385');
-assert.match(tipTag(), /\shidden[\s>]/);
-assert.ok(html().includes('S/C 沒有匯率，已自動帶入正航幣別檔 30.385，不用輸入'));
+ctx.renderPreview(preview({ exch_rate: 31.505, rate_source: 'sc_other', rate_required: false,
+  rate_hint: { sc: null, currency: 30.385, sc_no: 'MO-2611010' } }));
+noInput();
+assert.ok(html().includes('（第一張 S/C 沒有匯率，自動帶 S/C MO-2611010 的匯率 31.505）'));
+ctx.renderPreview(preview({ exch_rate: 31.505, rate_source: 'sc_latest', rate_required: false,
+  rate_hint: { sc: null, currency: 30.385, sc_no: 'MO-2611001' } }));
+noInput();
+assert.ok(html().includes('（S/C 沒有匯率，自動帶最近一張美金 S/C MO-2611001 的匯率 31.505）'));
+ctx.renderPreview(preview({ exch_rate: 30.385, rate_source: 'currency', rate_required: false,
+  rate_hint: { sc: null, currency: 30.385, sc_no: null } }));
+noInput();
+assert.ok(html().includes('（自動帶正航幣別檔 30.385）'));
 """)
 
-    def test_missing_rate_asks_for_input(self):
+    def test_missing_rate_does_not_ask_user_to_type(self):
         self._run(r"""
-ctx.renderPreview(preview({ exch_rate: 0, rate_source: 'missing', rate_required: true, rate_hint: { sc: null, currency: null } }));
-assert.equal(rateValue(), '');
-assert.match(html(), /id="erp-invoice-rate"[^>]*placeholder="照發票填"/);
-assert.ok(html().includes('請輸入發票上的匯率'));
-assert.ok(!html().includes('不用輸入'));
+ctx.renderPreview(preview({ exch_rate: 0, rate_source: 'missing', rate_required: true,
+  rate_hint: { sc: null, currency: null, sc_no: null } }));
+noInput();
+assert.ok(html().includes('找不到匯率，請聯絡系統管理員'));
+""")
+
+    def test_preview_request_never_sends_rate(self):
+        self._run(r"""
+document.getElementById('erp-invoice-date').value = '2026-11-25';
+assert.equal(ctx.buildBody().exch_rate, null);
 """)
 
 

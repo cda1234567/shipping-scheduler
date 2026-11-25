@@ -55,7 +55,9 @@ S/C 回寫（Flag 2）：TraBillSub.QtyRemain 與 NotTranInvQty 各減開立數�
   出庫不重算 CAvgCost。
 倉庫：ERP_INVOICE_WAREHOUSE（預設 001，公司3實單全是 001）。預設倉不夠、別倉較多時改用庫存最多的倉並在預覽顯示。
   庫存不足、超開 S/C 剩餘量：預覽警告，沒帶 confirm 不寫入。料號在 comProduct 不存在（例如公司13的 ItemNo='*'）直接報錯。
-匯率：預設第一張勾選 S/C 的 ExchRate（與正航手開 ST-2026304 一致）；S/C 沒有匯率才用 comCurrencySys.BuyInRate（公司3 USD 30.385），預覽可改（請求模型一定要收 exch_rate），幣別檔匯率顯示當參考。
+匯率：不要求使用者輸入（會計之後在正航調整）。順序：請求帶 exch_rate（API 相容；網頁只在寫入時回送預覽匯率）> 本幣 1
+  > 第一張勾選 S/C 的 ExchRate（與正航手開 ST-2026304 一致）> 其他勾選 S/C 中第一張有匯率的 > 正航最近一張同幣別 S/C
+  （BillDate、BillNo 由新到舊）> comCurrencySys.BuyInRate / FixedRate（公司3 USD 30.385）；全部為 0 才擋（rate_required）。
 主檔：測試公司缺客戶（comCustomer Flag=1）/ 料號時從來源公司（ERP_SQL_DATABASE）照抄；正式公司禁止自動抄主檔。
 錯誤訊息一律不含帳號密碼。
 """
@@ -491,6 +493,14 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
     prods = list(dict.fromkeys(ep._text(ep._get(p["sub"], "ItemNo")) for p in picked))
     masters = _load_masters(wcur, target, cust_id, prods, hint)
     currency = er.load_currency(wcur, curr) if curr else None
+    # 勾選的 S/C 都沒有匯率：唯讀查正航最近一張同幣別 S/C 的匯率（排在幣別檔之前）
+    latest_sc = None
+    if curr and not er.is_local_currency(curr) and not req.get("exch_rate") \
+            and all(_dec(ep._get(s["main"], "ExchRate", 0)) <= 0 for s in scs.values()):
+        found = _one_row(wcur, f"SELECT TOP 1 BillNo, ExchRate FROM TraBillMain WHERE Flag = {SC_FLAG} "
+                               "AND CurrID = %s AND ExchRate > 0 ORDER BY BillDate DESC, BillNo DESC", (curr,))
+        if found is not None and _dec(ep._get(found, "ExchRate", 0)) > 0:
+            latest_sc = {"bill_no": ep._text(ep._get(found, "BillNo")), "rate": _dec(ep._get(found, "ExchRate"))}
 
     default_ware = warehouse()
     need: Dict[str, Decimal] = {}
@@ -520,7 +530,7 @@ def _load_context(wcur, target: str, req: Dict[str, Any], lock: bool) -> Dict[st
         "customer": masters["customer"], "products": masters["products"], "missing_masters": masters["missing"],
         "default_ware": default_ware, "wares": wares, "ware_switched": ware_switched, "ware_amounts": ware_amounts,
         "stocks": stocks, "all_qty": all_qty, "cost_params": cost_params, "req_exch_rate": req.get("exch_rate"),
-        "hint": hint,
+        "latest_sc_rate": latest_sc, "hint": hint,
     }
 
 
@@ -611,12 +621,24 @@ def build_plan(
     local = er.is_local_currency(curr)
     sc_rate = _dec(ep._get(first, "ExchRate", 0))
     sys_rate = _dec(ep._get(cur_row, "BuyInRate", 0)) or _dec(ep._get(cur_row, "FixedRate", 0))
+    # 勾選順序的其他 S/C 中第一張有匯率的
+    other = next(((no, _dec(ep._get(ctx["scs"][no]["main"], "ExchRate", 0)))
+                  for no in dict.fromkeys(p["sc_no"] for p in picked)
+                  if no != first_no and _dec(ep._get(ctx["scs"][no]["main"], "ExchRate", 0)) > 0), None)
+    latest = ctx.get("latest_sc_rate")
+    rate_sc_no = None
+    # 不要求使用者輸入匯率（同正航預設 = S/C 匯率，會計之後在正航調整）
     if ctx.get("req_exch_rate"):
         rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
     elif local:
         rate, rate_source = Decimal(1), "local"
     elif sc_rate > 0:  # 與正航手開一致：預設帶第一張 S/C 的匯率（ST-2026304 用 31.505）
-        rate, rate_source = sc_rate, "sc"
+        rate, rate_source, rate_sc_no = sc_rate, "sc", first_no
+    elif other is not None:
+        rate_sc_no, rate = other
+        rate_source = "sc_other"
+    elif latest and _dec(latest.get("rate")) > 0:
+        rate, rate_source, rate_sc_no = _dec(latest["rate"]), "sc_latest", latest.get("bill_no")
     elif sys_rate > 0:
         rate, rate_source = sys_rate, "currency"
     else:
@@ -681,9 +703,12 @@ def build_plan(
     if diff:
         warnings.append({"code": "price_diff", "needs_confirm": False, "message": "單價與 S/C 不同：" + "、".join(
             f"{l['sc_no']}#{l['sc_row']} {l['sc_price']:g}→{l['price']:g}" for l in diff)})
+    if ep._text(curr).upper() != "USD":
+        warnings.append({"code": "currency_not_usd", "needs_confirm": False,
+                         "message": f"S/C 幣別不是美金（{curr or 'NTD'}）"})
     if rate_source == "missing":
         warnings.append({"code": "rate_required", "needs_confirm": False,
-                         "message": f"正航幣別檔沒有 {curr} 匯率：請輸入本次發票匯率後才能寫入"})
+                         "message": f"找不到 {curr} 匯率（S/C 與正航幣別檔都沒有），無法開立，請聯絡系統管理員"})
     for m in ctx["missing_masters"]:
         warnings.append({"code": "copy_master", "needs_confirm": False,
                          "message": f"寫入公司缺{m['label']} {m['key']}，寫入時會從來源公司照抄主檔"})
@@ -806,7 +831,8 @@ def build_plan(
         "target": target, "bill_no": bill_no, "today": today, "inv_date": inv_date,
         "customer": {"id": cust_id, "name": ep._text(ep._get(customer, "ShortName")) or ep._text(ep._get(customer, "FullName"))},
         "currency": curr, "exch_rate": rate, "rate_source": rate_source, "rate_required": rate_source == "missing",
-        "rate_hint": {"sc": float(sc_rate) if sc_rate > 0 else None, "currency": float(sys_rate) if sys_rate > 0 else None},
+        "rate_hint": {"sc": float(sc_rate) if sc_rate > 0 else None, "currency": float(sys_rate) if sys_rate > 0 else None,
+                      "sc_no": rate_sc_no},
         "amount_digits": amount_digits, "origin_no": first_no, "sc_nos": list(ctx["scs"]),
         "default_warehouse": ctx["default_ware"], "lines": lines, "totals": totals, "warnings": warnings,
         "confirm_items": confirm_items, "needs_confirm": bool(confirm_items), "closed_scs": closed_scs,
@@ -981,7 +1007,7 @@ def _write(req: Dict[str, Any], target: str, creds: Dict[str, Any], actor: str, 
                     if plan["number_taken"]:  # 自填單號在交易內（鎖定）重查已存在：不寫入
                         raise InvoiceValidationError(number_taken_message(plan["bill_no"], plan["number_taken_in"]))
                     if plan["rate_required"]:
-                        raise InvoiceValidationError(f"{plan['currency']}：請輸入發票匯率（大於 0）後再寫入")
+                        raise InvoiceValidationError(f"找不到 {plan['currency']} 匯率，無法開立，請聯絡系統管理員")
                     if plan["needs_confirm"] and not req["confirm"]:
                         raise InvoiceConfirmWarning(plan["confirm_items"])  # 尚未寫入任何東西
                     taken = existing_numbers(wcur, plan["bill_no"], lock=True)

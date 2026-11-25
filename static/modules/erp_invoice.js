@@ -12,8 +12,6 @@ let _preview = null;
 let _token = "";
 let _rePreviewPending = false;
 let _costTouched = false;
-let _rate = "";            // 預覽畫面輸入的發票匯率；空 = 用第一張 S/C 匯率（沒有才用正航幣別檔）
-let _rateCustomer = null;  // 匯率是哪個客戶時輸入的；換客戶就不沿用
 let _serial = "";          // 預覽畫面輸入的發票流水號（3 碼）；空 = 自動編號
 let _serialCustomer = null; // 流水號是哪個客戶時輸入的；換客戶就不沿用
 let _lastShown = null;     // 最後一次成功畫出的預覽（預覽失敗時保留給使用者對照）
@@ -34,14 +32,6 @@ export function invoiceLines(selection) {
     if (!Number.isFinite(s.price) || s.price < 0) throw new Error(`${s.line.sc_no} #${s.line.row_no} 的單價不正確`);
     return { sc_no: s.line.sc_no, row_no: s.line.row_no, qty: s.qty, price: s.price };
   });
-}
-
-/** 匯率輸入值 → 數字；空白或不合法回 null（= 後端用第一張 S/C 匯率，沒有才用正航幣別檔）。 */
-export function parseRate(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  const n = Number(text);
-  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** 流水號輸入值 → 3 碼字串；空白回 ""（= 自動），不合法回 null。 */
@@ -135,11 +125,6 @@ function syncCostDefault() {
   if (box && _config && !_costTouched) box.checked = _config.update_cost_default !== false;
 }
 
-function currentRate() {
-  if (!_rate || _picker.lockedGroup() !== _rateCustomer) return null;
-  return parseRate(_rate);
-}
-
 function currentSerial() {
   if (!_serial || _picker.lockedGroup() !== _serialCustomer) return "";
   return _serial;
@@ -161,42 +146,12 @@ function buildBody(confirm = false) {
     confirm,
     client_token: _token,
     update_cost: updateCostChecked(),
-    exch_rate: currentRate(),
+    exch_rate: null,  // 匯率不用輸入：後端自動帶 S/C 匯率；寫入時才回送預覽匯率
     bill_serial: currentSerial() || null,
   };
 }
 
-// 匯率輸入框：change（離開欄位）或按 Enter 都重新預覽；預覽中再改會排隊，不會被吃掉
-function applyRate(value) {
-  const n = parseRate(value);
-  if (n === null) { showToast("發票匯率必須大於 0", { tone: "error" }); return; }
-  const same = _rate === String(n) && _rateCustomer === _picker.lockedGroup();
-  _rate = String(n);
-  _rateCustomer = _picker.lockedGroup();
-  if (_busy) { if (!same) _rePreviewPending = true; return; }
-  if (same && _preview && Number(_preview.exch_rate) === n) return;  // Enter 後又 blur：不重複預覽
-  void handlePreview();
-}
-
-function bindRateInput() {
-  const input = el("erp-invoice-rate");
-  if (!input) return;
-  input.addEventListener("input", () => {
-    // 匯率改了但還沒重新預覽：先鎖住確認鈕，免得照舊金額寫入
-    const btn = el("btn-erp-invoice-create");
-    if (btn) { btn.disabled = true; btn.title = "匯率已修改，按 Enter 或點別處重新計算"; }
-    const tip = el("erp-invoice-rate-tip");
-    if (tip) tip.hidden = false;
-  });
-  input.addEventListener("change", event => applyRate(event.target.value));
-  input.addEventListener("keydown", event => {
-    if (event.key !== "Enter") return;
-    event.preventDefault();
-    applyRate(event.target.value);
-  });
-}
-
-// 流水號輸入框：同匯率，change 或 Enter 重新預覽；空白 = 回到自動編號
+// 流水號輸入框：change 或 Enter 重新預覽；空白 = 回到自動編號
 function applySerial(value) {
   const serial = parseSerial(value);
   if (serial === null) { showToast("發票流水號只能輸入 1～999 的數字（空白 = 自動）", { tone: "error" }); return; }
@@ -229,19 +184,20 @@ function serialInput(r) {
   return `　<label class="erp-receive-rate-label"><strong>發票流水號</strong> <span class="mono">${esc(r.bill_prefix || "")}</span><input type="text" id="erp-invoice-serial" class="num mono" inputmode="numeric" maxlength="3" style="width:4em" placeholder="空白=自動" value="${esc(val)}"></label> <span style="color:#999">→ <span class="mono">${esc(r.bill_no)}</span>${r.bill_serial_manual ? "（自填）" : "（自動）"}</span>${taken}`;
 }
 
-function rateInput(r) {
+// 匯率唯讀顯示（不用輸入；會計之後在正航調整）
+function rateText(r) {
   if (r.rate_source === "local") return "";
-  const h = r.rate_hint || {};
-  // 使用者輸入過的匯率優先（預覽失敗重畫時也不會把剛打的數字清掉）
-  const typed = currentRate();
-  const ref = h.currency ? `正航幣別檔 ${h.currency}（參考）` : "";
-  let hint;
-  if (typed === null && r.rate_source === "sc") hint = [`已自動帶入第一張 S/C 匯率 ${r.exch_rate}，不用輸入`, ref].filter(Boolean).join(" / ");
-  else if (typed === null && r.rate_source === "currency") hint = `S/C 沒有匯率，已自動帶入正航幣別檔 ${r.exch_rate}，不用輸入`;
-  else hint = [h.sc ? `預設＝第一張 S/C 匯率 ${h.sc}` : (h.currency ? "S/C 沒有匯率，預設用正航幣別檔" : ""), ref].filter(Boolean).join(" / ");
-  const val = typed !== null ? esc(typed) : (r.rate_required ? "" : esc(r.exch_rate));
-  const placeholder = r.rate_required ? ' placeholder="照發票填"' : "";
-  return `　<label class="erp-receive-rate-label"><strong>發票匯率</strong>（${esc(r.currency)}）<input type="number" id="erp-invoice-rate" class="num" min="0" step="any" style="width:7em"${placeholder} value="${val}"></label> <span id="erp-invoice-rate-tip" class="erp-po-hint" hidden>按 Enter 重新計算</span>${hint ? ` <span style="color:#999">${esc(hint)}</span>` : ""}${r.rate_required ? ' <strong class="erp-po-warn" style="display:inline">請輸入發票上的匯率</strong>' : ""}`;
+  const sc = (r.rate_hint || {}).sc_no || "";
+  const ccy = r.currency === "USD" ? "美金" : (r.currency || "");
+  const why = {
+    sc: `自動帶第一張 S/C ${sc}`,
+    sc_other: `第一張 S/C 沒有匯率，自動帶 S/C ${sc} 的匯率 ${r.exch_rate}`,
+    sc_latest: `S/C 沒有匯率，自動帶最近一張${ccy} S/C ${sc} 的匯率 ${r.exch_rate}`,
+    currency: `自動帶正航幣別檔 ${r.exch_rate}`,
+    manual: "指定匯率",
+  }[r.rate_source];
+  if (r.rate_required) return `　匯率 <strong class="erp-po-warn" style="display:inline">找不到匯率，請聯絡系統管理員</strong>`;
+  return `　匯率 <span class="mono" id="erp-invoice-rate-text">${esc(r.exch_rate)}</span>${why ? `<span style="color:#999">（${esc(why)}）</span>` : ""}`;
 }
 
 function hidePreview() {
@@ -262,17 +218,16 @@ function renderPreview(r, error = "") {
   p.innerHTML = `${errorBox}
     <div class="erp-po-badge ${r.is_production ? "is-prod" : "is-test"} erp-po-badge-small">寫入：${esc(targetText(r.target_label, r.is_production))}　${costText}</div>
     <div class="erp-po-preview-head">預估單號（寫入當下才會確定）：<strong class="mono">${esc(r.bill_no)}</strong>　客戶 ${esc(r.customer.id)} ${esc(r.customer.name)}　來源 S/C <span class="mono">${esc((r.sc_nos || []).join("、"))}</span></div>
-    <div class="erp-po-hint">發票日期 ${ymd(r.inv_date)}${serialInput(r)}　幣別 ${cur}${rateInput(r)}</div>
+    <div class="erp-po-hint">發票日期 ${ymd(r.inv_date)}${serialInput(r)}　幣別 ${cur}${rateText(r)}</div>
     ${warn}
     <div class="erp-po-table-wrap"><table class="erp-po-table">
       <thead><tr><th>#</th><th>S/C</th><th>料號</th><th>品名</th><th class="num">未完成量</th><th class="num">數量</th><th class="num">單價（${cur}）</th><th class="num">金額（${cur}）</th><th class="num">本幣金額</th><th>倉別</th><th class="num">庫存</th></tr></thead>
       <tbody>${r.lines.map(l => `<tr><td>${l.row_no}</td><td class="mono">${esc(l.sc_no)} #${l.sc_row}</td><td class="mono">${esc(l.prod_id)}</td><td>${esc(l.prod_name)}</td><td class="num">${fmt(l.qty_remain)}</td><td class="num">${fmt(l.qty)}</td><td class="num">${fmt(l.price)}</td><td class="num">${fmt(l.amount)}</td><td class="num">${fmt(l.ml_amount)}</td><td class="mono">${esc(l.warehouse)}</td><td class="num">${fmt(l.stock)}</td></tr>`).join("")}</tbody>
     </table></div>
     <div class="erp-po-totals">數量 ${fmt(r.totals.sum_qty)}　<strong>合計 ${cur} ${fmt(r.totals.total)}</strong>　本幣 ${fmt(r.totals.local_total)}（匯率 ${fmt(r.exch_rate)}）</div>
-    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-invoice-create" type="button"${blocked ? ` disabled title="${error ? "預覽失敗，請重新預覽" : (r.number_taken ? "單號已存在，請改流水號" : "請先輸入發票匯率")}"` : ""}>確認開立</button></div>`;
+    <div class="erp-po-actions"><span class="spacer"></span><button class="btn btn-primary" id="btn-erp-invoice-create" type="button"${blocked ? ` disabled title="${error ? "預覽失敗，請重新預覽" : (r.number_taken ? "單號已存在，請改流水號" : "找不到匯率，請聯絡系統管理員")}"` : ""}>確認開立</button></div>`;
   p.hidden = false;
   el("btn-erp-invoice-create").addEventListener("click", handleCreate);
-  bindRateInput();
   bindSerialInput();
 }
 
@@ -347,15 +302,6 @@ async function handleCreate() {
   }
   if (_preview.update_cost !== body.update_cost) {
     showToast("「扣總成本」已變更，已重新預覽，請確認後再按「確認開立」");
-    await handlePreview();
-    return;
-  }
-  if (_preview.rate_required && body.exch_rate === null) {
-    showToast("請先輸入發票匯率（大於 0）", { tone: "error" });
-    return;
-  }
-  if (body.exch_rate !== null && Number(_preview.exch_rate) !== body.exch_rate) {
-    showToast("匯率已變更，已重新預覽，請確認後再按「確認開立」");
     await handlePreview();
     return;
   }
