@@ -562,6 +562,8 @@ def load_bill_params(wcur, target: str) -> Dict[str, Any]:
 #   依據：CHIComp03 手開實單 RM-20220712001 / RM-20221004002（USD 採購單 PO-20220414005、廠商 P0304）。
 #   只對 USD 採購單且最後是 convert 有效；台幣採購單、打美金一律忽略（明確送 entry_ccy=USD 搭 price_ntd 會回錯誤）。
 # 匯率：預設 comCurrencySys.BuyInRate（目前 USD 30.385，= 採購單匯率）；預覽畫面可改成當日匯率（Tracy 的單都手 key 當日匯率）。
+# v2026.11.26.1：USD 採購單沒選幣別時一律預設打台幣（NTD → convert），不再依課稅別（老闆 11/26：幣別像正航進貨單自己選，預設台幣）；
+#   匯率沒輸入時預帶 comCurrencySys.BuyInRate（rate_source = currency_default），使用者輸入的優先（manual）；BuyInRate 是 0 / 沒有才要求輸入。
 LOCAL_CURRENCY = "NTD"
 ML_PRICE_DIGITS = 4  # comProdRec.MLPrice：2023–2026 USD 列 round 4 位 1,253/1,281（3 位 1,174）
 TAX_TYPE_LABELS = {0: "應稅（外加 5%）"}
@@ -589,21 +591,23 @@ def can_choose_entry_ccy(curr: Any) -> bool:
 
 
 def default_entry_ccy(curr: Any, tax_type: int) -> Optional[str]:
-    """USD 採購單的預設：課稅別 0 → 打台幣（NTD），≠ 0 → 打美金（USD）；不能選的幣別回 None。"""
+    """USD 採購單的預設：一律打台幣（NTD，v2026.11.26.1 起不看課稅別）；不能選的幣別回 None。"""
     if not can_choose_entry_ccy(curr):
         return None
-    return LOCAL_CURRENCY if int(tax_type) == 0 else CHOOSABLE_CURRENCY
+    return LOCAL_CURRENCY
 
 
 def receive_mode(curr: Any, tax_type: int, entry_ccy: Optional[str] = None) -> str:
     """local = 台幣採購單；foreign = 外幣且免稅 → 外幣進貨單；convert = 外幣但應稅（國內廠商）→ 轉台幣進貨單。
 
-    entry_ccy（只對 USD 採購單有效）：USD → foreign、NTD → convert；空 = 依課稅別自動判斷。
+    entry_ccy（只對 USD 採購單有效）：USD → foreign、NTD → convert；空 = 預設打台幣（convert）。
+    其他外幣（EUR…）仍依課稅別自動判斷。
     """
     if is_local_currency(curr):
         return "local"
-    if entry_ccy and can_choose_entry_ccy(curr):
-        return "foreign" if entry_ccy == CHOOSABLE_CURRENCY else "convert"
+    if can_choose_entry_ccy(curr):
+        chosen = entry_ccy or default_entry_ccy(curr, tax_type)
+        return "foreign" if chosen == CHOOSABLE_CURRENCY else "convert"
     return "convert" if int(tax_type) == 0 else "foreign"
 
 
@@ -822,11 +826,14 @@ def build_plan(
     else:
         cur_row = ctx.get("currency_row") or {}
         sys_rate = _dec(ep._get(cur_row, "BuyInRate", 0)) or _dec(ep._get(cur_row, "FixedRate", 0))
-        # v2026.11.04.2：匯率一律用發票上的匯率（使用者手動輸入），不自動帶幣別檔 / 採購單匯率
+        buy_rate = _dec(ep._get(cur_row, "BuyInRate", 0))
+        # v2026.11.26.1：使用者輸入的匯率優先；沒輸入預帶正航幣別檔 BuyInRate（可改）；BuyInRate 是 0 / 沒有才要求輸入
         if price_ntd:
             rate, rate_source = Decimal(1), "ntd_price"
         elif ctx.get("req_exch_rate"):
             rate, rate_source = _dec(ctx["req_exch_rate"]), "manual"
+        elif buy_rate > 0:
+            rate, rate_source = buy_rate, "currency_default"
         else:
             rate, rate_source = Decimal(0), "missing"
         exch = rate if mode == "foreign" else Decimal(1)
@@ -909,7 +916,8 @@ def build_plan(
         warnings.append({"code": "terms_mismatch", "needs_confirm": False,
                          "message": "各採購單付款條件不同，進貨單以第一張採購單的條件為準"})
 
-    rate_text = {"manual": "發票匯率", "ntd_price": "單價直接打台幣，不用匯率"}.get(rate_source, "")
+    rate_text = {"manual": "發票匯率", "currency_default": "預帶正航幣別檔匯率，可改",
+                 "ntd_price": "單價直接打台幣，不用匯率"}.get(rate_source, "")
     rate_missing = rate_source == "missing"
     if rate_missing:
         warnings.append({"code": "rate_required", "needs_confirm": False,

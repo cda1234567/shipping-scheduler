@@ -36,6 +36,11 @@ class ErpReceiveRequestModelTests(unittest.TestCase):
         self.assertIsNone(ErpReceiveRequest(lines=[]).dict()["entry_ccy"])
         self.assertIs(ErpReceiveRequest(lines=[]).dict()["price_ntd"], False)
 
+    def test_entry_ccy_usd_kept(self):
+        # v2026.11.26.1：「單據幣別」下拉選 USD 時照送（沒選 = None，後端預設 NTD）
+        req = ErpReceiveRequest(**{**BODY, "entry_ccy": "USD", "price_ntd": False, "exch_rate": None}).dict()
+        self.assertEqual((req["entry_ccy"], req["exch_rate"]), ("USD", None))
+
 
 class ErpReceiveRouteTests(unittest.TestCase):
     @classmethod

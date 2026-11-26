@@ -1398,7 +1398,7 @@ class TaxCurrencyTests(ErpCase):
         # RM-20261023001：0.47 USD × 1010 = 474.7、匯率 32.215 → MLPrice 15.141、MLAmount 15292、稅 0
         self.usd_setup(1)
         self.rows("ordBillSub")[0].update(Quantity=Decimal(1010), QtyRemain=Decimal(1010))
-        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1010}], exch_rate="32.215")
+        req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 1010}], exch_rate="32.215", entry_ccy="USD")
         r = er.preview_receive(req)
         self.assertEqual((r["mode"], r["currency"], r["exch_rate"], r["rate_source"]), ("foreign", "USD", 32.215, "manual"))
         self.assertEqual((r["totals"]["sum_amount"], r["totals"]["sum_tax"], r["totals"]["local_total"]), (474.7, 0.0, 15292.0))
@@ -1421,12 +1421,28 @@ class TaxCurrencyTests(ErpCase):
         ntd = next(x for x in self.rows("comCustAccounts") if x["ID"] == "CS007" and x["CurrID"] == "NTD")
         self.assertEqual(ntd["CurReceivable"], Decimal(2520))
 
-    def test_usd_rate_not_prefilled_and_write_blocked(self):
-        # 匯率照發票上（v2026.11.04.2）：不自動帶幣別檔 / 採購單匯率，只當參考
+    def test_usd_rate_prefilled_from_buy_in_rate(self):
+        # v2026.11.26.1：沒輸入匯率預帶正航幣別檔 BuyInRate（像正航預設），可改；打台幣進貨單匯率 1、打美金進貨單匯率 = 預帶匯率
+        for entry, mode, bill_curr, bill_rate in (("NTD", "convert", "NTD", Decimal(1)), ("USD", "foreign", "USD", Decimal(31))):
+            with self.subTest(entry_ccy=entry):
+                self.erp.table("comCurrencySys").clear()
+                self.usd_setup(1, rate="31")
+                self.rows("ordBillSub")[0].update(QtyRemain=Decimal(1000))  # 第一輪收料扣掉的剩餘量補回
+                req = self.req(entry_ccy=entry)
+                r = er.preview_receive(req)
+                self.assertEqual((r["mode"], r["exch_rate"], r["rate_source"], r["rate_required"]), (mode, 31.0, "currency_default", False))
+                self.assertFalse(any(w["code"] == "rate_required" for w in r["warnings"]))
+                res = er.create_receive(req, "t", "1.2.3.4")
+                acc = self.acc(res["rm_no"])
+                self.assertEqual((acc["CurrID"], acc["ExchRate"]), (bill_curr, bill_rate))
+
+    def test_usd_rate_blocked_when_buy_in_rate_zero(self):
+        # BuyInRate 是 0 才照舊要求輸入（FixedRate 只當參考）
         for tax_type in (1, 0):
             with self.subTest(tax_type=tax_type):
                 self.erp.table("comCurrencySys").clear()
                 self.usd_setup(tax_type, rate="31")
+                self.erp.table("comCurrencySys")[0].update(BuyInRate=Decimal(0))
                 r = er.preview_receive(self.req())
                 self.assertTrue(r["rate_required"])
                 self.assertEqual((r["exch_rate"], r["rate_source"]), (0.0, "missing"))
@@ -1489,7 +1505,8 @@ class TaxCurrencyTests(ErpCase):
 
     def test_history_foreign_stores_usd_and_invoice_rate(self):
         self.usd_setup(1)
-        res = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.215"), "t", "1.2.3.4")
+        res = er.create_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.215", entry_ccy="USD"),
+                                "t", "1.2.3.4")
         self.assertEqual((res["mode"], res["currency"], res["exch_rate"], res["bill_exch_rate"]), ("foreign", "USD", 32.215, 32.215))
         rec = self._last_receipt(res)
         self.assertEqual((rec["currency"], rec["exch_rate"], rec["po_currency"], rec["convert_rate"], rec["price_ntd"]),
@@ -1567,7 +1584,7 @@ class TaxCurrencyTests(ErpCase):
         req = self.req([{"po_no": "PO-1", "row_no": 1, "qty": 10}], exch_rate="32.45", entry_ccy="NTD")
         r = er.preview_receive(req)
         self.assertEqual((r["mode"], r["currency"], r["po_currency"], r["exch_rate"], r["entry_ccy"], r["entry_ccy_default"]),
-                         ("convert", "NTD", "USD", 32.45, "NTD", "USD"))
+                         ("convert", "NTD", "USD", 32.45, "NTD", "NTD"))
         self.assertEqual((r["tax_type"], r["po_tax_type"]), (0, 1))
         line = r["lines"][0]
         self.assertEqual((line["src_price"], line["price"], line["amount"], line["tax"], line["tax_rate"]),
@@ -1657,14 +1674,12 @@ class TaxCurrencyTests(ErpCase):
         lines = [{"po_no": "PO-1", "row_no": 1, "qty": 18000, "price": 8.5}]
         a = er.preview_receive(self.req(lines, entry_ccy="NTD"))
         b = er.preview_receive(self.req(lines, entry_ccy="NTD", price_ntd=False))
-        self.assertTrue(a["rate_required"])
-        self.assertIn("rate_required", [w["code"] for w in a["warnings"]])
+        # 沒勾「單價是台幣」：照 USD 單價 × 匯率（預帶正航幣別檔 30.385）
+        self.assertEqual((a["rate_required"], a["rate_source"], a["exch_rate"]), (False, "currency_default", 30.385))
+        self.assertNotIn("rate_required", [w["code"] for w in a["warnings"]])
         self.assertFalse(a["price_ntd"])
         for k in ("mode", "exch_rate", "rate_source", "lines", "totals", "warnings"):
             self.assertEqual(a[k], b[k], k)
-        with self.assertRaises(er.ReceiveValidationError) as cm:
-            er.create_receive(self.req(lines, entry_ccy="NTD"), "t", "1.2.3.4")
-        self.assertIn("發票匯率", str(cm.exception))
 
     def test_price_ntd_ignored_for_ntd_po(self):
         a = er.preview_receive(self.req())
@@ -1678,22 +1693,34 @@ class TaxCurrencyTests(ErpCase):
         b = er._fingerprint("CHIComp13", er.normalize_request(self.req(entry_ccy="NTD")), "")
         self.assertNotEqual(a, b)
 
-    def test_entry_ccy_omitted_taxed_po_keeps_convert(self):
-        # 沒送 entry_ccy（舊客戶端）：課稅別 0 → convert；送預設值結果完全相同
-        self._check_default(0, "convert", "NTD")
+    # v2026.11.26.1：沒送 entry_ccy 一律預設打台幣（convert、課稅別 0、稅 5%），不看採購單課稅別；送 NTD 結果完全相同
+    def test_entry_ccy_omitted_taxed_po_defaults_ntd(self):
+        self._check_default(0)
 
-    def test_entry_ccy_omitted_tax_free_po_keeps_foreign(self):
-        self._check_default(1, "foreign", "USD")
+    def test_entry_ccy_omitted_tax_free_po_defaults_ntd(self):
+        self._check_default(1)
 
-    def test_entry_ccy_omitted_tax_type_4_keeps_foreign(self):
-        self._check_default(4, "foreign", "USD")
+    def test_entry_ccy_omitted_tax_type_4_defaults_ntd(self):
+        self._check_default(4)
 
-    def _check_default(self, tax_type, mode, default):
+    def test_entry_ccy_omitted_like_po_20260722005_defaults_ntd_convert(self):
+        # PO-20260722005 #1（P0317、UC-F0021A、2000 × 18.7 USD、課稅別 4）：以前預設打美金，現在預設打台幣、匯率預帶 30.385
+        self.usd_setup(4, price="18.7")
+        self.rows("ordBillSub")[0].update(Quantity=Decimal(2000), QtyRemain=Decimal(2000), TaxRate=Decimal("0.05"))
+        r = er.preview_receive(self.req([{"po_no": "PO-1", "row_no": 1, "qty": 2000}]))
+        self.assertEqual((r["mode"], r["currency"], r["po_currency"], r["entry_ccy"], r["entry_ccy_default"], r["tax_type"]),
+                         ("convert", "NTD", "USD", "NTD", "NTD", 0))
+        self.assertEqual((r["exch_rate"], r["rate_source"], r["rate_required"]), (30.385, "currency_default", False))
+        line = r["lines"][0]
+        self.assertEqual((line["src_price"], line["price"], line["amount"], line["tax"]), (18.7, 568.1995, 1136399.0, 56820.0))
+        self.assertEqual(r["totals"]["total"], 1193219.0)
+
+    def _check_default(self, tax_type):
         self.usd_setup(tax_type, price="19.3")
         a = er.preview_receive(self.req(exch_rate="32.45"))
-        b = er.preview_receive(self.req(exch_rate="32.45", entry_ccy=default))
+        b = er.preview_receive(self.req(exch_rate="32.45", entry_ccy="NTD"))
         c = er.preview_receive(self.req(exch_rate="32.45", entry_ccy=""))
-        self.assertEqual((a["mode"], a["tax_type"], a["entry_ccy"], a["entry_ccy_default"]), (mode, tax_type, default, default))
+        self.assertEqual((a["mode"], a["tax_type"], a["entry_ccy"], a["entry_ccy_default"]), ("convert", 0, "NTD", "NTD"))
         for other in (b, c):
             for k in ("mode", "currency", "exch_rate", "tax_type", "tax_label", "lines", "totals", "warnings"):
                 self.assertEqual(a[k], other[k], k)

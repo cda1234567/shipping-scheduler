@@ -31,9 +31,16 @@ function makeDom() {
       get innerHTML() { return this._html; },
       set innerHTML(v) {
         this._html = v;
-        for (const m of v.matchAll(/<(input|button|div|span)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
+        for (const m of v.matchAll(/<(input|button|div|span|select)\b[^>]*\bid="([^"]+)"[^>]*>/g)) {
           const c = mk(m[2], m[1]);
           c.value = (m[0].match(/\bvalue="([^"]*)"/) || [])[1] ?? '';
+          if (m[1] === 'select') {
+            const body = v.slice(m.index).split('</select>')[0];
+            c.options = [...body.matchAll(/<option value="([^"]*)"([^>]*)>([^<]*)<\/option>/g)]
+              .map(o => ({ value: o[1], text: o[3], selected: /\sselected/.test(o[2]), disabled: /\sdisabled/.test(o[2]),
+                title: (o[2].match(/title="([^"]*)"/) || [])[1] ?? '' }));
+            c.value = (c.options.find(o => o.selected) || c.options[0] || {}).value ?? '';
+          }
           c.disabled = /\sdisabled[\s>]/.test(m[0]);
           c.hidden = /\shidden[\s>]/.test(m[0]);
           c.checked = /\schecked[\s>]/.test(m[0]);
@@ -174,14 +181,17 @@ const ntd = { ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_
 const ntdNoRate = { ...fx.without, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true };
 const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : ntdNoRate);
 
-// USD 單看得到「美金」「台幣」，預設照預覽（課稅別 0 → 台幣）；首次預覽不帶 entry_ccy（用後端預設）
+// v2026.11.26.1：USD 單有「單據幣別」下拉（NTD 台幣 / USD 美金），預設 NTD；首次預覽不帶 entry_ccy（用後端預設 NTD）
 {
   const t = await setup(pick);
   await t.run('handlePreview()');
   const html = t.els['erp-receive-preview'].innerHTML;
-  assert.ok(html.includes('美金') && html.includes('台幣'), '要有美金 / 台幣選項');
-  assert.equal(t.els['erp-receive-ccy-ntd'].checked, true);
-  assert.equal(t.els['erp-receive-ccy-usd'].checked, false);
+  assert.ok(html.includes('<strong>單據幣別</strong>'), '下拉標籤');
+  assert.ok(!html.includes('type="radio"'), '不再用 radio');
+  const sel = t.els['erp-receive-ccy'];
+  assert.equal(sel.tag, 'select');
+  assert.deepEqual(sel.options.map(o => [o.value, o.text, o.disabled]), [['NTD', 'NTD 台幣', false], ['USD', 'USD 美金', false]]);
+  assert.equal(sel.value, 'NTD');
   assert.equal(t.posts[0].entry_ccy, null);
   // 選台幣沒匯率：確認鈕鎖住，按了也不送 create
   assert.equal(t.els['btn-erp-receive-create'].disabled, true, '台幣沒匯率不能收料');
@@ -195,24 +205,26 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : nt
   const t = await setup(pick);
   t.run('_rate = "32.77"; _rateVendor = "P0373";');
   await t.run('handlePreview()');
-  t.els['erp-receive-ccy-usd'].fire('change');
+  t.els['erp-receive-ccy'].value = 'USD'; t.els['erp-receive-ccy'].fire('change');
   assert.equal(t.els['btn-erp-receive-create'].disabled, true, '切換後重新預覽前鎖住');
   await flush(); await flush();
   assert.deepEqual(t.posts.map(b => b.entry_ccy), [null, 'USD']);
   assert.deepEqual(t.posts.map(b => b.exch_rate), [32.77, 32.77], '匯率照帶');
   let html = t.els['erp-receive-preview'].innerHTML;
-  assert.equal(t.els['erp-receive-ccy-usd'].checked, true);
+  assert.equal(t.els['erp-receive-ccy'].value, 'USD');
+  assert.ok(html.includes('<strong>發票匯率</strong>（預帶正航幣別檔，可改）'), '美金匯率標籤');
   assert.ok(html.includes('免稅'), '要標明免稅');
   assert.ok(html.includes('課稅別 1'), '要標明課稅別 1');
   assert.ok(/稅 0（免稅）/.test(html), '合計稅額 0（免稅）');
   assert.ok(html.includes('USD 進貨單'));
   assert.equal(t.els['btn-erp-receive-create'].disabled, false);
-  t.els['erp-receive-ccy-ntd'].fire('change');
+  t.els['erp-receive-ccy'].value = 'NTD'; t.els['erp-receive-ccy'].fire('change');
   await flush(); await flush();
   assert.deepEqual(t.posts.map(b => b.entry_ccy), [null, 'USD', 'NTD']);
   html = t.els['erp-receive-preview'].innerHTML;
   assert.ok(html.includes('216.282') && html.includes('32,442'), '台幣：換算單價、稅 5%');
-  assert.equal(t.els['erp-receive-ccy-ntd'].checked, true);
+  assert.equal(t.els['erp-receive-ccy'].value, 'NTD');
+  assert.ok(html.includes('<strong>換算匯率</strong>（預設正航幣別檔，可改成當日匯率）'), '台幣匯率標籤');
   assert.equal(t.run('buildBody().entry_ccy'), 'NTD');
 }
 
@@ -221,10 +233,10 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : nt
   const t = await setup(body => { if (body.entry_ccy === 'USD') throw new Error('逾時'); return pick(body); });
   t.run('_rate = "32.77"; _rateVendor = "P0373";');
   await t.run('handlePreview()');
-  t.els['erp-receive-ccy-usd'].fire('change');
+  t.els['erp-receive-ccy'].value = 'USD'; t.els['erp-receive-ccy'].fire('change');
   await flush(); await flush();
   assert.ok(t.els['erp-receive-preview'].innerHTML.includes('預覽失敗：逾時'));
-  assert.equal(t.els['erp-receive-ccy-usd'].checked, true, '剛選的美金不能被清掉');
+  assert.equal(t.els['erp-receive-ccy'].value, 'USD', '剛選的美金不能被清掉');
   assert.equal(t.els['erp-receive-rate'].value, '32.77');
   assert.equal(t.els['btn-erp-receive-create'].disabled, true);
 }
@@ -238,12 +250,19 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : nt
   assert.equal(t.run('buildBody().entry_ccy'), null);
 }
 
-// 台幣採購單（local）：沒有美金 / 台幣選項
+// 台幣採購單（local）：同一個下拉固定 NTD，USD 選項停用（後端不支援台幣採購單開美金進貨單）；選了也不重新預覽
 {
   const t = await setup(pick);
   t.run(`renderPreview(${JSON.stringify({ ...fx.with, mode: 'local', currency: 'NTD', po_currency: 'NTD' })})`);
   const html = t.els['erp-receive-preview'].innerHTML;
-  assert.ok(!html.includes('erp-receive-ccy'), '台幣單不出現選項');
+  const sel = t.els['erp-receive-ccy'];
+  assert.equal(sel.value, 'NTD');
+  assert.deepEqual(sel.options.map(o => [o.value, o.disabled, o.title]),
+    [['NTD', false, ''], ['USD', true, '台幣採購單不能開美金進貨單']]);
+  assert.ok(!html.includes('erp-receive-price-ntd') && !html.includes('erp-receive-rate'), '台幣單沒有單價是台幣 / 匯率');
+  sel.value = 'USD'; sel.fire('change');
+  await flush();
+  assert.equal(t.posts.length, 0, '台幣單改下拉不送預覽');
 }
 """
         completed = run_node(script)
@@ -301,12 +320,12 @@ const pick = body => (body.entry_ccy === 'USD' ? usd : body.price_ntd ? ntdPrice
   await t.run('handlePreview()');
   t.els['erp-receive-price-ntd'].checked = true; t.els['erp-receive-price-ntd'].fire('change');
   await flush(); await flush();
-  t.els['erp-receive-ccy-usd'].fire('change');
+  t.els['erp-receive-ccy'].value = 'USD'; t.els['erp-receive-ccy'].fire('change');
   await flush(); await flush();
   assert.equal(t.posts.at(-1).entry_ccy, 'USD');
   assert.equal(t.posts.at(-1).price_ntd, false);
   assert.ok(!t.els['erp-receive-preview'].innerHTML.includes('erp-receive-price-ntd'), '美金不出現勾選框');
-  t.els['erp-receive-ccy-ntd'].fire('change');
+  t.els['erp-receive-ccy'].value = 'NTD'; t.els['erp-receive-ccy'].fire('change');
   await flush(); await flush();
   assert.equal(t.posts.at(-1).price_ntd, true, '切回台幣保留勾選');
   t.run(`_picker.lockedGroup = () => 'P0304';`);
@@ -450,6 +469,57 @@ const DEFAULTS = { r: '', rv: null, c: '', cv: null, p: false, pv: null };
   assert.equal(t.run('_entryChoosable'), false);
   const b = t.run('buildBody()');
   assert.deepEqual([b.price_ntd, b.entry_ccy, b.exch_rate], [false, null, null]);
+}
+"""
+        completed = run_node(script)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_currency_default_rate_with_node(self):
+        # v2026.11.26.1：匯率預帶正航幣別檔 BuyInRate（rate_source currency_default），不再是 0 / 鎖住；打了就改送 manual
+        script = r"""
+const dflt = { ...fx.with, exch_rate: 30.385, rate_source: 'currency_default', rate_required: false,
+  entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true, price_ntd: false };
+const usdDflt = { ...dflt, mode: 'foreign', currency: 'USD', entry_ccy: 'USD', tax_type: 4, po_tax_type: 4 };
+const pick = body => {
+  const base = body.entry_ccy === 'USD' ? usdDflt : dflt;
+  return body.exch_rate ? { ...base, exch_rate: body.exch_rate, rate_source: 'manual' } : base;
+};
+
+// 預設 NTD、匯率欄預帶 30.385、確認鈕可按；沒改匯率直接收料，送 exch_rate null（後端同樣預帶）
+{
+  const t = await setup(pick);
+  t.run(`_picker.clear = () => {}; _picker.reload = async () => {}; window.confirm = m => { globalThis._msg = m; return true; };`);
+  await t.run('handlePreview()');
+  assert.equal(t.els['erp-receive-ccy'].value, 'NTD');
+  assert.equal(t.els['erp-receive-rate'].value, '30.385');
+  const html = t.els['erp-receive-preview'].innerHTML;
+  assert.ok(!html.includes('請輸入發票上的匯率'));
+  assert.equal(t.els['btn-erp-receive-create'].disabled, false, '預帶匯率不鎖確認鈕');
+  await t.run('handleCreate()');
+  assert.equal(t.posts.length, 2, '直接送 create');
+  assert.deepEqual([t.posts[1].exch_rate, t.posts[1].entry_ccy], [null, null]);
+  assert.ok(!t.toasts.some(x => x.msg.includes('發票匯率')), JSON.stringify(t.toasts));
+  assert.ok(t.run('globalThis._msg').includes('單據幣別 NTD 台幣'));
+}
+
+// 選 USD：同一批明細保留選擇，匯率照預帶；使用者打的匯率優先
+{
+  const t = await setup(pick);
+  await t.run('handlePreview()');
+  const sel = t.els['erp-receive-ccy'];
+  sel.value = 'USD'; sel.fire('change');
+  await flush(); await flush();
+  assert.equal(t.els['erp-receive-ccy'].value, 'USD');
+  assert.equal(t.els['erp-receive-rate'].value, '30.385');
+  const rate = t.els['erp-receive-rate'];
+  rate.value = '32.5'; rate.fire('change');
+  await flush(); await flush();
+  assert.deepEqual(t.posts.map(b => [b.entry_ccy, b.exch_rate]), [[null, null], ['USD', null], ['USD', 32.5]]);
+  assert.equal(t.els['erp-receive-ccy'].value, 'USD', '同一批明細選擇不跳回 NTD');
+  assert.equal(t.els['erp-receive-rate'].value, '32.5');
+  // 換一批明細：回到預設 NTD
+  t.run('resetEntryChoices()');
+  assert.equal(t.run('buildBody().entry_ccy'), null);
 }
 """
         completed = run_node(script)
