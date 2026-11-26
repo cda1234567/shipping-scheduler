@@ -181,12 +181,12 @@ const ntd = { ...fx.with, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_
 const ntdNoRate = { ...fx.without, entry_ccy: 'NTD', entry_ccy_default: 'NTD', entry_ccy_choosable: true };
 const pick = body => (body.entry_ccy === 'USD' ? usd : body.exch_rate ? ntd : ntdNoRate);
 
-// v2026.11.26.1：USD 單有「單據幣別」下拉（NTD 台幣 / USD 美金），預設 NTD；首次預覽不帶 entry_ccy（用後端預設 NTD）
+// v2026.11.26.1：USD 單有「使用幣別」下拉（NTD 台幣 / USD 美金），預設 NTD；首次預覽不帶 entry_ccy（用後端預設 NTD）
 {
   const t = await setup(pick);
   await t.run('handlePreview()');
   const html = t.els['erp-receive-preview'].innerHTML;
-  assert.ok(html.includes('<strong>單據幣別</strong>'), '下拉標籤');
+  assert.ok(html.includes('<strong>使用幣別</strong>'), '下拉標籤');
   assert.ok(!html.includes('type="radio"'), '不再用 radio');
   const sel = t.els['erp-receive-ccy'];
   assert.equal(sel.tag, 'select');
@@ -485,7 +485,7 @@ const pick = body => {
   return body.exch_rate ? { ...base, exch_rate: body.exch_rate, rate_source: 'manual' } : base;
 };
 
-// 預設 NTD、匯率欄預帶 30.385、確認鈕可按；沒改匯率直接收料，送 exch_rate null（後端同樣預帶）
+// 預設 NTD、匯率欄預帶 30.385、確認鈕可按；沒改匯率直接收料，照送預覽顯示的 30.385（寫入 = 預覽）
 {
   const t = await setup(pick);
   t.run(`_picker.clear = () => {}; _picker.reload = async () => {}; window.confirm = m => { globalThis._msg = m; return true; };`);
@@ -497,9 +497,21 @@ const pick = body => {
   assert.equal(t.els['btn-erp-receive-create'].disabled, false, '預帶匯率不鎖確認鈕');
   await t.run('handleCreate()');
   assert.equal(t.posts.length, 2, '直接送 create');
-  assert.deepEqual([t.posts[1].exch_rate, t.posts[1].entry_ccy], [null, null]);
+  assert.deepEqual([t.posts[0].exch_rate, t.posts[1].exch_rate, t.posts[1].entry_ccy], [null, 30.385, null]);
   assert.ok(!t.toasts.some(x => x.msg.includes('發票匯率')), JSON.stringify(t.toasts));
-  assert.ok(t.run('globalThis._msg').includes('單據幣別 NTD 台幣'));
+  assert.ok(t.run('globalThis._msg').includes('使用幣別 NTD 台幣'));
+}
+
+// 預覽後正航幣別檔匯率被改（後端再預帶會是 31.2）：確認收料仍送預覽的 30.385，不重新預覽
+{
+  let buyIn = 30.385;
+  const t = await setup(body => (body.exch_rate ? { ...dflt, exch_rate: body.exch_rate, rate_source: 'manual' } : { ...dflt, exch_rate: buyIn }));
+  t.run(`_picker.clear = () => {}; _picker.reload = async () => {}; window.confirm = () => true;`);
+  await t.run('handlePreview()');
+  buyIn = 31.2;
+  await t.run('handleCreate()');
+  assert.equal(t.posts.length, 2, '不重新預覽，直接送 create');
+  assert.equal(t.posts[1].exch_rate, 30.385, '寫入用預覽顯示的匯率');
 }
 
 // 選 USD：同一批明細保留選擇，匯率照預帶；使用者打的匯率優先
